@@ -1,7 +1,7 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2010-2015. All Rights Reserved.
+%% Copyright Ericsson AB 2010-2017. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -31,9 +31,9 @@
          fold/3,
          foldl/3,
          scramble/1,
-         seed/0,
          unique_string/0,
-         have_sctp/0]).
+         have_sctp/0,
+         eprof/1]).
 
 %% diameter-specific
 -export([lport/2,
@@ -49,6 +49,16 @@
 
 -define(L, atom_to_list).
 
+%% ---------------------------------------------------------------------------
+
+eprof(start) ->
+    eprof:start(),
+    eprof:start_profiling([self()]);
+
+eprof(stop) ->
+    eprof:stop_profiling(),
+    eprof:analyze(),
+    eprof:stop().
 
 %% ---------------------------------------------------------------------------
 %% name/2
@@ -173,26 +183,7 @@ recvl([{MRef, F} | L], Ref, Fun, Acc) ->
 %% Sort a list into random order.
 
 scramble(L) ->
-    foldl(fun(true, _, S, false) -> S end,
-          false,
-          [[fun s/1, L]]).
-
-s(L) ->
-    random:seed(seed()),
-    s([], L).
-
-s(Acc, []) ->
-    Acc;
-s(Acc, L) ->
-    {H, [T|Rest]} = lists:split(random:uniform(length(L)) - 1, L),
-    s([T|Acc], H ++ Rest).
-
-%% ---------------------------------------------------------------------------
-%% seed/0
-
-seed() ->
-    {_,T} = diameter_lib:seed(),
-    T.
+    [X || {_,X} <- lists:sort([{rand:uniform(), T} || T <- L])].
 
 %% ---------------------------------------------------------------------------
 %% unique_string/0
@@ -204,6 +195,15 @@ unique_string() ->
 %% have_sctp/0
 
 have_sctp() ->
+    have_sctp(erlang:system_info(system_architecture)).
+
+%% Don't run SCTP on platforms where it's either known to be flakey or
+%% isn't available.
+
+have_sctp("sparc-sun-solaris2.10") ->
+    false;
+
+have_sctp(_) ->
     case gen_sctp:open() of
         {ok, Sock} ->
             gen_sctp:close(Sock),
@@ -314,16 +314,22 @@ listen(SvcName, Prot, Opts) ->
 connect(Client, Prot, LRef) ->
     connect(Client, Prot, LRef, []).
 
-connect(Client, Prot, LRef, Opts) ->
+connect(Client, ProtOpts, LRef, Opts) ->
+    Prot = head(ProtOpts),
     [PortNr] = lport(Prot, LRef),
     Client = diameter:service_info(Client, name),  %% assert
     true = diameter:subscribe(Client),
-    Ref = add_transport(Client, {connect, opts(Prot, PortNr) ++ Opts}),
+    Ref = add_transport(Client, {connect, opts(ProtOpts, PortNr) ++ Opts}),
     true = transport(Client, Ref),                 %% assert
 
     diameter_lib:for_n(fun(_) -> ok = up(Client, Ref, Prot, PortNr) end,
                        proplists:get_value(pool_size, Opts, 1)),
     Ref.
+
+head([T|_]) ->
+    T;
+head(T) ->
+    T.
 
 up(Client, Ref, Prot, PortNr) ->
     receive
@@ -345,11 +351,12 @@ transport(SvcName, Ref) ->
 disconnect(Client, Ref, Server, LRef) ->
     true = diameter:subscribe(Server),
     ok = diameter:remove_transport(Client, Ref),
-    ok = receive
-             {diameter_event, Server, {down, LRef, _, _}} -> ok
-         after 10000 ->
-                 {Client, Ref, Server, LRef, process_info(self(), messages)}
-         end.
+    receive
+        {diameter_event, Server, {down, LRef, _, _}} ->
+            ok
+    after 10000 ->
+            {Client, Ref, Server, LRef, process_info(self(), messages)}
+    end.
 
 %% ---------------------------------------------------------------------------
 
@@ -366,10 +373,13 @@ tmod(sctp) ->
 tmod(any) ->
     [diameter_sctp, diameter_tcp].
 
-opts(Prot, T) ->
-    tmo(T, lists:append([[{transport_module, M}, {transport_config, C}]
+opts([Prot | Opts], T) ->
+    tmo(T, lists:append([[{transport_module, M}, {transport_config, C ++ Opts}]
                          || M <- tmod(Prot),
-                            C <- [cfg(M,T) ++ cfg(M) ++ cfg(T)]])).
+                            C <- [cfg(M,T) ++ cfg(M) ++ cfg(T)]]));
+
+opts(Prot, T) ->
+    opts([Prot], T).
 
 tmo(listen, Opts) ->
     Opts;

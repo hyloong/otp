@@ -1,7 +1,7 @@
 %%----------------------------------------------------------------------
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2012-2014. All Rights Reserved.
+%% Copyright Ericsson AB 2012-2019. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -23,24 +23,15 @@
 %% Description:
 %%    This file contains the Netconf client interface
 %%
-%% @author Support
+%% Netconf servers can be configured by adding the following statement
+%% to a configuration file:
 %%
-%% @doc Netconf client module.
+%% {server_id(), [option()]}.
 %%
-%% <p>The Netconf client is compliant with RFC4741 and RFC4742.</p>
+%% The server_id() or an associated ct:target_name() shall then be
+%% used in calls to open/2 connect/2.
 %%
-%% <p> For each server to test against, the following entry can be
-%% added to a configuration file:</p>
-%%
-%% <p>`{server_id(),options()}.'</p>
-%%
-%% <p> The `server_id()' or an associated `target_name()' (see
-%% {@link ct}) shall then be used in calls to {@link open/2}.</p>
-%%
-%% <p>If no configuration exists for a server, a session can still be
-%% opened by calling {@link open/2} with all necessary options given
-%% in the call. The first argument to {@link open/2} can then be any
-%% atom.</p>
+%% If no configuration exists for a server, use open/1 and connect/1.
 %%
 %% == Logging ==
 %%
@@ -49,116 +40,28 @@
 %% `ct_conn_log_h'. To use this error handler, add the `cth_conn_log'
 %% hook in your test suite, e.g.
 %%
-%% ```
 %% suite() ->
-%%    [{ct_hooks, [{cth_conn_log, [{conn_mod(),hook_options()}]}]}].
-%%'''
-%%
-%% The `conn_mod()' is the name of the common_test module implementing
-%% the connection protocol, e.g. `ct_netconfc'.
-%%
-%% The hook option `log_type' specifies the type of logging:
-%%
-%% <dl>
-%%   <dt>`raw'</dt>
-%%   <dd>The sent and received netconf data is logged to a separate
-%%   text file as is without any formatting. A link to the file is
-%%   added to the test case HTML log.</dd>
-%%
-%%   <dt>`pretty'</dt>
-%%   <dd>The sent and received netconf data is logged to a separate
-%%   text file with XML data nicely indented. A link to the file is
-%%   added to the test case HTML log.</dd>
-%%
-%%   <dt>`html (default)'</dt>
-%%   <dd>The sent and received netconf traffic is pretty printed
-%%   directly in the test case HTML log.</dd>
-%%
-%%   <dt>`silent'</dt>
-%%   <dd>Netconf traffic is not logged.</dd>
-%% </dl>
-%%
-%% By default, all netconf traffic is logged in one single log
-%% file. However, it is possible to have different connections logged
-%% in separate files. To do this, use the hook option `hosts' and
-%% list the names of the servers/connections that will be used in the
-%% suite. Note that the connections must be named for this to work,
-%% i.e. they must be opened with {@link open/2}.
-%%
-%% The `hosts' option has no effect if `log_type' is set to `html' or
-%% `silent'.
-%%
-%% The hook options can also be specified in a configuration file with
-%% the configuration variable `ct_conn_log':
-%%
-%% ```
-%% {ct_conn_log,[{conn_mod(),hook_options()}]}.
-%% '''
+%%     [{ct_hooks, [{cth_conn_log, [{ct:conn_log_mod(),ct:conn_log_options()}]}]}].
 %%
 %% For example:
 %%
-%% ```
-%% {ct_conn_log,[{ct_netconfc,[{log_type,pretty},
-%%                             {hosts,[key_or_name()]}]}]}
-%% '''
-%%
-%% <b>Note</b> that hook options specified in a configuration file
-%% will overwrite the hardcoded hook options in the test suite.
-%%
-%% === Logging example 1 ===
-%%
-%% The following `ct_hooks' statement will cause pretty printing of
-%% netconf traffic to separate logs for the connections named
-%% `nc_server1' and `nc_server2'. Any other connections will be logged
-%% to default netconf log.
-%%
-%% ```
 %% suite() ->
-%%    [{ct_hooks, [{cth_conn_log, [{ct_netconfc,[{log_type,pretty}},
-%%                                               {hosts,[nc_server1,nc_server2]}]}
-%%                                ]}]}].
-%%'''
-%%
-%% Connections must be opened like this:
-%%
-%% ```
-%% open(nc_server1,[...]),
-%% open(nc_server2,[...]).
-%% '''
-%%
-%% === Logging example 2 ===
-%%
-%% The following configuration file will cause raw logging of all
-%% netconf traffic into one single text file.
-%%
-%% ```
-%% {ct_conn_log,[{ct_netconfc,[{log_type,raw}]}]}.
-%% '''
-%%
-%% The `ct_hooks' statement must look like this:
-%%
-%% ```
-%% suite() ->
-%%    [{ct_hooks, [{cth_conn_log, []}]}].
-%% '''
-%%
-%% The same `ct_hooks' statement without the configuration file would
-%% cause HTML logging of all netconf connections into the test case
-%% HTML log.
+%%     [{ct_hooks,
+%%         [{cth_conn_log,[{ct_netconfc,[{log_type,pretty},
+%%                                       {hosts,[my_configured_server]}]}]}
 %%
 %% == Notifications ==
 %%
 %% The netconf client is also compliant with RFC5277 NETCONF Event
 %% Notifications, which defines a mechanism for an asynchronous
 %% message notification delivery service for the netconf protocol.
+%% Functions supporting this are create_subscription/3
+%% get_event_streams/3.
 %%
-%% Specific functions to support this are {@link
-%% create_subscription/6} and {@link get_event_streams/3}. (The
-%% functions also exist with other arities.)
-%%
-%% @end
 %%----------------------------------------------------------------------
 -module(ct_netconfc).
+
+-dialyzer(no_improper_lists).
 
 -include("ct_netconfc.hrl").
 -include("ct_util.hrl").
@@ -167,7 +70,13 @@
 %%----------------------------------------------------------------------
 %% External exports
 %%----------------------------------------------------------------------
--export([open/1,
+-export([connect/1,
+         connect/2,
+         disconnect/1,
+         session/1,
+         session/2,
+         session/3,
+         open/1,
 	 open/2,
 	 only_open/1,
 	 only_open/2,
@@ -199,12 +108,9 @@
 	 copy_config/4,
 	 action/2,
 	 action/3,
-	 create_subscription/1,
 	 create_subscription/2,
 	 create_subscription/3,
-	 create_subscription/4,
-	 create_subscription/5,
-	 create_subscription/6,
+	 get_event_streams/1,
 	 get_event_streams/2,
 	 get_event_streams/3,
 	 get_capabilities/1,
@@ -212,10 +118,18 @@
 	 get_session_id/1,
 	 get_session_id/2]).
 
+%% historic, no longer documented
+-export([create_subscription/1,
+	 create_subscription/4,
+	 create_subscription/5,
+	 create_subscription/6]).
+
 %%----------------------------------------------------------------------
 %% Exported types
 %%----------------------------------------------------------------------
--export_type([notification/0]).
+-export_type([client/0,
+              handle/0,
+              notification/0]).
 
 %%----------------------------------------------------------------------
 %% Internal exports
@@ -234,7 +148,6 @@
 %% Internal defines
 %%----------------------------------------------------------------------
 -define(APPLICATION,?MODULE).
--define(VALID_SSH_OPTS,[user, password, user_dir]).
 -define(DEFAULT_STREAM,"NETCONF").
 
 -define(error(ConnName,Report),
@@ -253,6 +166,9 @@
 	(is_atom(Xml) orelse (is_tuple(Xml) andalso is_atom(element(1,Xml))))).
 -define(is_string(S), (is_list(S) andalso is_integer(hd(S)))).
 
+%% Keys into the process dictionary.
+-define(KEY(T), {?MODULE, T}).
+
 %%----------------------------------------------------------------------
 %% Records
 %%----------------------------------------------------------------------
@@ -263,8 +179,9 @@
 		capabilities,
 		session_id,
 		msg_id = 1,
-		hello_status,
-		buff = <<>>,
+		hello_status,    % undefined | received | #pending{}
+                                 % string() | {error, Reason}
+		buf = false,     % binary() | list() | boolean()
 		pending = [],    % [#pending]
 		event_receiver}).% pid
 
@@ -273,35 +190,37 @@
 		  host,
 		  port = ?DEFAULT_PORT,
 		  timeout = ?DEFAULT_TIMEOUT,
-		  name}).
+		  name,
+                  type}).
 
 %% Connection reference
 -record(connection, {reference, % {CM,Ch}
 		     host,
 		     port,
-		     name}).
+		     name,
+                     type}).
 
 %% Pending replies from server
--record(pending, {tref,    % timer ref (returned from timer:xxx)
-		  ref,     % pending ref
+-record(pending, {tref :: false | reference(),  % timer reference
 		  msg_id,
-		  op,
+                  op,
 		  caller}).% pid which sent the request
 
 %%----------------------------------------------------------------------
 %% Type declarations
 %%----------------------------------------------------------------------
--type client() :: handle() | ct_gen_conn:server_id() | ct_gen_conn:target_name().
--type handle() :: term().
-%% An opaque reference for a connection (netconf session). See {@link
-%% ct} for more information.
+-type client() :: handle() | server_id() | ct:target_name().
+-opaque handle() :: pid().
 
--type options() :: [option()].
-%% Options used for setting up ssh connection to a netconf server.
+-type option() :: {host | ssh, host()}
+                | {port, inet:port_number()}
+                | {timeout, timeout()}
+                | {capability, string() | [string()]}
+                | ssh:client_option().
 
--type option() :: {ssh,host()} | {port,inet:port_number()} | {user,string()} |
-		  {password,string()} | {user_dir,string()} |
-		  {timeout,timeout()}.
+-type session_option() :: {timeout,timeout()}
+                        | {capability, string() | [string()]}.
+
 -type host() :: inet:hostname() | inet:ip_address().
 
 -type notification() :: {notification, xml_attributes(), notification_content()}.
@@ -317,14 +236,13 @@
 %% See XML Schema for Event Notifications found in RFC5277 for further
 %% detail about the data format for the string values.
 
-%-type error_handler() :: module().
 -type error_reason() :: term().
+
+-type server_id() :: atom().
 
 -type simple_xml() :: {xml_tag(), xml_attributes(), xml_content()} |
 		      {xml_tag(), xml_content()} |
 		      xml_tag().
-%% <p>This type is further described in the documentation for the
-%% <tt>Xmerl</tt> application.</p>
 -type xml_tag() :: atom().
 -type xml_attributes() :: [{xml_attribute_tag(),xml_attribute_value()}].
 -type xml_attribute_tag() :: atom().
@@ -336,733 +254,664 @@
 -type xs_datetime() :: string().
 %% This date and time identifyer has the same format as the XML type
 %% dateTime and compliant to RFC3339. The format is
-%% ```[-]CCYY-MM-DDThh:mm:ss[.s][Z|(+|-)hh:mm]'''
+%% "[-]CCYY-MM-DDThh:mm:ss[.s][Z|(+|-)hh:mm]"
 
 %%----------------------------------------------------------------------
 %% External interface functions
 %%----------------------------------------------------------------------
 
 %%----------------------------------------------------------------------
--spec open(Options) -> Result when
-      Options :: options(),
-      Result :: {ok,handle()} | {error,error_reason()}.
-%% @doc Open a netconf session and exchange `hello' messages.
-%%
-%% If the server options are specified in a configuration file, or if
-%% a named client is needed for logging purposes (see {@section
-%% Logging}) use {@link open/2} instead.
-%%
-%% The opaque `handler()' reference which is returned from this
-%% function is required as client identifier when calling any other
-%% function in this module.
-%%
-%% The `timeout' option (milli seconds) is used when setting up
-%% the ssh connection and when waiting for the hello message from the
-%% server. It is not used for any other purposes during the lifetime
-%% of the connection.
-%%
-%% @end
-%%----------------------------------------------------------------------
-open(Options) ->
-    open(Options,#options{},[],true).
+%% Open an SSH connection to a Netconf server
+%% If the server options are specified in a configuration file, use
+%% open/2.
+
+%% connect/1
+
+-spec connect(Options) -> Result when
+      Options :: [option()],
+      Result :: {ok, handle()} | {error, error_reason()}.
+connect(Options) ->
+    connect(Options, #options{type = connection}, []).
+
+%% connect/2
+
+-spec connect(KeyOrName, ExtraOptions) -> Result when
+      KeyOrName :: ct:key_or_name(),
+      ExtraOptions :: [option()],
+      Result :: {ok, handle()} | {error, error_reason()}.
+
+connect(KeyOrName, ExtraOptions) ->
+    connect(make_opts(KeyOrName, ExtraOptions),
+            #options{name = KeyOrName, type = connection},
+            [{name, KeyOrName}]).
+
+%% connect/3
+
+connect(Opts, InitRec, NameOpt) ->
+    case make_options(Opts, InitRec) of
+        #options{} = Rec ->
+            start(Rec, NameOpt, false);
+        {error, _} = No ->
+            No
+    end.
+
+%% make_opts/2
+
+make_opts(KeyOrName, ExtraOptions) ->
+    SortedExtra = lists:keysort(1, ExtraOptions),
+    SortedConfig = lists:keysort(1, ct:get_config(KeyOrName, [])),
+    lists:ukeymerge(1, SortedConfig, SortedExtra).
 
 %%----------------------------------------------------------------------
--spec open(KeyOrName, ExtraOptions) -> Result when
-      KeyOrName :: ct_gen_conn:key_or_name(),
-      ExtraOptions :: options(),
-      Result :: {ok,handle()} | {error,error_reason()}.
-%% @doc Open a named netconf session and exchange `hello' messages.
-%%
-%% If `KeyOrName' is a configured `server_id()' or a
-%% `target_name()' associated with such an ID, then the options
-%% for this server will be fetched from the configuration file.
-%
-%% The `ExtraOptions' argument will be added to the options found in
-%% the configuration file. If the same options are given, the values
-%% from the configuration file will overwrite `ExtraOptions'.
-%%
-%% If the server is not specified in a configuration file, use {@link
-%% open/1} instead.
-%%
-%% The opaque `handle()' reference which is returned from this
-%% function can be used as client identifier when calling any other
-%% function in this module. However, if `KeyOrName' is a
-%% `target_name()', i.e. if the server is named via a call to
-%% `ct:require/2' or a `require' statement in the test
-%% suite, then this name may be used instead of the `handle()'.
-%%
-%% The `timeout' option (milli seconds) is used when setting up
-%% the ssh connection and when waiting for the hello message from the
-%% server. It is not used for any other purposes during the lifetime
-%% of the connection.
-%%
-%% @see ct:require/2
-%% @end
+%% Close the given SSH connection.
+-spec disconnect(Conn) -> ok | {error,error_reason()} when
+      Conn :: handle().
+disconnect(Conn) ->
+    case call(Conn,get_ssh_connection) of
+        {ok,_} ->
+            ct_gen_conn:stop(Conn);
+        Error ->
+            Error
+    end.
+
 %%----------------------------------------------------------------------
+%% Open a netconf session as a channel on the given SSH connection,
+%% and exchange `hello' messages.
+
+%% session/1
+
+-spec session(Conn) -> Result when
+      Conn :: handle(),
+      Result :: {ok, handle()} | {error, error_reason()}.
+
+session(Conn) ->
+    session(Conn, [], #options{type = channel}, []).
+
+%% session/2
+
+-spec session(Conn, Options) -> Result when
+      Conn :: handle(),
+      Options :: [session_option()],
+      Result :: {ok, handle()} | {error, error_reason()};
+             (KeyOrName, Conn) -> Result when
+      KeyOrName :: ct:key_or_name(),
+      Conn :: handle(),
+      Result :: {ok, handle()} | {error, error_reason()}.
+
+session(Conn, Options) when is_list(Options) ->
+    session(Conn, Options, #options{type = channel}, []);
+
+session(KeyOrName, Conn) ->
+    session(Conn,
+            [],
+            #options{name = KeyOrName, type = channel},
+            [{name, KeyOrName}]).
+
+%% session/3
+
+-spec session(KeyOrName, Conn, Options) -> Result when
+      Conn :: handle(),
+      Options :: [session_option()],
+      KeyOrName :: ct:key_or_name(),
+      Result :: {ok, handle()} | {error, error_reason()}.
+
+session(KeyOrName, Conn, ExtraOptions) ->
+    session(Conn,
+            make_opts(KeyOrName, ExtraOptions),
+            #options{name = KeyOrName, type = channel},
+            [{name, KeyOrName}]).
+
+%% session/4
+
+session(Conn, Opts, InitRec, NameOpt) ->
+    T = make_ref(),
+    try
+        [_ | {ok, SshConn}] = [T | call(Conn, get_ssh_connection)],
+        [_ | #options{} = Rec] = [T | make_session_options(Opts, InitRec)],
+        [_ | {ok, Client} = Ok] = [T | start(SshConn, Rec, NameOpt, true)],
+        [_ | ok] = [T | hello(Client, caps(Opts), Rec#options.timeout)],
+        Ok
+    catch
+        error: {badmatch, [T | Error]} ->
+            Error
+    end.
+
+%% caps/1
+
+caps(Opts) ->
+    [T || {capability, _} = T <- Opts].
+
+%%----------------------------------------------------------------------
+%% Open a netconf session and exchange 'hello' messages.
+%% If the server options are specified in a configuration file, use
+%% open/2.
+
+%% open/1
+
+-spec open(Options) -> Result when
+      Options :: [option()],
+      Result :: {ok, handle()} | {error, error_reason()}.
+
+open(Options) ->
+    open(Options,
+         #options{type = connection_and_channel},
+         [],
+         true).
+
+-spec open(KeyOrName, ExtraOption) -> Result when
+      KeyOrName :: ct:key_or_name(),
+      ExtraOption :: [option()],
+      Result :: {ok, handle()} | {error, error_reason()}.
+
 open(KeyOrName, ExtraOpts) ->
     open(KeyOrName, ExtraOpts, true).
 
-open(KeyOrName, ExtraOpts, Hello) ->
-    SortedExtra = lists:keysort(1,ExtraOpts),
-    SortedConfig = lists:keysort(1,ct:get_config(KeyOrName,[])),
-    AllOpts = lists:ukeymerge(1,SortedConfig,SortedExtra),
-    open(AllOpts,#options{name=KeyOrName},[{name,KeyOrName}],Hello).
+%% open/3
 
-open(OptList,InitOptRec,NameOpt,Hello) ->
-    case check_options(OptList,undefined,undefined,InitOptRec) of
-	{Host,Port,Options} ->
-	    case ct_gen_conn:start({Host,Port},Options,?MODULE,
-				   NameOpt ++ [{reconnect,false},
-					       {use_existing_connection,false},
-					       {forward_messages,true}]) of
-		{ok,Client} when Hello==true ->
-		    case hello(Client,Options#options.timeout) of
-			ok ->
-			    {ok,Client};
-			Error ->
-			    Error
-		    end;
-		Other ->
-		    Other
-	    end;
-	Error ->
-	    Error
+open(KeyOrName, ExtraOptions, Hello) ->
+    open(make_opts(KeyOrName, ExtraOptions),
+         #options{name = KeyOrName, type = connection_and_channel},
+         [{name, KeyOrName}],
+         Hello).
+
+%% open/4
+
+open(Opts, InitRec, NameOpt, Hello) ->
+    T = make_ref(),
+    try
+        [_, #options{} = Rec] = [T, make_options(Opts, InitRec)],
+        [_, {ok, Client} = Ok | true] = [T, start(Rec, NameOpt, true) | Hello],
+        [_, ok] = [T, hello(Client, caps(Opts), Rec#options.timeout)],
+        Ok
+    catch
+        error: {badmatch, [T, Res | _]} ->
+            Res
     end.
 
+%% start/3
+
+start(#options{host = undefined}, _, _) ->
+    {error, no_host_address};
+
+start(#options{port = undefined}, _, _) ->
+    {error, no_port};
+
+start(#options{host = Host, port = Port} = Opts, NameOpt, Fwd) ->
+    start({Host, Port}, Opts, NameOpt, Fwd).
+
+%% start/4
+
+start(Ep, Opts, NameOpt, Fwd) ->
+    ct_gen_conn:start(Ep, Opts, ?MODULE, [{reconnect, false},
+                                          {use_existing_connection, false},
+                                          {forward_messages, Fwd}
+                                          | NameOpt]).
 
 %%----------------------------------------------------------------------
+%% Like open/1,2, but no 'hello' message is sent.
+
 -spec only_open(Options) -> Result when
-      Options :: options(),
-      Result :: {ok,handle()} | {error,error_reason()}.
-%% @doc Open a netconf session, but don't send `hello'.
-%%
-%% As {@link open/1} but does not send a `hello' message.
-%%
-%% @end
-%%----------------------------------------------------------------------
-only_open(Options) ->
-    open(Options,#options{},[],false).
+      Options :: [option()],
+      Result :: {ok, handle()} | {error, error_reason()}.
 
-%%----------------------------------------------------------------------
--spec only_open(KeyOrName,ExtraOptions) -> Result when
-      KeyOrName :: ct_gen_conn:key_or_name(),
-      ExtraOptions :: options(),
-      Result :: {ok,handle()} | {error,error_reason()}.
-%% @doc Open a name netconf session, but don't send `hello'.
-%%
-%% As {@link open/2} but does not send a `hello' message.
-%%
-%% @end
-%%----------------------------------------------------------------------
+only_open(Options) ->
+    open(Options, #options{type = connection_and_channel}, [], false).
+
+-spec only_open(KeyOrName, ExtraOptions) -> Result when
+      KeyOrName :: ct:key_or_name(),
+      ExtraOptions :: [option()],
+      Result :: {ok, handle()} | {error, error_reason()}.
+
 only_open(KeyOrName, ExtraOpts) ->
     open(KeyOrName, ExtraOpts, false).
 
 %%----------------------------------------------------------------------
-%% @spec hello(Client) -> Result
-%% @equiv hello(Client, [], infinity)
-hello(Client) ->
-    hello(Client,[],?DEFAULT_TIMEOUT).
+%% Send a 'hello' message.
 
-%%----------------------------------------------------------------------
--spec hello(Client,Timeout) -> Result when
+%% hello/1
+
+-spec hello(Client) -> Result when
+      Client :: handle(),
+      Result :: ok | {error, error_reason()}.
+
+hello(Client) ->
+    hello(Client, [], ?DEFAULT_TIMEOUT).
+
+%% hello/2
+
+-spec hello(Client, Timeout) -> Result when
       Client :: handle(),
       Timeout :: timeout(),
-      Result :: ok | {error,error_reason()}.
-%% @spec hello(Client, Timeout) -> Result
-%% @equiv hello(Client, [], Timeout)
-hello(Client,Timeout) ->
-    hello(Client,[],Timeout).
+      Result :: ok | {error, error_reason()}.
 
-%%----------------------------------------------------------------------
--spec hello(Client,Options,Timeout) -> Result when
+hello(Client, Timeout) ->
+    hello(Client, [], Timeout).
+
+%% hello/3
+
+-spec hello(Client, Options, Timeout) -> Result when
       Client :: handle(),
       Options :: [{capability, [string()]}],
       Timeout :: timeout(),
-      Result :: ok | {error,error_reason()}.
-%% @doc Exchange `hello' messages with the server.
-%%
-%% Adds optional capabilities and sends a `hello' message to the
-%% server and waits for the return.
-%% @end
-%%----------------------------------------------------------------------
-hello(Client,Options,Timeout) ->
+      Result :: ok | {error, error_reason()}.
+
+hello(Client, Options, Timeout) ->
     call(Client, {hello, Options, Timeout}).
 
 
 %%----------------------------------------------------------------------
-%% @spec get_session_id(Client) -> Result
-%% @equiv get_session_id(Client, infinity)
+%% Get the session id for the session specified by Client.
+-spec get_session_id(Client) -> Result when
+      Client :: client(),
+      Result :: pos_integer() | {error,error_reason()}.
 get_session_id(Client) ->
     get_session_id(Client, ?DEFAULT_TIMEOUT).
 
-%%----------------------------------------------------------------------
 -spec get_session_id(Client, Timeout) -> Result when
       Client :: client(),
       Timeout :: timeout(),
       Result :: pos_integer() | {error,error_reason()}.
-%% @doc Returns the session id associated with the given client.
-%%
-%% @end
-%%----------------------------------------------------------------------
 get_session_id(Client, Timeout) ->
     call(Client, get_session_id, Timeout).
 
 %%----------------------------------------------------------------------
-%% @spec get_capabilities(Client) -> Result
-%% @equiv get_capabilities(Client, infinity)
+%% Get the server side capabilities.
+-spec get_capabilities(Client) -> Result when
+      Client :: client(),
+      Result :: [string()] | {error,error_reason()}.
 get_capabilities(Client) ->
     get_capabilities(Client, ?DEFAULT_TIMEOUT).
 
-%%----------------------------------------------------------------------
 -spec get_capabilities(Client, Timeout) -> Result when
       Client :: client(),
       Timeout :: timeout(),
       Result :: [string()] | {error,error_reason()}.
-%% @doc Returns the server side capabilities
-%%
-%% The following capability identifiers, defined in RFC 4741, can be returned:
-%%
-%% <ul>
-%%   <li>`"urn:ietf:params:netconf:base:1.0"'</li>
-%%   <li>`"urn:ietf:params:netconf:capability:writable-running:1.0"'</li>
-%%   <li>`"urn:ietf:params:netconf:capability:candidate:1.0"'</li>
-%%   <li>`"urn:ietf:params:netconf:capability:confirmed-commit:1.0"'</li>
-%%   <li>`"urn:ietf:params:netconf:capability:rollback-on-error:1.0"'</li>
-%%   <li>`"urn:ietf:params:netconf:capability:startup:1.0"'</li>
-%%   <li>`"urn:ietf:params:netconf:capability:url:1.0"'</li>
-%%   <li>`"urn:ietf:params:netconf:capability:xpath:1.0"'</li>
-%% </ul>
-%%
-%% Note, additional identifiers may exist, e.g. server side namespace.
-%%
-%% @end
-%%----------------------------------------------------------------------
 get_capabilities(Client, Timeout) ->
     call(Client, get_capabilities, Timeout).
 
 %%----------------------------------------------------------------------
-%% @spec send(Client, SimpleXml) -> Result
-%% @equiv send(Client, SimpleXml, infinity)
+%% Send an XML document to the server.
+-spec send(Client, SimpleXml) -> Result when
+      Client :: client(),
+      SimpleXml :: simple_xml(),
+      Result :: simple_xml() | {error,error_reason()}.
 send(Client, SimpleXml) ->
     send(Client, SimpleXml, ?DEFAULT_TIMEOUT).
 
-%%----------------------------------------------------------------------
 -spec send(Client, SimpleXml, Timeout) -> Result when
       Client :: client(),
       SimpleXml :: simple_xml(),
       Timeout :: timeout(),
       Result :: simple_xml() | {error,error_reason()}.
-%% @doc Send an XML document to the server.
-%%
-%% The given XML document is sent as is to the server. This function
-%% can be used for sending XML documents that can not be expressed by
-%% other interface functions in this module.
 send(Client, SimpleXml, Timeout) ->
     call(Client,{send, Timeout, SimpleXml}).
 
 %%----------------------------------------------------------------------
-%% @spec send_rpc(Client, SimpleXml) -> Result
-%% @equiv send_rpc(Client, SimpleXml, infinity)
+%% Wrap the given XML document in a valid netconf 'rpc' request and
+%% send to the server.
+-spec send_rpc(Client, SimpleXml) -> Result when
+      Client :: client(),
+      SimpleXml :: simple_xml(),
+      Result :: [simple_xml()] | {error,error_reason()}.
 send_rpc(Client, SimpleXml) ->
     send_rpc(Client, SimpleXml, ?DEFAULT_TIMEOUT).
 
-%%----------------------------------------------------------------------
 -spec send_rpc(Client, SimpleXml, Timeout) -> Result when
       Client :: client(),
       SimpleXml :: simple_xml(),
       Timeout :: timeout(),
       Result :: [simple_xml()] | {error,error_reason()}.
-%% @doc Send a Netconf <code>rpc</code> request to the server.
-%%
-%% The given XML document is wrapped in a valid Netconf
-%% <code>rpc</code> request and sent to the server. The
-%% <code>message-id</code> and namespace attributes are added to the
-%% <code>rpc</code> element.
-%%
-%% This function can be used for sending <code>rpc</code> requests
-%% that can not be expressed by other interface functions in this
-%% module.
 send_rpc(Client, SimpleXml, Timeout) ->
     call(Client,{send_rpc, SimpleXml, Timeout}).
 
 %%----------------------------------------------------------------------
-%% @spec lock(Client, Target) -> Result
-%% @equiv lock(Client, Target, infinity)
+%% Send a 'lock' request.
+-spec lock(Client, Target) -> Result when
+      Client :: client(),
+      Target :: netconf_db(),
+      Result :: ok | {error,error_reason()}.
 lock(Client, Target) ->
     lock(Client, Target,?DEFAULT_TIMEOUT).
 
-%%----------------------------------------------------------------------
 -spec lock(Client, Target, Timeout) -> Result when
       Client :: client(),
       Target :: netconf_db(),
       Timeout :: timeout(),
       Result :: ok | {error,error_reason()}.
-%% @doc Unlock configuration target.
-%%
-%% Which target parameters that can be used depends on if
-%% `:candidate' and/or `:startup' are supported by the
-%% server. If successfull, the configuration system of the device is
-%% not available to other clients (Netconf, CORBA, SNMP etc). Locks
-%% are intended to be short-lived.
-%%
-%% The operations {@link kill_session/2} or {@link kill_session/3} can
-%% be used to force the release of a lock owned by another Netconf
-%% session. How this is achieved by the server side is implementation
-%% specific.
-%%
-%% @end
-%%----------------------------------------------------------------------
 lock(Client, Target, Timeout) ->
     call(Client,{send_rpc_op,lock,[Target],Timeout}).
 
 %%----------------------------------------------------------------------
-%% @spec unlock(Client, Target) -> Result
-%% @equiv unlock(Client, Target, infinity)
+%% Send a 'unlock' request.
+-spec unlock(Client, Target) -> Result when
+      Client :: client(),
+      Target :: netconf_db(),
+      Result :: ok | {error,error_reason()}.
 unlock(Client, Target) ->
     unlock(Client, Target,?DEFAULT_TIMEOUT).
 
-%%----------------------------------------------------------------------
 -spec unlock(Client, Target, Timeout) -> Result when
       Client :: client(),
       Target :: netconf_db(),
       Timeout :: timeout(),
       Result :: ok | {error,error_reason()}.
-%% @doc Unlock configuration target.
-%%
-%% If the client earlier has aquired a lock, via {@link lock/2} or
-%% {@link lock/3}, this operation release the associated lock.  To be
-%% able to access another target than `running', the server must
-%% support `:candidate' and/or `:startup'.
-%%
-%% @end
-%%----------------------------------------------------------------------
 unlock(Client, Target, Timeout) ->
     call(Client, {send_rpc_op, unlock, [Target], Timeout}).
 
 %%----------------------------------------------------------------------
-%% @spec get(Client, Filter) -> Result
-%% @equiv get(Client, Filter, infinity)
+%% Send a 'get' request.
+-spec get(Client, Filter) -> Result when
+      Client :: client(),
+      Filter :: simple_xml() | xpath(),
+      Result :: {ok,[simple_xml()]} | {error,error_reason()}.
 get(Client, Filter) ->
     get(Client, Filter, ?DEFAULT_TIMEOUT).
 
-%%----------------------------------------------------------------------
 -spec get(Client, Filter, Timeout) -> Result when
       Client :: client(),
       Filter :: simple_xml() | xpath(),
       Timeout :: timeout(),
       Result :: {ok,[simple_xml()]} | {error,error_reason()}.
-%% @doc Get data.
-%%
-%% This operation returns both configuration and state data from the
-%% server.
-%%
-%% Filter type `xpath' can only be used if the server supports
-%% `:xpath'.
-%%
-%% @end
-%%----------------------------------------------------------------------
 get(Client, Filter, Timeout) ->
     call(Client,{send_rpc_op, get, [Filter], Timeout}).
 
 %%----------------------------------------------------------------------
-%% @spec get_config(Client, Source, Filter) -> Result
-%% @equiv get_config(Client, Source, Filter, infinity)
+%% Send a 'get-config' request.
+-spec get_config(Client, Source, Filter) -> Result when
+      Client :: client(),
+      Source :: netconf_db(),
+      Filter :: simple_xml() | xpath(),
+      Result :: {ok,[simple_xml()]} | {error,error_reason()}.
 get_config(Client, Source, Filter) ->
     get_config(Client, Source, Filter, ?DEFAULT_TIMEOUT).
 
-%%----------------------------------------------------------------------
 -spec get_config(Client, Source, Filter, Timeout) -> Result when
       Client :: client(),
       Source :: netconf_db(),
       Filter :: simple_xml() | xpath(),
       Timeout :: timeout(),
       Result :: {ok,[simple_xml()]} | {error,error_reason()}.
-%% @doc Get configuration data.
-%%
-%% To be able to access another source than `running', the server
-%% must advertise `:candidate' and/or `:startup'.
-%%
-%% Filter type `xpath' can only be used if the server supports
-%% `:xpath'.
-%%
-%%
-%% @end
-%%----------------------------------------------------------------------
 get_config(Client, Source, Filter, Timeout) ->
     call(Client, {send_rpc_op, get_config, [Source, Filter], Timeout}).
 
 %%----------------------------------------------------------------------
-%% @spec edit_config(Client, Target, Config) -> Result
-%% @equiv edit_config(Client, Target, Config, [], infinity)
+%% Send a 'edit-config' request.
+-spec edit_config(Client, Target, Config) -> Result when
+      Client :: client(),
+      Target :: netconf_db(),
+      Config :: simple_xml() | [simple_xml()],
+      Result :: ok | {error,error_reason()}.
 edit_config(Client, Target, Config) ->
     edit_config(Client, Target, Config, ?DEFAULT_TIMEOUT).
 
-%%----------------------------------------------------------------------
--spec edit_config(Client, Target, Config, OptParamsOrTimeout) -> Result when
+-spec edit_config(Client, Target, Config, OptParams) -> Result when
+      Client :: client(),
+      Target :: netconf_db(),
+      Config :: simple_xml() | [simple_xml()],
+      OptParams :: [simple_xml()],
+      Result :: ok | {error,error_reason()};
+                 (Client, Target, Config, Timeout) -> Result when
       Client :: client(),
       Target :: netconf_db(),
       Config :: simple_xml(),
-      OptParamsOrTimeout :: [simple_xml()] | timeout(),
+      Timeout :: timeout(),
       Result :: ok | {error,error_reason()}.
-%% @doc
-%%
-%% If `OptParamsOrTimeout' is a timeout value, then this is
-%% equivalent to {@link edit_config/5. edit_config(Client, Target,
-%% Config, [], Timeout)}.
-%%
-%% If `OptParamsOrTimeout' is a list of simple XML, then this is
-%% equivalent to {@link edit_config/5. edit_config(Client, Target,
-%% Config, OptParams, infinity)}.
-%%
-%% @end
 edit_config(Client, Target, Config, Timeout) when ?is_timeout(Timeout) ->
     edit_config(Client, Target, Config, [], Timeout);
 edit_config(Client, Target, Config, OptParams) when is_list(OptParams) ->
     edit_config(Client, Target, Config, OptParams, ?DEFAULT_TIMEOUT).
 
-%%----------------------------------------------------------------------
 -spec edit_config(Client, Target, Config, OptParams, Timeout) -> Result when
       Client :: client(),
       Target :: netconf_db(),
-      Config :: simple_xml(),
+      Config :: simple_xml() | [simple_xml()],
       OptParams :: [simple_xml()],
       Timeout :: timeout(),
       Result :: ok | {error,error_reason()}.
-%% @doc Edit configuration data.
-%%
-%% Per default only the running target is available, unless the server
-%% include `:candidate' or `:startup' in its list of
-%% capabilities.
-%%
-%% `OptParams' can be used for specifying optional parameters
-%% (`default-operation', `test-option' or `error-option') that will be
-%% added to the `edit-config' request. The value must be a list
-%% containing valid simple XML, for example
-%%
-%% ```
-%% [{'default-operation', ["none"]},
-%%  {'error-option', ["rollback-on-error"]}]
-%%'''
-%%
-%% @end
-%%----------------------------------------------------------------------
+edit_config(Client, Target, Config, OptParams, Timeout) when not is_list(Config)->
+    edit_config(Client, Target, [Config], OptParams, Timeout);
 edit_config(Client, Target, Config, OptParams, Timeout) ->
     call(Client, {send_rpc_op, edit_config, [Target,Config,OptParams], Timeout}).
 
 
 %%----------------------------------------------------------------------
-%% @spec delete_config(Client, Target) -> Result
-%% @equiv delete_config(Client, Target, infinity)
+%% Send a 'delete-config' request.
+-spec delete_config(Client, Target) -> Result when
+      Client :: client(),
+      Target :: startup | candidate,
+      Result :: ok | {error,error_reason()}.
 delete_config(Client, Target) ->
     delete_config(Client, Target, ?DEFAULT_TIMEOUT).
 
-%%----------------------------------------------------------------------
 -spec delete_config(Client, Target, Timeout) -> Result when
       Client :: client(),
       Target :: startup | candidate,
       Timeout :: timeout(),
       Result :: ok | {error,error_reason()}.
-%% @doc Delete configuration data.
-%%
-%% The running configuration cannot be deleted and `:candidate'
-%% or `:startup' must be advertised by the server.
-%%
-%% @end
-%%----------------------------------------------------------------------
 delete_config(Client, Target, Timeout) when Target == startup;
 					    Target == candidate ->
     call(Client,{send_rpc_op, delete_config, [Target], Timeout}).
 
 %%----------------------------------------------------------------------
-%% @spec copy_config(Client, Source, Target) -> Result
-%% @equiv copy_config(Client, Source, Target, infinity)
+%% Send a 'copy-config' request.
+-spec copy_config(Client, Target, Source) -> Result when
+      Client :: client(),
+      Target :: netconf_db(),
+      Source :: netconf_db(),
+      Result :: ok | {error,error_reason()}.
 copy_config(Client, Source, Target) ->
     copy_config(Client, Source, Target, ?DEFAULT_TIMEOUT).
 
-%%----------------------------------------------------------------------
 -spec copy_config(Client, Target, Source, Timeout) -> Result when
       Client :: client(),
       Target :: netconf_db(),
       Source :: netconf_db(),
       Timeout :: timeout(),
       Result :: ok | {error,error_reason()}.
-%% @doc Copy configuration data.
-%%
-%% Which source and target options that can be issued depends on the
-%% capabilities supported by the server. I.e. `:candidate' and/or
-%% `:startup' are required.
-%%
-%% @end
-%%----------------------------------------------------------------------
 copy_config(Client, Target, Source, Timeout) ->
     call(Client,{send_rpc_op, copy_config, [Target, Source], Timeout}).
 
 %%----------------------------------------------------------------------
-%% @spec action(Client, Action) -> Result
-%% @equiv action(Client, Action, infinity)
+%% Execute an action.
+-spec action(Client, Action) -> Result when
+      Client :: client(),
+      Action :: simple_xml(),
+      Result :: ok | {ok,[simple_xml()]} | {error,error_reason()}.
 action(Client,Action) ->
     action(Client,Action,?DEFAULT_TIMEOUT).
 
-%%----------------------------------------------------------------------
 -spec action(Client, Action, Timeout) -> Result when
       Client :: client(),
       Action :: simple_xml(),
       Timeout :: timeout(),
       Result :: ok | {ok,[simple_xml()]} | {error,error_reason()}.
-%% @doc Execute an action. If the return type is void, <c>ok</c> will
-%%      be returned instead of <c>{ok,[simple_xml()]}</c>.
-%%
-%% @end
-%%----------------------------------------------------------------------
 action(Client,Action,Timeout) ->
     call(Client,{send_rpc_op, action, [Action], Timeout}).
 
 %%----------------------------------------------------------------------
-create_subscription(Client) ->
-    create_subscription(Client,?DEFAULT_STREAM,?DEFAULT_TIMEOUT).
+%% Send a 'create-subscription' request
+%% See RFC5277, NETCONF Event Notifications
 
-create_subscription(Client,Timeout)
-  when ?is_timeout(Timeout) ->
-    create_subscription(Client,?DEFAULT_STREAM,Timeout);
-create_subscription(Client,Stream)
-  when ?is_string(Stream) ->
-    create_subscription(Client,Stream,?DEFAULT_TIMEOUT);
-create_subscription(Client,Filter)
-  when ?is_filter(Filter) ->
-    create_subscription(Client,?DEFAULT_STREAM,Filter,
-			?DEFAULT_TIMEOUT).
+%% create_subscription/2
 
-create_subscription(Client,Stream,Timeout)
-  when ?is_string(Stream) andalso
-       ?is_timeout(Timeout) ->
-    call(Client,{send_rpc_op,{create_subscription,self()},
-		 [Stream,undefined,undefined,undefined],
-		 Timeout});
-create_subscription(Client,StartTime,StopTime)
-  when ?is_string(StartTime) andalso
-       ?is_string(StopTime) ->
-    create_subscription(Client,?DEFAULT_STREAM,StartTime,StopTime,
-			?DEFAULT_TIMEOUT);
-create_subscription(Client,Filter,Timeout)
-  when ?is_filter(Filter) andalso
-       ?is_timeout(Timeout) ->
-    create_subscription(Client,?DEFAULT_STREAM,Filter,Timeout);
-create_subscription(Client,Stream,Filter)
-  when ?is_string(Stream) andalso
-       ?is_filter(Filter) ->
-    create_subscription(Client,Stream,Filter,?DEFAULT_TIMEOUT).
-
-create_subscription(Client,StartTime,StopTime,Timeout)
-  when ?is_string(StartTime) andalso
-       ?is_string(StopTime) andalso
-       ?is_timeout(Timeout) ->
-    create_subscription(Client,?DEFAULT_STREAM,StartTime,StopTime,Timeout);
-create_subscription(Client,Stream,StartTime,StopTime)
-  when ?is_string(Stream) andalso
-       ?is_string(StartTime) andalso
-       ?is_string(StopTime) ->
-    create_subscription(Client,Stream,StartTime,StopTime,?DEFAULT_TIMEOUT);
-create_subscription(Client,Filter,StartTime,StopTime)
-  when ?is_filter(Filter) andalso
-       ?is_string(StartTime) andalso
-       ?is_string(StopTime) ->
-    create_subscription(Client,?DEFAULT_STREAM,Filter,
-			StartTime,StopTime,?DEFAULT_TIMEOUT);
-create_subscription(Client,Stream,Filter,Timeout)
-  when ?is_string(Stream) andalso
-       ?is_filter(Filter) andalso
-       ?is_timeout(Timeout) ->
-    call(Client,{send_rpc_op,{create_subscription,self()},
-		 [Stream,Filter,undefined,undefined],
-		 Timeout}).
-
-create_subscription(Client,Stream,StartTime,StopTime,Timeout)
-  when ?is_string(Stream) andalso
-       ?is_string(StartTime) andalso
-       ?is_string(StopTime) andalso
-       ?is_timeout(Timeout) ->
-    call(Client,{send_rpc_op,{create_subscription,self()},
-		 [Stream,undefined,StartTime,StopTime],
-		 Timeout});
-create_subscription(Client,Stream,Filter,StartTime,StopTime)
-  when ?is_string(Stream) andalso
-       ?is_filter(Filter) andalso
-       ?is_string(StartTime) andalso
-       ?is_string(StopTime) ->
-    create_subscription(Client,Stream,Filter,StartTime,StopTime,?DEFAULT_TIMEOUT).
-
-%%----------------------------------------------------------------------
--spec create_subscription(Client, Stream, Filter,StartTime, StopTime, Timeout) ->
-				 Result when
+-spec create_subscription(Client, Values) -> Result when
       Client :: client(),
+      Values :: #{stream => Stream,
+                  filter => Filter,
+                  start => StartTime,
+                  stop => StopTime},
+      Stream :: stream_name(),
+      Filter :: simple_xml() | [simple_xml()],
+      StartTime :: xs_datetime(),
+      StopTime :: xs_datetime(),
+      Result :: ok | {error,error_reason()};
+      %% historic, no longer documented
+                         (Client, list() | timeout()) -> Result when
+      Client :: client(),
+      Result :: ok | {error,error_reason()}.
+
+create_subscription(Client, #{} = Values) ->
+    create_subscription(Client, Values, ?DEFAULT_TIMEOUT);
+
+%% historic clauses
+create_subscription(Client, Timeout)
+  when ?is_timeout(Timeout) ->
+    create_subscription(Client, #{}, Timeout);
+create_subscription(Client, Stream)
+  when ?is_string(Stream) ->
+    create_subscription(Client, #{stream => Stream});
+create_subscription(Client, Filter)
+  when ?is_filter(Filter) ->
+    create_subscription(Client, #{filter => Filter}).
+
+-spec create_subscription(Client, Values, Timeout) -> Result when
+      Client :: client(),
+      Values :: #{stream => Stream,
+                  filter => Filter,
+                  start => StartTime,
+                  stop => StopTime},
       Stream :: stream_name(),
       Filter :: simple_xml() | [simple_xml()],
       StartTime :: xs_datetime(),
       StopTime :: xs_datetime(),
       Timeout :: timeout(),
+      Result :: ok | {error,error_reason()};
+      %% historic, no longer documented
+                         (Client, list(), list() | timeout()) -> Result when
+      Client :: client(),
       Result :: ok | {error,error_reason()}.
-%% @doc Create a subscription for event notifications.
-%%
-%% This function sets up a subscription for netconf event
-%% notifications of the given stream type, matching the given
-%% filter. The calling process will receive notifications as messages
-%% of type `notification()'.
-%%
-%% <dl>
-%%   <dt>Stream:</dt>
-%%   <dd> An optional parameter that indicates which stream of events
-%%   is of interest.  If not present, events in the default NETCONF
-%%   stream will be sent.</dd>
-%%
-%%   <dt>Filter:</dt>
-%%   <dd>An optional parameter that indicates which subset of all
-%%   possible events is of interest.  The format of this parameter is
-%%   the same as that of the filter parameter in the NETCONF protocol
-%%   operations.  If not present, all events not precluded by other
-%%   parameters will be sent.</dd>
-%%
-%%   <dt>StartTime:</dt>
-%%   <dd>An optional parameter used to trigger the replay feature and
-%%   indicate that the replay should start at the time specified.  If
-%%   `StartTime' is not present, this is not a replay subscription.
-%%   It is not valid to specify start times that are later than the
-%%   current time.  If the `StartTime' specified is earlier than the
-%%   log can support, the replay will begin with the earliest
-%%   available notification.  This parameter is of type dateTime and
-%%   compliant to [RFC3339].  Implementations must support time
-%%   zones.</dd>
-%%
-%%   <dt>StopTime:</dt>
-%%   <dd>An optional parameter used with the optional replay feature
-%%   to indicate the newest notifications of interest.  If `StopTime'
-%%   is not present, the notifications will continue until the
-%%   subscription is terminated.  Must be used with and be later than
-%%   `StartTime'.  Values of `StopTime' in the future are valid.  This
-%%   parameter is of type dateTime and compliant to [RFC3339].
-%%   Implementations must support time zones.</dd>
-%% </dl>
-%%
-%% See RFC5277 for further details about the event notification
-%% mechanism.
-%%
-%% @end
-%%----------------------------------------------------------------------
-create_subscription(Client,Stream,Filter,StartTime,StopTime,Timeout) ->
-    call(Client,{send_rpc_op,{create_subscription, self()},
-		 [Stream,Filter,StartTime,StopTime],
-		 Timeout}).
+
+create_subscription(Client, #{} = Values, Timeout) ->
+    Keys = [{stream, ?DEFAULT_STREAM},
+            {filter, undefined},
+            {start, undefined},
+            {stop, undefined}],
+    call(Client, {send_rpc_op, {create_subscription, self()},
+                               [maps:get(K, Values, D) || {K,D} <- Keys],
+                               Timeout});
+
+%% historic clauses, arity 3
+create_subscription(Client, Stream, Timeout)
+  when ?is_string(Stream), ?is_timeout(Timeout) ->
+    create_subscription(Client, #{stream => Stream}, Timeout);
+create_subscription(Client, StartTime, StopTime)
+  when ?is_string(StartTime), ?is_string(StopTime) ->
+    create_subscription(Client, #{start => StartTime, stop => StopTime});
+create_subscription(Client, Filter, Timeout)
+  when ?is_filter(Filter), ?is_timeout(Timeout) ->
+    create_subscription(Client, #{filter => Filter}, Timeout);
+create_subscription(Client, Stream, Filter)
+  when ?is_string(Stream), ?is_filter(Filter) ->
+    create_subscription(Client, #{stream => Stream, filter => Filter}).
+
+%% historic clauses, arity 1,4-5
+create_subscription(Client) ->
+    create_subscription(Client, #{}).
+create_subscription(Client, StartTime, StopTime, Timeout)
+  when ?is_string(StartTime), ?is_string(StopTime), ?is_timeout(Timeout) ->
+    Values = #{start => StartTime,
+               stop => StopTime},
+    create_subscription(Client, Values, Timeout);
+create_subscription(Client, Stream, StartTime, StopTime)
+  when ?is_string(Stream), ?is_string(StartTime), ?is_string(StopTime) ->
+    create_subscription(Client, #{stream => Stream,
+                                  start => StartTime,
+                                  stop => StopTime});
+create_subscription(Client, Filter, StartTime, StopTime)
+  when ?is_filter(Filter), ?is_string(StartTime), ?is_string(StopTime) ->
+    create_subscription(Client, #{filter => Filter,
+                                  start => StartTime,
+                                  stop => StopTime});
+create_subscription(Client, Stream, Filter, Timeout)
+  when ?is_string(Stream), ?is_filter(Filter), ?is_timeout(Timeout) ->
+    Values = #{stream => Stream,
+               filter => Filter},
+    create_subscription(Client, Values, Timeout).
+create_subscription(Client, Stream, StartTime, StopTime, Timeout)
+  when ?is_string(Stream), ?is_string(StartTime), ?is_string(StopTime),
+       ?is_timeout(Timeout) ->
+    Values = #{stream => Stream,
+               start => StartTime,
+               stop => StopTime},
+    create_subscription(Client, Values, Timeout);
+create_subscription(Client, Stream, Filter, StartTime, StopTime)
+  when ?is_string(Stream), ?is_filter(Filter), ?is_string(StartTime),
+       ?is_string(StopTime) ->
+    create_subscription(Client, #{stream => Stream,
+                                  filter => Filter,
+                                  start => StartTime,
+                                  stop => StopTime}).
+create_subscription(Client, Stream, Filter, StartTime, StopTime, Timeout) ->
+    Values = #{stream => Stream,
+               filter => Filter,
+               start => StartTime,
+               stop => StopTime},
+    create_subscription(Client, Values, Timeout).
 
 %%----------------------------------------------------------------------
-%% @spec get_event_streams(Client, Timeout) -> Result
-%% @equiv get_event_streams(Client, [], Timeout)
+%% Send a request to get the given event streams
+%% See RFC5277, NETCONF Event Notifications
+-spec get_event_streams(Client)
+		       -> Result when
+      Client :: client(),
+      Result :: {ok,streams()} | {error,error_reason()}.
+get_event_streams(Client) ->
+    get_event_streams(Client,[],?DEFAULT_TIMEOUT).
+
+-spec get_event_streams(Client, Timeout)
+		       -> Result when
+      Client :: client(),
+      Timeout :: timeout(),
+      Result :: {ok,streams()} | {error,error_reason()};
+                       (Client, Streams) -> Result when
+      Client :: client(),
+      Streams :: [stream_name()],
+      Result :: {ok,streams()} | {error,error_reason()}.
 get_event_streams(Client,Timeout) when is_integer(Timeout); Timeout==infinity ->
     get_event_streams(Client,[],Timeout);
-
-%%----------------------------------------------------------------------
-%% @spec get_event_streams(Client, Streams) -> Result
-%% @equiv get_event_streams(Client, Streams, infinity)
 get_event_streams(Client,Streams) when is_list(Streams) ->
     get_event_streams(Client,Streams,?DEFAULT_TIMEOUT).
 
-%%----------------------------------------------------------------------
 -spec get_event_streams(Client, Streams, Timeout)
 		       -> Result when
       Client :: client(),
       Streams :: [stream_name()],
       Timeout :: timeout(),
       Result :: {ok,streams()} | {error,error_reason()}.
-%% @doc Send a request to get the given event streams.
-%%
-%% `Streams' is a list of stream names. The following filter will
-%% be sent to the netconf server in a `get' request:
-%%
-%% ```
-%% <netconf xmlns="urn:ietf:params:xml:ns:netmod:notification">
-%%   <streams>
-%%     <stream>
-%%       <name>StreamName1</name>
-%%     </stream>
-%%     <stream>
-%%       <name>StreamName2</name>
-%%     </stream>
-%%     ...
-%%   </streams>
-%% </netconf>
-%% '''
-%%
-%% If `Streams' is an empty list, ALL streams will be requested
-%% by sending the following filter:
-%%
-%% ```
-%% <netconf xmlns="urn:ietf:params:xml:ns:netmod:notification">
-%%   <streams/>
-%% </netconf>
-%% '''
-%%
-%% If more complex filtering is needed, a use {@link get/2} or {@link
-%% get/3} and specify the exact filter according to XML Schema for
-%% Event Notifications found in RFC5277.
-%%
-%% @end
-%%----------------------------------------------------------------------
 get_event_streams(Client,Streams,Timeout) ->
     call(Client,{get_event_streams,Streams,Timeout}).
 
 
 %%----------------------------------------------------------------------
-%% @spec close_session(Client) -> Result
-%% @equiv close_session(Client, infinity)
+%% Send a 'close-session' request
+-spec close_session(Client) -> Result when
+      Client :: client(),
+      Result :: ok | {error,error_reason()}.
 close_session(Client) ->
     close_session(Client, ?DEFAULT_TIMEOUT).
 
-%%----------------------------------------------------------------------
 -spec close_session(Client, Timeout) -> Result when
       Client :: client(),
       Timeout :: timeout(),
       Result :: ok | {error,error_reason()}.
-%% @doc Request graceful termination of the session associated with the client.
-%%
-%% When a netconf server receives a `close-session' request, it
-%% will gracefully close the session.  The server will release any
-%% locks and resources associated with the session and gracefully
-%% close any associated connections.  Any NETCONF requests received
-%% after a `close-session' request will be ignored.
-%%
-%% @end
-%%----------------------------------------------------------------------
 close_session(Client, Timeout) ->
     call(Client,{send_rpc_op, close_session, [], Timeout}, true).
 
 
 %%----------------------------------------------------------------------
-%% @spec kill_session(Client, SessionId) -> Result
-%% @equiv kill_session(Client, SessionId, infinity)
+%% Send a 'kill-session' request
+-spec kill_session(Client, SessionId) -> Result when
+      Client :: client(),
+      SessionId :: pos_integer(),
+      Result :: ok | {error,error_reason()}.
 kill_session(Client, SessionId) ->
     kill_session(Client, SessionId, ?DEFAULT_TIMEOUT).
 
-%%----------------------------------------------------------------------
 -spec kill_session(Client, SessionId, Timeout) -> Result when
       Client :: client(),
       SessionId :: pos_integer(),
       Timeout :: timeout(),
       Result :: ok | {error,error_reason()}.
-%% @doc Force termination of the session associated with the supplied
-%% session id.
-%%
-%% The server side shall abort any operations currently in process,
-%% release any locks and resources associated with the session, and
-%% close any associated connections.
-%%
-%% Only if the server is in the confirmed commit phase, the
-%% configuration will be restored to its state before entering the
-%% confirmed commit phase. Otherwise, no configuration roll back will
-%% be performed.
-%%
-%% If the given `SessionId' is equal to the current session id,
-%% an error will be returned.
-%%
-%% @end
-%% ----------------------------------------------------------------------
 kill_session(Client, SessionId, Timeout) ->
     call(Client,{send_rpc_op, kill_session, [SessionId], Timeout}).
 
@@ -1071,75 +920,111 @@ kill_session(Client, SessionId, Timeout) ->
 %% Callback functions
 %%----------------------------------------------------------------------
 
-%% @private
+%% init/3
+
+init(_KeyOrName,{CM,{Host,Port}},Options) ->
+    case ssh_channel(#connection{reference=CM,host=Host,port=Port},Options) of
+        {ok,Connection} ->
+	    {ok, CM, #state{connection = Connection}};
+	{error,Reason}->
+	    {error,Reason}
+    end;
+init(_KeyOrName,{_Host,_Port},Options) when Options#options.type==connection ->
+    case ssh_connect(Options) of
+        {ok, Connection} ->
+	    ConnPid = Connection#connection.reference,
+            {ok, ConnPid, #state{connection = Connection}};
+        Error ->
+            Error
+    end;
 init(_KeyOrName,{_Host,_Port},Options) ->
     case ssh_open(Options) of
 	{ok, Connection} ->
-	    log(Connection,open),
 	    {ConnPid,_} = Connection#connection.reference,
 	    {ok, ConnPid, #state{connection = Connection}};
 	{error,Reason}->
 	    {error,Reason}
     end.
 
-%% @private
+%% terminate/2
+
 terminate(_, #state{connection=Connection}) ->
     ssh_close(Connection),
-    log(Connection,close),
     ok.
 
-%% @private
-handle_msg({hello, Options, Timeout}, From,
-	   #state{connection=Connection,hello_status=HelloStatus} = State) ->
+%% handle_msg/3
+
+%% Send hello and return to the caller only after reception of the
+%% server's hello.
+handle_msg({hello, Options, Timeout},
+           From,
+	   #state{connection = Connection,
+                  hello_status = HelloStatus}
+           = State) ->
     case do_send(Connection, client_hello(Options)) of
-	ok ->
-	    case HelloStatus of
-		undefined ->
-		    {Ref,TRef} = set_request_timer(Timeout),
-		    {noreply, State#state{hello_status=#pending{tref=TRef,
-								ref=Ref,
-								caller=From}}};
-		received ->
-		    {reply, ok, State#state{hello_status=done}};
-		{error,Reason} ->
-		    {stop, {error,Reason}, State}
-	    end;
-	Error ->
+	ok when HelloStatus == undefined -> %% server hello not yet received
+            TRef = set_request_timer(Timeout, hello),
+            {noreply, State#state{hello_status = #pending{tref = TRef,
+                                                          caller = From}}};
+        ok ->                               %% or yes: negotiate version
+            handle_capx(State);
+        Error ->
 	    {stop, Error, State}
     end;
-handle_msg(_, _From, #state{session_id=undefined} = State) ->
-    %% Hello is not yet excanged - this shall never happen
-    {reply,{error,waiting_for_hello},State};
+
+handle_msg(get_ssh_connection, _From, #state{connection=Connection}=State) ->
+    Reply =
+        case Connection#connection.reference of
+            {_,_} -> {error,not_an_ssh_connection};
+            CM -> {ok,{CM,{Connection#connection.host,
+                           Connection#connection.port}}}
+        end,
+    {reply, Reply, State};
+
+%% Request before server hello. Possible with only_open, since a
+%% handle is then returned without waiting for the server.
+handle_msg(_, _From, #state{session_id = undefined} = State) ->
+    {reply, {error, waiting_for_hello}, State};
+
 handle_msg(get_capabilities, _From, #state{capabilities = Caps} = State) ->
     {reply, Caps, State};
+
 handle_msg(get_session_id, _From, #state{session_id = Id} = State) ->
     {reply, Id, State};
-handle_msg({send, Timeout, SimpleXml}, From,
-	    #state{connection=Connection,pending=Pending} = State) ->
+
+handle_msg({send, Timeout, SimpleXml},
+           From,
+           #state{connection = Connection,
+                  pending = Pending}
+           = State) ->
     case do_send(Connection, SimpleXml) of
-	ok ->
-	    {Ref,TRef} = set_request_timer(Timeout),
-	    {noreply, State#state{pending=[#pending{tref=TRef,
-						    ref=Ref,
-						    caller=From} | Pending]}};
-	Error ->
-	    {reply, Error, State}
+        ok ->
+            TRef = set_request_timer(Timeout, send),
+            {noreply, State#state{pending = [#pending{tref = TRef,
+                                                      caller = From}
+                                             | Pending]}};
+        Error ->
+            {reply, Error, State}
     end;
+
 handle_msg({send_rpc, SimpleXml, Timeout}, From, State) ->
     do_send_rpc(undefined, SimpleXml, Timeout, From, State);
+
 handle_msg({send_rpc_op, Op, Data, Timeout}, From, State) ->
     SimpleXml = encode_rpc_operation(Op,Data),
     do_send_rpc(Op, SimpleXml, Timeout, From, State);
+
 handle_msg({get_event_streams=Op,Streams,Timeout}, From, State) ->
     Filter = {netconf,?NETMOD_NOTIF_NAMESPACE_ATTR,
              [{streams,[{stream,[{name,[Name]}]} || Name <- Streams]}]},
     SimpleXml = encode_rpc_operation(get,[Filter]),
     do_send_rpc(Op, SimpleXml, Timeout, From, State).
 
-%% @private
 handle_msg({ssh_cm, CM, {data, Ch, _Type, Data}}, State) ->
     ssh_connection:adjust_window(CM,Ch,size(Data)),
+    log(State#state.connection, recv, Data),
     handle_data(Data, State);
+
 handle_msg({ssh_cm, _CM, _SshCloseMsg}, State) ->
     %% _SshCloseMsg can probably be one of
     %% {eof,Ch}
@@ -1156,23 +1041,30 @@ handle_msg({ssh_cm, _CM, _SshCloseMsg}, State) ->
     %%! connection - due to terminate/2
 
     {stop, State};
-handle_msg({Ref,timeout},
-	   #state{hello_status=#pending{ref=Ref,caller=Caller}} = State) ->
-    ct_gen_conn:return(Caller,{error,{hello_session_failed,timeout}}),
-    {stop,State#state{hello_status={error,timeout}}};
-handle_msg({Ref,timeout},#state{pending=Pending} = State) ->
-    {value,#pending{op=Op,caller=Caller},Pending1} =
-	lists:keytake(Ref,#pending.ref,Pending),
-    ct_gen_conn:return(Caller,{error,timeout}),
-    R = case Op of
-	    close_session -> stop;
-	    _ -> noreply
-	end,
-    %% Halfhearted try to get in correct state, this matches
-    %% the implementation before this patch
-    {R,State#state{pending=Pending1, buff= <<>>}}.
 
-%% @private
+handle_msg({timeout, TRef, hello},
+           #state{hello_status = #pending{tref = TRef,
+                                          caller = From}}
+           = State) ->
+    ct_gen_conn:return(From, {error, {hello_session_failed, timeout}}),
+    {stop, State#state{hello_status = {error,timeout}}};
+
+handle_msg({timeout, TRef, Op}, #state{pending = Pending} = State) ->
+    case lists:keytake(TRef, #pending.tref, Pending) of
+        {value, #pending{caller = From}, Rest} ->
+            ct_gen_conn:return(From, {error, timeout}),
+            %% Discard received bytes in hope that the server has sent
+            %% an incomplete message. Otherwise this is doomed to
+            %% leave the connection in an unusable state.
+            {if Op == close_session -> stop; true -> noreply end,
+             State#state{pending = Rest,
+                         buf = is_binary(State#state.buf)}};
+        false ->
+            {noreply, State}
+    end.
+
+%% close/1
+
 %% Called by ct_util_server to close registered connections before terminate.
 close(Client) ->
     case get_handle(Client) of
@@ -1205,7 +1097,7 @@ call(Client, Msg, Timeout, WaitStop) ->
 		    {error,no_such_client};
 		{error,{process_down,Pid,normal}} when WaitStop ->
 		    %% This will happen when server closes connection
-		    %% before clien received rpc-reply on
+		    %% before client received rpc-reply on
 		    %% close-session.
 		    ok;
 		{error,{process_down,Pid,normal}} ->
@@ -1243,45 +1135,163 @@ get_handle(Client) ->
 	    Error
     end.
 
-check_options([], undefined, _Port, _Options) ->
-    {error, no_host_address};
-check_options([], _Host, undefined, _Options) ->
-    {error, no_port};
-check_options([], Host, Port, Options) ->
-    {Host,Port,Options};
-check_options([{ssh, Host}|T], _, Port, #options{} = Options) ->
-    check_options(T, Host, Port, Options#options{host=Host});
-check_options([{port,Port}|T], Host, _, #options{} = Options) ->
-    check_options(T, Host, Port, Options#options{port=Port});
-check_options([{timeout, Timeout}|T], Host, Port, Options)
-  when is_integer(Timeout); Timeout==infinity ->
-    check_options(T, Host, Port, Options#options{timeout = Timeout});
-check_options([{X,_}=Opt|T], Host, Port, #options{ssh=SshOpts}=Options) ->
-    case lists:member(X,?VALID_SSH_OPTS) of
-	true ->
-	    check_options(T, Host, Port, Options#options{ssh=[Opt|SshOpts]});
-	false ->
-	    {error, {invalid_option, Opt}}
+%% make_options/2
+
+make_options(Opts, Rec) ->
+    make_options(Opts, Rec#options{port = undefined}, fun opt/2).
+
+opt({T, Host}, Rec)
+  when T == ssh;
+       T == host ->
+    Rec#options{host = Host};
+
+opt({port, Port}, Rec) ->
+    Rec#options{port = Port};
+
+opt({timeout, Tmo}, Rec)
+  when is_integer(Tmo);
+       Tmo == infinity ->
+    Rec#options{timeout = Tmo};
+
+opt({timeout, _} = T, _) ->
+    throw(T);
+
+opt({capability, _}, Rec) ->
+    Rec;
+
+opt(Opt, #options{ssh = Opts} = Rec) -> %% option verified by ssh
+    Rec#options{ssh = [Opt | Opts]}.
+
+%% make_session_options/2
+
+make_session_options(Opts, Rec) ->
+    make_options(Opts, Rec, fun session_opt/2).
+
+session_opt({capability, _}, Rec) ->
+    Rec;
+
+session_opt({timeout, Tmo}, Rec)
+  when is_integer(Tmo);
+       Tmo == infinity ->
+    Rec#options{timeout = Tmo};
+
+session_opt(T, _Rec) ->
+    throw(T).
+
+%% make_options/3
+
+make_options(Opts, Rec, F) ->
+    try
+        #options{} = lists:foldl(F, Rec, Opts)
+    catch
+        T ->
+            {error, {invalid_option, T}}
     end.
 
 %%%-----------------------------------------------------------------
-set_request_timer(infinity) ->
-    {undefined,undefined};
-set_request_timer(T) ->
-    Ref = make_ref(),
-    {ok,TRef} = timer:send_after(T,{Ref,timeout}),
-    {Ref,TRef}.
 
+set_request_timer(infinity, _) ->
+    false;
+
+set_request_timer(Tmo, Op) ->
+    erlang:start_timer(Tmo, self(), Op).
 
 %%%-----------------------------------------------------------------
-client_hello(Options) when is_list(Options) ->
-    UserCaps = [{capability, UserCap} ||
-		   {capability, UserCap} <- Options,
-		   is_list(hd(UserCap))],
-    {hello, ?NETCONF_NAMESPACE_ATTR,
-     [{capabilities,
-       [{capability,[?NETCONF_BASE_CAP++?NETCONF_BASE_CAP_VSN]}|
-	UserCaps]}]}.
+
+cancel_request_timer(false) ->
+    ok;
+
+cancel_request_timer(TRef) ->
+    erlang:cancel_timer(TRef).
+
+%%%-----------------------------------------------------------------
+
+%% client_hello/1
+%%
+%% Prepend the 1.0 base capability only if none is specified by the
+%% user. Store the versions in the process dictionary until they're
+%% examined upon reception of server capabilities in handle_capx/1.
+
+client_hello(Opts)
+  when is_list(Opts) ->
+    UserCaps = [{T, cap(lists:flatten(Cs))} || {capability = T, Cs} <- Opts],
+    Vsns = versions(UserCaps),
+    put(?KEY(protocol_vsn), Vsns),
+    {hello,
+     ?NETCONF_NAMESPACE_ATTR,
+     [{capabilities, [{capability, [?NETCONF_BASE_CAP, ?NETCONF_BASE_CAP_VSN]}
+                      || [] == Vsns]
+                     ++ UserCaps}]}.
+
+%% cap/1
+%%
+%% Let NETCONF capabilities be specified in the shorthand documented in
+%% RFC 6241.
+
+%% This shorthand is documented in RFC 6241 10.4 NETCONF Capabilities
+%% URNS, but not in 8 Capabilities.
+cap(":base:" ++ _ = Str) ->
+    ["urn:ietf:params:netconf", Str];
+
+cap([$:|_] = Str) ->
+    ["urn:ietf:params:netconf:capability", Str];
+
+cap(Str) ->
+    [Str].
+
+%% versions/1
+%%
+%% Extract base protocol versions from capability options.
+
+versions(Opts) ->
+    [V || {capability, L} <- Opts,
+          S <- L,
+          ?NETCONF_BASE_CAP ++ X <- [lists:flatten(S)],
+          V <- [lists:takewhile(fun(C) -> C /= $? end, X)]].
+
+%% handle_capx/1
+%%
+%% Ignore parameters as RFC 6241 (NETCONF 1.1) requires in 8.1
+%% Capabilities Exchange. Be overly lenient with whitespace since RFC
+%% 6241 gives examples with significant trailing whitespace.
+
+handle_capx(#state{hello_status = received, capabilities = Caps} = S) ->
+    Remote = [V || ?NETCONF_BASE_CAP ++ X <- Caps,
+                   [V|_] <- [string:lexemes(X, "? \t\r\n")]],
+    Local = erase(?KEY(protocol_vsn)),
+    case protocol_vsn(Local, Remote) of
+        false when Remote == [] ->
+            Reason = {incorrect_hello, no_base_capability_found},
+            {stop, {error, Reason}, S};
+        false ->
+            Reason = {incompatible_base_capability_vsn, lists:min(Remote)},
+            {stop, {error, Reason}, S};
+        Vsn ->
+            put(?KEY(chunk), Vsn /= "1.0"),
+            {reply, ok, rebuf(Vsn, S#state{hello_status = Vsn})}
+    end;
+
+handle_capx(#state{hello_status = {error, _} = No} = S) ->
+    {stop, No, S}.
+
+%% rebuf/2
+%%
+%% Turn the message buffer into a list for 1.1 chunking if the
+%% negotiated protocol version is > 1.0.
+
+rebuf("1.0", S) ->
+    S;
+
+rebuf(_, #state{buf = Bin} = S) ->
+    S#state{buf = [Bin, 3]}.
+
+%% protocol_vsn/2
+
+protocol_vsn([], Vsns) ->
+    protocol_vsn(["1.0"], Vsns);
+
+protocol_vsn(Local, Remote) ->
+    lists:max([false | [V || V <- Remote, lists:member(V, Local)]]).
 
 %%%-----------------------------------------------------------------
 
@@ -1292,7 +1302,7 @@ encode_rpc_operation(get,[Filter]) ->
 encode_rpc_operation(get_config,[Source,Filter]) ->
     {'get-config',[{source,[Source]}] ++ filter(Filter)};
 encode_rpc_operation(edit_config,[Target,Config,OptParams]) ->
-    {'edit-config',[{target,[Target]}] ++ OptParams ++ [{config,[Config]}]};
+    {'edit-config',[{target,[Target]}] ++ OptParams ++ [{config,Config}]};
 encode_rpc_operation(delete_config,[Target]) ->
     {'delete-config',[{target,[Target]}]};
 encode_rpc_operation(copy_config,[Target,Source]) ->
@@ -1327,91 +1337,130 @@ maybe_element(Tag,Value) ->
 
 %%%-----------------------------------------------------------------
 %%% Send XML data to server
-do_send_rpc(PendingOp,SimpleXml,Timeout,Caller,
-	    #state{connection=Connection,msg_id=MsgId,pending=Pending} = State) ->
-    case do_send_rpc(Connection, MsgId, SimpleXml) of
-	ok ->
-	    {Ref,TRef} = set_request_timer(Timeout),
-	    {noreply, State#state{msg_id=MsgId+1,
-				  pending=[#pending{tref=TRef,
-						    ref=Ref,
-						    msg_id=MsgId,
-						    op=PendingOp,
-						    caller=Caller} | Pending]}};
-	Error ->
-	    {reply, Error, State#state{msg_id=MsgId+1}}
+do_send_rpc(Op, SimpleXml, Timeout, Caller, #state{connection = Connection,
+                                                   msg_id = MsgId,
+                                                   pending = Pending}
+                                            = State) ->
+    Msg = {rpc,
+           [{'message-id', MsgId} | ?NETCONF_NAMESPACE_ATTR],
+           [SimpleXml]},
+    Next = MsgId + 1,
+    case do_send(Connection, Msg) of
+        ok ->
+            TRef = set_request_timer(Timeout, Op),
+            Rec = #pending{tref = TRef,
+                           msg_id = MsgId,
+                           op = Op,
+                           caller = Caller},
+            {noreply, State#state{msg_id = Next,
+                                  pending = [Rec | Pending]}};
+        Error ->
+            {reply, Error, State#state{msg_id = Next}}
     end.
 
-do_send_rpc(Connection, MsgId, SimpleXml) ->
-    do_send(Connection,
-	    {rpc,
-	     [{'message-id',MsgId} | ?NETCONF_NAMESPACE_ATTR],
-	     [SimpleXml]}).
+do_send(Connection, Simple) ->
+    ssh_send(Connection, frame(to_xml(Simple))).
 
-do_send(Connection, SimpleXml) ->
-    Xml=to_xml_doc(SimpleXml),
-    log(Connection,send,Xml),
-    ssh_send(Connection, Xml).
-
-to_xml_doc(Simple) ->
+to_xml(Simple) ->
     Prolog = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>",
-    Xml = unicode:characters_to_binary(
-	    xmerl:export_simple([Simple],
-				xmerl_xml,
-				[#xmlAttribute{name=prolog,
-					       value=Prolog}])),
-    <<Xml/binary,?END_TAG/binary>>.
+    Chars = xmerl:export_simple([Simple],
+                                xmerl_xml,
+                                [#xmlAttribute{name = prolog,
+                                               value = Prolog}]),
+    unicode:characters_to_binary(Chars).
+
+%% frame/1
+
+frame(Bin) ->
+    case get(?KEY(chunk)) of
+        true ->  %% 1.1 chunking
+            [chunk(Bin) | "\n##\n"];
+        _ ->     %% 1.0 framing
+            [Bin | ?END_TAG]
+    end.
+
+%% chunk/1
+%%
+%% Chunk randomly to exercise the server.
+
+chunk(<<>>) ->
+    [];
+
+chunk(Bin) ->
+    Sz = min(rand:uniform(1024), size(Bin)),
+    <<B:Sz/binary, Rest/binary>> = Bin,
+    ["\n#", integer_to_list(Sz), $\n, B | chunk(Rest)].
 
 %%%-----------------------------------------------------------------
 %%% Parse and handle received XML data
-handle_data(NewData,#state{connection=Connection,buff=Buff0} = State0) ->
-    log(Connection,recv,NewData),
-    Data = append_wo_initial_nl(Buff0,NewData),
-    case binary:split(Data,[?END_TAG],[]) of
-	[_NoEndTagFound] ->
-	    {noreply, State0#state{buff=Data}};
-	[FirstMsg,Buff1] ->
-	    SaxArgs = [{event_fun,fun sax_event/3}, {event_state,[]}],
-	    case xmerl_sax_parser:stream(FirstMsg, SaxArgs) of
-		{ok, Simple, _Thrash} ->
-		    case decode(Simple, State0#state{buff=Buff1}) of
-			{noreply, #state{buff=Buff} = State} when Buff =/= <<>> ->
-			    %% Recurse if we have more data in buffer
-			    handle_data(<<>>, State);
-			Other ->
-			    Other
-		    end;
-		{fatal_error,_Loc,Reason,_EndTags,_EventState} ->
-		    ?error(Connection#connection.name,
-			   [{parse_error,Reason},
-			    {buffer, Buff0},
-			    {new_data,NewData}]),
-		    handle_error(Reason, State0#state{buff= <<>>})
-	    end
+
+handle_data(Bin, #state{buf = Head} = S) ->
+    case recv(Bin, Head) of
+        {error, Reason} ->
+            Conn = S#state.connection,
+            ?error(Conn#connection.name, [{receive_error, Reason},
+                                          {buffer, Head},
+                                          {bytes, Bin}]),
+            {stop, S};
+        {Bytes, Rest} ->
+            handle_more(Rest, handle_xml(Bytes, S));
+        Buf ->
+            {noreply, S#state{buf = Buf}}
     end.
 
-%% xml does not accept a leading nl and some netconf server add a nl after
-%% each ?END_TAG, ignore them
-append_wo_initial_nl(<<>>,NewData) -> NewData;
-append_wo_initial_nl(<<"\n", Data/binary>>, NewData) ->
-    append_wo_initial_nl(Data, NewData);
-append_wo_initial_nl(Data, NewData) ->
-    <<Data/binary, NewData/binary>>.
+%% handle_more/2
 
-handle_error(Reason, State) ->
-    Pending1 = case State#state.pending of
-		   [] -> [];
-		   Pending ->
-		       %% Assuming the first request gets the
-		       %% first answer
-		       P=#pending{tref=TRef,caller=Caller} =
-			   lists:last(Pending),
-		       _ = timer:cancel(TRef),
-		       Reason1 = {failed_to_parse_received_data,Reason},
-		       ct_gen_conn:return(Caller,{error,Reason1}),
-		       lists:delete(P,Pending)
-	       end,
-    {noreply, State#state{pending=Pending1}}.
+handle_more(_, {stop, _} = No) ->
+    No;
+
+handle_more(Bin, {noreply, State}) ->
+    handle_data(Bin, State#state{buf = true == get(?KEY(chunk))}).
+
+%% handle_xml/2
+
+handle_xml(Bytes, State) ->
+    case parse(Bytes) of
+        {ok, Simple, _Rest} ->  %% ignore trailing bytes
+            decode(Simple, State);
+        {fatal_error,_Loc,Reason,_EndTags,_EventState} ->
+            Conn = State#state.connection,
+            ?error(Conn#connection.name, [{parse_error, Reason},
+                                          {message, Bytes}]),
+            {noreply, handle_error(Reason, State)}
+    end.
+
+%% parse/1
+
+parse(Bytes) ->
+    xmerl_sax_parser:stream(<<>>, [{event_fun, fun sax_event/3},
+                                   {event_state, []},
+                                   {continuation_fun, fun cont/1},
+                                   {continuation_state, Bytes}]).
+
+%% cont/1
+
+cont([] = No) ->
+    {<<>>, No};
+
+cont([Bin | Rest]) ->
+    {Bin, Rest};
+
+cont(Bin) ->
+    {Bin, <<>>}.
+
+%% handle_error/2
+
+handle_error(_Reason, #state{pending = []} = State) ->
+    State;
+
+handle_error(Reason, #state{pending = Pending} = State) ->
+    %% Assuming the first request gets the first answer.
+    Rec = #pending{tref = TRef,
+                   caller = Caller}
+        = lists:last(Pending),
+    cancel_request_timer(TRef),
+    ct_gen_conn:return(Caller,{error, {failed_to_parse_received_data, Reason}}),
+    State#state{pending = lists:delete(Rec, Pending)}.
 
 %% Event function for the sax parser. It builds a simple XML structure.
 %% Care is taken to keep namespace attributes and prefixes as in the original XML.
@@ -1462,136 +1511,180 @@ parse_attrs([]) ->
 
 
 %%%-----------------------------------------------------------------
-%%% Decoding of parsed XML data
-decode({Tag,Attrs,_}=E, #state{connection=Connection,pending=Pending}=State) ->
-    ConnName = Connection#connection.name,
-    case get_local_name_atom(Tag) of
-	'rpc-reply' ->
-	    case get_msg_id(Attrs) of
-		undefined ->
-		    case Pending of
-			[#pending{msg_id=MsgId}] ->
-			    ?error(ConnName,[{warning,rpc_reply_missing_msg_id},
-					       {assuming,MsgId}]),
-			    decode_rpc_reply(MsgId,E,State);
-			_ ->
-			    ?error(ConnName,[{error,rpc_reply_missing_msg_id}]),
-			    {noreply,State}
-		    end;
-		MsgId ->
-		    decode_rpc_reply(MsgId,E,State)
-	    end;
-	hello ->
-	    case State#state.hello_status of
-		undefined ->
-		    case decode_hello(E) of
-			{ok,SessionId,Capabilities} ->
-			    {noreply,State#state{session_id = SessionId,
-						 capabilities = Capabilities,
-						 hello_status = received}};
-			{error,Reason} ->
-			    {noreply,State#state{hello_status = {error,Reason}}}
-		    end;
-		#pending{tref=TRef,caller=Caller} ->
-		    _ = timer:cancel(TRef),
-		    case decode_hello(E) of
-			{ok,SessionId,Capabilities} ->
-			    ct_gen_conn:return(Caller,ok),
-			    {noreply,State#state{session_id = SessionId,
-						 capabilities = Capabilities,
-						 hello_status = done}};
-			{error,Reason} ->
-			    ct_gen_conn:return(Caller,{error,Reason}),
-			    {stop,State#state{hello_status={error,Reason}}}
-		    end;
-		Other ->
-		    ?error(ConnName,[{got_unexpected_hello,E},
-				       {hello_status,Other}]),
-		    {noreply,State}
-	    end;
-	notification ->
-	    EventReceiver = State#state.event_receiver,
-	    EventReceiver ! E,
-	    {noreply,State};
-	Other ->
-	    %% Result of send/2, when not sending an rpc request - or
-	    %% if netconf server sends noise. Can handle this only if
-	    %% there is just one pending that matches (i.e. has
-	    %% undefined msg_id and op)
-	    case [P || P = #pending{msg_id=undefined,op=undefined} <- Pending] of
-		[#pending{tref=TRef,
-			  caller=Caller}] ->
-		    _ = timer:cancel(TRef),
-		    ct_gen_conn:return(Caller,E),
-		    {noreply,State#state{pending=[]}};
-		_ ->
-		    ?error(ConnName,[{got_unexpected_msg,Other},
-				       {expecting,Pending}]),
-		    {noreply,State}
-	    end
 
+%% decode/2
+%%
+%% Decode parsed (incoming) XML.
+
+decode({Tag, _, _} = E, #state{} = State) ->
+    case decode(get_local_name_atom(Tag), E, State) of
+        #state{} = S ->
+            {noreply, S};
+        {stop, #state{}} = T ->
+            T
     end.
+
+%% decode/3
+
+decode('rpc-reply', {_, Attrs, _} = E, State) ->
+    decode_rpc_reply(get_msg_id(Attrs), E, State);
+
+%% Incoming hello, outgoing not yet sent.
+decode(hello, E, #state{hello_status = undefined} = State) ->
+    case decode_hello(E) of
+        {ok, SessionId, Capabilities} ->
+            State#state{session_id = SessionId,
+                        capabilities = Capabilities,
+                        hello_status = received};
+        {error, _Reason} = No ->
+            State#state{hello_status = No}
+    end;
+
+%% Incoming hello, outgoing already sent: negotiate protocol version.
+decode(hello, E, #state{hello_status = #pending{tref = TRef,
+                                                caller = From}}
+                 = State) ->
+    cancel_request_timer(TRef),
+    case decode_hello(E) of
+        {ok, SessionId, Capabilities} ->
+            reply(From, handle_capx(State#state{session_id = SessionId,
+                                                capabilities = Capabilities,
+                                                hello_status = received}));
+        {error, _Reason} = No ->
+            ct_gen_conn:return(From, No),
+            {stop, State#state{hello_status = No}}
+    end;
+
+%% Duplicate hello: ignore.
+decode(hello, E, #state{hello_status = Other} = State) ->
+    ConnName = (State#state.connection)#connection.name,
+    ?error(ConnName, [{got_unexpected_hello, E},
+                      {hello_status, Other}]),
+    State;
+
+decode(notification, E, State) ->
+    State#state.event_receiver ! E,
+    State;
+
+decode(Other, E, State) ->
+    decode_send({got_unexpected_msg, Other}, E, State).
+
+%% reply/2
+%%
+%% Explicitly send a reply that can't be returned.
+
+reply(From, {T, Res, State}) ->
+    ct_gen_conn:return(From, Res),
+    case T of
+        reply ->
+            State;
+        stop ->
+            {T, State}
+    end.
+
+%% get_msg_id/1
 
 get_msg_id(Attrs) ->
-    case lists:keyfind('message-id',1,Attrs) of
-	{_,Str} ->
-	    list_to_integer(Str);
-	false ->
-	    undefined
+    case find('message-id', Attrs) of
+        {_,Str} ->
+            list_to_integer(Str);
+        false ->
+            undefined
     end.
 
-decode_rpc_reply(MsgId,{_,Attrs,Content0}=E,#state{pending=Pending} = State) ->
-    case lists:keytake(MsgId,#pending.msg_id,Pending) of
-	{value, #pending{tref=TRef,op=Op,caller=Caller}, Pending1} ->
-	    _ = timer:cancel(TRef),
-	    Content = forward_xmlns_attr(Attrs,Content0),
-	    {CallerReply,{ServerReply,State2}} =
-		do_decode_rpc_reply(Op,Content,State#state{pending=Pending1}),
-	    ct_gen_conn:return(Caller,CallerReply),
-	    {ServerReply,State2};
-	false ->
-	    %% Result of send/2, when receiving a correct
-	    %% rpc-reply. Can handle this only if there is just one
-	    %% pending that matches (i.e. has undefined msg_id and op)
-	    case [P || P = #pending{msg_id=undefined,op=undefined} <- Pending] of
-		[#pending{tref=TRef,
-			  msg_id=undefined,
-			  op=undefined,
-			  caller=Caller}] ->
-		    _ = timer:cancel(TRef),
-		    ct_gen_conn:return(Caller,E),
-		    {noreply,State#state{pending=[]}};
-		_ ->
-		    ConnName = (State#state.connection)#connection.name,
-		    ?error(ConnName,[{got_unexpected_msg_id,MsgId},
-						   {expecting,Pending}]),
-		    {noreply,State}
-	    end
+%% recode_rpc_reply/3
+
+decode_rpc_reply(undefined, E, #state{pending = [#pending{msg_id = MsgId}]}
+                               = State)
+  when MsgId /= undefined ->
+    ConnName = (State#state.connection)#connection.name,
+    ?error(ConnName, [{warning, rpc_reply_missing_msg_id},
+                      {assuming, MsgId}]),
+    decode_rpc_reply(MsgId, E, State);
+
+decode_rpc_reply(undefined, _, State) ->
+    ConnName = (State#state.connection)#connection.name,
+    ?error(ConnName, [{error, rpc_reply_missing_msg_id}]),
+    State;
+
+decode_rpc_reply(MsgId,
+                 {_, Attrs, Content0}
+                 = E,
+                 #state{pending = Pending}
+                 = State) ->
+    case lists:keytake(MsgId, #pending.msg_id, Pending) of
+        {value, Rec, Rest} ->
+            #pending{tref = TRef, op = Op, caller = From}
+                = Rec,
+            cancel_request_timer(TRef),
+            Content = forward_xmlns_attr(Attrs, Content0),
+            {Reply, T} = do_decode_rpc_reply(Op,
+                                             Content,
+                                             State#state{pending = Rest}),
+            ct_gen_conn:return(From, Reply),
+            T;
+        false ->  %% not a send_rcp or server has sent wrong id
+            decode_send({got_unexpected_msg_id, MsgId}, E, State)
     end.
 
-do_decode_rpc_reply(Op,Result,State)
-  when Op==lock; Op==unlock; Op==edit_config; Op==delete_config;
-       Op==copy_config; Op==kill_session ->
-    {decode_ok(Result),{noreply,State}};
-do_decode_rpc_reply(Op,Result,State)
-  when Op==get; Op==get_config; Op==action ->
-    {decode_data(Result),{noreply,State}};
-do_decode_rpc_reply(close_session,Result,State) ->
+%% decode_send/2
+%%
+%% Result of send/2,3. Only handle one at a time there since all
+%% pendings have msg_id = undefined.
+
+decode_send(ErrorT, Elem, #state{pending = Pending} = State) ->
+    case [P || #pending{msg_id = undefined} = P <- Pending] of
+        [Rec] ->
+            #pending{tref = TRef,
+                     caller = From}
+                = Rec,
+            cancel_request_timer(TRef),
+            ct_gen_conn:return(From, Elem),
+            State#state{pending = lists:delete(Rec, Pending)};
+        _ ->
+            Conn = State#state.connection,
+            ?error(Conn#connection.name, [ErrorT, {expecting, Pending}]),
+            State
+    end.
+
+%% do_decode_rpc_reply/3
+
+do_decode_rpc_reply(Op, Result, State)
+  when Op == lock;
+       Op == unlock;
+       Op == edit_config;
+       Op == delete_config;
+       Op == copy_config;
+       Op == kill_session ->
+    {decode_ok(Result), State};
+
+do_decode_rpc_reply(Op, Result, State)
+  when Op == get;
+       Op == get_config;
+       Op == action ->
+    {decode_data(Result), State};
+
+do_decode_rpc_reply(close_session, Result, State) ->
     case decode_ok(Result) of
-	ok -> {ok,{stop,State}};
-	Other -> {Other,{noreply,State}}
+        ok ->
+            {ok, {stop, State}};
+        Other ->
+            {Other, State}
     end;
-do_decode_rpc_reply({create_subscription,Caller},Result,State) ->
+
+do_decode_rpc_reply({create_subscription, From}, Result, State) ->
     case decode_ok(Result) of
-	ok ->
-	    {ok,{noreply,State#state{event_receiver=Caller}}};
-	Other ->
-	    {Other,{noreply,State}}
+        ok ->
+            {ok, State#state{event_receiver = From}};
+        Other ->
+            {Other, State}
     end;
-do_decode_rpc_reply(get_event_streams,Result,State) ->
-    {decode_streams(decode_data(Result)),{noreply,State}};
-do_decode_rpc_reply(undefined,Result,State) ->
-    {Result,{noreply,State}}.
+
+do_decode_rpc_reply(get_event_streams, Result, State) ->
+    {decode_streams(decode_data(Result)), State};
+
+do_decode_rpc_reply(undefined, Result, State) ->
+    {Result, State}.
 
 
 
@@ -1611,7 +1704,7 @@ decode_data([{Tag,Attrs,Content}]) ->
     case get_local_name_atom(Tag) of
 	ok ->
 	    %% when action has return type void
-	    ok;	
+	    ok;
 	data ->
 	    %% Since content of data has nothing from the netconf
 	    %% namespace, we remove the parent's xmlns attribute here
@@ -1626,7 +1719,7 @@ decode_data(Other) ->
     {error,{unexpected_rpc_reply,Other}}.
 
 get_qualified_name(Tag) ->
-    case string:tokens(atom_to_list(Tag),":") of
+    case string:lexemes(atom_to_list(Tag),":") of
 	[TagStr] -> {[],TagStr};
 	[PrefixStr,TagStr] -> {PrefixStr,TagStr}
     end.
@@ -1682,41 +1775,43 @@ get_all_xmlns_attrs([{Key,_}=Attr|Attrs],XmlnsAttrs) ->
 get_all_xmlns_attrs([],XmlnsAttrs) ->
     XmlnsAttrs.
 
-
 %% Decode server hello to pick out session id and capabilities
-decode_hello({hello,_Attrs,Hello}) ->
-    case lists:keyfind('session-id',1,Hello) of
-	{'session-id',_,[SessionId]} ->
-	    case lists:keyfind(capabilities,1,Hello) of
-		{capabilities,_,Capabilities} ->
-		    case decode_caps(Capabilities,[],false) of
-			{ok,Caps} ->
-			    {ok,list_to_integer(SessionId),Caps};
-			Error ->
-			    Error
-		    end;
-		false ->
-		    {error,{incorrect_hello,capabilities_not_found}}
-	    end;
-	false ->
-	    {error,{incorrect_hello,no_session_id_found}}
+decode_hello({hello, _Attrs, Hello}) ->
+    U = make_ref(),
+    try
+        [{'session-id', _, [SessionId]}, _ | _]
+            = [find('session-id', Hello), no_session_id_found | U],
+        [{ok, Id}, _ | _]
+            = [catch {ok, list_to_integer(SessionId)}, invalid_session_id | U],
+        [true, _ | _]
+            = [0 < Id, invalid_session_id | U],
+        [{capabilities, _, Capabilities}, _ | _]
+            = [find(capabilities, Hello), capabilities_not_found | U],
+        [{ok, Caps}, _ | _]
+            = [decode_caps(Capabilities, [], false), false | U],
+        {ok, Id, Caps}
+    catch
+        error: {badmatch, [Error, false | U]} ->
+            Error;
+        error: {badmatch, [_, Reason | U]} ->
+            {error, {incorrect_hello, Reason}}
     end.
 
-decode_caps([{capability,[],[?NETCONF_BASE_CAP++Vsn=Cap]} |Caps], Acc, _) ->
-    case Vsn of
-	?NETCONF_BASE_CAP_VSN ->
-	    decode_caps(Caps, [Cap|Acc], true);
-	_ ->
-	    {error,{incompatible_base_capability_vsn,Vsn}}
-    end;
-decode_caps([{capability,[],[Cap]}|Caps],Acc,Base) ->
-    decode_caps(Caps,[Cap|Acc],Base);
-decode_caps([H|_T],_,_) ->
-    {error,{unexpected_capability_element,H}};
-decode_caps([],_,false) ->
-    {error,{incorrect_hello,no_base_capability_found}};
-decode_caps([],Acc,true) ->
-    {ok,lists:reverse(Acc)}.
+find(Key, List) ->
+    lists:keyfind(Key, 1, List).
+
+decode_caps([{capability, [], [?NETCONF_BASE_CAP ++ _ = Cap]} | Caps],
+            Acc,
+            _) ->
+    decode_caps(Caps, [Cap|Acc], true);
+decode_caps([{capability, [], [Cap]} | Caps], Acc, Base) ->
+    decode_caps(Caps, [Cap|Acc], Base);
+decode_caps([H|_], _, _) ->
+    {error, {unexpected_capability_element, H}};
+decode_caps([], _, false) ->
+    {error, {incorrect_hello, no_base_capability_found}};
+decode_caps([], Acc, true) ->
+    {ok, lists:reverse(Acc)}.
 
 
 %% Return a list of {Name,Data}, where data is a {Tag,Value} list for each stream
@@ -1727,7 +1822,7 @@ decode_streams({ok,[{netconf,_,Streams}]}) ->
 decode_streams([{streams,_,Streams}]) ->
     decode_streams(Streams);
 decode_streams([{stream,_,Stream} | Streams]) ->
-    {name,_,[Name]} = lists:keyfind(name,1,Stream),
+    {name,_,[Name]} = find(name, Stream),
     [{Name,[{Tag,Value} || {Tag,_,[Value]} <- Stream, Tag /= name]}
      | decode_streams(Streams)];
 decode_streams([]) ->
@@ -1739,9 +1834,14 @@ decode_streams([]) ->
 
 log(Connection,Action) ->
     log(Connection,Action,<<>>).
-log(#connection{host=Host,port=Port,name=Name},Action,Data) ->
+log(#connection{reference=Ref,host=Host,port=Port,name=Name},Action,Data) ->
+    Address =
+        case Ref of
+            {_,Ch} -> {Host,Port,Ch};
+            _ -> {Host,Port}
+        end,
     error_logger:info_report(#conn_log{client=self(),
-				       address={Host,Port},
+				       address=Address,
 				       name=Name,
 				       action=Action,
 				       module=?MODULE},
@@ -1749,7 +1849,6 @@ log(#connection{host=Host,port=Port,name=Name},Action,Data) ->
 
 
 %% Log callback - called from the error handler process
-%% @private
 format_data(How,Data) ->
     %% Assuming that the data is encoded as UTF-8.  If it is not, then
     %% the printout might be wrong, but the format function will not
@@ -1762,9 +1861,14 @@ format_data(How,Data) ->
 do_format_data(raw,Data) ->
     io_lib:format("~n~ts~n",[hide_password(Data)]);
 do_format_data(pretty,Data) ->
-    io_lib:format("~n~ts~n",[indent(Data)]);
+    maybe_io_lib_format(indent(Data));
 do_format_data(html,Data) ->
-    io_lib:format("~n~ts~n",[html_format(Data)]).
+    maybe_io_lib_format(html_format(Data)).
+
+maybe_io_lib_format(<<>>) ->
+    [];
+maybe_io_lib_format(String) ->
+    io_lib:format("~n~ts~n",[String]).
 
 %%%-----------------------------------------------------------------
 %%% Hide password elements from XML data
@@ -1803,13 +1907,21 @@ indent1("<?"++Rest1,Indent1) ->
     Line++indent1(Rest2,Indent2);
 indent1("</"++Rest1,Indent1) ->
     %% Stop tag
-    {Line,Rest2,Indent2} = indent_line1(Rest1,Indent1,[$/,$<]),
-    "\n"++Line++indent1(Rest2,Indent2);
+    case indent_line1(Rest1,Indent1,[$/,$<]) of
+	{[],[],_} ->
+	    [];
+	{Line,Rest2,Indent2} ->
+	    "\n"++Line++indent1(Rest2,Indent2)
+    end;
 indent1("<"++Rest1,Indent1) ->
     %% Start- or empty tag
     put(tag,get_tag(Rest1)),
-    {Line,Rest2,Indent2} = indent_line(Rest1,Indent1,[$<]),
-    "\n"++Line++indent1(Rest2,Indent2);
+    case indent_line(Rest1,Indent1,[$<]) of
+	{[],[],_} ->
+	    [];
+	{Line,Rest2,Indent2} ->
+	    "\n"++Line++indent1(Rest2,Indent2)
+    end;
 indent1([H|T],Indent) ->
     [H|indent1(T,Indent)];
 indent1([],_Indent) ->
@@ -1875,43 +1987,269 @@ get_tag([]) ->
 
 %%%-----------------------------------------------------------------
 %%% SSH stuff
-
-ssh_open(#options{host=Host,timeout=Timeout,port=Port,ssh=SshOpts,name=Name}) ->
+ssh_connect(#options{host=Host,timeout=Timeout,port=Port,
+                     ssh=SshOpts,name=Name,type=Type}) ->
     case ssh:connect(Host, Port,
 		     [{user_interaction,false},
-		      {silently_accept_hosts, true}|SshOpts]) of
+		      {silently_accept_hosts, true}|SshOpts],
+                     Timeout) of
 	{ok,CM} ->
-	    case ssh_connection:session_channel(CM, Timeout) of
-		{ok,Ch} ->
-		    case ssh_connection:subsystem(CM, Ch, "netconf", Timeout) of
-			success ->
-			    {ok, #connection{reference = {CM,Ch},
-					     host = Host,
-					     port = Port,
-					     name = Name}};
-			failure ->
-			    ssh:close(CM),
-			    {error,{ssh,could_not_execute_netconf_subsystem}};
-			{error,timeout} ->
-			    {error,{ssh,could_not_execute_netconf_subsystem,timeout}}
-		    end;
-		{error, Reason} ->
-		    ssh:close(CM),
-		    {error,{ssh,could_not_open_channel,Reason}}
-	    end;
+            Connection = #connection{reference = CM,
+                                     host = Host,
+                                     port = Port,
+                                     name = Name,
+                                     type = Type},
+            log(Connection,connect),
+            {ok,Connection};
 	{error,Reason} ->
 	    {error,{ssh,could_not_connect_to_server,Reason}}
     end.
 
-ssh_send(#connection{reference = {CM,Ch}}, Data) ->
-    case ssh_connection:send(CM, Ch, Data) of
-	ok -> ok;
-	{error,Reason} -> {error,{ssh,failed_to_send_data,Reason}}
+ssh_channel(#connection{reference=CM}=Connection0,
+            #options{timeout=Timeout,name=Name,type=Type}) ->
+    case ssh_connection:session_channel(CM, Timeout) of
+        {ok,Ch} ->
+            case ssh_connection:subsystem(CM, Ch, "netconf", Timeout) of
+                success ->
+                    Connection = Connection0#connection{reference = {CM,Ch},
+                                                       name = Name,
+                                                       type = Type},
+                    log(Connection,open),
+                    {ok, Connection};
+                failure ->
+                    ssh_connection:close(CM,Ch),
+                    {error,{ssh,could_not_execute_netconf_subsystem}};
+                {error,timeout} ->
+                    ssh_connection:close(CM,Ch),
+                    {error,{ssh,could_not_execute_netconf_subsystem,timeout}}
+            end;
+        {error, Reason} ->
+            {error,{ssh,could_not_open_channel,Reason}}
     end.
 
-ssh_close(#connection{reference = {CM,_Ch}}) ->
-    ssh:close(CM).
 
+ssh_open(Options) ->
+    case ssh_connect(Options) of
+        {ok,Connection} ->
+            case ssh_channel(Connection,Options) of
+                {ok,_} = Ok ->
+                    Ok;
+                Error ->
+                    ssh_close(Connection),
+                    Error
+            end;
+        Error ->
+            Error
+    end.
+
+ssh_send(#connection{reference = {CM,Ch}}=Connection, Data) ->
+    case ssh_connection:send(CM, Ch, Data) of
+	ok ->
+            log(Connection,send,Data),
+            ok;
+	{error,Reason} ->
+            {error,{ssh,failed_to_send_data,Reason}}
+    end.
+
+ssh_close(Connection=#connection{reference = {CM,Ch}, type = Type}) ->
+    _ = ssh_connection:close(CM,Ch),
+    log(Connection,close),
+    case Type of
+        connection_and_channel ->
+            ssh_close(Connection#connection{reference = CM});
+        _ ->
+            ok
+    end,
+    ok;
+ssh_close(Connection=#connection{reference = CM}) ->
+    _ = ssh:close(CM),
+    log(Connection,disconnect),
+    ok.
+
+%% ===========================================================================
+
+%% recv/1
+%%
+%% Extract incoming messages using either NETCONF 1.0 framing or
+%% NETCONF 1.1 chunking.
+
+recv(Bin, true) ->
+    recv(Bin, [<<>>, 3]);
+recv(Bin, false) ->
+    recv(Bin, <<>>);
+
+recv(Bin, [Head, Len | Chunks]) ->       %% 1.1 chunking
+    chunk(<<Head/binary, Bin/binary>>, Chunks, Len);
+
+%% Start looking for the terminating end-of-message sequence ]]>]]>
+%% 5 characters from the end of the buffered head, since this binary
+%% has already been scanned.
+recv(Bin, Head) when is_binary(Head) ->  %% 1.0 framing
+    frame(<<Head/binary, Bin/binary>>, max(0, size(Head) - 5)).
+
+%% frame/2
+%%
+%% Extract a message terminated by the ]]>]]> end-of-message sequence.
+%% Don't need to extract characters as UTF-8 since matching byte-wise
+%% is unambiguous: the high-order bit of every byte of a multi-byte
+%% UTF character is 1, while the end-of-message sequence is ASCII.
+
+frame(Bin, Start) ->
+    Sz = size(Bin),
+    Scope = {Start, Sz - Start},
+    case binary:match(Bin, pattern(), [{scope, Scope}]) of
+        {Len, 6} ->
+            <<Msg:Len/binary, _:6/binary, Rest/binary>> = Bin,
+            {trim(Msg), Rest};
+        nomatch ->
+            Bin
+    end.
+
+%% pattern/0
+
+pattern() ->
+    Key = ?KEY(pattern),
+    case get(Key) of
+        undefined ->
+            CP = binary:compile_pattern(<<"]]>]]>">>),
+            put(Key, CP),
+            CP;
+        CP ->
+            CP
+    end.
+
+%% trim/1
+%%
+%% Whitespace before an XML declaration is an error, but be somewhat
+%% lenient and strip line breaks since the RFC's are unclear on what's
+%% allowed following a ]]>]]> delimiter. Typical seems to be a single
+%% $\n, but strip any of " \t\r\n", and regardless of NETCONF version.
+
+trim(<<C, Bin/binary>>)
+  when C == $\n;
+       C == $\r;
+       C == $\t;
+       C == $  ->
+    trim(Bin);
+
+trim(Bin) ->
+    Bin.
+
+%% chunk/3
+%%
+%% The final argument is either 0 to indicate that a specified number
+%% of bytes of chunk data should be consumed, or at least 3 to
+%% indicate an offset at which to look for a newline following a chunk
+%% size.
+
+%% Accumulating chunk-data ...
+chunk(Bin, [Sz | Chunks] = L, 0) ->
+    case Bin of
+        <<Chunk:Sz/binary, Rest/binary>> ->
+            chunk(Rest, acc(Chunk, Chunks), 3);  %% complete chunk ...
+        _ ->
+            [Bin, 0 | L]                         %% ... or not
+    end;
+
+%% ... or a header.
+
+chunk(Bin, Chunks, Len)
+  when size(Bin) < 4 ->
+    [Bin, 3 = Len | Chunks];
+
+%% End of chunks.
+chunk(<<"\n##\n", Rest/binary>>, Chunks, _) ->
+    case Chunks of
+        [] ->
+            {error, "end-of-chunks unexpected"}; %% must be at least one
+        Bins ->
+            {lists:reverse(Bins), Rest}
+    end;
+
+%% Matching each of the 10 newline possibilities is faster than
+%% searching.
+chunk(<<"\n#", Head:1/binary, $\n, Rest/binary>>, Chunks, _) ->
+    acc(Head, Rest, Chunks);
+chunk(<<"\n#", Head:2/binary, $\n, Rest/binary>>, Chunks, _) ->
+    acc(Head, Rest, Chunks);
+chunk(<<"\n#", Head:3/binary, $\n, Rest/binary>>, Chunks, _) ->
+    acc(Head, Rest, Chunks);
+chunk(<<"\n#", Head:4/binary, $\n, Rest/binary>>, Chunks, _) ->
+    acc(Head, Rest, Chunks);
+chunk(<<"\n#", Head:5/binary, $\n, Rest/binary>>, Chunks, _) ->
+    acc(Head, Rest, Chunks);
+chunk(<<"\n#", Head:6/binary, $\n, Rest/binary>>, Chunks, _) ->
+    acc(Head, Rest, Chunks);
+chunk(<<"\n#", Head:7/binary, $\n, Rest/binary>>, Chunks, _) ->
+    acc(Head, Rest, Chunks);
+chunk(<<"\n#", Head:8/binary, $\n, Rest/binary>>, Chunks, _) ->
+    acc(Head, Rest, Chunks);
+chunk(<<"\n#", Head:9/binary, $\n, Rest/binary>>, Chunks, _) ->
+    acc(Head, Rest, Chunks);
+chunk(<<"\n#", Head:10/binary, $\n, Rest/binary>>, Chunks, _) ->
+    acc(Head, Rest, Chunks);
+
+chunk(<<"\n#", Bin:11/binary, _/binary>>, _, _) ->
+    {error, {"chunk-size too long", Bin}}; %% 32-bits = max 10 digits
+
+chunk(<<"\n#", _/binary>> = Bin, Chunks, _) ->
+    [Bin, size(Bin) | Chunks];
+
+chunk(Bin, Chunks, 3 = Len) ->
+    case drop(Bin) of
+        <<>> ->
+            [Bin, Len | Chunks];
+        <<"\n#", _/binary>> = B ->
+            chunk(B, Chunks, Len);
+        _ ->
+            {error, {"not a chunk", Bin}}
+    end.
+
+%% drop/1
+
+drop(<<"\n#", _/binary>> = Bin) ->
+    Bin;
+
+drop(<<C, Bin/binary>>)
+  when C == $\n;
+       C == $\r;
+       C == $\t;
+       C == $  ->
+    drop(Bin);
+
+drop(Bin) ->
+    Bin.
+
+%% acc/2
+
+acc(Chunk, []) ->
+    [B || B <- [trim(Chunk)], <<>> /= B];
+
+acc(Chunk, Chunks) ->
+    [Chunk | Chunks].
+
+%% acc/3
+
+acc(Head, Rest, Chunks) ->
+    case chunk_size(Head) of
+        {error, _Reason} = No ->
+            No;
+        Sz ->
+            chunk(Rest, [Sz | Chunks], 0)
+    end.
+
+%% chunk_size/1
+
+chunk_size(<<C, _/binary>> = Bin) ->
+    try true = $0 < C, binary_to_integer(Bin) of
+        Sz when 0 < Sz bsr 32 ->
+            {error, {"chunk-size too large", Sz}};
+        Sz ->
+            Sz
+    catch
+        error: _ ->
+            {error, {"chunk-size invalid", Bin}}
+    end.
 
 %%----------------------------------------------------------------------
 %% END OF MODULE

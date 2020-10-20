@@ -1,7 +1,7 @@
 /*
  * %CopyrightBegin%
  *
- * Copyright Ericsson AB 2009-2014. All Rights Reserved.
+ * Copyright Ericsson AB 2009-2020. All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -28,7 +28,6 @@
 #  include "config.h"
 #endif
 
-#include "erl_native_features_config.h"
 #include "erl_drv_nif.h"
 
 /* Version history:
@@ -48,9 +47,29 @@
 **           add ErlNifEntry options
 **           add ErlNifFunc flags
 ** 2.8: 18.0 add enif_has_pending_exception
+** 2.9: 18.2 enif_getenv
+** 2.10: Time API
+** 2.11: 19.0 enif_snprintf 
+** 2.12: 20.0 add enif_select, enif_open_resource_type_x
+** 2.13: 20.1 add enif_ioq
+** 2.14: 21.0 add enif_ioq_peek_head, enif_(mutex|cond|rwlock|thread)_name
+**                enif_vfprintf, enif_vsnprintf, enif_make_map_from_arrays
+** 2.15: 22.0 ERL_NIF_SELECT_CANCEL, enif_select_(read|write)
+**            enif_term_type
 */
 #define ERL_NIF_MAJOR_VERSION 2
-#define ERL_NIF_MINOR_VERSION 8
+#define ERL_NIF_MINOR_VERSION 15
+
+/*
+ * WHEN CHANGING INTERFACE VERSION, also replace erts version below with
+ * a ticket number e.g. "erts-@OTP-12345@". The syntax is the same as for
+ * runtime dependencies so multiple tickets should be separated with ":", e.g.
+ * "erts-@OTP-12345:OTP-54321@".
+ *
+ * If you're not on the OTP team, you should use a placeholder like
+ * erts-@MyName@ instead.
+ */
+#define ERL_NIF_MIN_ERTS_VERSION "erts-10.4"
 
 /*
  * The emulator will refuse to load a nif-lib with a major version
@@ -65,68 +84,38 @@
 #define ERL_NIF_MIN_REQUIRED_MAJOR_VERSION_ON_LOAD 2
 
 #include <stdlib.h>
-
-#ifdef SIZEOF_CHAR
-#  define SIZEOF_CHAR_SAVED__ SIZEOF_CHAR
-#  undef SIZEOF_CHAR
-#endif
-#ifdef SIZEOF_SHORT
-#  define SIZEOF_SHORT_SAVED__ SIZEOF_SHORT
-#  undef SIZEOF_SHORT
-#endif
-#ifdef SIZEOF_INT
-#  define SIZEOF_INT_SAVED__ SIZEOF_INT
-#  undef SIZEOF_INT
-#endif
-#ifdef SIZEOF_LONG
-#  define SIZEOF_LONG_SAVED__ SIZEOF_LONG
-#  undef SIZEOF_LONG
-#endif
-#ifdef SIZEOF_LONG_LONG
-#  define SIZEOF_LONG_LONG_SAVED__ SIZEOF_LONG_LONG
-#  undef SIZEOF_LONG_LONG
-#endif
-#ifdef HALFWORD_HEAP_EMULATOR
-#  define HALFWORD_HEAP_EMULATOR_SAVED__ HALFWORD_HEAP_EMULATOR
-#  undef HALFWORD_HEAP_EMULATOR
-#endif
-#include "erl_int_sizes_config.h"
+#include <stdio.h>
+#include <stdarg.h>
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-#if (defined(__WIN32__) || defined(_WIN32) || defined(_WIN32_))
-typedef unsigned __int64 ErlNifUInt64;
-typedef __int64 ErlNifSInt64;
-#elif SIZEOF_LONG == 8
-typedef unsigned long ErlNifUInt64;
-typedef long ErlNifSInt64;
-#elif SIZEOF_LONG_LONG == 8
-typedef unsigned long long ErlNifUInt64;
-typedef long long ErlNifSInt64;
-#else
-#error No 64-bit integer type
-#endif
+typedef ErlNapiUInt64 ErlNifUInt64;
+typedef ErlNapiSInt64 ErlNifSInt64;
+typedef ErlNapiUInt ErlNifUInt;
+typedef ErlNapiSInt ErlNifSInt;
 
-#ifdef HALFWORD_HEAP_EMULATOR
-#  define ERL_NIF_VM_VARIANT "beam.halfword" 
-typedef unsigned int ERL_NIF_TERM;
-#else
 #  define ERL_NIF_VM_VARIANT "beam.vanilla" 
-#  if SIZEOF_LONG == SIZEOF_VOID_P
-typedef unsigned long ERL_NIF_TERM;
-#  elif SIZEOF_LONG_LONG == SIZEOF_VOID_P
-typedef unsigned long long ERL_NIF_TERM;
-#  endif
-#endif
+typedef ErlNifUInt ERL_NIF_TERM;
 
 typedef ERL_NIF_TERM ERL_NIF_UINT;
+
+typedef ErlNifSInt64 ErlNifTime;
+
+#define ERL_NIF_TIME_ERROR ((ErlNifSInt64) ERTS_NAPI_TIME_ERROR__)
+
+typedef enum {
+    ERL_NIF_SEC    = ERTS_NAPI_SEC__,
+    ERL_NIF_MSEC   = ERTS_NAPI_MSEC__,
+    ERL_NIF_USEC   = ERTS_NAPI_USEC__,
+    ERL_NIF_NSEC   = ERTS_NAPI_NSEC__
+} ErlNifTimeUnit;
 
 struct enif_environment_t;
 typedef struct enif_environment_t ErlNifEnv;
 
-typedef struct
+typedef struct enif_func_t
 {
     const char* name;
     unsigned arity;
@@ -146,12 +135,19 @@ typedef struct enif_entry_t
     int  (*reload) (ErlNifEnv*, void** priv_data, ERL_NIF_TERM load_info);
     int  (*upgrade)(ErlNifEnv*, void** priv_data, void** old_priv_data, ERL_NIF_TERM load_info);
     void (*unload) (ErlNifEnv*, void* priv_data);
-    const char* vm_variant;
-    unsigned options;
-}ErlNifEntry;
 
-/* Field bits for ErlNifEntry options */
-#define ERL_NIF_DIRTY_NIF_OPTION 1
+    /* Added in 2.1 */
+    const char* vm_variant;
+
+    /* Added in 2.7 */
+    unsigned options;   /* Unused. Can be set to 0 or 1 (dirty sched config) */
+
+    /* Added in 2.12 */
+    size_t sizeof_ErlNifResourceTypeInit;
+
+    /* Added in 2.14 */
+    const char* min_erts;
+}ErlNifEntry;
 
 
 typedef struct
@@ -160,12 +156,25 @@ typedef struct
     unsigned char* data;
 
     /* Internals (avert your eyes) */
-    ERL_NIF_TERM bin_term;
     void* ref_bin;
+    /* for future additions to be ABI compatible (same struct size) */
+    void* __spare__[2];
 }ErlNifBinary;
 
-typedef struct enif_resource_type_t ErlNifResourceType;
-typedef void ErlNifResourceDtor(ErlNifEnv*, void*);
+#if (defined(__WIN32__) || defined(_WIN32) || defined(_WIN32_))
+typedef void* ErlNifEvent; /* FIXME: Use 'HANDLE' somehow without breaking existing source */
+#else
+typedef int ErlNifEvent;
+#endif
+
+/* Return bits from enif_select: */
+#define ERL_NIF_SELECT_STOP_CALLED    (1 << 0)
+#define ERL_NIF_SELECT_STOP_SCHEDULED (1 << 1)
+#define ERL_NIF_SELECT_INVALID_EVENT  (1 << 2)
+#define ERL_NIF_SELECT_FAILED         (1 << 3)
+#define ERL_NIF_SELECT_READ_CANCELLED (1 << 4)
+#define ERL_NIF_SELECT_WRITE_CANCELLED (1 << 5)
+
 typedef enum
 {
     ERL_NIF_RT_CREATE = 1,
@@ -180,7 +189,25 @@ typedef enum
 typedef struct
 {
     ERL_NIF_TERM pid;  /* internal, may change */
-}ErlNifPid;
+} ErlNifPid;
+
+typedef struct
+{
+    ERL_NIF_TERM port_id;  /* internal, may change */
+}ErlNifPort;
+
+typedef ErlDrvMonitor ErlNifMonitor;
+
+typedef struct enif_resource_type_t ErlNifResourceType;
+typedef void ErlNifResourceDtor(ErlNifEnv*, void*);
+typedef void ErlNifResourceStop(ErlNifEnv*, void*, ErlNifEvent, int is_direct_call);
+typedef void ErlNifResourceDown(ErlNifEnv*, void*, ErlNifPid*, ErlNifMonitor*);
+
+typedef struct {
+    ErlNifResourceDtor* dtor;
+    ErlNifResourceStop* stop;  /* at ERL_NIF_SELECT_STOP event */
+    ErlNifResourceDown* down;  /* enif_monitor_process */
+} ErlNifResourceTypeInit;
 
 typedef ErlDrvSysInfo ErlNifSysInfo;
 
@@ -192,13 +219,11 @@ typedef int ErlNifTSDKey;
 
 typedef ErlDrvThreadOpts ErlNifThreadOpts;
 
-#ifdef ERL_NIF_DIRTY_SCHEDULER_SUPPORT
 typedef enum
 {
-    ERL_NIF_DIRTY_JOB_CPU_BOUND = ERL_DRV_DIRTY_JOB_CPU_BOUND,
-    ERL_NIF_DIRTY_JOB_IO_BOUND  = ERL_DRV_DIRTY_JOB_IO_BOUND
+    ERL_NIF_DIRTY_JOB_CPU_BOUND = ERL_DIRTY_JOB_CPU_BOUND,
+    ERL_NIF_DIRTY_JOB_IO_BOUND  = ERL_DIRTY_JOB_IO_BOUND
 }ErlNifDirtyTaskFlags;
-#endif
 
 typedef struct /* All fields all internal and may change */
 {
@@ -227,10 +252,78 @@ typedef enum {
     ERL_NIF_MAP_ITERATOR_TAIL = ERL_NIF_MAP_ITERATOR_LAST
 } ErlNifMapIteratorEntry;
 
+typedef enum {
+    ERL_NIF_UNIQUE_POSITIVE = (1 << 0),
+    ERL_NIF_UNIQUE_MONOTONIC = (1 << 1)
+} ErlNifUniqueInteger;
+
+typedef enum {
+    ERL_NIF_BIN2TERM_SAFE = 0x20000000
+} ErlNifBinaryToTerm;
+
+typedef enum {
+    ERL_NIF_INTERNAL_HASH = 1,
+    ERL_NIF_PHASH2 = 2
+} ErlNifHash;
+
+#define ERL_NIF_IOVEC_SIZE 16
+
+typedef struct erl_nif_io_vec {
+    int iovcnt;  /* length of vectors */
+    size_t size; /* total size in bytes */
+    SysIOVec *iov;
+
+    /* internals (avert your eyes) */
+    void **ref_bins; /* Binary[] */
+    int flags;
+
+    /* Used when stack allocating the io vec */
+    SysIOVec small_iov[ERL_NIF_IOVEC_SIZE];
+    void *small_ref_bin[ERL_NIF_IOVEC_SIZE];
+} ErlNifIOVec;
+
+typedef struct erts_io_queue ErlNifIOQueue;
+
+typedef enum {
+    ERL_NIF_IOQ_NORMAL = 1
+} ErlNifIOQueueOpts;
+
+typedef enum {
+    ERL_NIF_TERM_TYPE_ATOM = 1,
+    ERL_NIF_TERM_TYPE_BITSTRING = 2,
+    ERL_NIF_TERM_TYPE_FLOAT = 3,
+    ERL_NIF_TERM_TYPE_FUN = 4,
+    ERL_NIF_TERM_TYPE_INTEGER = 5,
+    ERL_NIF_TERM_TYPE_LIST = 6,
+    ERL_NIF_TERM_TYPE_MAP = 7,
+    ERL_NIF_TERM_TYPE_PID = 8,
+    ERL_NIF_TERM_TYPE_PORT = 9,
+    ERL_NIF_TERM_TYPE_REFERENCE = 10,
+    ERL_NIF_TERM_TYPE_TUPLE = 11,
+
+    /* This is a dummy value intended to coax the compiler into warning about
+     * unhandled values in a switch even if all the above values have been
+     * handled. We can add new entries at any time so the user must always
+     * have a default case. */
+    ERL_NIF_TERM_TYPE__MISSING_DEFAULT_CASE__READ_THE_MANUAL = -1
+} ErlNifTermType;
+
+/*
+ * Return values from enif_thread_type(). Negative values
+ * reserved for specific types of non-scheduler threads.
+ * Positive values reserved for scheduler thread types.
+ */
+
+#define ERL_NIF_THR_UNDEFINED 0
+#define ERL_NIF_THR_NORMAL_SCHEDULER 1
+#define ERL_NIF_THR_DIRTY_CPU_SCHEDULER 2
+#define ERL_NIF_THR_DIRTY_IO_SCHEDULER 3
+
 #if (defined(__WIN32__) || defined(_WIN32) || defined(_WIN32_))
 #  define ERL_NIF_API_FUNC_DECL(RET_TYPE, NAME, ARGS) RET_TYPE (*NAME) ARGS
 typedef struct {
 #  include "erl_nif_api_funcs.h"
+   void* erts_alc_test;
 } TWinDynNifCallbacks;
 extern TWinDynNifCallbacks WinDynNifCallbacks;
 #  undef ERL_NIF_API_FUNC_DECL
@@ -250,26 +343,26 @@ extern TWinDynNifCallbacks WinDynNifCallbacks;
 
 #if (defined(__WIN32__) || defined(_WIN32) || defined(_WIN32_))
 #  define ERL_NIF_INIT_GLOB TWinDynNifCallbacks WinDynNifCallbacks;
-#  ifdef STATIC_ERLANG_NIF
-#    define ERL_NIF_INIT_DECL(MODNAME) __declspec(dllexport) ErlNifEntry* MODNAME ## _nif_init(TWinDynNifCallbacks* callbacks)
-#  else
-#    define ERL_NIF_INIT_DECL(MODNAME) __declspec(dllexport) ErlNifEntry* nif_init(TWinDynNifCallbacks* callbacks)
-#  endif
+#  define ERL_NIF_INIT_ARGS TWinDynNifCallbacks* callbacks
 #  define ERL_NIF_INIT_BODY memcpy(&WinDynNifCallbacks,callbacks,sizeof(TWinDynNifCallbacks))
+#  define ERL_NIF_INIT_EXPORT __declspec(dllexport)
 #else 
 #  define ERL_NIF_INIT_GLOB
+#  define ERL_NIF_INIT_ARGS void
 #  define ERL_NIF_INIT_BODY
-#  ifdef STATIC_ERLANG_NIF
-#    define ERL_NIF_INIT_DECL(MODNAME)  ErlNifEntry* MODNAME ## _nif_init(void)
+#  if defined(__GNUC__) && __GNUC__ >= 4
+#    define ERL_NIF_INIT_EXPORT __attribute__ ((visibility("default")))
+#  elif defined (__SUNPRO_C) && (__SUNPRO_C >= 0x550)
+#    define ERL_NIF_INIT_EXPORT __global
 #  else
-#    define ERL_NIF_INIT_DECL(MODNAME)  ErlNifEntry* nif_init(void)
+#    define ERL_NIF_INIT_EXPORT
 #  endif
 #endif
 
-#ifdef ERL_NIF_DIRTY_SCHEDULER_SUPPORT
-#  define ERL_NIF_ENTRY_OPTIONS ERL_NIF_DIRTY_NIF_OPTION
+#ifdef STATIC_ERLANG_NIF
+#  define ERL_NIF_INIT_DECL(MODNAME) ErlNifEntry* MODNAME ## _nif_init(ERL_NIF_INIT_ARGS)
 #else
-#  define ERL_NIF_ENTRY_OPTIONS 0
+#  define ERL_NIF_INIT_DECL(MODNAME) ERL_NIF_INIT_EXPORT ErlNifEntry* nif_init(ERL_NIF_INIT_ARGS)
 #endif
 
 #ifdef __cplusplus
@@ -297,7 +390,9 @@ ERL_NIF_INIT_DECL(NAME)			\
 	FUNCS,				\
 	LOAD, RELOAD, UPGRADE, UNLOAD,	\
 	ERL_NIF_VM_VARIANT,		\
-	ERL_NIF_ENTRY_OPTIONS		\
+        1,                              \
+        sizeof(ErlNifResourceTypeInit), \
+        ERL_NIF_MIN_ERTS_VERSION        \
     };                                  \
     ERL_NIF_INIT_BODY;                  \
     return &entry;			\

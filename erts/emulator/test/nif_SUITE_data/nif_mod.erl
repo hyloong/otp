@@ -1,7 +1,7 @@
 %%
 %% %CopyrightBegin%
 %% 
-%% Copyright Ericsson AB 2005-2011. All Rights Reserved.
+%% Copyright Ericsson AB 2005-2020. All Rights Reserved.
 %% 
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -20,26 +20,49 @@
 
 -module(nif_mod).
 
--include_lib("test_server/include/test_server.hrl").
+-include_lib("common_test/include/ct.hrl").
 
--export([load_nif_lib/2, load_nif_lib/3, start/0, lib_version/0, call_history/0,
-	 get_priv_data_ptr/0, make_new_resource/2, get_resource/2]).
+-export([load_nif_lib/2, load_nif_lib/3, start/0,
+         lib_version/0, lib_version_check/0,
+	 get_priv_data_ptr/0, make_new_resource/2, get_resource/2,
+         monitor_process/3]).
 
 -export([loop/0, upgrade/1]).
 
 -define(nif_stub,nif_stub_error(?LINE)).
 
+-ifdef(USE_ON_LOAD).
+-on_load(on_load/0).
+
+on_load() ->
+    [{data_dir, Path}] = ets:lookup(nif_SUITE, data_dir),
+    [{lib_version, Ver}] = ets:lookup(nif_SUITE, lib_version),
+    [{nif_api_version, API}] = ets:lookup(nif_SUITE, nif_api_version),
+    R = erlang:load_nif(filename:join(Path,libname(Ver,API)), []),
+    check_api_version(R, API).
+
+-endif.
+
+check_api_version(Err, _) when Err =/= ok -> Err;
+check_api_version(ok, []) -> ok;
+check_api_version(ok, [$., MajC, $_ | MinS]) ->
+    {Maj, Min} = {list_to_integer([MajC]), list_to_integer(MinS)},
+    {Maj, Min} = nif_api_version(),
+    ok.
+
 load_nif_lib(Config, Ver) ->
     load_nif_lib(Config, Ver, []).
 
 load_nif_lib(Config, Ver, LoadInfo) ->
-    ?line Path = ?config(data_dir, Config),    
-    erlang:load_nif(filename:join(Path,libname(Ver)), LoadInfo).
+    Path = proplists:get_value(data_dir, Config),
+    API = proplists:get_value(nif_api_version, Config, ""),
+    R = erlang:load_nif(filename:join(Path,libname(Ver,API)), LoadInfo),
+    check_api_version(R, API).
 
-libname(no_init) -> libname(3);
-libname(Ver) when is_integer(Ver) ->
-    "nif_mod." ++ integer_to_list(Ver).
-
+libname(no_init,API) -> libname(3,API);
+libname(Ver,API) when is_integer(Ver) ->
+    "nif_mod." ++ integer_to_list(Ver) ++ API.
+    
 start() ->
     spawn_opt(?MODULE,loop,[],
 	      [link, monitor]).
@@ -62,10 +85,24 @@ upgrade(Pid) ->
 lib_version() ->  % NIF
     undefined.
 
-call_history() -> ?nif_stub.    
+nif_api_version() -> %NIF
+    {undefined,undefined}.
+
 get_priv_data_ptr() -> ?nif_stub.
 make_new_resource(_,_) -> ?nif_stub.
 get_resource(_,_) -> ?nif_stub.
+monitor_process(_,_,_) -> ?nif_stub.
+
+lib_version_check() ->
+    %% Do a recursive call to test that we are able to return
+    %% while this function has been NIF patched.
+    X = lib_version(),
+    case lib_version() of
+        X -> X;
+        V ->
+            undefined = X,
+            V
+    end.
 
 nif_stub_error(Line) ->
     exit({nif_not_loaded,module,?MODULE,line,Line}).

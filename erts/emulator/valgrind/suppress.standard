@@ -252,7 +252,19 @@ obj:*/ssleay.*
    fun:start_thread
    fun:clone
 }
-
+{
+   Crypto engine internal...
+   Memcheck:Leak
+   fun:malloc
+   fun:CRYPTO_malloc
+   fun:ENGINE_new
+   fun:ENGINE_by_id
+   fun:engine_by_id_nif
+   fun:process_main
+   fun:sched_thread_func
+   fun:thr_wrapper
+   fun:start_thread
+}
 {
    Harmless assembler bug in openssl
    Memcheck:Addr8
@@ -336,9 +348,17 @@ Memcheck:Addr4
 ...
 fun:erts_print_scheduler_info
 ...
-fun:erl_exit
+fun:erts_exit
 fun:broken_halt_test
 fun:erts_debug_set_internal_state_2
 fun:process_main
+}
+
+{
+Thread specific dlerror buffer. Either bug in libc or valgrind.
+Memcheck:Leak
+...
+fun:_dlerror_run
+...
 }
 

@@ -1,7 +1,7 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2004-2013. All Rights Reserved.
+%% Copyright Ericsson AB 2004-2020. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -18,11 +18,9 @@
 %% %CopyrightEnd%
 %%
 
-%%% @doc Common Test Framework callback module.
-%%%
-%%% <p>This module contains CT internal help functions for searching
-%%%    through groups specification trees and producing resulting
-%%%    tests.</p>
+%%% This module contains CT internal help functions for searching
+%%% through groups specification trees and producing resulting
+%%% tests.
 
 -module(ct_groups).
 
@@ -81,7 +79,7 @@ find(Mod, all, all, [{Name,Props,Tests} | Gs], Known, Defs, _)
 find(Mod, all, TCs, [{Name,Props,Tests} | Gs], Known, Defs, _) 
   when is_atom(Name), is_list(Props), is_list(Tests) ->
     cyclic_test(Mod, Name, Known),
-    Tests1 = rm_unwanted_tcs(Tests, TCs, []),
+    Tests1 = modify_tc_list(Tests, TCs, []),
     trim(make_conf(Mod, Name, Props,
 		   find(Mod, all, TCs, Tests1, [Name | Known],
 			Defs, true))) ++
@@ -91,7 +89,7 @@ find(Mod, all, TCs, [{Name,Props,Tests} | Gs], Known, Defs, _)
 find(Mod, [Name|GrNames]=SPath, TCs, [{Name,Props,Tests} | Gs], Known,
      Defs, FindAll) when is_atom(Name), is_list(Props), is_list(Tests) ->
     cyclic_test(Mod, Name, Known),
-    Tests1 = rm_unwanted_tcs(Tests, TCs, GrNames),
+    Tests1 = modify_tc_list(Tests, TCs, GrNames),
     trim(make_conf(Mod, Name, Props,
 		   find(Mod, GrNames, TCs, Tests1, [Name|Known],
 			Defs, FindAll))) ++
@@ -103,23 +101,34 @@ find(Mod, [], TCs, Tests, _Known, _Defs, false) ->
 				  [{Mod,TC}];
 			     ({group,_}) ->
 				  [];
+                             ({testcase,TC,[Prop]}) when is_atom(TC), TC ==all ->
+                                  [{repeat,{Mod,TC},Prop}];
 			     ({_,_}=TC) when TCs == all ->
 				  [TC];
-			     (TC) ->
-				  if is_atom(TC) ->
-					  Tuple = {Mod,TC},
-					  case lists:member(Tuple, TCs) of
-					      true  ->
-						  [Tuple];
-					      false ->
-						  case lists:member(TC, TCs) of
-						      true  -> [{Mod,TC}];
-						      false -> []
-						  end
-					  end;
-				     true ->
-					  []
-				  end
+			     (TC) when is_atom(TC) ->
+                                  Tuple = {Mod,TC},
+                                  case lists:member(Tuple, TCs) of
+                                      true  ->
+                                          [Tuple];
+                                      false ->
+                                          case lists:member(TC, TCs) of
+                                              true  -> [Tuple];
+                                              false -> []
+                                          end
+                                  end;
+                             ({testcase,TC,[Prop]}) when is_atom(TC) ->
+                                  Tuple = {Mod,TC},
+                                  case lists:member(Tuple, TCs) of
+                                      true  ->
+                                          [{repeat,Tuple,Prop}];
+                                      false ->
+                                          case lists:member(TC, TCs) of
+                                              true  -> [{repeat,Tuple,Prop}];
+                                              false -> []
+                                          end
+                                  end;
+                             (_) ->
+                                  []
 			  end, Tests),
     if Cases == [] -> ['NOMATCH'];
        true -> Cases
@@ -133,7 +142,7 @@ find(_Mod, [_|_], _TCs, [], _Known, _Defs, _) ->
 find(Mod, GrNames, TCs, [{Name,Props,Tests} | Gs], Known,
      Defs, FindAll) when is_atom(Name), is_list(Props), is_list(Tests) ->
     cyclic_test(Mod, Name, Known),
-    Tests1 = rm_unwanted_tcs(Tests, TCs, GrNames),
+    Tests1 = modify_tc_list(Tests, TCs, GrNames),
     trim(make_conf(Mod, Name, Props,
 		   find(Mod, GrNames, TCs, Tests1, [Name|Known],
 			Defs, FindAll))) ++
@@ -174,12 +183,19 @@ find(Mod, GrNames, all, [{M,TC} | Gs], Known,
      Defs, FindAll) when is_atom(M), M /= group, is_atom(TC) ->
     [{M,TC} | find(Mod, GrNames, all, Gs, Known, Defs, FindAll)];
 
+%% Save test case
+find(Mod, GrNames, all, [{testcase,TC,[Prop]} | Gs], Known,
+     Defs, FindAll) when is_atom(TC) ->
+    [{repeat,{Mod,TC},Prop} | find(Mod, GrNames, all, Gs, Known, Defs, FindAll)];
+
 %% Check if test case should be saved
-find(Mod, GrNames, TCs, [TC | Gs], Known,
-     Defs, FindAll) when is_atom(TC) orelse 
-			 ((size(TC) == 2) and (element(1,TC) /= group)) ->
+find(Mod, GrNames, TCs, [TC | Gs], Known, Defs, FindAll)
+  when is_atom(TC) orelse
+       ((size(TC) == 3) andalso (element(1,TC) == testcase)) orelse
+       ((size(TC) == 2) and (element(1,TC) /= group)) ->
     Case =
-	if is_atom(TC) ->
+        case TC of
+            _ when is_atom(TC) ->
 		Tuple = {Mod,TC},
 		case lists:member(Tuple, TCs) of
 		    true  ->
@@ -190,7 +206,18 @@ find(Mod, GrNames, TCs, [TC | Gs], Known,
 			    false -> []
 			end
 		end;
-	   true ->
+            {testcase,TC0,[Prop]} when is_atom(TC0) ->
+		Tuple = {Mod,TC0},
+		case lists:member(Tuple, TCs) of
+		    true  ->
+			{repeat,Tuple,Prop};
+		    false ->
+			case lists:member(TC0, TCs) of
+			    true  -> {repeat,{Mod,TC0},Prop};
+			    false -> []
+			end
+		end;
+            _ ->
 		case lists:member(TC, TCs) of
 		    true  -> {Mod,TC};
 		    false -> []
@@ -210,7 +237,7 @@ find(Mod, _GrNames, _TCs, [BadTerm | _Gs], Known, _Defs, _FindAll) ->
 		    "group "++atom_to_list(lists:last(Known))++
 			" in "++atom_to_list(Mod)++":groups/0"
 	    end,		 
-    Term = io_lib:format("~p", [BadTerm]),
+    Term = io_lib:format("~tp", [BadTerm]),
     E = "Bad term "++lists:flatten(Term)++" in "++Where,
     throw({error,list_to_atom(E)});
 
@@ -284,70 +311,67 @@ trim_test(Test) ->
 %% GrNames is [] if the terminating group has been found. From
 %% that point, all specified test should be included (as well as
 %% sub groups for deeper search).
-rm_unwanted_tcs(Tests, all, []) ->
-    Tests;
+modify_tc_list(GrSpecTs, all, []) ->
+    GrSpecTs;
 
-rm_unwanted_tcs(Tests, TCs, []) ->
-    sort_tests(lists:flatmap(fun(Test) when is_tuple(Test),
-					    (size(Test) > 2) ->
-				     [Test];
-				(Test={group,_}) ->
-				     [Test];
-				(Test={_M,TC}) ->
-				     case lists:member(TC, TCs) of
-					 true  -> [Test];
-					 false -> []
-				     end;
-				(Test) when is_atom(Test) ->
-				     case lists:keysearch(Test, 2, TCs) of
-					 {value,_} ->
-					     [Test];
-					 _ ->
-					     case lists:member(Test, TCs) of
-						 true  -> [Test];
-						 false -> []
-					     end
-				     end;
-				(Test) -> [Test]
-			     end, Tests), TCs);
-					  
-rm_unwanted_tcs(Tests, _TCs, _) ->
-    [Test || Test <- Tests, not is_atom(Test)].
+modify_tc_list(GrSpecTs, TSCs, []) ->
+    modify_tc_list1(GrSpecTs, TSCs);
+    
+modify_tc_list(GrSpecTs, _TSCs, _) ->
+    [Test || Test <- GrSpecTs, not is_atom(Test), element(1,Test)=/=testcase].
 
-%% make sure the order of tests is according to the order in TCs
-sort_tests(Tests, TCs) when is_list(TCs)->
-    lists:sort(fun(T1, T2) ->
-		       case {is_tc(T1),is_tc(T2)} of
-			   {true,true} ->
-			       (position(T1, TCs) =<
-				position(T2, TCs));
-			   {false,true} ->
-			       (position(T2, TCs) == (length(TCs)+1));
-			   _ -> true
-				   
-		       end
-	       end, Tests);
-sort_tests(Tests, _) ->
-    Tests.
-
-is_tc(T) when is_atom(T)      -> true;
-is_tc({group,_})              -> false;
-is_tc({_M,T}) when is_atom(T) -> true;
-is_tc(_)                      -> false.
-
-position(T, TCs) ->
-    position(T, TCs, 1).
-
-position(T, [T|_TCs], Pos) ->
-    Pos;
-position(T, [{_,T}|_TCs], Pos) ->
-    Pos;
-position({M,T}, [T|_TCs], Pos) when M /= group ->
-    Pos;
-position(T, [_|TCs], Pos) ->
-    position(T, TCs, Pos+1);
-position(_, [], Pos) ->
-    Pos.
+modify_tc_list1(GrSpecTs, TSCs) ->
+    %% remove all cases in group tc list that should not be executed
+    GrSpecTs1 =
+	lists:flatmap(fun(Test={testcase,TC,_}) ->
+			      case lists:keysearch(TC, 2, TSCs) of
+				  {value,_} ->
+				      [Test];
+				  _ ->
+				      case lists:member(TC, TSCs) of
+					  true  -> [Test];
+					  false -> []
+				      end
+			      end;
+                         (Test) when is_tuple(Test),
+				     (size(Test) > 2) ->
+			      [Test];
+			 (Test={group,_}) ->
+			      [Test];
+			 (Test={_M,TC}) ->
+			      case lists:member(TC, TSCs) of
+				  true  -> [Test];
+				  false -> []
+			      end;
+			 (Test) when is_atom(Test) ->
+			      case lists:keysearch(Test, 2, TSCs) of
+				  {value,_} ->
+				      [Test];
+				  _ ->
+				      case lists:member(Test, TSCs) of
+					  true  -> [Test];
+					  false -> []
+				      end
+			      end;
+			 (Test) -> [Test]
+		      end, GrSpecTs),
+    {TSCs2,GrSpecTs3} =
+	lists:foldr(
+	  fun(TC, {TSCs1,GrSpecTs2}) ->
+		  case lists:member(TC,GrSpecTs1) of
+		      true ->
+			  {[TC|TSCs1],lists:delete(TC,GrSpecTs2)};
+		      false ->
+			  case lists:keysearch(TC, 2, GrSpecTs) of
+			      {value,Test} ->
+				  {[Test|TSCs1],
+				   lists:keydelete(TC, 2, GrSpecTs2)};
+			      false ->
+				  {TSCs1,GrSpecTs2}
+			  end
+		  end
+	  end, {[],GrSpecTs1}, TSCs),
+    TSCs2 ++ GrSpecTs3.
 
 %%%-----------------------------------------------------------------
 
@@ -415,12 +439,7 @@ expand(Mod, Name, Defs) ->
     end.
 
 make_all_conf(Dir, Mod, Props, TestSpec) ->
-    case code:is_loaded(Mod) of
-	false ->
-	    code:load_abs(filename:join(Dir,atom_to_list(Mod)));
-	_ ->
-	    ok
-    end,
+    _ = load_abs(Dir, Mod),
     make_all_conf(Mod, Props, TestSpec).
 
 make_all_conf(Mod, Props, TestSpec) ->
@@ -441,33 +460,40 @@ make_all_conf(Mod, Props, TestSpec) ->
     end.
 
 make_conf(Dir, Mod, Name, Props, TestSpec) ->
+    _ = load_abs(Dir, Mod),
+    make_conf(Mod, Name, Props, TestSpec).
+
+load_abs(Dir, Mod) ->
     case code:is_loaded(Mod) of
 	false ->
 	    code:load_abs(filename:join(Dir,atom_to_list(Mod)));
 	_ ->
 	    ok
-    end,
-    make_conf(Mod, Name, Props, TestSpec).
+    end.
 
 make_conf(Mod, Name, Props, TestSpec) ->
-    case code:is_loaded(Mod) of
+    _ = case code:is_loaded(Mod) of
 	false ->
 	    code:load_file(Mod);
 	_ ->
 	    ok
     end,
     {InitConf,EndConf,ExtraProps} =
-	case erlang:function_exported(Mod,init_per_group,2) of
-	    true ->
-		{{Mod,init_per_group},{Mod,end_per_group},[]};
-	    false ->
+	case {erlang:function_exported(Mod,init_per_group,2),
+              erlang:function_exported(Mod,end_per_group,2)} of
+	    {false,false} ->
 		ct_logs:log("TEST INFO", "init_per_group/2 and "
 			    "end_per_group/2 missing for group "
-			    "~w in ~w, using default.",
+			    "~tw in ~w, using default.",
 			    [Name,Mod]),
 		{{ct_framework,init_per_group},
 		 {ct_framework,end_per_group},
-		 [{suite,Mod}]}
+		 [{suite,Mod}]};
+	    _ ->
+                %% If any of these exist, the other should too
+                %% (required and documented). If it isn't, it will fail
+                %% with reason 'undef'.
+		{{Mod,init_per_group},{Mod,end_per_group},[]}
 	end,
     {conf,[{name,Name}|Props++ExtraProps],InitConf,TestSpec,EndConf}.
 

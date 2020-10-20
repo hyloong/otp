@@ -1,7 +1,7 @@
 /*
  * %CopyrightBegin%
  *
- * Copyright Ericsson AB 2005-2014. All Rights Reserved.
+ * Copyright Ericsson AB 2005-2020. All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -117,13 +117,12 @@ do {									\
 /* return 0 if list is not a non-empty flat list of printable characters */
 
 static int
-is_printable_string(Eterm list, Eterm* base)
-{
+is_printable_string(Eterm list) {
     int len = 0;
     int c;
 
     while(is_list(list)) {
-	Eterm* consp = list_val_rel(list, base);
+	Eterm* consp = list_val(list);
 	Eterm hd = CAR(consp);
 
 	if (!is_byte(hd))
@@ -260,9 +259,7 @@ static char *format_binary(Uint16 x, char *b) {
 #endif
 
 static int
-print_term(fmtfn_t fn, void* arg, Eterm obj, long *dcount,
-	   Eterm* obj_base) /* ignored if !HALFWORD_HEAP */
-{
+print_term(fmtfn_t fn, void* arg, Eterm obj, long *dcount) {
     DECLARE_WSTACK(s);
     int res;
     int i;
@@ -308,7 +305,7 @@ print_term(fmtfn_t fn, void* arg, Eterm obj, long *dcount,
 		obj = (Eterm) popped.word;
 	    L_print_one_cons:
 		{
-		    Eterm* cons = list_val_rel(obj, obj_base);
+		    Eterm* cons = list_val(obj);
 		    Eterm tl;
 		    
 		    obj = CAR(cons);
@@ -344,11 +341,7 @@ print_term(fmtfn_t fn, void* arg, Eterm obj, long *dcount,
 	    PRINT_CHAR(res, fn, arg, '>');
 	    goto L_done;
 	}
-#if HALFWORD_HEAP
-	wobj = is_immed(obj) ? (Wterm)obj : rterm2wterm(obj, obj_base);
-#else
 	wobj = (Wterm)obj;
-#endif
 	switch (tag_val_def(wobj)) {
 	case NIL_DEF:
 	    PRINT_STRING(res, fn, arg, "[]");
@@ -371,13 +364,13 @@ print_term(fmtfn_t fn, void* arg, Eterm obj, long *dcount,
 	    int print_res;
 	    char def_buf[64];
 	    char *buf, *big_str;
-	    Uint sz = (Uint) big_decimal_estimate(wobj);
+	    Uint sz = (Uint) big_integer_estimate(wobj, 10);
 	    sz++;
 	    if (sz <= 64)
 		buf = &def_buf[0];
 	    else
 		buf = erts_alloc(ERTS_ALC_T_TMP, sz);
-	    big_str = erts_big_to_string(wobj, buf, sz);
+	    big_str = erts_big_to_string(wobj, 10, buf, sz);
 	    print_res = erts_printf_string(fn, arg, big_str);
 	    if (buf != &def_buf[0])
 		erts_free(ERTS_ALC_T_TMP, (void *) buf);
@@ -389,12 +382,15 @@ print_term(fmtfn_t fn, void* arg, Eterm obj, long *dcount,
 	    break;
 	}
 	case REF_DEF:
+            if (!ERTS_IS_CRASH_DUMPING)
+                erts_magic_ref_save_bin(obj);
+            /* fall through... */
 	case EXTERNAL_REF_DEF:
 	    PRINT_STRING(res, fn, arg, "#Ref<");
 	    PRINT_UWORD(res, fn, arg, 'u', 0, 1,
 			(ErlPfUWord) ref_channel_no(wobj));
 	    ref_num = ref_numbers(wobj);
-	    for (i = ref_no_of_numbers(wobj)-1; i >= 0; i--) {
+	    for (i = ref_no_numbers(wobj)-1; i >= 0; i--) {
 		PRINT_CHAR(res, fn, arg, '.');
 		PRINT_UWORD(res, fn, arg, 'u', 0, 1, (ErlPfUWord) ref_num[i]);
 	    }
@@ -424,10 +420,10 @@ print_term(fmtfn_t fn, void* arg, Eterm obj, long *dcount,
 	    PRINT_CHAR(res, fn, arg, '>');
 	    break;
 	case LIST_DEF:
-	    if (is_printable_string(obj, obj_base)) {
+	    if (is_printable_string(obj)) {
 		int c;
 		PRINT_CHAR(res, fn, arg, '"');
-		nobj = list_val_rel(obj, obj_base);
+		nobj = list_val(obj);
 		while (1) {
 		    if ((*dcount)-- <= 0)
 			goto L_done;
@@ -441,7 +437,7 @@ print_term(fmtfn_t fn, void* arg, Eterm obj, long *dcount,
 		    }
 		    if (is_not_list(*nobj))
 			break;
-		    nobj = list_val_rel(*nobj, obj_base);
+		    nobj = list_val(*nobj);
 		}
 		PRINT_CHAR(res, fn, arg, '"');
 	    } else {
@@ -467,16 +463,13 @@ print_term(fmtfn_t fn, void* arg, Eterm obj, long *dcount,
 	}
 	    break;
 	case BINARY_DEF:
-	    if (header_is_bin_matchstate(*boxed_val(wobj))) {
-		PRINT_STRING(res, fn, arg, "#MatchState");
-	    }
-	    else {
+	    {
 		byte* bytep;
-		Uint bytesize = binary_size_rel(obj,obj_base);
+		Uint bytesize = binary_size(obj);
 		Uint bitoffs;
 		Uint bitsize;
 		byte octet;
-		ERTS_GET_BINARY_BYTES_REL(obj, bytep, bitoffs, bitsize, obj_base);
+		ERTS_GET_BINARY_BYTES(obj, bytep, bitoffs, bitsize);
 
 		if (bitsize || !bytesize
 		    || !is_printable_ascii(bytep, bytesize, bitoffs)) {
@@ -494,6 +487,8 @@ print_term(fmtfn_t fn, void* arg, Eterm obj, long *dcount,
 			PRINT_UWORD(res, fn, arg, 'u', 0, 1, octet);
 			++bytep;
 			--bytesize;
+                        if ((*dcount)-- <= 0)
+                            goto L_done;
 		    }
 		    if (bitsize) {
 			Uint bits = bitoffs + bitsize;
@@ -528,6 +523,8 @@ print_term(fmtfn_t fn, void* arg, Eterm obj, long *dcount,
 			PRINT_CHAR(res, fn, arg, octet);
 			++bytep;
 			--bytesize;
+                        if ((*dcount)-- <= 0)
+                            goto L_done;
 		    }
 		    PRINT_STRING(res, fn, arg, "\">>");
 		}
@@ -536,17 +533,37 @@ print_term(fmtfn_t fn, void* arg, Eterm obj, long *dcount,
 	case EXPORT_DEF:
 	    {
 		Export* ep = *((Export **) (export_val(wobj) + 1));
-		Atom* module = atom_tab(atom_val(ep->code[0]));
-		Atom* name = atom_tab(atom_val(ep->code[1]));
+		long tdcount;
+		int tres;
 
-		PRINT_STRING(res, fn, arg, "#Fun<");
-		PRINT_BUF(res, fn, arg, module->name, module->len);
-		PRINT_CHAR(res, fn, arg, '.');
-		PRINT_BUF(res, fn, arg, name->name, name->len);
-		PRINT_CHAR(res, fn, arg, '.');
+		PRINT_STRING(res, fn, arg, "fun ");
+
+		/* We pass a temporary 'dcount' and adjust the real one later to ensure
+		 * that the fun doesn't get split up between the module and function
+		 * name. */
+		tdcount = MAX_ATOM_SZ_LIMIT;
+		tres = print_atom_name(fn, arg, ep->info.mfa.module, &tdcount);
+		if (tres < 0) {
+		    res = tres;
+		    goto L_done;
+		}
+		*dcount -= (MAX_ATOM_SZ_LIMIT - tdcount);
+		res += tres;
+
+		PRINT_CHAR(res, fn, arg, ':');
+
+		tdcount = MAX_ATOM_SZ_LIMIT;
+		tres = print_atom_name(fn, arg, ep->info.mfa.function, &tdcount);
+		if (tres < 0) {
+		    res = tres;
+		    goto L_done;
+		}
+		*dcount -= (MAX_ATOM_SZ_LIMIT - tdcount);
+		res += tres;
+
+		PRINT_CHAR(res, fn, arg, '/');
 		PRINT_SWORD(res, fn, arg, 'd', 0, 1,
-			    (ErlPfSWord) ep->code[2]);
-		PRINT_CHAR(res, fn, arg, '>');
+			    (ErlPfSWord) ep->info.mfa.arity);
 	    }
 	    break;
 	case FUN_DEF:
@@ -633,6 +650,9 @@ print_term(fmtfn_t fn, void* arg, Eterm obj, long *dcount,
                 }
             }
             break;
+	case MATCHSTATE_DEF:
+	    PRINT_STRING(res, fn, arg, "#MatchState");
+	    break;
         default:
 	    PRINT_STRING(res, fn, arg, "<unknown:");
 	    PRINT_POINTER(res, fn, arg, wobj);
@@ -648,13 +668,11 @@ print_term(fmtfn_t fn, void* arg, Eterm obj, long *dcount,
 
 
 int
-erts_printf_term(fmtfn_t fn, void* arg, ErlPfEterm term, long precision,
-		 ErlPfEterm* term_base)
-{
+erts_printf_term(fmtfn_t fn, void* arg, ErlPfEterm term, long precision) {
     int res;
     ERTS_CT_ASSERT(sizeof(ErlPfEterm) == sizeof(Eterm));
 
-    res = print_term(fn, arg, (Eterm)term, &precision, (Eterm*)term_base);
+    res = print_term(fn, arg, (Eterm)term, &precision);
     if (res < 0)
 	return res;
     if (precision <= 0)

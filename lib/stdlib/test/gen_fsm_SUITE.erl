@@ -1,7 +1,7 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 1996-2014. All Rights Reserved.
+%% Copyright Ericsson AB 1996-2019. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -19,7 +19,7 @@
 %%
 -module(gen_fsm_SUITE).
 
--include_lib("test_server/include/test_server.hrl").
+-include_lib("common_test/include/ct.hrl").
 
 %% Test cases
 -export([all/0, suite/0,groups/0,init_per_suite/1, end_per_suite/1,
@@ -39,23 +39,29 @@
 	  call_format_status/1, error_format_status/1, terminate_crash_format/1,
 	  get_state/1, replace_state/1]).
 
--export([hibernate/1,hiber_idle/3,hiber_wakeup/3,hiber_idle/2,hiber_wakeup/2]).
+-export([undef_handle_event/1, undef_handle_sync_event/1, undef_handle_info/1,
+         undef_init/1, undef_code_change/1, undef_terminate1/1, undef_terminate2/1]).
+
+-export([undef_in_handle_info/1, undef_in_terminate/1]).
+
+-export([hibernate/1,auto_hibernate/1,hiber_idle/3,hiber_wakeup/3,hiber_idle/2,hiber_wakeup/2]).
+
+-export([format_log_1/1, format_log_2/1]).
 
 -export([enter_loop/1]).
 
 %% Exports for apply
--export([do_msg/1, do_sync_msg/1]).
 -export([enter_loop/2]).
 
-% The gen_fsm behaviour
+%% The gen_fsm behaviour
 -export([init/1, handle_event/3, handle_sync_event/4, terminate/3,
-	 handle_info/3, format_status/2]).
+	 handle_info/3, format_status/2, code_change/4]).
 -export([idle/2,	idle/3,
 	 timeout/2,
 	 wfor_conf/2,	wfor_conf/3,
 	 connected/2,	connected/3]).
 -export([state0/3]).
-	 
+
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
@@ -64,7 +70,8 @@ suite() -> [{ct_hooks,[ts_install_cth]}].
 
 all() ->
     [{group, start}, {group, abnormal}, shutdown,
-     {group, sys}, hibernate, enter_loop].
+     {group, sys}, hibernate, auto_hibernate, enter_loop, {group, undef_callbacks},
+     undef_in_handle_info, undef_in_terminate,{group,format_log}].
 
 groups() ->
     [{start, [],
@@ -75,7 +82,11 @@ groups() ->
      {abnormal, [], [abnormal1, abnormal2]},
      {sys, [],
       [sys1, call_format_status, error_format_status, terminate_crash_format,
-       get_state, replace_state]}].
+       get_state, replace_state]},
+     {undef_callbacks, [],
+      [undef_handle_event, undef_handle_sync_event, undef_handle_info,
+       undef_init, undef_code_change, undef_terminate1, undef_terminate2]},
+     {format_log, [], [format_log_1, format_log_2]}].
 
 init_per_suite(Config) ->
     Config.
@@ -83,6 +94,11 @@ init_per_suite(Config) ->
 end_per_suite(_Config) ->
     ok.
 
+init_per_group(undef_callbacks, Config) ->
+    DataDir = ?config(data_dir, Config),
+    Server = filename:join(DataDir, "oc_fsm.erl"),
+    {ok, oc_fsm} = compile:file(Server),
+    Config;
 init_per_group(_GroupName, Config) ->
     Config.
 
@@ -93,97 +109,97 @@ end_per_group(_GroupName, Config) ->
 start1(Config) when is_list(Config) ->
     %%OldFl = process_flag(trap_exit, true),
 
-    ?line {ok, Pid0} = gen_fsm:start_link(gen_fsm_SUITE, [], []),
-    ?line ok = do_func_test(Pid0),
-    ?line ok = do_sync_func_test(Pid0),
+    {ok, Pid0} = gen_fsm:start_link(gen_fsm_SUITE, [], []),
+    ok = do_func_test(Pid0),
+    ok = do_sync_func_test(Pid0),
     stop_it(Pid0),
-%%    ?line stopped = gen_fsm:sync_send_all_state_event(Pid0, stop),
-%%    ?line {'EXIT', {timeout,_}} = 
-%%	(catch gen_fsm:sync_send_event(Pid0, hej)),
+    %%    stopped = gen_fsm:sync_send_all_state_event(Pid0, stop),
+    %%    {'EXIT', {timeout,_}} =
+    %%	(catch gen_fsm:sync_send_event(Pid0, hej)),
 
-    ?line test_server:messages_get(),
+    [] = get_messages(),
     %%process_flag(trap_exit, OldFl),
-   ok.
+    ok.
 
 %% anonymous w. shutdown
 start2(Config) when is_list(Config) ->
     %% Dont link when shutdown
-    ?line {ok, Pid0} = gen_fsm:start(gen_fsm_SUITE, [], []),
-    ?line ok = do_func_test(Pid0),
-    ?line ok = do_sync_func_test(Pid0),
-    ?line shutdown_stopped = 
+    {ok, Pid0} = gen_fsm:start(gen_fsm_SUITE, [], []),
+    ok = do_func_test(Pid0),
+    ok = do_sync_func_test(Pid0),
+    MRef = monitor(process,Pid0),
+    shutdown_stopped =
 	gen_fsm:sync_send_all_state_event(Pid0, stop_shutdown),
-    ?line {'EXIT', {noproc,_}} = 
+    receive {'DOWN',MRef,_,_,shutdown} -> ok end,
+    {'EXIT', {noproc,_}} =
 	(catch gen_fsm:sync_send_event(Pid0, hej)),
 
-    ?line test_server:messages_get(),
+    [] = get_messages(),
     ok.
 
 %% anonymous with timeout
 start3(Config) when is_list(Config) ->
     %%OldFl = process_flag(trap_exit, true),
 
-    ?line {ok, Pid0} = gen_fsm:start(gen_fsm_SUITE, [], [{timeout,5}]),
-    ?line ok = do_func_test(Pid0),
-    ?line ok = do_sync_func_test(Pid0),
-    ?line stop_it(Pid0),
-    
-    ?line {error, timeout} = gen_fsm:start(gen_fsm_SUITE, sleep,
-					   [{timeout,5}]),
+    {ok, Pid0} = gen_fsm:start(gen_fsm_SUITE, [], [{timeout,5}]),
+    ok = do_func_test(Pid0),
+    ok = do_sync_func_test(Pid0),
+    stop_it(Pid0),
 
-    test_server:messages_get(),
+    {error, timeout} = gen_fsm:start(gen_fsm_SUITE, sleep,
+				     [{timeout,5}]),
+
+    [] = get_messages(),
     %%process_flag(trap_exit, OldFl),
     ok.
 
 %% anonymous with ignore
-start4(suite) -> [];
 start4(Config) when is_list(Config) ->
     OldFl = process_flag(trap_exit, true),
 
-    ?line ignore = gen_fsm:start(gen_fsm_SUITE, ignore, []),
+    ignore = gen_fsm:start(gen_fsm_SUITE, ignore, []),
 
-    test_server:messages_get(),
+    [] = get_messages(),
     process_flag(trap_exit, OldFl),
     ok.
 
 %% anonymous with stop
-start5(suite) -> [];
 start5(Config) when is_list(Config) ->
     OldFl = process_flag(trap_exit, true),
 
-    ?line {error, stopped} = gen_fsm:start(gen_fsm_SUITE, stop, []),
+    {error, stopped} = gen_fsm:start(gen_fsm_SUITE, stop, []),
 
-    test_server:messages_get(),
+    [] = get_messages(),
     process_flag(trap_exit, OldFl),
     ok.
 
 %% anonymous linked
 start6(Config) when is_list(Config) ->
-    ?line {ok, Pid} = gen_fsm:start_link(gen_fsm_SUITE, [], []),
-    ?line ok = do_func_test(Pid),
-    ?line ok = do_sync_func_test(Pid),
-    ?line stop_it(Pid),
+    {ok, Pid} = gen_fsm:start_link(gen_fsm_SUITE, [], []),
+    ok = do_func_test(Pid),
+    ok = do_sync_func_test(Pid),
+    stop_it(Pid),
 
-    test_server:messages_get(),
+    [] = get_messages(),
 
     ok.
 
 %% global register linked
 start7(Config) when is_list(Config) ->
-    ?line {ok, Pid} = 
+    {ok, Pid} =
 	gen_fsm:start_link({global, my_fsm}, gen_fsm_SUITE, [], []),
-    ?line {error, {already_started, Pid}} =
+    {error, {already_started, Pid}} =
 	gen_fsm:start_link({global, my_fsm}, gen_fsm_SUITE, [], []),
-    ?line {error, {already_started, Pid}} =
+    {error, {already_started, Pid}} =
 	gen_fsm:start({global, my_fsm}, gen_fsm_SUITE, [], []),
-    
-    ?line ok = do_func_test(Pid),
-    ?line ok = do_sync_func_test(Pid),
-    ?line ok = do_func_test({global, my_fsm}),
-    ?line ok = do_sync_func_test({global, my_fsm}),
-    ?line stop_it({global, my_fsm}),
-    
-    test_server:messages_get(),
+
+    ok = do_func_test(Pid),
+    ok = do_sync_func_test(Pid),
+    ok = do_func_test({global, my_fsm}),
+    ok = do_sync_func_test({global, my_fsm}),
+    stop_it({global, my_fsm}),
+
+    [] = get_messages(),
     ok.
 
 
@@ -191,18 +207,18 @@ start7(Config) when is_list(Config) ->
 start8(Config) when is_list(Config) ->
     %%OldFl = process_flag(trap_exit, true),
 
-    ?line {ok, Pid} = 
+    {ok, Pid} =
 	gen_fsm:start({local, my_fsm}, gen_fsm_SUITE, [], []),
-    ?line {error, {already_started, Pid}} =
+    {error, {already_started, Pid}} =
 	gen_fsm:start({local, my_fsm}, gen_fsm_SUITE, [], []),
 
-    ?line ok = do_func_test(Pid),
-    ?line ok = do_sync_func_test(Pid),
-    ?line ok = do_func_test(my_fsm),
-    ?line ok = do_sync_func_test(my_fsm),
-    ?line stop_it(Pid),
-    
-    test_server:messages_get(),
+    ok = do_func_test(Pid),
+    ok = do_sync_func_test(Pid),
+    ok = do_func_test(my_fsm),
+    ok = do_sync_func_test(my_fsm),
+    stop_it(Pid),
+
+    [] = get_messages(),
     %%process_flag(trap_exit, OldFl),
     ok.
 
@@ -210,80 +226,80 @@ start8(Config) when is_list(Config) ->
 start9(Config) when is_list(Config) ->
     %%OldFl = process_flag(trap_exit, true),
 
-    ?line {ok, Pid} = 
+    {ok, Pid} =
 	gen_fsm:start_link({local, my_fsm}, gen_fsm_SUITE, [], []),
-    ?line {error, {already_started, Pid}} =
+    {error, {already_started, Pid}} =
 	gen_fsm:start({local, my_fsm}, gen_fsm_SUITE, [], []),
 
-    ?line ok = do_func_test(Pid),
-    ?line ok = do_sync_func_test(Pid),
-    ?line ok = do_func_test(my_fsm),
-    ?line ok = do_sync_func_test(my_fsm),
-    ?line stop_it(Pid),
-    
-    test_server:messages_get(),
+    ok = do_func_test(Pid),
+    ok = do_sync_func_test(Pid),
+    ok = do_func_test(my_fsm),
+    ok = do_sync_func_test(my_fsm),
+    stop_it(Pid),
+
+    [] = get_messages(),
     %%process_flag(trap_exit, OldFl),
     ok.
 
 %% global register
 start10(Config) when is_list(Config) ->
-    ?line {ok, Pid} = 
+    {ok, Pid} =
 	gen_fsm:start({global, my_fsm}, gen_fsm_SUITE, [], []),
-    ?line {error, {already_started, Pid}} =
+    {error, {already_started, Pid}} =
 	gen_fsm:start({global, my_fsm}, gen_fsm_SUITE, [], []),
-    ?line {error, {already_started, Pid}} =
+    {error, {already_started, Pid}} =
 	gen_fsm:start_link({global, my_fsm}, gen_fsm_SUITE, [], []),
-    
-    ?line ok = do_func_test(Pid),
-    ?line ok = do_sync_func_test(Pid),
-    ?line ok = do_func_test({global, my_fsm}),
-    ?line ok = do_sync_func_test({global, my_fsm}),
-    ?line stop_it({global, my_fsm}),
-    
-    test_server:messages_get(),
+
+    ok = do_func_test(Pid),
+    ok = do_sync_func_test(Pid),
+    ok = do_func_test({global, my_fsm}),
+    ok = do_sync_func_test({global, my_fsm}),
+    stop_it({global, my_fsm}),
+
+    [] = get_messages(),
     ok.
 
 
 %% Stop registered processes
 start11(Config) when is_list(Config) ->
-    ?line {ok, Pid} = 
+    {ok, Pid} =
 	gen_fsm:start_link({local, my_fsm}, gen_fsm_SUITE, [], []),
-    ?line stop_it(Pid),
+    stop_it(Pid),
 
-    ?line {ok, _Pid1} = 
+    {ok, _Pid1} =
 	gen_fsm:start_link({local, my_fsm}, gen_fsm_SUITE, [], []),
-    ?line stop_it(my_fsm),
-    
-    ?line {ok, Pid2} = 
+    stop_it(my_fsm),
+
+    {ok, Pid2} =
 	gen_fsm:start({global, my_fsm}, gen_fsm_SUITE, [], []),
-    ?line stop_it(Pid2),
+    stop_it(Pid2),
     receive after 1 -> true end,
-    ?line Result = 
+    Result =
 	gen_fsm:start({global, my_fsm}, gen_fsm_SUITE, [], []),
     io:format("Result = ~p~n",[Result]),
-    ?line {ok, _Pid3} = Result, 
-    ?line stop_it({global, my_fsm}),
+    {ok, _Pid3} = Result,
+    stop_it({global, my_fsm}),
 
-    test_server:messages_get(),
+    [] = get_messages(),
     ok.
 
 %% Via register linked
 start12(Config) when is_list(Config) ->
-    ?line dummy_via:reset(),
-    ?line {ok, Pid} =
+    dummy_via:reset(),
+    {ok, Pid} =
 	gen_fsm:start_link({via, dummy_via, my_fsm}, gen_fsm_SUITE, [], []),
-    ?line {error, {already_started, Pid}} =
+    {error, {already_started, Pid}} =
 	gen_fsm:start_link({via, dummy_via, my_fsm}, gen_fsm_SUITE, [], []),
-    ?line {error, {already_started, Pid}} =
+    {error, {already_started, Pid}} =
 	gen_fsm:start({via, dummy_via, my_fsm}, gen_fsm_SUITE, [], []),
 
-    ?line ok = do_func_test(Pid),
-    ?line ok = do_sync_func_test(Pid),
-    ?line ok = do_func_test({via, dummy_via, my_fsm}),
-    ?line ok = do_sync_func_test({via, dummy_via, my_fsm}),
-    ?line stop_it({via, dummy_via, my_fsm}),
+    ok = do_func_test(Pid),
+    ok = do_sync_func_test(Pid),
+    ok = do_func_test({via, dummy_via, my_fsm}),
+    ok = do_sync_func_test({via, dummy_via, my_fsm}),
+    stop_it({via, dummy_via, my_fsm}),
 
-    test_server:messages_get(),
+    [] = get_messages(),
     ok.
 
 
@@ -339,7 +355,7 @@ stop6(_Config) ->
 stop7(_Config) ->
     dummy_via:reset(),
     {ok, Pid} = gen_fsm:start({via, dummy_via, to_stop},
-				  ?MODULE, [], []),
+			      ?MODULE, [], []),
     ok = gen_fsm:stop({via, dummy_via, to_stop}),
     false = erlang:is_process_alive(Pid),
     {'EXIT',noproc} = (catch gen_fsm:stop({via, dummy_via, to_stop})),
@@ -378,7 +394,7 @@ stop10(_Config) ->
     Dir = filename:dirname(code:which(?MODULE)),
     rpc:call(Node,code,add_path,[Dir]),
     {ok, Pid} = rpc:call(Node,gen_fsm,start,[{global,to_stop},?MODULE,[],[]]),
-    global:sync(),
+    ok = global:sync(),
     ok = gen_fsm:stop({global,to_stop}),
     false = rpc:call(Node,erlang,is_process_alive,[Pid]),
     {'EXIT',noproc} = (catch gen_fsm:stop({global,to_stop})),
@@ -387,53 +403,57 @@ stop10(_Config) ->
     ok.
 
 %% Check that time outs in calls work
-abnormal1(suite) -> [];
 abnormal1(Config) when is_list(Config) ->
     {ok, _Pid} = gen_fsm:start({local, my_fsm}, gen_fsm_SUITE, [], []),
 
     %% timeout call.
     delayed = gen_fsm:sync_send_event(my_fsm, {delayed_answer,1}, 100),
     {'EXIT',{timeout,_}} =
-    (catch gen_fsm:sync_send_event(my_fsm, {delayed_answer,10}, 1)),
-    test_server:messages_get(),
+	(catch gen_fsm:sync_send_event(my_fsm, {delayed_answer,10}, 1)),
+    receive
+	Msg ->
+	    %% Ignore the delayed answer from the server.
+	    io:format("Delayed message: ~p", [Msg])
+    end,
+
+    [] = get_messages(),
     ok.
 
 %% Check that bad return values makes the fsm crash. Note that we must
 %% trap exit since we must link to get the real bad_return_ error
-abnormal2(suite) -> [];
 abnormal2(Config) when is_list(Config) ->
     OldFl = process_flag(trap_exit, true),
-    ?line {ok, Pid} = 
+    {ok, Pid} =
 	gen_fsm:start_link(gen_fsm_SUITE, [], []),
 
     %% bad return value in the gen_fsm loop
-    ?line {'EXIT',{{bad_return_value, badreturn},_}} =
+    {'EXIT',{{bad_return_value, badreturn},_}} =
 	(catch gen_fsm:sync_send_event(Pid, badreturn)),
-    
-    test_server:messages_get(),
+
+    [{'EXIT',Pid,{bad_return_value,badreturn}}] = get_messages(),
     process_flag(trap_exit, OldFl),
     ok.
 
 shutdown(Config) when is_list(Config) ->
-    ?line error_logger_forwarder:register(),
+    error_logger_forwarder:register(),
 
     process_flag(trap_exit, true),
 
-    ?line {ok,Pid0} = gen_fsm:start_link(gen_fsm_SUITE, [], []),
-    ?line ok = do_func_test(Pid0),
-    ?line ok = do_sync_func_test(Pid0),
-    ?line {shutdown,reason} = 
+    {ok,Pid0} = gen_fsm:start_link(gen_fsm_SUITE, [], []),
+    ok = do_func_test(Pid0),
+    ok = do_sync_func_test(Pid0),
+    {shutdown,reason} =
 	gen_fsm:sync_send_all_state_event(Pid0, stop_shutdown_reason),
     receive {'EXIT',Pid0,{shutdown,reason}} -> ok end,
     process_flag(trap_exit, false),
 
-    ?line {'EXIT', {noproc,_}} = 
+    {'EXIT', {noproc,_}} =
 	(catch gen_fsm:sync_send_event(Pid0, hej)),
 
     receive
 	Any ->
-	    ?line io:format("Unexpected: ~p", [Any]),
-	    ?line ?t:fail()
+	    io:format("Unexpected: ~p", [Any]),
+	    ct:fail(failed)
     after 500 ->
 	    ok
     end,
@@ -443,81 +463,82 @@ shutdown(Config) when is_list(Config) ->
 
 
 sys1(Config) when is_list(Config) ->
-    ?line {ok, Pid} = 
+    {ok, Pid} =
 	gen_fsm:start(gen_fsm_SUITE, [], []),
-    ?line {status, Pid, {module,gen_fsm}, _} = sys:get_status(Pid),
-    ?line sys:suspend(Pid),
-    ?line {'EXIT', {timeout,_}} = 
+    {status, Pid, {module,gen_fsm}, _} = sys:get_status(Pid),
+    sys:suspend(Pid),
+    {'EXIT', {timeout,_}} =
 	(catch gen_fsm:sync_send_event(Pid, hej)),
-    ?line sys:resume(Pid),
-    ?line stop_it(Pid).
+    sys:resume(Pid),
+    stop_it(Pid).
 
 call_format_status(Config) when is_list(Config) ->
-    ?line {ok, Pid} = gen_fsm:start(gen_fsm_SUITE, [], []),
-    ?line Status = sys:get_status(Pid),
-    ?line {status, Pid, _Mod, [_PDict, running, _, _, Data]} = Status,
-    ?line [format_status_called | _] = lists:reverse(Data),
-    ?line stop_it(Pid),
+    {ok, Pid} = gen_fsm:start(gen_fsm_SUITE, [], []),
+    Status = sys:get_status(Pid),
+    {status, Pid, _Mod, [_PDict, running, _, _, Data]} = Status,
+    [format_status_called | _] = lists:reverse(Data),
+    stop_it(Pid),
 
     %% check that format_status can handle a name being an atom (pid is
     %% already checked by the previous test)
-    ?line {ok, Pid2} = gen_fsm:start({local, gfsm}, gen_fsm_SUITE, [], []),
-    ?line Status2 = sys:get_status(gfsm),
-    ?line {status, Pid2, _Mod, [_PDict2, running, _, _, Data2]} = Status2,
-    ?line [format_status_called | _] = lists:reverse(Data2),
-    ?line stop_it(Pid2),
+    {ok, Pid2} = gen_fsm:start({local, gfsm}, gen_fsm_SUITE, [], []),
+    Status2 = sys:get_status(gfsm),
+    {status, Pid2, _Mod, [_PDict2, running, _, _, Data2]} = Status2,
+    [format_status_called | _] = lists:reverse(Data2),
+    stop_it(Pid2),
 
     %% check that format_status can handle a name being a term other than a
     %% pid or atom
     GlobalName1 = {global, "CallFormatStatus"},
-    ?line {ok, Pid3} = gen_fsm:start(GlobalName1, gen_fsm_SUITE, [], []),
-    ?line Status3 = sys:get_status(GlobalName1),
-    ?line {status, Pid3, _Mod, [_PDict3, running, _, _, Data3]} = Status3,
-    ?line [format_status_called | _] = lists:reverse(Data3),
-    ?line stop_it(Pid3),
+    {ok, Pid3} = gen_fsm:start(GlobalName1, gen_fsm_SUITE, [], []),
+    Status3 = sys:get_status(GlobalName1),
+    {status, Pid3, _Mod, [_PDict3, running, _, _, Data3]} = Status3,
+    [format_status_called | _] = lists:reverse(Data3),
+    stop_it(Pid3),
     GlobalName2 = {global, {name, "term"}},
-    ?line {ok, Pid4} = gen_fsm:start(GlobalName2, gen_fsm_SUITE, [], []),
-    ?line Status4 = sys:get_status(GlobalName2),
-    ?line {status, Pid4, _Mod, [_PDict4, running, _, _, Data4]} = Status4,
-    ?line [format_status_called | _] = lists:reverse(Data4),
-    ?line stop_it(Pid4),
+    {ok, Pid4} = gen_fsm:start(GlobalName2, gen_fsm_SUITE, [], []),
+    Status4 = sys:get_status(GlobalName2),
+    {status, Pid4, _Mod, [_PDict4, running, _, _, Data4]} = Status4,
+    [format_status_called | _] = lists:reverse(Data4),
+    stop_it(Pid4),
 
     %% check that format_status can handle a name being a term other than a
     %% pid or atom
-    ?line dummy_via:reset(),
+    dummy_via:reset(),
     ViaName1 = {via, dummy_via, "CallFormatStatus"},
-    ?line {ok, Pid5} = gen_fsm:start(ViaName1, gen_fsm_SUITE, [], []),
-    ?line Status5 = sys:get_status(ViaName1),
-    ?line {status, Pid5, _Mod, [_PDict5, running, _, _, Data5]} = Status5,
-    ?line [format_status_called | _] = lists:reverse(Data5),
-    ?line stop_it(Pid5),
+    {ok, Pid5} = gen_fsm:start(ViaName1, gen_fsm_SUITE, [], []),
+    Status5 = sys:get_status(ViaName1),
+    {status, Pid5, _Mod, [_PDict5, running, _, _, Data5]} = Status5,
+    [format_status_called | _] = lists:reverse(Data5),
+    stop_it(Pid5),
     ViaName2 = {via, dummy_via, {name, "term"}},
-    ?line {ok, Pid6} = gen_fsm:start(ViaName2, gen_fsm_SUITE, [], []),
-    ?line Status6 = sys:get_status(ViaName2),
-    ?line {status, Pid6, _Mod, [_PDict6, running, _, _, Data6]} = Status6,
-    ?line [format_status_called | _] = lists:reverse(Data6),
-    ?line stop_it(Pid6).
+    {ok, Pid6} = gen_fsm:start(ViaName2, gen_fsm_SUITE, [], []),
+    Status6 = sys:get_status(ViaName2),
+    {status, Pid6, _Mod, [_PDict6, running, _, _, Data6]} = Status6,
+    [format_status_called | _] = lists:reverse(Data6),
+    stop_it(Pid6).
 
 
 
 error_format_status(Config) when is_list(Config) ->
-    ?line error_logger_forwarder:register(),
+    error_logger_forwarder:register(),
     OldFl = process_flag(trap_exit, true),
     StateData = "called format_status",
-    ?line {ok, Pid} = gen_fsm:start(gen_fsm_SUITE, {state_data, StateData}, []),
+    Parent = self(),
+    {ok, Pid} = gen_fsm:start(gen_fsm_SUITE, {state_data, StateData}, []),
     %% bad return value in the gen_fsm loop
-    ?line {'EXIT',{{bad_return_value, badreturn},_}} =
+    {'EXIT',{{bad_return_value, badreturn},_}} =
 	(catch gen_fsm:sync_send_event(Pid, badreturn)),
     receive
 	{error,_GroupLeader,{Pid,
-			     "** State machine"++_,
-			     [Pid,{_,_,badreturn},idle,{formatted,StateData},_]}} ->
+			     "** State machine "++_,
+			     [Pid,badreturn,Parent,idle,{formatted,StateData},
+                              {bad_return_value,badreturn}|_]}} ->
 	    ok;
 	Other ->
-	    ?line io:format("Unexpected: ~p", [Other]),
-	    ?line ?t:fail()
+	    io:format("Unexpected: ~p", [Other]),
+	    ct:fail(failed)
     end,
-    ?t:messages_get(),
     process_flag(trap_exit, OldFl),
     ok.
 
@@ -525,21 +546,22 @@ terminate_crash_format(Config) when is_list(Config) ->
     error_logger_forwarder:register(),
     OldFl = process_flag(trap_exit, true),
     StateData = crash_terminate,
+    Parent = self(),
     {ok, Pid} = gen_fsm:start(gen_fsm_SUITE, {state_data, StateData}, []),
     stop_it(Pid),
     receive
 	{error,_GroupLeader,{Pid,
-			     "** State machine"++_,
-			     [Pid,{_,_,_},idle,{formatted, StateData},_]}} ->
+			     "** State machine "++_,
+			     [Pid,stop,Parent,idle,{formatted, StateData},
+                              {crash,terminate}|_]}} ->
 	    ok;
 	Other ->
 	    io:format("Unexpected: ~p", [Other]),
-	    ?t:fail()
+	    ct:fail(failed)
     after 5000 ->
 	    io:format("Timeout: expected error logger msg", []),
-	    ?t:fail()
+	    ct:fail(failed)
     end,
-    _ = ?t:messages_get(),
     process_flag(trap_exit, OldFl),
     ok.
 
@@ -603,7 +625,9 @@ hibernate(Config) when is_list(Config) ->
     {ok, Pid0} = gen_fsm:start_link(?MODULE, hiber_now, []),
     is_in_erlang_hibernate(Pid0),
     stop_it(Pid0),
-    test_server:messages_get(),
+    receive
+	{'EXIT',Pid0,normal} -> ok
+    end,
 
     {ok, Pid} = gen_fsm:start_link(?MODULE, hiber, []),
     true = ({current_function,{erlang,hibernate,3}} =/=
@@ -677,7 +701,48 @@ hibernate(Config) when is_list(Config) ->
     good_morning  = gen_fsm:sync_send_all_state_event(Pid, wakeup_sync),
     is_not_in_erlang_hibernate(Pid),
     stop_it(Pid),
-    test_server:messages_get(),
+    receive
+	{'EXIT',Pid,normal} -> ok
+    end,
+
+    [] = get_messages(),
+    process_flag(trap_exit, OldFl),
+    ok.
+
+%% Auto hibernation
+auto_hibernate(Config) when is_list(Config) ->
+    OldFl = process_flag(trap_exit, true),
+    HibernateAfterTimeout = 100,
+    State = {auto_hibernate_state},
+    {ok, Pid} = gen_fsm:start_link({local, my_test_name_auto_hibernate}, ?MODULE, {state_data, State}, [{hibernate_after, HibernateAfterTimeout}]),
+    %% After init test
+    is_not_in_erlang_hibernate(Pid),
+    timer:sleep(HibernateAfterTimeout),
+    is_in_erlang_hibernate(Pid),
+    %% Get state test
+    {_, State} = sys:get_state(my_test_name_auto_hibernate),
+    is_in_erlang_hibernate(Pid),
+    %% Sync send event test
+    'alive!' = gen_fsm:sync_send_event(Pid,'alive?'),
+    is_not_in_erlang_hibernate(Pid),
+    timer:sleep(HibernateAfterTimeout),
+    is_in_erlang_hibernate(Pid),
+    %% Send event test
+    ok = gen_fsm:send_all_state_event(Pid,{'alive?', self()}),
+    wfor(yes),
+    is_not_in_erlang_hibernate(Pid),
+    timer:sleep(HibernateAfterTimeout),
+    is_in_erlang_hibernate(Pid),
+    %% Info test
+    Pid ! {self(), handle_info},
+    wfor({Pid, handled_info}),
+    is_not_in_erlang_hibernate(Pid),
+    timer:sleep(HibernateAfterTimeout),
+    is_in_erlang_hibernate(Pid),
+    stop_it(Pid),
+    receive
+        {'EXIT',Pid,normal} -> ok
+    end,
     process_flag(trap_exit, OldFl),
     ok.
 
@@ -687,7 +752,7 @@ is_in_erlang_hibernate(Pid) ->
 
 is_in_erlang_hibernate_1(0, Pid) ->
     io:format("~p\n", [erlang:process_info(Pid, current_function)]),
-    ?t:fail(not_in_erlang_hibernate_3);
+    ct:fail(not_in_erlang_hibernate_3);
 is_in_erlang_hibernate_1(N, Pid) ->
     {current_function,MFA} = erlang:process_info(Pid, current_function),
     case MFA of
@@ -704,7 +769,7 @@ is_not_in_erlang_hibernate(Pid) ->
 
 is_not_in_erlang_hibernate_1(0, Pid) ->
     io:format("~p\n", [erlang:process_info(Pid, current_function)]),
-    ?t:fail(not_in_erlang_hibernate_3);
+    ct:fail(not_in_erlang_hibernate_3);
 is_not_in_erlang_hibernate_1(N, Pid) ->
     {current_function,MFA} = erlang:process_info(Pid, current_function),
     case MFA of
@@ -715,108 +780,102 @@ is_not_in_erlang_hibernate_1(N, Pid) ->
 	    ok
     end.
 
-%%sys1(suite) -> [];
-%%sys1(_) ->
-
-enter_loop(suite) ->
-    [];
-enter_loop(doc) ->
-    ["Test gen_fsm:enter_loop/4,5,6"];
+%% Test gen_fsm:enter_loop/4,5,6.
 enter_loop(Config) when is_list(Config) ->
     OldFlag = process_flag(trap_exit, true),
 
-    ?line dummy_via:reset(),
+    dummy_via:reset(),
 
     %% Locally registered process + {local, Name}
-    ?line {ok, Pid1a} =
+    {ok, Pid1a} =
 	proc_lib:start_link(?MODULE, enter_loop, [local, local]),
-    ?line yes = gen_fsm:sync_send_event(Pid1a, 'alive?'),
-    ?line stopped = gen_fsm:sync_send_event(Pid1a, stop),
+    yes = gen_fsm:sync_send_event(Pid1a, 'alive?'),
+    stopped = gen_fsm:sync_send_event(Pid1a, stop),
     receive
 	{'EXIT', Pid1a, normal} ->
 	    ok
     after 5000 ->
-	    ?line test_server:fail(gen_fsm_did_not_die)
+	    ct:fail(gen_fsm_did_not_die)
     end,
 
     %% Unregistered process + {local, Name}
-    ?line {ok, Pid1b} =
+    {ok, Pid1b} =
 	proc_lib:start_link(?MODULE, enter_loop, [anon, local]),
     receive
 	{'EXIT', Pid1b, process_not_registered} ->
 	    ok
     after 5000 ->
-	    ?line test_server:fail(gen_fsm_did_not_die)
+	    ct:fail(gen_fsm_did_not_die)
     end,
 
     %% Globally registered process + {global, Name}
-    ?line {ok, Pid2a} =
+    {ok, Pid2a} =
 	proc_lib:start_link(?MODULE, enter_loop, [global, global]),
-    ?line yes = gen_fsm:sync_send_event(Pid2a, 'alive?'),
-    ?line stopped = gen_fsm:sync_send_event(Pid2a, stop),
+    yes = gen_fsm:sync_send_event(Pid2a, 'alive?'),
+    stopped = gen_fsm:sync_send_event(Pid2a, stop),
     receive
 	{'EXIT', Pid2a, normal} ->
 	    ok
     after 5000 ->
-	    ?line test_server:fail(gen_fsm_did_not_die)
+	    ct:fail(gen_fsm_did_not_die)
     end,
 
     %% Unregistered process + {global, Name}
-    ?line {ok, Pid2b} =
+    {ok, Pid2b} =
 	proc_lib:start_link(?MODULE, enter_loop, [anon, global]),
     receive
 	{'EXIT', Pid2b, process_not_registered_globally} ->
 	    ok
     after 5000 ->
-	    ?line test_server:fail(gen_fsm_did_not_die)
+	    ct:fail(gen_fsm_did_not_die)
     end,
 
     %% Unregistered process + no name
-    ?line {ok, Pid3} =
+    {ok, Pid3} =
 	proc_lib:start_link(?MODULE, enter_loop, [anon, anon]),
-    ?line yes = gen_fsm:sync_send_event(Pid3, 'alive?'),
-    ?line stopped = gen_fsm:sync_send_event(Pid3, stop),
+    yes = gen_fsm:sync_send_event(Pid3, 'alive?'),
+    stopped = gen_fsm:sync_send_event(Pid3, stop),
     receive
 	{'EXIT', Pid3, normal} ->
 	    ok
     after 5000 ->
-	    ?line test_server:fail(gen_fsm_did_not_die)
+	    ct:fail(gen_fsm_did_not_die)
     end,
 
     %% Process not started using proc_lib
-    ?line Pid4 =
+    Pid4 =
 	spawn_link(gen_fsm, enter_loop, [?MODULE, [], state0, []]),
     receive
 	{'EXIT', Pid4, process_was_not_started_by_proc_lib} ->
 	    ok
     after 5000 ->
-	    ?line test_server:fail(gen_fsm_did_not_die)
+	    ct:fail(gen_fsm_did_not_die)
     end,
 
     %% Make sure I am the parent, ie that ordering a shutdown will
     %% result in the process terminating with Reason==shutdown
-    ?line {ok, Pid5} =
+    {ok, Pid5} =
 	proc_lib:start_link(?MODULE, enter_loop, [anon, anon]),
-    ?line yes = gen_fsm:sync_send_event(Pid5, 'alive?'),
-    ?line exit(Pid5, shutdown),
+    yes = gen_fsm:sync_send_event(Pid5, 'alive?'),
+    exit(Pid5, shutdown),
     receive
 	{'EXIT', Pid5, shutdown} ->
 	    ok
     after 5000 ->
-	    ?line test_server:fail(gen_fsm_did_not_die)
+	    ct:fail(gen_fsm_did_not_die)
     end,
 
     %% Make sure gen_fsm:enter_loop does not accept {local,Name}
     %% when it's another process than the calling one which is
     %% registered under that name
     register(armitage, self()),
-    ?line {ok, Pid6a} =
+    {ok, Pid6a} =
 	proc_lib:start_link(?MODULE, enter_loop, [anon, local]),
     receive
 	{'EXIT', Pid6a, process_not_registered} ->
 	    ok
     after 1000 ->
-	    ?line test_server:fail(gen_fsm_started)
+	    ct:fail(gen_fsm_started)
     end,
     unregister(armitage),
 
@@ -824,25 +883,24 @@ enter_loop(Config) when is_list(Config) ->
     %% when it's another process than the calling one which is
     %% registered under that name
     global:register_name(armitage, self()),
-    ?line {ok, Pid6b} =
+    {ok, Pid6b} =
 	proc_lib:start_link(?MODULE, enter_loop, [anon, global]),
     receive
 	{'EXIT', Pid6b, process_not_registered_globally} ->
 	    ok
     after 1000 ->
-	    ?line test_server:fail(gen_fsm_started)
+	    ct:fail(gen_fsm_started)
     end,
     global:unregister_name(armitage),
 
     dummy_via:register_name(armitage, self()),
-    ?line {ok, Pid6c} =
+    {ok, Pid6c} =
 	proc_lib:start_link(?MODULE, enter_loop, [anon, via]),
     receive
 	{'EXIT', Pid6c, {process_not_registered_via, dummy_via}} ->
 	    ok
     after 1000 ->
-	    ?line test_server:fail({gen_fsm_started, process_info(self(),
-								 messages)})
+	    ct:fail({gen_fsm_started, process_info(self(), messages)})
     end,
     dummy_via:unregister_name(armitage),
 
@@ -870,6 +928,329 @@ enter_loop(Reg1, Reg2) ->
 	    gen_fsm:enter_loop(?MODULE, [], state0, [])
     end.
 
+%% Start should return an undef error if init isn't implemented
+undef_init(Config) when is_list(Config) ->
+    {error, {undef, [{oc_init_fsm, init, [[]], []}|_]}}
+        =  gen_fsm:start(oc_init_fsm, [], []),
+    ok.
+
+%% Test that the server crashes correctly if the handle_event callback is
+%% not exported in the callback module
+undef_handle_event(Config) when is_list(Config) ->
+    {ok, FSM} = gen_fsm:start(oc_fsm, [], []),
+    MRef = monitor(process, FSM),
+    gen_fsm:send_all_state_event(FSM, state_name),
+    ok = verify_undef_down(MRef, FSM, oc_fsm, handle_event).
+
+%% Test that the server crashes correctly if the handle_sync_event callback is
+%% not exported in the callback module
+undef_handle_sync_event(Config) when is_list(Config) ->
+    {ok, FSM} = gen_fsm:start(oc_fsm, [], []),
+    try
+        gen_fsm:sync_send_all_state_event(FSM, state_name),
+        ct:fail(should_crash)
+    catch exit:{{undef, [{oc_fsm, handle_sync_event, _, _}|_]},_} ->
+        ok
+    end.
+
+%% The fsm should log but not crash if the handle_info callback is
+%% calling an undefined function
+undef_handle_info(Config) when is_list(Config) ->
+    error_logger_forwarder:register(),
+    {ok, FSM} = gen_fsm:start(oc_fsm, [], []),
+    MRef = monitor(process, FSM),
+    FSM ! hej,
+    receive
+        {'DOWN', MRef, process, FSM, _} ->
+            ct:fail(should_not_crash)
+    after 500 ->
+        ok
+    end,
+    receive
+        {warning_msg, _GroupLeader,
+         {FSM, "** Undefined handle_info in " ++ _, [oc_fsm, hej]}} ->
+            ok;
+        Other ->
+            io:format("Unexpected: ~p", [Other]),
+            ct:fail(failed)
+    end.
+
+%% The upgrade should fail if code_change is expected in the callback module
+%% but not exported, but the fsm should continue with the old code
+undef_code_change(Config) when is_list(Config) ->
+    {ok, FSM} = gen_fsm:start(oc_fsm, [], []),
+    {error, {'EXIT', {undef, [{oc_fsm, code_change, [_, _, _, _], _}|_]}}}
+        = fake_upgrade(FSM, oc_fsm),
+    ok.
+
+%% Test the default implementation of terminate with normal reason if the
+%% callback module does not export it
+undef_terminate1(Config) when is_list(Config) ->
+    {ok, FSM} = gen_fsm:start(oc_fsm, [], []),
+    MRef = monitor(process, FSM),
+    ok = gen_fsm:stop(FSM),
+    ok = verify_down_reason(MRef, FSM, normal).
+
+%% Test the default implementation of terminate with error reason if the
+%% callback module does not export it
+undef_terminate2(Config) when is_list(Config) ->
+    {ok, FSM} = gen_fsm:start(oc_fsm, [], []),
+    MRef = monitor(process, FSM),
+    ok = gen_fsm:stop(FSM, {error, test}, infinity),
+    ok = verify_down_reason(MRef, FSM, {error, test}).
+
+%% Test that the server crashes correctly if the handle_info callback is
+%% calling an undefined function
+undef_in_handle_info(Config) when is_list(Config) ->
+    {ok, FSM} = gen_fsm:start(?MODULE, [], []),
+    MRef = monitor(process, FSM),
+    FSM ! {call_undef_fun, {?MODULE, handle_info}},
+    verify_undef_down(MRef, FSM, ?MODULE, handle_info),
+    ok.
+
+%% Test that the server crashes correctly if the terminate callback is
+%% calling an undefined function
+undef_in_terminate(Config) when is_list(Config) ->
+    State = {undef_in_terminate, {?MODULE, terminate}},
+    {ok, FSM} = gen_fsm:start(?MODULE, {state_data, State}, []),
+    try
+        ok = gen_fsm:stop(FSM),
+        ct:fail(failed)
+    catch
+        exit:{undef, [{?MODULE, terminate, _, _}|_]} ->
+            ok
+    end.
+
+%% Test report callback for Logger handler error_logger
+format_log_1(_Config) ->
+    FD = application:get_env(kernel, error_logger_format_depth),
+    application:unset_env(kernel, error_logger_format_depth),
+    Term = lists:seq(1, 15),
+    Name = self(),
+    Report = #{label=>{gen_fsm,terminate},
+               name=>Name,
+               last_message=>Term,
+               state_name=>Name,
+               state_data=>Term,
+               log=>[Term],
+               reason=>Term,
+               client_info=>{self(),{clientname,[]}}},
+    {F1,A1} = gen_fsm:format_log(Report),
+    FExpected1 = "** State machine ~tp terminating \n"
+        "** Last message in was ~tp~n"
+        "** When State == ~tp~n"
+        "**      Data  == ~tp~n"
+        "** Reason for termination ==~n** ~tp~n"
+        "** Log ==~n**~tp~n"
+        "** Client ~tp stacktrace~n** ~tp~n",
+    ct:log("F1: ~ts~nA1: ~tp", [F1,A1]),
+    FExpected1=F1,
+
+    [Name,Term,Name,Term,Term,[Term],clientname,[]] = A1,
+
+    Warning = #{label=>{gen_fsm,no_handle_info},
+                module=>?MODULE,
+                message=>Term},
+    {WF1,WA1} = gen_fsm:format_log(Warning),
+    WFExpected1 = "** Undefined handle_info in ~p~n"
+        "** Unhandled message: ~tp~n",
+    ct:log("WF1: ~ts~nWA1: ~tp", [WF1,WA1]),
+    WFExpected1=WF1,
+    [?MODULE,Term] = WA1,
+
+    Depth = 10,
+    ok = application:set_env(kernel, error_logger_format_depth, Depth),
+    Limited = [1,2,3,4,5,6,7,8,9,'...'],
+    {F2,A2} = gen_fsm:format_log(#{label=>{gen_fsm,terminate},
+                                   name=>Name,
+                                   last_message=>Term,
+                                   state_name=>Name,
+                                   state_data=>Term,
+                                   log=>[Term],
+                                   reason=>Term,
+                                   client_info=>{self(),{clientname,[]}}}),
+    FExpected2 =  "** State machine ~tP terminating \n"
+        "** Last message in was ~tP~n"
+        "** When State == ~tP~n"
+        "**      Data  == ~tP~n"
+        "** Reason for termination ==~n** ~tP~n"
+        "** Log ==~n**~tP~n"
+        "** Client ~tP stacktrace~n** ~tP~n",
+    ct:log("F2: ~ts~nA2: ~tp", [F2,A2]),
+    FExpected2=F2,
+
+    [Name,Depth,Limited,Depth,Name,Depth,Limited,Depth,Limited,
+     Depth,[Limited],Depth,clientname,Depth,[],Depth] = A2,
+
+    {WF2,WA2} = gen_fsm:format_log(Warning),
+    WFExpected2 = "** Undefined handle_info in ~p~n"
+        "** Unhandled message: ~tP~n",
+    ct:log("WF2: ~ts~nWA2: ~tp", [WF2,WA2]),
+    WFExpected2=WF2,
+    [?MODULE,Limited,Depth] = WA2,
+
+    case FD of
+        undefined ->
+            application:unset_env(kernel, error_logger_format_depth);
+        _ ->
+            application:set_env(kernel, error_logger_format_depth, FD)
+    end,
+    ok.
+
+%% Test report callback for any Logger handler
+format_log_2(_Config) ->
+    Term = lists:seq(1, 15),
+    Name = self(),
+    NameStr = pid_to_list(Name),
+    Report = #{label=>{gen_fsm,terminate},
+               name=>Name,
+               last_message=>Term,
+               state_name=>Name,
+               state_data=>Term,
+               log=>[Term],
+               reason=>Term,
+               client_info=>{self(),{clientname,[]}}},
+    FormatOpts1 = #{},
+    Str1 = flatten_format_log(Report, FormatOpts1),
+    L1 = length(Str1),
+    Expected1 = "** State machine "++NameStr++" terminating \n"
+        "** Last message in was [1,2,3,4,5,6,7,8,9,10,11,12,13,14,15]\n"
+        "** When State == "++NameStr++"\n"
+        "**      Data  == [1,2,3,4,5,6,7,8,9,10,11,12,13,14,15]\n"
+        "** Reason for termination ==\n"
+        "** [1,2,3,4,5,6,7,8,9,10,11,12,13,14,15]\n"
+        "** Log ==\n"
+        "**[[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15]]\n"
+        "** Client clientname stacktrace\n"
+        "** []\n",
+    ct:log("Str1: ~ts", [Str1]),
+    ct:log("length(Str1): ~p", [L1]),
+    true = Expected1 =:= Str1,
+
+    Warning = #{label=>{gen_fsm,no_handle_info},
+                module=>?MODULE,
+                message=>Term},
+    WStr1 = flatten_format_log(Warning, FormatOpts1),
+    WL1 = length(WStr1),
+    WExpected1 = "** Undefined handle_info in gen_fsm_SUITE\n"
+        "** Unhandled message: [1,2,3,4,5,6,7,8,9,10,11,12,13,14,15]\n",
+    ct:log("WStr1: ~ts", [WStr1]),
+    ct:log("length(WStr1): ~p", [WL1]),
+    true = WExpected1 =:= WStr1,
+
+    Depth = 10,
+    FormatOpts2 = #{depth=>Depth},
+    Str2 = flatten_format_log(Report, FormatOpts2),
+    L2 = length(Str2),
+    Expected2 = "** State machine "++NameStr++" terminating \n"
+        "** Last message in was [1,2,3,4,5,6,7,8,9|...]\n"
+        "** When State == "++NameStr++"\n"
+        "**      Data  == [1,2,3,4,5,6,7,8,9|...]\n"
+        "** Reason for termination ==\n"
+        "** [1,2,3,4,5,6,7,8,9|...]\n"
+        "** Log ==\n"
+        "**[[1,2,3,4,5,6,7,8|...]]\n"
+        "** Client clientname stacktrace\n"
+        "** []\n",
+    ct:log("Str2: ~ts", [Str2]),
+    ct:log("length(Str2): ~p", [L2]),
+    true = Expected2 =:= Str2,
+
+    WStr2 = flatten_format_log(Warning, FormatOpts2),
+    WL2 = length(WStr2),
+    WExpected2 = "** Undefined handle_info in gen_fsm_SUITE\n"
+        "** Unhandled message: [1,2,3,4,5,6,7,8,9|...]\n",
+    ct:log("WStr2: ~ts", [WStr2]),
+    ct:log("length(WStr2): ~p", [WL2]),
+    true = WExpected2 =:= WStr2,
+
+    FormatOpts3 = #{chars_limit=>200},
+    Str3 = flatten_format_log(Report, FormatOpts3),
+    L3 = length(Str3),
+    Expected3 = "** State machine "++NameStr++" terminating \n"
+        "** Last ",
+    ct:log("Str3: ~ts", [Str3]),
+    ct:log("length(Str3): ~p", [L3]),
+    true = lists:prefix(Expected3, Str3),
+    true = L3 < L1,
+
+    WFormatOpts3 = #{chars_limit=>80},
+    WStr3 = flatten_format_log(Warning, WFormatOpts3),
+    WL3 = length(WStr3),
+    WExpected3 = "** Undefined handle_info in gen_fsm_SUITE",
+    ct:log("WStr3: ~ts", [WStr3]),
+    ct:log("length(WStr3): ~p", [WL3]),
+    true = lists:prefix(WExpected3, WStr3),
+    true = WL3 < WL1,
+
+    FormatOpts4 = #{single_line=>true},
+    Str4 = flatten_format_log(Report, FormatOpts4),
+    L4 = length(Str4),
+    Expected4 = "State machine "++NameStr++" terminating. "
+        "Reason: [1,2,3,4,5,6,7,8,9,10,11,12,13,14,15]. "
+        "Last event: [[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15]]. "
+        "State: "++NameStr++". "
+        "Data: [1,2,3,4,5,6,7,8,9,10,11,12,13,14,15]. "
+        "Log: [[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15]]. "
+        "Client clientname stacktrace: [].",
+    ct:log("Str4: ~ts", [Str4]),
+    ct:log("length(Str4): ~p", [L4]),
+    true = Expected4 =:= Str4,
+
+    WStr4 = flatten_format_log(Warning, FormatOpts4),
+    WL4 = length(WStr4),
+    WExpected4 = "Undefined handle_info in gen_fsm_SUITE. "
+        "Unhandled message: [1,2,3,4,5,6,7,8,9,10,11,12,13,14,15].",
+    ct:log("WStr4: ~ts", [WStr4]),
+    ct:log("length(WStr4): ~p", [WL4]),
+    true = WExpected4 =:= WStr4,
+
+    FormatOpts5 = #{single_line=>true, depth=>Depth},
+    Str5 = flatten_format_log(Report, FormatOpts5),
+    L5 = length(Str5),
+    Expected5 = "State machine "++NameStr++" terminating. "
+        "Reason: [1,2,3,4,5,6,7,8,9|...]. "
+        "Last event: [[1,2,3,4,5,6,7,8|...]]. "
+        "State: "++NameStr++". "
+        "Data: [1,2,3,4,5,6,7,8,9|...]. "
+        "Log: [[1,2,3,4,5,6,7,8|...]]. "
+        "Client clientname stacktrace: [].",
+    ct:log("Str5: ~ts", [Str5]),
+    ct:log("length(Str5): ~p", [L5]),
+    true = Expected5 =:= Str5,
+
+    WStr5 = flatten_format_log(Warning, FormatOpts5),
+    WL5 = length(WStr5),
+    WExpected5 = "Undefined handle_info in gen_fsm_SUITE. "
+        "Unhandled message: [1,2,3,4,5,6,7,8,9|...].",
+    ct:log("WStr5: ~ts", [WStr5]),
+    ct:log("length(WStr5): ~p", [WL5]),
+    true = WExpected5 =:= WStr5,
+
+    FormatOpts6 = #{single_line=>true, chars_limit=>200},
+    Str6 = flatten_format_log(Report, FormatOpts6),
+    L6 = length(Str6),
+    Expected6 = "State machine "++NameStr++" terminating. Reason: ",
+    ct:log("Str6: ~ts", [Str6]),
+    ct:log("length(Str6): ~p", [L6]),
+    true = lists:prefix(Expected6, Str6),
+    true = L6 < L4,
+
+    WFormatOpts6 = #{single_line=>true, chars_limit=>80},
+    WStr6 = flatten_format_log(Warning, WFormatOpts6),
+    WL6 = length(WStr6),
+    WExpected6 = "Undefined handle_info in gen_fsm_SUITE. "
+        "Unhandled message: ",
+    ct:log("WStr6: ~ts", [WStr6]),
+    ct:log("length(WStr6): ~p", [WL6]),
+    true = lists:prefix(WExpected6, WStr6),
+    true = WL6 < WL4,
+
+    ok.
+
+flatten_format_log(Report, Format) ->
+    lists:flatten(gen_fsm:format_log(Report, Format)).
+
 %%
 %% Functionality check
 %%
@@ -883,8 +1264,8 @@ wfor(Msg) ->
 
 
 stop_it(FSM) ->
-    ?line stopped = gen_fsm:sync_send_all_state_event(FSM, stop),
-    ?line {'EXIT',_} = 	(catch gen_fsm:sync_send_event(FSM, hej)),
+    stopped = gen_fsm:sync_send_all_state_event(FSM, stop),
+    {'EXIT',_} = 	(catch gen_fsm:sync_send_event(FSM, hej)),
     ok.
 
 
@@ -895,7 +1276,7 @@ do_func_test(FSM) ->
     ok = do_connect(FSM),
     ok = gen_fsm:send_all_state_event(FSM, {'alive?', self()}),
     wfor(yes),
-    test_server:do_times(3, ?MODULE, do_msg, [FSM]),
+    _ = [do_msg(FSM) || _ <- lists:seq(1, 3)],
     ok = gen_fsm:send_all_state_event(FSM, {'alive?', self()}),
     wfor(yes),
     ok = do_disconnect(FSM),
@@ -933,7 +1314,7 @@ do_sync_func_test(FSM) ->
     yes = gen_fsm:sync_send_all_state_event(FSM, 'alive?'),
     ok = do_sync_connect(FSM),
     yes = gen_fsm:sync_send_all_state_event(FSM, 'alive?'),
-    test_server:do_times(3, ?MODULE, do_sync_msg, [FSM]),
+    _ = [do_sync_msg(FSM) || _ <- lists:seq(1, 3)],
     yes = gen_fsm:sync_send_all_state_event(FSM, 'alive?'),
     ok = do_sync_disconnect(FSM),
     yes = gen_fsm:sync_send_all_state_event(FSM, 'alive?'),
@@ -964,7 +1345,31 @@ do_sync_disconnect(FSM) ->
     yes = gen_fsm:sync_send_event(FSM, disconnect),
     check_state(FSM, idle).
 
-    
+verify_down_reason(MRef, Pid, Reason) ->
+    receive
+        {'DOWN', MRef, process, Pid, Reason} ->
+            ok;
+        {'DOWN', MRef, process, Pid, Other}->
+            ct:fail({wrong_down_reason, Other})
+    after 5000 ->
+        ct:fail(should_shutdown)
+    end.
+
+verify_undef_down(MRef, Pid, Mod, Fun) ->
+    ok = receive
+        {'DOWN', MRef, process, Pid,
+         {undef, [{Mod, Fun, _, _}|_]}} ->
+            ok
+    after 5000 ->
+        ct:fail(should_crash)
+    end.
+
+fake_upgrade(Pid, Mod) ->
+    sys:suspend(Pid),
+    sys:replace_state(Pid, fun(State) -> {new, State} end),
+    Ret = sys:change_code(Pid, Mod, old_vsn, []),
+    ok = sys:resume(Pid),
+    Ret.
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %%
@@ -979,7 +1384,7 @@ init(stop) ->
 init(stop_shutdown) ->
     {stop, shutdown};
 init(sleep) ->
-    test_server:sleep(1000),
+    timer:sleep(1000),
     {ok, idle, data};
 init({timeout, T}) ->
     {ok, idle, state, T};
@@ -994,6 +1399,9 @@ init(_) ->
 
 terminate(_, _State, crash_terminate) ->
     exit({crash, terminate});
+terminate(_, _, {undef_in_terminate, {Mod, Fun}}) ->
+    Mod:Fun(),
+    ok;
 terminate({From, stopped}, State, _Data) ->
     From ! {self(), {stopped, State}},
     ok;
@@ -1012,13 +1420,15 @@ idle(_, Data) ->
 idle({connect, _Pid}, _From, Data) ->
     {reply, accept, wfor_conf, Data};
 idle({delayed_answer, T}, _From, Data) ->
-    test_server:sleep(T),
+    timer:sleep(T),
     {reply, delayed, idle, Data};
 idle(badreturn, _From, _Data) ->
     badreturn;
 idle({timeout,Time}, From, _Data) ->
     gen_fsm:send_event_after(Time, {timeout,Time}),
     {next_state, timeout, From};
+idle('alive?', _From, Data) ->
+    {reply, 'alive!', idle, Data};
 idle(_, _From, Data) ->
     {reply, 'eh?', idle, Data}.
 
@@ -1030,7 +1440,7 @@ timeout({timeout,Ref,{timeout,Time}}, {From,Ref}) ->
     Cref = gen_fsm:start_timer(Time, cancel),
     Time4 = Time*4,
     receive after Time4 -> ok end,
-    gen_fsm:cancel_timer(Cref),
+    _= gen_fsm:cancel_timer(Cref),
     {next_state, timeout, {From,Ref2}};
 timeout({timeout,Ref2,ok},{From,Ref2}) ->
     gen_fsm:reply(From, ok),
@@ -1070,8 +1480,8 @@ hiber_idle('alive?', _From, Data) ->
     {reply, 'alive!', hiber_idle, Data};
 hiber_idle(hibernate_sync, _From, Data) ->
     {reply, hibernating, hiber_wakeup, Data,hibernate}.
-hiber_idle(timeout, hibernate_me) ->  % Arrive here from 
-				              % handle_info(hibernate_later,...)
+hiber_idle(timeout, hibernate_me) ->
+    %% Arrive here from handle_info(hibernate_later,...)
     {next_state, hiber_idle, [], hibernate};
 hiber_idle(hibernate_async, Data) ->
     {next_state,hiber_wakeup, Data, hibernate}.
@@ -1084,13 +1494,19 @@ hiber_wakeup(wakeup_async,Data) ->
     {next_state,hiber_idle,Data};
 hiber_wakeup(snooze_async,Data) ->
     {next_state,hiber_wakeup,Data,hibernate}.
-    
 
-handle_info(hibernate_now, _SName, _State) ->  % Arrive here from by direct ! from testcase
+
+handle_info(hibernate_now, _SName, _State) ->
+    %% Arrive here from by direct ! from testcase
     {next_state, hiber_idle, [], hibernate};
 handle_info(hibernate_later, _SName, _State) ->
     {next_state, hiber_idle, hibernate_me, 1000};
-
+handle_info({call_undef_fun, {Mod, Fun}}, State, Data) ->
+    Mod:Fun(),
+    {next_state, State, Data};
+handle_info({From, handle_info}, SName, State) ->
+    From ! {self(), handled_info},
+    {next_state, SName, State};
 handle_info(Info, _State, Data) ->
     {stop, {unexpected,Info}, Data}.
 
@@ -1134,3 +1550,16 @@ format_status(terminate, [_Pdict, StateData]) ->
     {formatted, StateData};
 format_status(normal, [_Pdict, _StateData]) ->
     [format_status_called].
+
+code_change(_OldVsn, State,
+            {idle, {undef_in_code_change, {Mod, Fun}}} = Data, _Extra) ->
+    Mod:Fun(),
+    {ok, State, Data};
+code_change(_OldVsn, State, Data, _Extra) ->
+    {ok, State, Data}.
+
+get_messages() ->
+    receive
+	Msg -> [Msg|get_messages()]
+    after 1 -> []
+    end.

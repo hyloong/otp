@@ -1,7 +1,7 @@
 %%
 %% %CopyrightBegin%
 %% 
-%% Copyright Ericsson AB 1997-2013. All Rights Reserved.
+%% Copyright Ericsson AB 1997-2018. All Rights Reserved.
 %% 
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -25,10 +25,13 @@
 %% 
 
 %% family codes to open
+-define(INET_AF_UNSPEC,       0).
 -define(INET_AF_INET,         1).
 -define(INET_AF_INET6,        2).
 -define(INET_AF_ANY,          3). % Fake for ANY in any address family
 -define(INET_AF_LOOPBACK,     4). % Fake for LOOPBACK in any address family
+-define(INET_AF_LOCAL,        5). % For Unix Domain address family
+-define(INET_AF_UNDEFINED,    6). % For any unknown address family
 
 %% type codes to open and gettype - INET_REQ_GETTYPE
 -define(INET_TYPE_STREAM,     1).
@@ -97,6 +100,8 @@
 -define(TCP_REQ_RECV,           42).
 -define(TCP_REQ_UNRECV,         43).
 -define(TCP_REQ_SHUTDOWN,       44).
+-define(TCP_REQ_SENDFILE,       45).
+
 %% UDP and SCTP requests
 -define(PACKET_REQ_RECV,        60).
 %%-define(SCTP_REQ_LISTEN,        61). MERGED
@@ -149,6 +154,15 @@
 -define(INET_LOPT_MSGQ_LOWTRMRK,  37).
 -define(INET_LOPT_NETNS,          38).
 -define(INET_LOPT_TCP_SHOW_ECONNRESET, 39).
+-define(INET_LOPT_LINE_DELIM,     40).
+-define(INET_OPT_TCLASS,          41).
+-define(INET_OPT_BIND_TO_DEVICE,  42).
+-define(INET_OPT_RECVTOS,         43).
+-define(INET_OPT_RECVTCLASS,      44).
+-define(INET_OPT_PKTOPTIONS,      45).
+-define(INET_OPT_TTL,             46).
+-define(INET_OPT_RECVTTL,         47).
+-define(TCP_OPT_NOPUSH,           48).
 % Specific SCTP options: separate range:
 -define(SCTP_OPT_RTOINFO,	 	100).
 -define(SCTP_OPT_ASSOCINFO,	 	101).
@@ -313,6 +327,12 @@
 	[((X) bsr 24) band 16#ff, ((X) bsr 16) band 16#ff,
 	 ((X) bsr 8) band 16#ff, (X) band 16#ff]).
 
+-define(int64(X),
+	[((X) bsr 56) band 16#ff, ((X) bsr 48) band 16#ff,
+	 ((X) bsr 40) band 16#ff, ((X) bsr 32) band 16#ff,
+	 ((X) bsr 24) band 16#ff, ((X) bsr 16) band 16#ff,
+	 ((X) bsr 8) band 16#ff, (X) band 16#ff]).
+
 -define(intAID(X), % For SCTP AssocID
         ?int32(X)).
 
@@ -377,7 +397,7 @@
 	{ 
 	  ifaddr = any,     %% bind to interface address
 	  port   = 0,       %% bind to port (default is dynamic port)
-	  fd      = -1,     %% fd >= 0 => already bound
+	  fd     = -1,      %% fd >= 0 => already bound
 	  opts   = []       %% [{active,true}] added in inet:connect_options
 	 }).
 

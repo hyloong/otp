@@ -2,7 +2,7 @@
 %% 
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 1996-2015. All Rights Reserved.
+%% Copyright Ericsson AB 1996-2020. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -20,7 +20,7 @@
 %%
 {application, stdlib,
  [{description, "ERTS  CXC 138 10"},
-  {vsn, "2.5"},
+  {vsn, "3.13.2"},
   {modules, [array,
 	     base64,
 	     beam_lib,
@@ -31,7 +31,6 @@
              dets_server,
 	     dets_sup,
 	     dets_utils,
-	     dets_v8,
 	     dets_v9,
 	     dict,
 	     digraph,
@@ -40,9 +39,11 @@
 	     edlin_expand,
 	     epp,
 	     eval_bits,
+             erl_abstract_code,
              erl_anno,
 	     erl_bits,
 	     erl_compile,
+	     erl_error,
 	     erl_eval,
              erl_expand_records,
 	     erl_internal,
@@ -65,12 +66,12 @@
 	     gen_event,
 	     gen_fsm,
 	     gen_server,
+	     gen_statem,
 	     io,
 	     io_lib,
 	     io_lib_format,
 	     io_lib_fread,
 	     io_lib_pretty,
-	     lib,
 	     lists,
 	     log_mf_h,
 	     maps,
@@ -91,6 +92,7 @@
 	     sets,
 	     shell,
 	     shell_default,
+	     shell_docs,
 	     slave,
 	     sofs,
 	     string,
@@ -99,13 +101,14 @@
 	     sys,
 	     timer,
 	     unicode,
+             unicode_util,
+	     uri_string,
 	     win32reg,
 	     zip]},
   {registered,[timer_server,rsh_starter,take_over_monitor,pool_master,
                dets]},
   {applications, [kernel]},
   {env, []},
-  {runtime_dependencies, ["sasl-2.4","kernel-4.0","erts-7.0","crypto-3.3",
+  {runtime_dependencies, ["sasl-3.0","kernel-7.0","erts-11.0","crypto-3.3",
 			  "compiler-5.0"]}
 ]}.
-

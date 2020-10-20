@@ -1,7 +1,7 @@
 /*
  * %CopyrightBegin%
  *
- * Copyright Ericsson AB 2002-2013. All Rights Reserved.
+ * Copyright Ericsson AB 2002-2018. All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -26,10 +26,22 @@
 #define ERL_THR_PROGRESS_TSD_TYPE_ONLY
 #include "erl_thr_progress.h"
 #undef ERL_THR_PROGRESS_TSD_TYPE_ONLY
-#include "erl_alloc_util.h"
-#ifdef USE_THREADS
 #include "erl_threads.h"
-#endif
+#include "erl_mmap.h"
+
+typedef enum {
+    ERTS_ALC_S_INVALID = 0,
+
+    ERTS_ALC_S_GOODFIT,
+    ERTS_ALC_S_BESTFIT,
+    ERTS_ALC_S_AFIT,
+    ERTS_ALC_S_FIRSTFIT,
+
+    ERTS_ALC_S_MIN = ERTS_ALC_S_GOODFIT,
+    ERTS_ALC_S_MAX = ERTS_ALC_S_FIRSTFIT
+} ErtsAlcStrat_t;
+
+#include "erl_alloc_util.h"
 
 #ifdef DEBUG
 #  undef ERTS_ALC_WANT_INLINE
@@ -43,13 +55,23 @@
 #if ERTS_CAN_INLINE && ERTS_ALC_WANT_INLINE
 #  define ERTS_ALC_DO_INLINE 1
 #  define ERTS_ALC_INLINE static ERTS_INLINE
+#  define ERTS_ALC_FORCE_INLINE static ERTS_FORCE_INLINE
 #else
 #  define ERTS_ALC_DO_INLINE 0
 #  define ERTS_ALC_INLINE
+#  define ERTS_ALC_FORCE_INLINE
 #endif
 
 #define ERTS_ALC_NO_FIXED_SIZES \
   (ERTS_ALC_N_MAX_A_FIXED_SIZE - ERTS_ALC_N_MIN_A_FIXED_SIZE + 1)
+
+#define ERTS_ALC_IS_FIX_TYPE(T) \
+    (ERTS_ALC_T2N(T) >= ERTS_ALC_N_MIN_A_FIXED_SIZE && \
+     ERTS_ALC_T2N(T) <= ERTS_ALC_N_MAX_A_FIXED_SIZE)
+
+#define ERTS_ALC_FIX_TYPE_IX(T) \
+  (ASSERT(ERTS_ALC_IS_FIX_TYPE(T)), \
+   ERTS_ALC_T2N((T)) - ERTS_ALC_N_MIN_A_FIXED_SIZE)
 
 void erts_sys_alloc_init(void);
 void *erts_sys_alloc(ErtsAlcType_t, void *, Uint);
@@ -66,11 +88,11 @@ void *erts_sys_aligned_realloc(UWord alignment, void *ptr, UWord size, UWord old
 void erts_sys_aligned_free(UWord alignment, void *ptr);
 #endif
 
-Eterm erts_memory(int *, void *, void *, Eterm);
-Eterm erts_allocated_areas(int *, void *, void *);
+Eterm erts_memory(fmtfn_t *, void *, void *, Eterm);
+Eterm erts_allocated_areas(fmtfn_t *, void *, void *);
 
 Eterm erts_alloc_util_allocators(void *proc);
-void erts_allocator_info(int, void *);
+void erts_allocator_info(fmtfn_t, void *);
 Eterm erts_allocator_options(void *proc);
 
 struct process;
@@ -125,8 +147,10 @@ typedef struct {
     void *extra;
 } ErtsAllocatorFunctions_t;
 
-extern ErtsAllocatorFunctions_t erts_allctrs[ERTS_ALC_A_MAX+1];
-extern ErtsAllocatorInfo_t erts_allctrs_info[ERTS_ALC_A_MAX+1];
+extern ErtsAllocatorFunctions_t
+    ERTS_WRITE_UNLIKELY(erts_allctrs[ERTS_ALC_A_MAX+1]);
+extern ErtsAllocatorInfo_t
+    ERTS_WRITE_UNLIKELY(erts_allctrs_info[ERTS_ALC_A_MAX+1]);
 
 typedef struct {
     int enabled;
@@ -143,7 +167,7 @@ typedef struct ErtsAllocatorWrapper_t_ {
     void (*unlock)(void);
     struct ErtsAllocatorWrapper_t_* next;
 }ErtsAllocatorWrapper_t;
-ErtsAllocatorWrapper_t *erts_allctr_wrappers;
+extern ErtsAllocatorWrapper_t *erts_allctr_wrappers;
 extern int erts_allctr_wrapper_prelocked;
 extern erts_tsd_key_t erts_allctr_prelock_tsd_key;
 void erts_allctr_wrapper_prelock_init(ErtsAllocatorWrapper_t* wrapper);
@@ -151,12 +175,10 @@ void erts_allctr_wrapper_pre_lock(void);
 void erts_allctr_wrapper_pre_unlock(void);
 
 void erts_alloc_register_scheduler(void *vesdp);
-#ifdef ERTS_SMP
 void erts_alloc_scheduler_handle_delayed_dealloc(void *vesdp,
 						 int *need_thr_progress,
 						 ErtsThrPrgrVal *thr_prgr_p,
 						 int *more_work);
-#endif
 erts_aint32_t erts_alloc_fix_alloc_shrink(int ix, erts_aint32_t flgs);
 
 __decl_noreturn void erts_alloc_enomem(ErtsAlcType_t,Uint)		
@@ -170,12 +192,13 @@ __decl_noreturn void erts_realloc_n_enomem(ErtsAlcType_t,void*,Uint)
 __decl_noreturn void erts_alc_fatal_error(int,int,ErtsAlcType_t,...)	
      __noreturn;
 
-/* --- DO *NOT* USE THESE DEPRECATED FUNCTIONS ---    Instead use:       */
-void *safe_alloc(Uint)               __deprecated; /* erts_alloc()       */
-void *safe_realloc(void *, Uint)     __deprecated; /* erts_realloc()     */
-void  sys_free(void *)               __deprecated; /* erts_free()        */
-void *sys_alloc(Uint )               __deprecated; /* erts_alloc_fnf()   */
-void *sys_realloc(void *, Uint)      __deprecated; /* erts_realloc_fnf() */
+Eterm erts_alloc_set_dyn_param(struct process*, Eterm);
+
+#undef ERTS_HAVE_IS_IN_LITERAL_RANGE
+#if defined(ARCH_32) || defined(ERTS_HAVE_OS_PHYSICAL_MEMORY_RESERVATION)
+#  define ERTS_HAVE_IS_IN_LITERAL_RANGE
+#endif
+
 
 /*
  * erts_alloc[_fnf](), erts_realloc[_fnf](), erts_free() works as
@@ -204,6 +227,9 @@ void erts_free(ErtsAlcType_t type, void *ptr);
 void *erts_alloc_fnf(ErtsAlcType_t type, Uint size);
 void *erts_realloc_fnf(ErtsAlcType_t type, void *ptr, Uint size);
 int erts_is_allctr_wrapper_prelocked(void);
+#ifdef ERTS_HAVE_IS_IN_LITERAL_RANGE
+int erts_is_in_literal_range(void* ptr);
+#endif
 
 #endif /* #if !ERTS_ALC_DO_INLINE */
 
@@ -221,12 +247,14 @@ ERTS_ALC_INLINE
 void *erts_alloc(ErtsAlcType_t type, Uint size)
 {
     void *res;
+    ERTS_MSACC_PUSH_AND_SET_STATE_X(ERTS_MSACC_STATE_ALLOC);
     res = (*erts_allctrs[ERTS_ALC_T2A(type)].alloc)(
-	ERTS_ALC_T2N(type),
-	erts_allctrs[ERTS_ALC_T2A(type)].extra,
-	size);
+            type,
+            erts_allctrs[ERTS_ALC_T2A(type)].extra,
+            size);
     if (!res)
 	erts_alloc_n_enomem(ERTS_ALC_T2N(type), size);
+    ERTS_MSACC_POP_STATE_X();
     return res;
 }
 
@@ -234,44 +262,56 @@ ERTS_ALC_INLINE
 void *erts_realloc(ErtsAlcType_t type, void *ptr, Uint size)
 {
     void *res;
+    ERTS_MSACC_PUSH_AND_SET_STATE_X(ERTS_MSACC_STATE_ALLOC);
     res = (*erts_allctrs[ERTS_ALC_T2A(type)].realloc)(
-	ERTS_ALC_T2N(type),
+	type,
 	erts_allctrs[ERTS_ALC_T2A(type)].extra,
 	ptr,
 	size);
     if (!res)
 	erts_realloc_n_enomem(ERTS_ALC_T2N(type), ptr, size);
+    ERTS_MSACC_POP_STATE_X();
     return res;
 }
 
 ERTS_ALC_INLINE
 void erts_free(ErtsAlcType_t type, void *ptr)
 {
+    ERTS_MSACC_PUSH_AND_SET_STATE_X(ERTS_MSACC_STATE_ALLOC);
     (*erts_allctrs[ERTS_ALC_T2A(type)].free)(
-	ERTS_ALC_T2N(type),
+	type,
 	erts_allctrs[ERTS_ALC_T2A(type)].extra,
 	ptr);
+    ERTS_MSACC_POP_STATE_X();
 }
 
 
 ERTS_ALC_INLINE
 void *erts_alloc_fnf(ErtsAlcType_t type, Uint size)
 {
-    return (*erts_allctrs[ERTS_ALC_T2A(type)].alloc)(
-	ERTS_ALC_T2N(type),
+    void *res;
+    ERTS_MSACC_PUSH_AND_SET_STATE_X(ERTS_MSACC_STATE_ALLOC);
+    res = (*erts_allctrs[ERTS_ALC_T2A(type)].alloc)(
+	type,
 	erts_allctrs[ERTS_ALC_T2A(type)].extra,
 	size);
+    ERTS_MSACC_POP_STATE_X();
+    return res;
 }
 
 
 ERTS_ALC_INLINE
 void *erts_realloc_fnf(ErtsAlcType_t type, void *ptr, Uint size)
 {
-    return (*erts_allctrs[ERTS_ALC_T2A(type)].realloc)(
-	ERTS_ALC_T2N(type),
+    void *res;
+    ERTS_MSACC_PUSH_AND_SET_STATE_X(ERTS_MSACC_STATE_ALLOC);
+    res = (*erts_allctrs[ERTS_ALC_T2A(type)].realloc)(
+	type,
 	erts_allctrs[ERTS_ALC_T2A(type)].extra,
 	ptr,
 	size);
+    ERTS_MSACC_POP_STATE_X();
+    return res;
 }
 
 ERTS_ALC_INLINE
@@ -280,6 +320,28 @@ int erts_is_allctr_wrapper_prelocked(void)
     return erts_allctr_wrapper_prelocked                 /* locked */
 	&& !!erts_tsd_get(erts_allctr_prelock_tsd_key);  /* by me  */
 }
+
+#ifdef ERTS_HAVE_IS_IN_LITERAL_RANGE
+
+ERTS_ALC_FORCE_INLINE
+int erts_is_in_literal_range(void* ptr)
+{
+#if defined(ARCH_32)
+    Uint ix = (UWord)ptr >> ERTS_MMAP_SUPERALIGNED_BITS;
+
+    return erts_literal_vspace_map[ix / ERTS_VSPACE_WORD_BITS]
+                  & ((UWord)1 << (ix % ERTS_VSPACE_WORD_BITS));
+
+#elif defined(ARCH_64)
+    extern char* erts_literals_start;
+    extern UWord erts_literals_size;
+    return ErtsInArea(ptr, erts_literals_start, erts_literals_size);
+#else
+# error No ARCH_xx
+#endif
+}
+
+#endif /* ERTS_HAVE_IS_IN_LITERAL_RANGE */
 
 #endif /* #if ERTS_ALC_DO_INLINE || defined(ERTS_ALC_INTERNAL__) */
 
@@ -297,54 +359,23 @@ erts_alloc_get_verify_unused_temp_alloc(Allctr_t **allctr);
   (((((SZ) - 1) / ERTS_CACHE_LINE_SIZE) + 1) * ERTS_CACHE_LINE_SIZE)
 
 #define ERTS_QUALLOC_IMPL(NAME, TYPE, PASZ, ALCT)			\
-ERTS_QUICK_ALLOC_IMPL(NAME, TYPE, PASZ, ALCT,				\
-		      (void) 0, (void) 0, (void) 0)
-
-#define ERTS_SMP_QUALLOC_IMPL(NAME, TYPE, PASZ, ALCT)			\
-static erts_smp_spinlock_t NAME##_lck;					\
-ERTS_QUICK_ALLOC_IMPL(NAME, TYPE, PASZ, ALCT,				\
-		      erts_smp_spinlock_init(&NAME##_lck, #NAME "_alloc_lock"),\
-		      erts_smp_spin_lock(&NAME##_lck),			\
-		      erts_smp_spin_unlock(&NAME##_lck))
-
-#ifdef ERTS_SMP
+    ERTS_QUICK_ALLOC_IMPL(NAME, TYPE, PASZ, ALCT, (void) 0, (void) 0, (void) 0)
 
 #define ERTS_TS_QUALLOC_IMPL(NAME, TYPE, PASZ, ALCT)			\
-ERTS_SMP_QUALLOC_IMPL(NAME, TYPE, PASZ, ALCT)
-
-#else /* !ERTS_SMP */
-
-#define ERTS_TS_QUALLOC_IMPL(NAME, TYPE, PASZ, ALCT)			\
-static erts_mtx_t NAME##_lck;						\
-ERTS_QUICK_ALLOC_IMPL(NAME, TYPE, PASZ, ALCT,				\
-		      erts_mtx_init(NAME##_lck, #NAME "_alloc_lock"),	\
-		      erts_mtx_lock(&NAME##_lck),			\
-		      erts_mtx_unlock(&NAME##_lck))
-
-
-#endif
-
-#define ERTS_PALLOC_IMPL(NAME, TYPE, PASZ)				\
-ERTS_PRE_ALLOC_IMPL(NAME, TYPE, PASZ, (void) 0, (void) 0, (void) 0)
+ERTS_QUALLOC_IMPL(NAME, TYPE, PASZ, ALCT)
 
 #define ERTS_TS_PALLOC_IMPL(NAME, TYPE, PASZ)				\
 static erts_spinlock_t NAME##_lck;					\
 ERTS_PRE_ALLOC_IMPL(NAME, TYPE, PASZ,					\
-		    erts_spinlock_init(&NAME##_lck, #NAME "_alloc_lock"),\
+		    erts_spinlock_init(&NAME##_lck, #NAME "_alloc_lock", NIL, \
+		          ERTS_LOCK_FLAGS_CATEGORY_ALLOCATOR),\
 		    erts_spin_lock(&NAME##_lck),			\
 		    erts_spin_unlock(&NAME##_lck))
 
-#ifdef ERTS_SMP
 
-#define ERTS_SMP_PALLOC_IMPL(NAME, TYPE, PASZ)				\
+#define ERTS_PALLOC_IMPL(NAME, TYPE, PASZ)				\
   ERTS_TS_PALLOC_IMPL(NAME, TYPE, PASZ)
 
-#else /* !ERTS_SMP */
-
-#define ERTS_SMP_PALLOC_IMPL(NAME, TYPE, PASZ)				\
-  ERTS_PALLOC_IMPL(NAME, TYPE, PASZ)
-
-#endif
 
 #define ERTS_QUICK_ALLOC_IMPL(NAME, TYPE, PASZ, ALCT, ILCK, LCK, ULCK)	\
 ERTS_PRE_ALLOC_IMPL(NAME##_pre, TYPE, PASZ, ILCK, LCK, ULCK)		\
@@ -368,21 +399,11 @@ NAME##_free(TYPE *p)							\
 	erts_free(ALCT, (void *) p);					\
 }
 
-#ifdef ERTS_SMP
 #define ERTS_SCHED_PREF_PALLOC_IMPL(NAME, TYPE, PASZ)			\
   ERTS_SCHED_PREF_PRE_ALLOC_IMPL(NAME, TYPE, PASZ)
-#else
-#define ERTS_SCHED_PREF_PALLOC_IMPL(NAME, TYPE, PASZ)			\
-  ERTS_PRE_ALLOC_IMPL(NAME, TYPE, PASZ, (void) 0, (void) 0, (void) 0)
-#endif
 
-#ifdef ERTS_SMP
 #define ERTS_SCHED_PREF_AUX(NAME, TYPE, PASZ)				\
 ERTS_SCHED_PREF_PRE_ALLOC_IMPL(NAME##_pre, TYPE, PASZ)
-#else
-#define ERTS_SCHED_PREF_AUX(NAME, TYPE, PASZ)				\
-ERTS_PRE_ALLOC_IMPL(NAME##_pre, TYPE, PASZ, (void) 0, (void) 0, (void) 0)
-#endif
 
 #define ERTS_SCHED_PREF_QUICK_ALLOC_IMPL(NAME, TYPE, PASZ, ALCT)	\
 ERTS_SCHED_PREF_AUX(NAME, TYPE, PASZ)					\
@@ -406,9 +427,35 @@ NAME##_free(TYPE *p)							\
 	erts_free(ALCT, (void *) p);					\
 }
 
+#define ERTS_THR_PREF_AUX(NAME, TYPE, PASZ)				\
+ERTS_THR_PREF_PRE_ALLOC_IMPL(NAME##_pre, TYPE, PASZ)
+
+#define ERTS_THR_PREF_QUICK_ALLOC_IMPL(NAME, TYPE, PASZ, ALCT)	        \
+ERTS_THR_PREF_AUX(NAME, TYPE, PASZ)					\
+static void								\
+init_##NAME##_alloc(int nthreads)					\
+{									\
+    init_##NAME##_pre_alloc(nthreads);			                \
+}									\
+static ERTS_INLINE TYPE *						\
+NAME##_alloc(void)							\
+{									\
+    TYPE *res = NAME##_pre_alloc();					\
+    if (!res)								\
+	res = erts_alloc(ALCT, sizeof(TYPE));				\
+    return res;								\
+}									\
+static ERTS_INLINE void							\
+NAME##_free(TYPE *p)							\
+{									\
+    if (!NAME##_pre_free(p))						\
+	erts_free(ALCT, (void *) p);					\
+}
+
+
 #ifdef DEBUG
-#define ERTS_PRE_ALLOC_SIZE(SZ) 2
-#define ERTS_PRE_ALLOC_CLOBBER(P, T) memset((void *) (P), 0xfd, sizeof(T))
+#define ERTS_PRE_ALLOC_SIZE(SZ) ((SZ) < 1000 ? (SZ)/10 + 10 : 100)
+#define ERTS_PRE_ALLOC_CLOBBER(P, T) sys_memset((void *) (P), 0xfd, sizeof(T))
 #else
 #define ERTS_PRE_ALLOC_SIZE(SZ) ((SZ) > 1 ? (SZ) : 1)
 #define ERTS_PRE_ALLOC_CLOBBER(P, T)
@@ -486,7 +533,8 @@ init_##NAME##_alloc(void)						\
 {									\
     sspa_data_##NAME##__ =						\
 	erts_sspa_create(sizeof(union erts_sspa_##NAME##__),		\
-			 ERTS_PRE_ALLOC_SIZE((PASZ)));			\
+			 ERTS_PRE_ALLOC_SIZE((PASZ)), 			\
+                         0, NULL);                                      \
 }									\
 									\
 static TYPE *								\
@@ -508,6 +556,57 @@ NAME##_free(TYPE *p)							\
 			  (char *) p);					\
 }
 
+
+#define ERTS_THR_PREF_PRE_ALLOC_IMPL(NAME, TYPE, PASZ)		        \
+union erts_sspa_##NAME##__ {						\
+    erts_sspa_blk_t next;						\
+    TYPE type;								\
+};									\
+									\
+static erts_sspa_data_t *sspa_data_##NAME##__;				\
+									\
+static void								\
+init_##NAME##_alloc(int nthreads)					\
+{									\
+    sspa_data_##NAME##__ =						\
+	erts_sspa_create(sizeof(union erts_sspa_##NAME##__),		\
+			 ERTS_PRE_ALLOC_SIZE((PASZ)),			\
+                         nthreads,                                      \
+                         #NAME);                                        \
+}									\
+                                                                        \
+void								        \
+erts_##NAME##_alloc_init_thread(void)				        \
+{									\
+    int id = erts_atomic_inc_read_nob(&sspa_data_##NAME##__->id_generator);\
+    if (id > sspa_data_##NAME##__->nthreads) {                          \
+        erts_exit(ERTS_ABORT_EXIT,                                      \
+                  "%s:%d:%s(): Too many threads for '" #NAME "'\n",     \
+                  __FILE__, __LINE__, __func__);                        \
+    }                                                                   \
+    erts_tsd_set(sspa_data_##NAME##__->tsd_key, (void*)(SWord)id);      \
+}									\
+									\
+static TYPE *								\
+NAME##_alloc(void)							\
+{									\
+    int id = (int)(SWord)erts_tsd_get(sspa_data_##NAME##__->tsd_key);   \
+    if (id == 0)                                                        \
+        return NULL;                                                    \
+    return (TYPE *) erts_sspa_alloc(sspa_data_##NAME##__,		\
+                                    id-1);		                \
+}									\
+									\
+static int								\
+NAME##_free(TYPE *p)							\
+{									\
+    int id = (int)(SWord)erts_tsd_get(sspa_data_##NAME##__->tsd_key);   \
+    return erts_sspa_free(sspa_data_##NAME##__,				\
+			  id - 1,		                        \
+			  (char *) p);					\
+}
+
+
 #ifdef DEBUG
 #define ERTS_ALC_DBG_BLK_SZ(PTR) (*(((UWord *) (PTR)) - 2))
 #endif /* #ifdef DEBUG */
@@ -516,5 +615,3 @@ NAME##_free(TYPE *p)							\
 #undef ERTS_ALC_ATTRIBUTES
 
 #endif /* #ifndef ERL_ALLOC_H__ */
-
-

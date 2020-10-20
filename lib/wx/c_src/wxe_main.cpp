@@ -1,7 +1,7 @@
 /*
  * %CopyrightBegin%
  *
- * Copyright Ericsson AB 2014. All Rights Reserved.
+ * Copyright Ericsson AB 2014-2018. All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -59,11 +59,6 @@ void *wxe_main_loop(void * );
  *  START AND STOP of driver thread
  * ************************************************************/
 
-int load_native_gui()
-{
-  return 1;
-}
-
 int start_native_gui(wxe_data *sd)
 {
   int res;
@@ -78,8 +73,11 @@ int start_native_gui(wxe_data *sd)
   res = erl_drv_steal_main_thread((char *)"wxwidgets",
 				  &wxe_thread,wxe_main_loop,(void *) sd->pdl,NULL);
 #else
+  ErlDrvThreadOpts *opts = erl_drv_thread_opts_create((char *)"wx thread");
+  opts->suggested_stack_size = 8192;
   res = erl_drv_thread_create((char *)"wxwidgets",
-			      &wxe_thread,wxe_main_loop,(void *) sd->pdl,NULL);
+			      &wxe_thread,wxe_main_loop,(void *) sd->pdl,opts);
+  erl_drv_thread_opts_destroy(opts);
 #endif
   if(res == 0) {
     erl_drv_mutex_lock(wxe_status_m);
@@ -112,11 +110,6 @@ void stop_native_gui(wxe_data *sd)
   erl_drv_cond_destroy(wxe_batch_locker_c);
 }
 
-void unload_native_gui()
-{
-
-}
-
 /* ************************************************************
  *  wxWidgets Thread
  * ************************************************************/
@@ -125,8 +118,8 @@ void *wxe_main_loop(void *vpdl)
 {
   int result;
   int  argc = 1;
-  char * temp = (char *) "Erlang";
-  char * argv[] = {temp,NULL};
+  const wxChar temp[10] = L"Erlang";
+  wxChar * argv[] = {(wxChar *)temp, NULL};
   ErlDrvPDL pdl = (ErlDrvPDL) vpdl;
 
   driver_pdl_inc_refc(pdl);

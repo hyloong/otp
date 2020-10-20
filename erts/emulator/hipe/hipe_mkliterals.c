@@ -1,7 +1,7 @@
 /*
  * %CopyrightBegin%
  * 
- * Copyright Ericsson AB 2001-2012. All Rights Reserved.
+ * Copyright Ericsson AB 2001-2018. All Rights Reserved.
  * 
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -269,9 +269,6 @@ static const struct literal {
     /* freason codes */
     { "FREASON_TRAP", TRAP },
 
-    /* special Erlang constants */
-    { "THE_NON_VALUE", (int)THE_NON_VALUE },
-
     /* funs */
 #ifdef HIPE
     { "EFE_NATIVE_ADDRESS", offsetof(struct erl_fun_entry, native_address) },
@@ -438,18 +435,13 @@ static const struct rts_param rts_params[] = {
        presence or absence of struct erl_fun_thing's "next" field. */
     { 5, "EFT_CREATOR", 1, offsetof(struct erl_fun_thing, creator) },
     { 6, "EFT_FE", 1, offsetof(struct erl_fun_thing, fe) },
-#ifdef HIPE
-    { 7, "EFT_NATIVE_ADDRESS", 1, offsetof(struct erl_fun_thing, native_address) },
-#endif
     { 8, "EFT_ARITY", 1, offsetof(struct erl_fun_thing, arity) },
     { 9, "EFT_NUM_FREE", 1, offsetof(struct erl_fun_thing, num_free) },
     { 10, "EFT_ENV", 1, offsetof(struct erl_fun_thing, env[0]) },
     { 11, "ERL_FUN_SIZE", 1, ERL_FUN_SIZE },
 
     { 12, "P_SCHED_DATA",
-#ifdef ERTS_SMP
       1, offsetof(struct process, scheduler_data)
-#endif
     },
     { 14, "P_FP_EXCEPTION",
 #if !defined(NO_FPE_SIGNALS) || defined(HIPE)
@@ -459,11 +451,7 @@ static const struct rts_param rts_params[] = {
     /* This flag is always defined, but its value is configuration-dependent. */
     { 15, "ERTS_IS_SMP",
       1,
-#if defined(ERTS_SMP)
       1
-#else
-      0
-#endif
     },
     /* This flag is always defined, but its value is configuration-dependent. */
     { 16, "ERTS_NO_FPE_SIGNALS",
@@ -474,7 +462,15 @@ static const struct rts_param rts_params[] = {
       0
 #endif
     },
-    /* This parameter is always defined, but its value depends on ERTS_SMP. */
+    /* This flag is always defined, but its value is configuration-dependent. */
+    { 17, "ERTS_USE_LITERAL_TAG",
+      1,
+#if defined(TAG_LITERAL_PTR)
+      1
+#else
+      0
+#endif
+    },
     { 19, "MSG_MESSAGE",
       1, offsetof(struct erl_mesg, m[0])
     },
@@ -519,19 +515,35 @@ static const struct rts_param rts_params[] = {
 #endif
     },
     { 48, "P_BIF_CALLEE",
-#if defined(ERTS_ENABLE_LOCK_CHECK) && defined(ERTS_SMP)
+#if defined(ERTS_ENABLE_LOCK_CHECK)
 	1, offsetof(struct process, hipe.bif_callee)
 #endif
     },
-    { 49, "P_MSG_FIRST", 1, offsetof(struct process, msg.first) },
-    { 50, "P_MSG_SAVE", 1, offsetof(struct process, msg.save) },
+    { 49, "P_MSG_FIRST", 1, offsetof(struct process, sig_qs.first) },
+    { 50, "P_MSG_SAVE", 1, offsetof(struct process, sig_qs.save) },
     { 51, "P_CALLEE_EXP", 1, offsetof(struct process, hipe.u.callee_exp) },
+
+    { 52, "THE_NON_VALUE", 1, (int)THE_NON_VALUE },
+
+    { 53, "P_GCUNSAFE",
+#ifdef DEBUG
+      1, offsetof(struct process, hipe.gc_is_unsafe)
+#endif
+    },
+
+    { 54, "P_MSG_LAST", 1, offsetof(struct process, sig_qs.last) },
+    { 55, "P_MSG_SAVED_LAST", 1, offsetof(struct process, sig_qs.saved_last) },
 };
 
 #define NR_PARAMS	ARRAY_SIZE(rts_params)
 
 static unsigned int literals_crc;
 static unsigned int system_crc;
+
+/*
+ * Change this version value to detect incompatible changes in primop interface.
+ */
+#define PRIMOP_ABI_VSN 0x090300  /* erts-9.3 */
 
 static void compute_crc(void)
 {
@@ -543,9 +555,13 @@ static void compute_crc(void)
 	crc_value = crc_update_int(crc_value, &literals[i].value);
     crc_value &= 0x07FFFFFF;
     literals_crc = crc_value;
+
+    crc_value = crc_init();
     for (i = 0; i < NR_PARAMS; ++i)
 	if (rts_params[i].is_defined)
 	    crc_value = crc_update_int(crc_value, &rts_params[i].value);
+
+    crc_value ^= PRIMOP_ABI_VSN;
     crc_value &= 0x07FFFFFF;
     system_crc = crc_value;
 }
@@ -628,6 +644,7 @@ static int do_c(FILE *fp, const char* this_exe)
     print_params(fp, c_define_param);
     fprintf(fp, "#define HIPE_LITERALS_CRC %uU\n", literals_crc);
     fprintf(fp, "#define HIPE_SYSTEM_CRC %uU\n", system_crc);
+    fprintf(fp, "#define HIPE_ERTS_CHECKSUM (HIPE_LITERALS_CRC ^ HIPE_SYSTEM_CRC)\n");
     fprintf(fp, "\n");
     fprintf(fp, "#define RTS_PARAMS_CASES");
     print_params(fp, c_case_param);
@@ -645,12 +662,14 @@ static int do_e(FILE *fp, const char* this_exe)
     fprintf(fp, "\n");
     print_params(fp, e_define_param);
     fprintf(fp, "\n");
+    fprintf(fp, "-define(HIPE_LITERALS_CRC, %u).\n", literals_crc);
     if (is_xcomp) {
 	fprintf(fp, "-define(HIPE_SYSTEM_CRC, %u).\n", system_crc);
     }
     else {
 	fprintf(fp, "-define(HIPE_SYSTEM_CRC, hipe_bifs:system_crc()).\n");
     }
+    fprintf(fp, "-define(HIPE_ERTS_CHECKSUM, (?HIPE_LITERALS_CRC bxor ?HIPE_SYSTEM_CRC)).\n");
     return 0;
 }
 

@@ -4,7 +4,7 @@
 <application xmlns:xi="http://www.w3.org/2001/XInclude">
   <header>
     <copyright>
-      <year>2002</year><year>2013</year>
+      <year>2002</year><year>2016</year>
       <holder>Ericsson AB. All Rights Reserved.</holder>
     </copyright>
     <legalnotice>
@@ -30,15 +30,12 @@
     <file>application.sgml</file>
   </header>
   <description>
-    <p>The <em>Observer</em> application contains tools for tracing
-      and investigation of distributed systems.</p>
-    <br></br>
-  </description>
+     </description>
   <xi:include href="observer_app.xml"/>
   <xi:include href="observer.xml"/>
   <xi:include href="ttb.xml"/>
   <xi:include href="etop.xml"/>
   <xi:include href="crashdump.xml"/>
-  <xi:include href="cdv.xml"/>
+  <xi:include href="cdv_cmd.xml"/>
 </application>
 

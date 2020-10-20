@@ -1,7 +1,7 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2013-2015. All Rights Reserved.
+%% Copyright Ericsson AB 2013-2020. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -27,6 +27,8 @@
 -export([suite/0,
          all/0,
          groups/0,
+         init_per_suite/1,
+         end_per_suite/1,
          init_per_group/2,
          end_per_group/2]).
 
@@ -85,6 +87,13 @@ groups() ->
     [{all, [parallel], [{group, P} || P <- ?PROTS]}
      | [{P, [], Tc} || P <- ?PROTS]].
 
+%% Not used, but a convenient place to enable trace.
+init_per_suite(Config) ->
+    Config.
+
+end_per_suite(_Config) ->
+    ok.
+
 init_per_group(all, Config) ->
     Config;
 
@@ -92,12 +101,10 @@ init_per_group(tcp = N, Config) ->
     [{group, N} | Config];
 
 init_per_group(sctp = N, Config) ->
-    case gen_sctp:open() of
-        {ok, Sock} ->
-            gen_sctp:close(Sock),
+    case ?util:have_sctp() of
+        true ->
             [{group, N} | Config];
-        {error, E} when E == eprotonosupport;
-                        E == esocktnosupport -> %% fail on any other reason
+        false->
             {skip, no_sctp}
     end.
 
@@ -218,12 +225,14 @@ make_name(Dict) ->
 %% Compile example code under examples/code.
 
 code(Config) ->
-    Node = slave(compile, here()),
-    [] = rpc:call(Node,
-                  ?MODULE,
-                  install,
-                  [proplists:get_value(priv_dir, Config)]),
-    {ok, Node} = ct_slave:stop(compile).
+    try
+        [] = rpc:call(slave(compile, here()),
+                      ?MODULE,
+                      install,
+                      [proplists:get_value(priv_dir, Config)])
+    after
+        {ok, _} = ct_slave:stop(compile)
+    end.
 
 %% Compile on another node since the code path may be modified.
 install(PrivDir) ->
@@ -346,7 +355,7 @@ top(Dir, LibDir) ->
 start({server, Prot}) ->
     ok = diameter:start(),
     ok = server:start(),
-    {ok, Ref} = server:listen(Prot),
+    {ok, Ref} = server:listen({Prot, any, 3868}),
     [_] = ?util:lport(Prot, Ref),
     ok;
 
@@ -354,7 +363,7 @@ start({client = Svc, Prot}) ->
     ok = diameter:start(),
     true = diameter:subscribe(Svc),
     ok = client:start(),
-    {ok, Ref} = client:connect(Prot),
+    {ok, Ref} = client:connect({Prot, loopback, loopback, 3868}),
     receive #diameter_event{info = {up, Ref, _, _, _}} -> ok end;
 
 start(Config) ->

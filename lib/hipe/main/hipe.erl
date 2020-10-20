@@ -1,9 +1,5 @@
 %% -*- erlang-indent-level: 2 -*-
 %%
-%% %CopyrightBegin%
-%%
-%% Copyright Ericsson AB 2001-2013. All Rights Reserved.
-%%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
 %% You may obtain a copy of the License at
@@ -15,8 +11,6 @@
 %% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 %% See the License for the specific language governing permissions and
 %% limitations under the License.
-%%
-%% %CopyrightEnd%
 %%
 %% ====================================================================
 %% Copyright (c) 1998 by Erik Johansson.  All Rights Reserved 
@@ -200,15 +194,17 @@
 	 compile/4,
 	 compile_core/4,
  	 file/1,
- 	 file/2,
-        llvm_support_available/0,
+	 file/2,
+	 get_llvm_version/0,
+	 erllvm_is_supported/0,
 	 load/1,
 	 help/0,
 	 help_hiper/0,
 	 help_options/0,
 	 help_option/1,
 	 help_debug_options/0,
-	 version/0]).
+	 version/0,
+	 erts_checksum/0]).
 
 -ifndef(DEBUG).
 -define(DEBUG,true).
@@ -216,17 +212,17 @@
 
 -include("hipe.hrl").
 -include("../../compiler/src/beam_disasm.hrl").
+-include("../rtl/hipe_literals.hrl").
 
 %%-------------------------------------------------------------------
 %% Basic type declaration for exported functions of the 'hipe' module
 %%-------------------------------------------------------------------
 
--type mod() :: atom().
--type f_unit() :: mod() | binary().
+-type mod() :: module().
+-type file_or_bin() :: file:filename() | binary().
 -type ret_rtl() :: [_].
 -type c_ret() :: {'ok', mod()} | {'error', term()} |
                  {'ok', mod(), ret_rtl()}. %% The last for debugging only
--type compile_file() :: atom() | string() | binary().
 -type compile_ret() :: {hipe_architecture(), binary()} | list().
 
 %%-------------------------------------------------------------------
@@ -236,26 +232,26 @@
 
 %%-------------------------------------------------------------------
 
-%% @spec load(Mod) -> {module, Mod} | {error, Reason}
-%%     Mod = mod()
+%% @spec load(Module) -> {module, Module} | {error, Reason}
+%%     Module = mod()
 %%     Reason = term()
 %% 
 %% @doc Like load/2, but tries to locate a BEAM file automatically.
 %%
 %% @see load/2
 
--spec load(Mod) -> {'module', Mod} | {'error', term()} when Mod :: mod().
+-spec load(Module) -> {'module', Module} | {'error', Reason :: term()}
+                   when Module :: mod().
 
-load(Mod) ->
-  load(Mod, beam_file(Mod)).
+load(Module) ->
+  load(Module, beam_file(Module)).
 
-%% @spec load(Mod, BeamFileName) -> {module, Mod} | {error, Reason}
-%%     Mod = mod()
+%% @spec load(Module, BeamFileName) -> {module, Module} | {error, Reason}
+%%     Module = mod()
+%%     BeamFileName = file:filename()
 %%     Reason = term()
-%%     BeamFileName = string()
-%%     filename() = term()
 %%
-%% @type mod() = atom(). A module name.
+%% @type mod() = module(). A module name.
 %% 
 %% @doc User interface for loading code into memory. The code can be
 %% given as a native code binary or as the file name of a BEAM file
@@ -265,8 +261,8 @@ load(Mod) ->
 %%
 %% @see load/1
 
--spec load(Mod, string()) -> {'module', Mod} | {'error', term()}
-				   when Mod :: mod().
+-spec load(Module, file:filename()) -> {'module', Module} | {'error', term()}
+				    when Module :: mod().
 
 load(Mod, BeamFileName) when is_list(BeamFileName) ->
   Architecture = erlang:system_info(hipe_architecture),
@@ -276,26 +272,22 @@ load(Mod, BeamFileName) when is_list(BeamFileName) ->
     Error -> {error, Error}
   end.
 
-%% @spec c(Name) -> {ok, Name} | {error, Reason}
-%%       Name = mod()
+%% @spec c(Mod) -> {ok, Mod} | {error, Reason}
+%%       Mod = mod()
 %%       Reason = term()
 %%
-%% @equiv c(Name, [])
+%% @equiv c(Mod, [])
 
 -spec c(mod()) -> c_ret().
 
-c(Name) ->
-  c(Name, []).
+c(Mod) ->
+  c(Mod, []).
 
-%% @spec c(Name, options()) -> {ok, Name} | {error, Reason}
-%%     Name = mod()
+%% @spec c(Module, options()) -> {ok, Module} | {error, Reason}
+%%     Module = mod()
 %%     options() = [option()]
 %%     option() = term()
 %%     Reason = term()
-%%
-%% @type fun() = atom(). A function identifier.
-%%
-%% @type arity() = integer(). A function arity; always nonnegative.
 %% 
 %% @doc User-friendly native code compiler interface. Reads BEAM code
 %% from the corresponding "Module<code>.beam</code>" file in the
@@ -310,12 +302,12 @@ c(Name) ->
 
 -spec c(mod(), comp_options()) -> c_ret().
 
-c(Name, Options) ->
-  c(Name, beam_file(Name), Options).
+c(Module, Options) ->
+  c(Module, beam_file(Module), Options).
 
-%% @spec c(Name, File, options()) -> {ok, Name} | {error, Reason}
-%%     Name = mod()
-%%     File = filename() | binary()
+%% @spec c(Module, File, options()) -> {ok, Module} | {error, Reason}
+%%     Module = mod()
+%%     File = file:filename() | binary()
 %%     Reason = term()
 %%
 %% @doc Like <code>c/2</code>, but reads BEAM code from the specified
@@ -324,32 +316,32 @@ c(Name, Options) ->
 %% @see c/2
 %% @see f/2
 
-c(Name, File, Opts) ->
+c(Module, File, Opts) ->
   Opts1 = user_compile_opts(Opts),
-  case compile(Name, File, Opts1) of
+  case compile(Module, File, Opts1) of
     {ok, Res} ->
       case proplists:get_bool(to_rtl, Opts1) of
-	true -> {ok, Name, Res};
-	false -> {ok, Name}
+	true  -> {ok, Module, Res};
+	false -> {ok, Module}
       end;
     Other ->
       Other
   end.
 
 %% @spec f(File) -> {ok, Name} | {error, Reason}
-%%     File = filename() | binary()
+%%     File = file:filename() | binary()
 %%     Name = mod()
 %%     Reason = term()
 %%
 %% @equiv f(File, [])
 
--spec f(f_unit()) -> {'ok', mod()} | {'error', term()}.
+-spec f(file_or_bin()) -> {'ok', mod()} | {'error', term()}.
 
 f(File) ->
   f(File, []).
 
 %% @spec f(File, options()) -> {ok, Name} | {error, Reason}
-%%     File = filename() | binary()
+%%     File = file:filename() | binary()
 %%     Name = mod()
 %%     Reason = term()
 %%
@@ -358,7 +350,7 @@ f(File) ->
 %%
 %% @see c/3
 
--spec f(f_unit(), comp_options()) -> {'ok', mod()} | {'error', term()}.
+-spec f(file_or_bin(), comp_options()) -> {'ok', mod()} | {'error', term()}.
 
 f(File, Opts) ->
   case file(File, user_compile_opts(Opts)) of
@@ -374,20 +366,20 @@ user_compile_opts(Opts) ->
   Opts ++ ?USER_DEFAULTS.
 
 
-%% @spec compile(Name) -> {ok, {Target,Binary}} | {error, Reason}
-%%       Name = mod()
+%% @spec compile(Module) -> {ok, {Target,Binary}} | {error, Reason}
+%%       Module = mod()
 %%       Binary = binary()
 %%       Reason = term()
 %% 
-%% @equiv compile(Name, [])
+%% @equiv compile(Module, [])
 
 -spec compile(mod()) -> {'ok', compile_ret()} | {'error', term()}.
 
-compile(Name) ->
-  compile(Name, []).
+compile(Module) ->
+  compile(Module, []).
 
-%% @spec compile(Name, options()) -> {ok, {Target,Binary}} | {error, Reason}
-%%       Name = mod()
+%% @spec compile(Module, options()) -> {ok, {Target,Binary}} | {error, Reason}
+%%       Module = mod()
 %%       Binary = binary()
 %%       Reason = term()
 %%
@@ -406,26 +398,26 @@ compile(Name) ->
 %% @see file/2
 %% @see load/2
 
--spec compile(mod(), comp_options()) -> {'ok', compile_ret()} | {'error', _}.
+-spec compile(mod(), comp_options()) -> {'ok', compile_ret()} | {'error', term()}.
 
-compile(Name, Options) ->
-  compile(Name, beam_file(Name), Options).
+compile(Module, Options) ->
+  compile(Module, beam_file(Module), Options).
 
--spec beam_file(mod()) -> string().
+-spec beam_file(mod()) -> file:filename().
 
 beam_file(Module) when is_atom(Module) ->
   case code:which(Module) of
     non_existing ->
-      ?error_msg("Cannot find ~w.beam file.",[Module]),
+      ?error_msg("Cannot find ~w.beam file.", [Module]),
       ?EXIT({cant_find_beam_file,Module});
-    File -> % string()
+    File when is_list(File) ->
       File
   end.
 
 %% @spec compile(Name, File, options()) ->
 %%           {ok, {Target, Binary}} | {error, Reason}
 %%       Name = mod()
-%%       File = filename() | binary()
+%%       File = file:filename() | binary()
 %%       Binary = binary()
 %%       Reason = term()
 %% 
@@ -434,7 +426,7 @@ beam_file(Module) when is_atom(Module) ->
 %%
 %% @see compile/2
 
--spec compile(mod(), compile_file(), comp_options()) ->
+-spec compile(mod(), file_or_bin(), comp_options()) ->
 	 {'ok', compile_ret()} | {'error', term()}.
 
 compile(Name, File, Opts0) when is_atom(Name) ->
@@ -444,18 +436,18 @@ compile(Name, File, Opts0) when is_atom(Name) ->
       ?error_msg("Cannot get Core Erlang code from BEAM binary.",[]),
       ?EXIT({cant_compile_core_from_binary});
     true ->
-      case filename:find_src(filename:rootname(File, ".beam")) of
+      case filelib:find_source(filename:rootname(File,".beam") ++ ".beam") of
 	{error, _} ->
-	  ?error_msg("Cannot find source code for ~p.",[File]),
+	  ?error_msg("Cannot find source code for ~p.", [File]),
 	  ?EXIT({cant_find_source_code});
 	{Source, CompOpts} ->
 	  CoreOpts = [X || X = {core_transform, _} <- Opts],
-	  %%io:format("Using: ~w\n", [CoreOpts]),
+	  %% io:format("Using: ~w\n", [CoreOpts]),
 	  case compile:file(Source, CoreOpts ++ [to_core, binary|CompOpts]) of
 	    {ok, _, Core} ->
 	      compile_core(Name, Core, File, Opts);
 	    Error ->
-	      ?error_msg("Error compiling ~p:\n~p.",[File, Error]),
+	      ?error_msg("Error compiling ~p:\n~p.", [File, Error]),
 	      ?EXIT({cant_compile_source_code})
 	  end
       end;
@@ -467,7 +459,7 @@ compile(Name, File, Opts0) when is_atom(Name) ->
 	{ok, _, Core} ->
 	  compile_core(Name, Core, File, Opts);
 	Error ->
-	  ?error_msg("Error compiling ~p:\n~p\n",[Source, Error]),
+	  ?error_msg("Error compiling ~p:\n~p\n", [Source, Error]),
 	  ?EXIT({cant_compile_source_code, Error})
       end;
     Other when Other =:= false; Other =:= undefined ->
@@ -478,18 +470,18 @@ compile(Name, File, Opts0) when is_atom(Name) ->
       run_compiler(Name, DisasmFun, IcodeFun, Opts)
   end.
 
--spec compile_core(mod(), cerl:c_module(), compile_file(), comp_options()) ->
+-spec compile_core(mod(), cerl:c_module(), file_or_bin(), comp_options()) ->
 	 {'ok', compile_ret()} | {'error', term()}.
 
 compile_core(Name, Core0, File, Opts) ->
   Core = cerl:from_records(Core0),
   compile(Name, Core, File, Opts).
 
-%% @spec compile(Name, Core, File, options()) ->
+%% @spec compile(Module, Core, File, options()) ->
 %%           {ok, {Target, Binary}} | {error, Reason}
-%%       Name = mod()
+%%       Module = mod()
 %%       Core = coreErlang() | []
-%%       File = filename() | binary()
+%%       File = file:filename() | binary()
 %%       Binary = binary()
 %%       Reason = term()
 %% 
@@ -502,49 +494,47 @@ compile_core(Name, Core0, File, Opts) ->
 %%
 %% @see compile/3
 
--spec compile(mod(), cerl:c_module() | [], compile_file(), comp_options()) ->
+-spec compile(mod(), cerl:c_module() | [], file_or_bin(), comp_options()) ->
 	 {'ok', compile_ret()} | {'error', term()}.
 
 compile(Name, [], File, Opts) ->
   compile(Name, File, Opts);
 compile(Name, Core, File, Opts) when is_atom(Name) ->
   DisasmFun = fun (_) -> {false, []} end,
-  IcodeFun = fun (_, Opts) ->
-		 get_core_icode(Name, Core, File, Opts)
+  IcodeFun = fun (_, FOpts) ->
+		 get_core_icode(Name, Core, File, FOpts)
 	     end,
   run_compiler(Name, DisasmFun, IcodeFun, Opts).
 
-%% @spec file(File) -> {ok, Name, {Target, Binary}} | {error, Reason}
-%%       File = filename() | binary()
-%%       Name = mod() | mfa()
+%% @spec file(File) -> {ok, Mod, {Target, Binary}} | {error, Reason}
+%%       File = file:filename()
+%%       Mod = mod()
 %%       Binary = binary()
 %%       Reason = term()
 %% 
 %% @equiv file(File, [])
 
--spec file(Mod) -> {'ok', Mod, compile_ret()} | {'error', term()}
-		     when Mod :: mod().
+-spec file(file:filename()) -> {'ok', mod(), compile_ret()} | {'error', term()}.
 
 file(File) ->
   file(File, []).
 
-%% @spec file(File, options()) -> {ok, Name, {Target,Binary}} | {error, Reason}
-%%       File = filename()
-%%       Name = mod() | mfa()
+%% @spec file(File, options()) -> {ok, Mod, {Target, Binary}} | {error, Reason}
+%%       File = file:filename()
+%%       Mod = mod()
 %%       Binary = binary()
 %%       Reason = term()
 %% 
 %% @doc Like <code>compile/2</code>, but takes the module name from the
-%% specified <code>File</code>. Returns both the name and the final
+%% specified <code>File</code>. Returns both the module name and the final
 %% binary if successful.
 %%
 %% @see file/1
 %% @see compile/2
 
--spec file(Mod, comp_options()) -> {'ok', Mod, compile_ret()}
-				|  {'error', term()}
-				     when Mod :: mod().
-file(File, Options) when is_atom(File) ->
+-spec file(file:filename(), comp_options()) -> {'ok', mod(), compile_ret()}
+				             | {'error', Reason :: term()}.
+file(File, Options) when is_list(File) ->
   case beam_lib:info(File) of
     L when is_list(L) ->
       {module, Mod} = lists:keyfind(module, 1, L),
@@ -570,8 +560,7 @@ file(File, Options) when is_atom(File) ->
 disasm(File) ->
   case beam_disasm:file(File) of
     #beam_file{labeled_exports = LabeledExports,
-	       compile_info = CompInfo,
-	       code = BeamCode} ->
+	       compile_info = CompInfo, code = BeamCode} ->
       CompOpts = proplists:get_value(options, CompInfo, []),
       HCompOpts = case lists:keyfind(hipe, 1, CompOpts) of
 		    {hipe, L} when is_list(L) -> L;
@@ -594,16 +583,15 @@ fix_beam_exports([], Exports) ->
   Exports.
 
 get_beam_icode(Mod, {BeamCode, Exports}, File, Options) ->
-  ?option_time({ok, Icode} =
-	       (catch {ok, hipe_beam_to_icode:module(BeamCode, Options)}),
-	       "BEAM-to-Icode", Options),
+  Icode = ?option_time(hipe_beam_to_icode:module(BeamCode, Options),
+                       "BEAM-to-Icode", Options),
   BeamBin = get_beam_code(File),
   {{Mod, Exports, Icode}, BeamBin}.
 
 get_core_icode(Mod, Core, File, Options) ->
-  ?option_time({ok, Icode} =
-	       (catch {ok, cerl_to_icode:module(Core, Options)}),
-	       "BEAM-to-Icode", Options),
+  {ok, Icode} =
+    ?option_time((catch {ok, cerl_to_icode:module(Core, Options)}),
+		 "BEAM-to-Icode", Options),
   NeedBeamCode = not proplists:get_bool(load, Options),
   BeamBin = 
     case NeedBeamCode of
@@ -616,7 +604,7 @@ get_core_icode(Mod, Core, File, Options) ->
 get_beam_code(Bin) when is_binary(Bin) -> Bin;
 get_beam_code(FileName) ->
   case erl_prim_loader:get_file(FileName) of
-    {ok,Bin,_} ->
+    {ok, Bin, _} ->
       Bin;
     error ->
       ?EXIT(no_beam_file)
@@ -633,44 +621,54 @@ run_compiler(Name, DisasmFun, IcodeFun, Opts0) ->
   Opts = expand_basic_options(Opts0 ++ ?COMPILE_DEFAULTS),
   ?when_option(verbose, Opts, ?debug_msg("Compiling: ~p\n",[Name])),
   ?option_start_time("Compile", Opts),
-  Res = run_compiler_1(DisasmFun, IcodeFun, Opts),
+  Res = run_compiler_1(Name, DisasmFun, IcodeFun, Opts),
   ?option_stop_time("Compile", Opts),
   Res.
 
-run_compiler_1(DisasmFun, IcodeFun, Options) ->
+run_compiler_1(Name, DisasmFun, IcodeFun, Options) ->
   Parent = self(),
   {trap_exit,TrapExit} = process_info(Parent, trap_exit),
   %% Spawn a compilation process CompProc. In case this process gets
   %% killed, the trap_exit flag is restored to that of the Parent process.
   process_flag(trap_exit, true),
-  CompProc = spawn_link(fun () ->
-			    %% Compiler process
-			    set_architecture(Options),
-			    pre_init(Options),
-			    %% The full option expansion is not done
-			    %% until the DisasmFun returns.
-			    {Code, CompOpts} = DisasmFun(Options),
-			    Opts0 = expand_options(Options ++ CompOpts,
-                                                   get(hipe_target_arch)),
-                            Opts =
-                             case proplists:get_bool(to_llvm, Opts0) andalso
-                                 not llvm_support_available() of
-                               true ->
-                                 ?error_msg("No LLVM version 3.4 or greater "
-                                            "found in $PATH; aborting "
-                                            "native code compilation.\n", []),
-                                 ?EXIT(cant_find_required_llvm_version);
-                               false ->
-                                 Opts0
-                             end,
-			    check_options(Opts),
-			    ?when_option(verbose, Options,
-					 ?debug_msg("Options: ~p.\n",[Opts])),
-			    init(Opts),
-			    {Icode, WholeModule} = IcodeFun(Code, Opts),
-			    CompRes = compile_finish(Icode, WholeModule, Opts),
-			    compiler_return(CompRes, Parent)
-			end),
+  CompProc =
+    spawn_link(
+      fun () ->
+	  try
+	    %% Compiler process
+	    set_architecture(Options),
+	    pre_init(Options),
+	    %% The full option expansion is not done
+	    %% until the DisasmFun returns.
+	    {Code, CompOpts} = DisasmFun(Options),
+	    Opts0 = expand_options(Options ++ CompOpts,
+				   get(hipe_target_arch)),
+	    Opts =
+	      case proplists:get_bool(to_llvm, Opts0) andalso
+		not llvm_version_is_OK() of
+		true ->
+		  ?error_msg("No LLVM version 3.9 or greater "
+			     "found in $PATH; aborting "
+			     "native code compilation.\n", []),
+		  ?EXIT(cant_find_required_llvm_version);
+		false ->
+		  Opts0
+	      end,
+	    check_options(Opts),
+	    ?when_option(verbose, Options,
+			 ?debug_msg("Options: ~p.\n",[Opts])),
+	    init(Opts),
+	    {Icode, WholeModule} = IcodeFun(Code, Opts),
+	    CompRes = compile_finish(Icode, WholeModule, Opts),
+	    compiler_return(CompRes, Parent)
+	  catch
+            error:Error:StackTrace ->
+	      print_crash_message(Name, Error, StackTrace),
+	      exit(Error);
+            throw:{unimplemented_instruction,_Instruction}=Error ->
+              exit(Error)
+	  end
+      end),
   Timeout = case proplists:get_value(timeout, Options) of
 	      N when is_integer(N), N >= 0 -> N;
 	      undefined -> ?DEFAULT_TIMEOUT;
@@ -689,7 +687,7 @@ run_compiler_1(DisasmFun, IcodeFun, Options) ->
       exit(CompProc, kill),
       receive {'EXIT', CompProc, _} -> ok end,
       flush(),
-      ?error_msg("ERROR: Compilation timed out.\n",[]),
+      ?error_msg("ERROR: Compilation of ~w timed out.\n",[Name]),
       exit(timed_out)
   end,
   Result = receive {CompProc, Res} -> Res end,
@@ -754,15 +752,16 @@ finalize(OrigList, Mod, Exports, WholeModule, Opts) ->
 	  TargetArch = get(hipe_target_arch),
 	  {ok, {TargetArch,Bin}}
       catch
-	error:Error ->
-	  {error,Error,erlang:get_stacktrace()}
+	error:Error:StackTrace ->
+	  {error,Error,StackTrace}
       end
   end.
 
 finalize_fun(MfaIcodeList, Exports, Opts) ->
   case proplists:get_value(concurrent_comp, Opts) of
     FalseVal when (FalseVal =:= undefined) orelse (FalseVal =:= false) ->
-      [finalize_fun_sequential(MFAIcode, Opts, #comp_servers{})
+      NoServers = #comp_servers{pp_server = none, range = none, type = none},
+      [finalize_fun_sequential(MFAIcode, Opts, NoServers)
        || {_MFA, _Icode} = MFAIcode <- MfaIcodeList];
     TrueVal when (TrueVal =:= true) orelse (TrueVal =:= debug) ->
       finalize_fun_concurrent(MfaIcodeList, Exports, Opts)
@@ -839,12 +838,26 @@ finalize_fun_sequential({MFA, Icode}, Opts, Servers) ->
     {llvm_binary, Binary} ->
       {MFA, Binary}
   catch
-    error:Error ->
+    error:Error:StackTrace ->
       ?when_option(verbose, Opts, ?debug_untagged_msg("\n", [])),
-      ErrorInfo = {Error, erlang:get_stacktrace()},
-      ?error_msg("ERROR: ~p~n", [ErrorInfo]),
-      ?EXIT(ErrorInfo)
+      print_crash_message(MFA, Error, StackTrace),
+      exit(Error)
   end.
+
+print_crash_message(What, Error, StackTrace) ->
+  StackFun = fun(_,_,_) -> false end,
+  FormatFun = fun (Term, _) -> io_lib:format("~p", [Term]) end,
+  StackTraceS = erl_error:format_stacktrace(1, StackTrace,
+                                            StackFun, FormatFun),
+  WhatS = case What of
+	    {M,F,A} -> io_lib:format("~w:~w/~w", [M,F,A]);
+	    Mod -> io_lib:format("~w", [Mod])
+	  end,
+  ?error_msg("INTERNAL ERROR~n"
+	     "while compiling ~s~n"
+	     "crash reason: ~p~n"
+	     "~s~n",
+	     [WhatS, Error, StackTraceS]).
 
 pp_server_start(Opts) ->
   set_architecture(Opts),
@@ -1032,6 +1045,12 @@ post(Res, Icode, Options) ->
 version() ->
   ?VERSION_STRING().
 
+%% @doc Returns checksum identifying the target runtime system.
+-spec erts_checksum() -> integer().
+
+erts_checksum() ->
+  ?HIPE_ERTS_CHECKSUM.
+
 %% --------------------------------------------------------------------
 %% D O C U M E N T A T I O N   -   H E L P 
 %% --------------------------------------------------------------------
@@ -1062,6 +1081,8 @@ help() ->
     "     Prints a description of debug options.\n" ++
     "   version() ->\n" ++
     "     Returns the HiPE version as a string'.\n" ++
+    "   erts_checksum() ->\n" ++
+    "     Returns a checksum identifying the target runtime system.\n" ++
     "\n" ++
     " For HiPE developers only:\n" ++
     "  Use `help_hiper()' for information about HiPE's low-level interface\n",
@@ -1107,9 +1128,10 @@ help_hiper() ->
 
 help_options() ->
   HostArch = erlang:system_info(hipe_architecture),
-  O1 = expand_options([o1], HostArch),
-  O2 = expand_options([o2], HostArch),
-  O3 = expand_options([o3], HostArch),
+  O0 = expand_options([o0] ++ ?COMPILE_DEFAULTS, HostArch),
+  O1 = expand_options([o1] ++ ?COMPILE_DEFAULTS, HostArch),
+  O2 = expand_options([o2] ++ ?COMPILE_DEFAULTS, HostArch),
+  O3 = expand_options([o3] ++ ?COMPILE_DEFAULTS, HostArch),
   io:format("HiPE Compiler Options\n" ++
 	    " Boolean-valued options generally have corresponding " ++
 	    "aliases `no_...',\n" ++
@@ -1128,15 +1150,16 @@ help_options() ->
 	    "   pp_x86 = pp_native,\n" ++
 	    "   pp_amd64 = pp_native,\n" ++
 	    "   pp_ppc = pp_native,\n" ++
-	    "   o0,\n" ++
-	    "   o1 = ~p,\n" ++
+	    "   o0 = ~p,\n" ++
+	    "   o1 = ~p ++ o0,\n" ++
 	    "   o2 = ~p ++ o1,\n" ++
 	    "   o3 = ~p ++ o2.\n",
 	    [ordsets:from_list([verbose, debug, time, load, pp_beam,
 				pp_icode, pp_rtl, pp_native, pp_asm,
 				timeout]),
 	     expand_options([pp_all], HostArch),
-	     O1 -- [o1],
+	     O0 -- [o0],
+	     (O1 -- O0) -- [o1],
 	     (O2 -- O1) -- [o2],
 	     (O3 -- O2) -- [o3]]),
   ok.
@@ -1154,6 +1177,9 @@ option_text(caller_save_spill_restore) ->
   "Activates caller save register spills and restores";
 option_text(debug) ->
   "Outputs internal debugging information during compilation";
+option_text(icode_call_elim) ->
+  "Performs call elimination of BIFs that are side-effect free\n" ++
+  "only on some argument types";
 option_text(icode_range) ->
   "Performs integer range analysis on the Icode level";
 option_text(icode_ssa_check) ->
@@ -1199,6 +1225,18 @@ option_text(regalloc) ->
   "    optimistic - another variant of a coalescing allocator";
 option_text(remove_comments) ->
   "Strip comments from intermediate code";
+option_text(ra_range_split) ->
+  "Split live ranges of temporaries live over call instructions\n"
+  "before performing register allocation.\n"
+  "Heuristically tries to move stack accesses to the cold path of function.\n"
+  "This range splitter is more sophisticated than 'ra_restore_reuse', but has\n"
+  "a significantly larger impact on compile time.\n"
+  "Should only be used with move coalescing register allocators.";
+option_text(ra_restore_reuse) ->
+  "Split live ranges of temporaries such that straight-line\n"
+  "code will not need to contain multiple restores from the same stack\n"
+  "location.\n"
+  "Should only be used with move coalescing register allocators.";
 option_text(rtl_ssa) ->
   "Perform SSA conversion on the RTL level -- default starting at O2";
 option_text(rtl_ssa_const_prop) ->
@@ -1307,6 +1345,7 @@ opt_keys() ->
      get_called_modules,
      split_arith,
      split_arith_unsafe,
+     icode_call_elim,
      icode_inline_bifs,
      icode_ssa_check,
      icode_ssa_copy_prop,
@@ -1337,6 +1376,14 @@ opt_keys() ->
      pp_rtl_lcm,
      pp_rtl_ssapre,
      pp_rtl_linear,
+     ra_partitioned,
+     ra_prespill,
+     ra_range_split,
+     ra_restore_reuse,
+     range_split_min_gain,
+     range_split_mode1_fudge,
+     range_split_weight_power,
+     range_split_weights,
      regalloc,
      remove_comments,
      rtl_ssa,
@@ -1362,13 +1409,22 @@ opt_keys() ->
      use_clusters,
      use_jumptable,
      verbose,
+     verify_gcsafe,
      %% verbose_spills,
      x87].
 
 %% Definitions:
 
+o0_opts(_TargetArch) ->
+  [concurrent_comp, {regalloc,linear_scan}].
+
 o1_opts(TargetArch) ->
-  Common = [inline_fp, pmatch, peephole],
+  Common = [inline_fp, pmatch, peephole, ra_prespill, ra_partitioned,
+	    icode_ssa_const_prop, icode_ssa_copy_prop, icode_inline_bifs,
+	    rtl_ssa, rtl_ssa_const_prop, rtl_ssapre,
+	    spillmin_color, use_indexing, remove_comments,
+	    binary_opt, {regalloc,coalescing}, ra_restore_reuse
+	    | o0_opts(TargetArch)],
   case TargetArch of
     ultrasparc ->
       Common;
@@ -1387,11 +1443,9 @@ o1_opts(TargetArch) ->
   end.
 
 o2_opts(TargetArch) ->
-  Common = [icode_ssa_const_prop, icode_ssa_copy_prop, % icode_ssa_struct_reuse,
-	    icode_type, icode_inline_bifs, rtl_lcm,
-	    rtl_ssa, rtl_ssa_const_prop,
-	    spillmin_color, use_indexing, remove_comments,
-	    concurrent_comp, binary_opt | o1_opts(TargetArch)],
+  Common = [icode_type, icode_call_elim, % icode_ssa_struct_reuse,
+	    ra_range_split, range_split_weights, % XXX: Having defaults here is ugly
+	    rtl_lcm | (o1_opts(TargetArch) -- [rtl_ssapre, ra_restore_reuse])],
   case TargetArch of
     T when T =:= amd64 orelse T =:= ppc64 -> % 64-bit targets
       [icode_range | Common];
@@ -1401,7 +1455,7 @@ o2_opts(TargetArch) ->
 
 o3_opts(TargetArch) ->
   %% no point checking for target architecture since this is checked in 'o1'
-  [icode_range, {regalloc,coalescing} | o2_opts(TargetArch)].
+  [icode_range | o2_opts(TargetArch)].
 
 %% Note that in general, the normal form for options should be positive.
 %% This is a good programming convention, so that tests in the code say
@@ -1418,6 +1472,7 @@ opt_negations() ->
    {no_icode_inline_bifs, icode_inline_bifs},
    {no_icode_range, icode_range},
    {no_icode_split_arith, icode_split_arith},
+   {no_icode_call_elim, icode_call_elim},
    {no_icode_ssa_check, icode_ssa_check},
    {no_icode_ssa_copy_prop, icode_ssa_copy_prop},
    {no_icode_ssa_const_prop, icode_ssa_const_prop},
@@ -1436,6 +1491,11 @@ opt_negations() ->
    {no_pp_native, pp_native},
    {no_pp_rtl_lcm, pp_rtl_lcm},
    {no_pp_rtl_ssapre, pp_rtl_ssapre},
+   {no_ra_partitioned, ra_partitioned},
+   {no_ra_prespill, ra_prespill},
+   {no_ra_range_split, ra_range_split},
+   {no_ra_restore_reuse, ra_restore_reuse},
+   {no_range_split_weights, range_split_weights},
    {no_remove_comments, remove_comments},
    {no_rtl_ssa, rtl_ssa},
    {no_rtl_ssa_const_prop, rtl_ssa_const_prop},
@@ -1446,7 +1506,8 @@ opt_negations() ->
    {no_use_callgraph, use_callgraph},
    {no_use_clusters, use_clusters},
    {no_use_inline_atom_search, use_inline_atom_search},
-   {no_use_indexing, use_indexing}].
+   {no_use_indexing, use_indexing},
+   {no_verify_gcsafe, verify_gcsafe}].
 
 %% Don't use negative forms in right-hand sides of aliases and expansions!
 %% We only expand negations once, before the other expansions are done.
@@ -1465,21 +1526,29 @@ opt_basic_expansions() ->
   [{pp_all, [pp_beam, pp_icode, pp_rtl, pp_native]}].
 
 opt_expansions(TargetArch) ->
-  [{o1, o1_opts(TargetArch)},
+  [{o0, o0_opts(TargetArch)},
+   {o1, o1_opts(TargetArch)},
    {o2, o2_opts(TargetArch)},
    {o3, o3_opts(TargetArch)},
-   {to_llvm, llvm_opts(o3)},
-   {{to_llvm, o0}, llvm_opts(o0)},
-   {{to_llvm, o1}, llvm_opts(o1)},
-   {{to_llvm, o2}, llvm_opts(o2)},
-   {{to_llvm, o3}, llvm_opts(o3)},
+   {to_llvm, llvm_opts(o3, TargetArch)},
+   {{to_llvm, o0}, llvm_opts(o0, TargetArch)},
+   {{to_llvm, o1}, llvm_opts(o1, TargetArch)},
+   {{to_llvm, o2}, llvm_opts(o2, TargetArch)},
+   {{to_llvm, o3}, llvm_opts(o3, TargetArch)},
    {x87, [x87, inline_fp]},
    {inline_fp, case TargetArch of  %% XXX: Temporary until x86 has sse2
 		 x86 -> [x87, inline_fp];
 		 _ -> [inline_fp] end}].
 
-llvm_opts(O) ->
-  [to_llvm, {llvm_opt, O}, {llvm_llc, O}].
+llvm_opts(O, TargetArch) ->
+  Base = [to_llvm, {llvm_opt, O}, {llvm_llc, O}],
+  case TargetArch of
+    %% A llvm bug present in 3.4 through (at least) 3.8 miscompiles x86
+    %% functions that have floats are spilled to stack by clobbering the process
+    %% pointer (ebp) trying to realign the stack pointer.
+    x86 -> [no_inline_fp | Base];
+      _ -> Base
+  end.
 
 %% This expands "basic" options, which may be tested early and cannot be
 %% in conflict with options found in the source code.
@@ -1505,11 +1574,20 @@ expand_kt2(Opts) ->
 
 -spec expand_options(comp_options(), hipe_architecture()) -> comp_options().
 
-expand_options(Opts, TargetArch) ->
+expand_options(Opts0, TargetArch) ->
+  Opts1 = proplists:normalize(Opts0, [{aliases, opt_aliases()}]),
+  Opts = normalise_opt_options(Opts1),
   proplists:normalize(Opts, [{negations, opt_negations()},
-			     {aliases, opt_aliases()},
 			     {expand, opt_basic_expansions()},
-			     {expand, opt_expansions(TargetArch)}]).
+			     {expand, opt_expansions(TargetArch)},
+			     {negations, opt_negations()}]).
+
+normalise_opt_options([o0|Opts]) -> [o0] ++ (Opts -- [o0, o1, o2, o3]);
+normalise_opt_options([o1|Opts]) -> [o1] ++ (Opts -- [o0, o1, o2, o3]);
+normalise_opt_options([o2|Opts]) -> [o2] ++ (Opts -- [o0, o1, o2, o3]);
+normalise_opt_options([o3|Opts]) -> [o3] ++ (Opts -- [o0, o1, o2, o3]);
+normalise_opt_options([O|Opts]) -> [O|normalise_opt_options(Opts)];
+normalise_opt_options([]) -> [].
 
 -spec check_options(comp_options()) -> 'ok'.
 
@@ -1524,21 +1602,36 @@ check_options(Opts) ->
       ok
   end.
 
--spec llvm_support_available() -> boolean().
+-spec erllvm_is_supported() -> boolean().
+erllvm_is_supported() ->
+  %% XXX: The test should really check the _target_ architecture,
+  %%      (hipe_target_arch), but there's no guarantee it's set.
+  Arch = erlang:system_info(hipe_architecture),
+  lists:member(Arch, [amd64, x86]) andalso llvm_version_is_OK().
 
-llvm_support_available() ->
-  get_llvm_version() >= 3.4.
+-spec llvm_version_is_OK() -> boolean().
+llvm_version_is_OK() ->
+  get_llvm_version() >= {3,9}.
 
+-type llvm_version() :: {Major :: integer(), Minor :: integer()}.
+
+-spec get_llvm_version() -> llvm_version() | {0, 0}.
 get_llvm_version() ->
   OptStr = os:cmd("opt -version"),
   SubStr = "LLVM version ", N = length(SubStr),
-  case string:str(OptStr, SubStr) of
-     0 -> % No opt available
-       0.0;
+  case string:find(OptStr, SubStr) of
+     nomatch -> % No opt available
+       {0, 0};
      S ->
-       case string:to_float(string:sub_string(OptStr, S + N)) of
-         {error, _} -> 0.0; %XXX: Assumes no revision numbers in versioning
-         {Float, _} -> Float
+       case string:lexemes(string:slice(S, N), ".") of
+	 [MajorS, MinorS | _] ->
+	   case {string:to_integer(MajorS), string:to_integer(MinorS)} of
+	     {{Major, ""}, {Minor, _}}
+	       when is_integer(Major), is_integer(Minor) ->
+	       {Major, Minor};
+	     _ -> {0, 0}
+	   end;
+	 _ -> {0, 0} %XXX: Assumes no revision numbers in versioning
        end
   end.
 

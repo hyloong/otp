@@ -1,7 +1,7 @@
 %%--------------------------------------------------------------------
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2013-2014. All Rights Reserved.
+%% Copyright Ericsson AB 2013-2020. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -23,9 +23,7 @@
 %% Description:
 %%    This file contains the test cases for the ct_netconfc API.
 %%
-%% @author Support
-%% @doc Netconf Client Interface.
-%% @end
+%% Netconf Client Interface.
 %%----------------------------------------------------------------------
 %%----------------------------------------------------------------------
 -module(netconfc1_SUITE).
@@ -36,7 +34,8 @@
 -compile(export_all).
 
 suite() ->
-    [{ct_hooks, [{cth_conn_log,
+    [{timetrap,?default_timeout},
+     {ct_hooks, [{cth_conn_log,
 		  [{ct_netconfc,[{log_type,html}, %will be overwritten by config
 				 {hosts,[my_named_connection,netconf1]}]
 		   }]
@@ -72,7 +71,9 @@ all() ->
 	     invalid_opt,
 	     timeout_close_session,
 	     get,
+	     get_a_lot,
 	     timeout_get,
+	     flush_timeout_get,
 	     get_xpath,
 	     get_config,
 	     get_config_xpath,
@@ -96,7 +97,12 @@ all() ->
 	     connection_crash,
 	     get_event_streams,
 	     create_subscription,
-	     receive_event
+	     receive_one_event,
+	     receive_multiple_events,
+	     receive_event_and_rpc,
+	     receive_event_and_rpc_in_chunks,
+             multiple_channels,
+             kill_session_same_connection
 	    ]
     end.
 
@@ -112,43 +118,43 @@ end_per_group(_GroupName, Config) ->
 
 init_per_testcase(_Case, Config) ->
     ets:delete_all_objects(ns_tab),
-    Dog = test_server:timetrap(?default_timeout),
-    [{watchdog, Dog}|Config].
+    Config.
 
-end_per_testcase(_Case, Config) ->
-    Dog=?config(watchdog, Config),
-    test_server:timetrap_cancel(Dog),
+end_per_testcase(_Case, _Config) ->
     ok.
 
 init_per_suite(Config) ->
-    case catch {crypto:start(), ssh:start()} of
-	{ok, ok} ->
-	    {ok, _} =  netconfc_test_lib:get_id_keys(Config),
-	    netconfc_test_lib:make_dsa_files(Config),
-	    Server = ?NS:start(?config(data_dir,Config)),
-	    [{server,Server}|Config];
-	_ ->
-	    {skip, "Crypto and/or SSH could not be started!"}
+    code:ensure_loaded(crypto),
+    case {ssh:start(),code:is_loaded(crypto)} of
+	{Ok,{file,_}} when Ok==ok; Ok=={error,{already_started,ssh}} ->
+	    ct:log("ssh started",[]),
+	    SshDir = filename:join(filename:dirname(code:which(?MODULE)),
+				   "ssh_dir"),
+	    Server = ?NS:start(SshDir),
+	    ct:log("netconf server started",[]),
+	    [{netconf_server,Server},{ssh_dir,SshDir}|Config];
+	Other ->
+	    ct:log("could not start ssh or load crypto: ~p",[Other]),
+	    {skip, "SSH could not be started!"}
     end.
 
 end_per_suite(Config) ->
-    ?NS:stop(?config(server,Config)),
+    ?NS:stop(?config(netconf_server,Config)),
     ssh:stop(),
     crypto:stop(),
-    netconfc_test_lib:remove_id_keys(Config),
     Config.
 
 hello(Config) ->
-    DataDir = ?config(data_dir,Config),
-    {ok,Client} = open_success(DataDir),
+    SshDir = ?config(ssh_dir,Config),
+    {ok,Client} = open_success(SshDir),
     ?NS:expect_do_reply('close-session',close,ok),
     ?ok = ct_netconfc:close_session(Client),
     ok.
 
 hello_from_server_first(Config) ->
-    DataDir = ?config(data_dir,Config),
+    SshDir = ?config(ssh_dir,Config),
     ?NS:hello(1),
-    {ok,Client} = ct_netconfc:only_open(?DEFAULT_SSH_OPTS(DataDir)),
+    {ok,Client} = ct_netconfc:only_open(?DEFAULT_SSH_OPTS(SshDir)),
     ct:sleep(500),
     ?NS:expect(hello),
     ?ok = ct_netconfc:hello(Client, [{capability, ["urn:com:ericsson:ebase:1.1.0"]}], infinity),
@@ -157,8 +163,8 @@ hello_from_server_first(Config) ->
     ok.
 
 hello_named(Config) ->
-    DataDir = ?config(data_dir,Config),
-    {ok,Client} = open_success(any_name,DataDir),
+    SshDir = ?config(ssh_dir,Config),
+    {ok,Client} = open_success(any_name,SshDir),
     ?NS:expect_do_reply('close-session',close,ok),
     ?ok = ct_netconfc:close_session(Client),
     ok.
@@ -166,8 +172,8 @@ hello_named(Config) ->
 hello_configured() ->
     [{require, netconf1}].
 hello_configured(Config) ->
-    DataDir = ?config(data_dir,Config),
-    {ok,Client} = open_configured_success(netconf1,DataDir),
+    SshDir = ?config(ssh_dir,Config),
+    {ok,Client} = open_configured_success(netconf1,SshDir),
     ?NS:expect_do_reply('close-session',close,ok),
     {error, {no_such_name,netconf1}} = ct_netconfc:close_session(netconf1),
     ?ok = ct_netconfc:close_session(Client),
@@ -176,10 +182,10 @@ hello_configured(Config) ->
 hello_configured_extraopts() ->
     [{require, netconf1}].
 hello_configured_extraopts(Config) ->
-    DataDir = ?config(data_dir,Config),
+    SshDir = ?config(ssh_dir,Config),
     %% Test that the cofiguration overwrites the ExtraOpts parameter
     %% to ct_netconfc:open/2.
-    {ok,Client} = open_configured_success(netconf1,DataDir,[{password,"faulty"}]),
+    {ok,Client} = open_configured_success(netconf1,SshDir,[{password,"faulty"}]),
     ?NS:expect_do_reply('close-session',close,ok),
     ?ok = ct_netconfc:close_session(Client),
     ok.
@@ -187,8 +193,8 @@ hello_configured_extraopts(Config) ->
 hello_required() ->
     [{require, my_named_connection, netconf1}].
 hello_required(Config) ->
-    DataDir = ?config(data_dir,Config),
-    {ok,_Client} = open_configured_success(my_named_connection,DataDir),
+    SshDir = ?config(ssh_dir,Config),
+    {ok,_Client} = open_configured_success(my_named_connection,SshDir),
     ?NS:expect_do_reply('close-session',close,ok),
     ?ok = ct_netconfc:close_session(my_named_connection),
     ok.
@@ -196,83 +202,83 @@ hello_required(Config) ->
 hello_required_exists() ->
     [{require, my_named_connection, netconf1}].
 hello_required_exists(Config) ->
-    DataDir = ?config(data_dir,Config),
-    {ok,_Client1} = open_configured_success(my_named_connection,DataDir),
+    SshDir = ?config(ssh_dir,Config),
+    {ok,_Client1} = open_configured_success(my_named_connection,SshDir),
 
-    %% Check that same name can not be used twice
+    %% Check that same name cannot be used twice
     {error,{connection_exists,_Client1}} =
-	ct_netconfc:open(my_named_connection,[{user_dir,DataDir}]),
+	ct_netconfc:open(my_named_connection,[{user_dir,SshDir}]),
 
     ?NS:expect_do_reply('close-session',close,ok),
     ?ok = ct_netconfc:close_session(my_named_connection),
     ct:sleep(500),
 
     %% Then check that it can be used again after the first is closed
-    {ok,_Client2} = open_configured_success(my_named_connection,DataDir),
+    {ok,_Client2} = open_configured_success(my_named_connection,SshDir),
     ?NS:expect_do_reply('close-session',close,ok),
     ?ok = ct_netconfc:close_session(my_named_connection),
     ok.
 
 hello_global_pwd(Config) ->
-    DataDir = ?config(data_dir,Config),
-    {ok,Client} = open_success(DataDir,[{user,"any-user"},
+    SshDir = ?config(ssh_dir,Config),
+    {ok,Client} = open_success(SshDir,[{user,"any-user"},
 					{password,"global-xxx"}]),
     ?NS:expect_do_reply('close-session',close,ok),
     ?ok = ct_netconfc:close_session(Client),
     ok.
 
 hello_no_session_id(Config) ->
-    DataDir = ?config(data_dir,Config),
+    SshDir = ?config(ssh_dir,Config),
     ?NS:hello(no_session_id),
     ?NS:expect(no_session_id,hello),
-    {error,{incorrect_hello,no_session_id_found}} = open(DataDir),
+    {error,{incorrect_hello,no_session_id_found}} = open(SshDir),
     ok.
 
 hello_incomp_base_vsn(Config) ->
-    DataDir = ?config(data_dir,Config),
+    SshDir = ?config(ssh_dir,Config),
     ?NS:hello(1,{base,"1.1"}),
     ?NS:expect(hello),
-    {error,{incompatible_base_capability_vsn,"1.1"}} = open(DataDir),
+    {error,{incompatible_base_capability_vsn,"1.1"}} = open(SshDir),
     ok.
 
 hello_no_base_cap(Config) ->
-    DataDir = ?config(data_dir,Config),
+    SshDir = ?config(ssh_dir,Config),
     ?NS:hello(1,no_base),
     ?NS:expect(hello),
-    {error,{incorrect_hello,no_base_capability_found}} = open(DataDir),
+    {error,{incorrect_hello,no_base_capability_found}} = open(SshDir),
     ok.
 
 hello_no_caps(Config) ->
-    DataDir = ?config(data_dir,Config),
+    SshDir = ?config(ssh_dir,Config),
     ?NS:hello(1,no_caps),
     ?NS:expect(hello),
-    {error,{incorrect_hello,capabilities_not_found}} = open(DataDir),
+    {error,{incorrect_hello,capabilities_not_found}} = open(SshDir),
     ok.
 
 no_server_hello(Config) ->
-    DataDir = ?config(data_dir,Config),
+    SshDir = ?config(ssh_dir,Config),
     ?NS:expect(undefined,hello),
-    {error,{hello_session_failed,timeout}} = open(DataDir,[{timeout,2000}]),
+    {error,{hello_session_failed,timeout}} = open(SshDir,[{timeout,2000}]),
     ok.
 
 no_client_hello(Config) ->
-    DataDir = ?config(data_dir,Config),
+    SshDir = ?config(ssh_dir,Config),
     ?NS:hello(1),
-    {ok,Client} = ct_netconfc:only_open(?DEFAULT_SSH_OPTS(DataDir)),
+    {ok,Client} = ct_netconfc:only_open(?DEFAULT_SSH_OPTS(SshDir)),
 
     %% Allow server hello to arrive
     ct:sleep(500),
 
     %% Tell server to receive a get request and then die without
     %% replying since no hello has been received. (is this correct
-    %% behavoiur??)
+    %% behaviour??)
     ?NS:expect_do(get,close),
     {error,closed} = ct_netconfc:get(Client,whatever),
     ok.
 
 get_session_id(Config) ->
-    DataDir = ?config(data_dir,Config),
-    {ok,Client} = open_success(DataDir),
+    SshDir = ?config(ssh_dir,Config),
+    {ok,Client} = open_success(SshDir),
 
     1 = ct_netconfc:get_session_id(Client),
 
@@ -281,8 +287,8 @@ get_session_id(Config) ->
     ok.
 
 get_capabilities(Config) ->
-    DataDir = ?config(data_dir,Config),
-    {ok,Client} = open_success(DataDir),
+    SshDir = ?config(ssh_dir,Config),
+    {ok,Client} = open_success(SshDir),
 
     Caps = ct_netconfc:get_capabilities(Client),
     BaseCap = ?NETCONF_BASE_CAP ++ ?NETCONF_BASE_CAP_VSN,
@@ -293,48 +299,49 @@ get_capabilities(Config) ->
     ok.
 
 faulty_user(Config) ->
-    DataDir = ?config(data_dir,Config),
+    SshDir = ?config(ssh_dir,Config),
     {error,{ssh,could_not_connect_to_server,
 	    "Unable to connect using the available authentication methods"}} =
-	open(DataDir,[{user,"yyy"}]),
+	open(SshDir,[{user,"yyy"}]),
     ok.
 
 faulty_passwd(Config) ->
-    DataDir = ?config(data_dir,Config),
+    SshDir = ?config(ssh_dir,Config),
     {error,{ssh,could_not_connect_to_server,
 	    "Unable to connect using the available authentication methods"}} =
-	open(DataDir,[{password,"yyy"}]),
+	open(SshDir,[{password,"yyy"}]),
     ok.
 
 faulty_port(Config) ->
-    DataDir = ?config(data_dir,Config),
+    SshDir = ?config(ssh_dir,Config),
     {error,{ssh,could_not_connect_to_server,econnrefused}} =
-	open(DataDir,[{port,2062}]),
+	open(SshDir,[{port,2062}]),
     ok.
 
 no_host(Config) ->
-    DataDir = ?config(data_dir,Config),
-    Opts = lists:keydelete(ssh,1,?DEFAULT_SSH_OPTS(DataDir)),
+    SshDir = ?config(ssh_dir,Config),
+    Opts = lists:keydelete(ssh,1,?DEFAULT_SSH_OPTS(SshDir)),
     {error,no_host_address} = ct_netconfc:open(Opts),
     ok.
 
 no_port(Config) ->
-    DataDir = ?config(data_dir,Config),
-    Opts = lists:keydelete(port,1,?DEFAULT_SSH_OPTS(DataDir)),
+    SshDir = ?config(ssh_dir,Config),
+    Opts = lists:keydelete(port,1,?DEFAULT_SSH_OPTS(SshDir)),
     {error,no_port} = ct_netconfc:open(Opts),
     ok.
 
 invalid_opt(Config) ->
-    DataDir = ?config(data_dir,Config),
-    Opts1 = ?DEFAULT_SSH_OPTS(DataDir) ++ [{timeout,invalidvalue}],
+    SshDir = ?config(ssh_dir,Config),
+    Opts1 = ?DEFAULT_SSH_OPTS(SshDir) ++ [{timeout,invalidvalue}],
     {error,{invalid_option,{timeout,invalidvalue}}} = ct_netconfc:open(Opts1),
-    Opts2 = ?DEFAULT_SSH_OPTS(DataDir) ++ [{some_other_opt,true}],
-    {error,{invalid_option,{some_other_opt,true}}} = ct_netconfc:open(Opts2),
+    Opts2 = ?DEFAULT_SSH_OPTS(SshDir) ++ [{some_other_opt,true}],
+    {error,{ssh,could_not_connect_to_server,{options,_}}} =
+	ct_netconfc:open(Opts2),
     ok.
 
 timeout_close_session(Config) ->
-    DataDir = ?config(data_dir,Config),
-    {ok,Client} = open_success(DataDir),
+    SshDir = ?config(ssh_dir,Config),
+    {ok,Client} = open_success(SshDir),
     ?NS:expect('close-session'),
     true = erlang:is_process_alive(Client),
     {error,timeout} = ct_netconfc:close_session(Client,1000),
@@ -342,8 +349,8 @@ timeout_close_session(Config) ->
     ok.
 
 get(Config) ->
-    DataDir = ?config(data_dir,Config),
-    {ok,Client} = open_success(DataDir),
+    SshDir = ?config(ssh_dir,Config),
+    {ok,Client} = open_success(SshDir),
     Data = [{server,[{xmlns,"myns"}],[{name,[],["myserver"]}]}],
     ?NS:expect_reply('get',{data,Data}),
     {ok,Data} = ct_netconfc:get(Client,{server,[{xmlns,"myns"}],[]}),
@@ -351,18 +358,53 @@ get(Config) ->
     ?ok = ct_netconfc:close_session(Client),
     ok.
 
+get_a_lot(Config) ->
+    SshDir = ?config(ssh_dir,Config),
+    {ok,Client} = open_success(SshDir),
+    Descr = lists:append(lists:duplicate(100,"Description of myserver! ")),
+    Server = {server,[{xmlns,"myns"}],[{name,[],["myserver"]},
+				       {description,[],[Descr]}]},
+    Data = lists:duplicate(100,Server),
+    ?NS:expect_reply('get',{fragmented,{data,Data}}),
+    {ok,Data} = ct_netconfc:get(Client,{server,[{xmlns,"myns"}],[]}),
+    ?NS:expect_do_reply('close-session',close,ok),
+    ?ok = ct_netconfc:close_session(Client),
+    ok.
+
 timeout_get(Config) ->
-    DataDir = ?config(data_dir,Config),
-    {ok,Client} = open_success(DataDir),
+    SshDir = ?config(ssh_dir,Config),
+    {ok,Client} = open_success(SshDir),
     ?NS:expect('get'),
     {error,timeout} = ct_netconfc:get(Client,{server,[{xmlns,"myns"}],[]},1000),
     ?NS:expect_do_reply('close-session',close,ok),
     ?ok = ct_netconfc:close_session(Client),
     ok.
 
+%% Test OTP-13008 "ct_netconfc crash when receiving unknown timeout"
+%% If the timer expires "at the same time" as the rpc reply is
+%% received, the timeout message might already be sent when the timer
+%% is cancelled. This test checks that the timeout message is flushed
+%% from the message queue. If it isn't, the client crashes and the
+%% session cannot be closed afterwards.
+%% Note that we can only hope that the test case triggers the problem
+%% every now and then, as it is very timing dependent...
+flush_timeout_get(Config) ->
+    SshDir = ?config(ssh_dir,Config),
+    {ok,Client} = open_success(SshDir),
+    Data = [{server,[{xmlns,"myns"}],[{name,[],["myserver"]}]}],
+    ?NS:expect_reply('get',{data,Data}),
+    timer:sleep(1000),
+    case ct_netconfc:get(Client,{server,[{xmlns,"myns"}],[]},1) of
+	{error,timeout} -> ok; % problem not triggered
+	{ok,Data} -> ok % problem possibly triggered
+    end,
+    ?NS:expect_do_reply('close-session',close,ok),
+    ?ok = ct_netconfc:close_session(Client),
+    ok.
+
 get_xpath(Config) ->
-    DataDir = ?config(data_dir,Config),
-    {ok,Client} = open_success(DataDir),
+    SshDir = ?config(ssh_dir,Config),
+    {ok,Client} = open_success(SshDir),
     Data = [{server,[{xmlns,"myns"}],[{name,[],["myserver"]}]}],
     ?NS:expect_reply({'get',xpath},{data,Data}),
     {ok,Data} = ct_netconfc:get(Client,{xpath,"/server"}),
@@ -371,8 +413,8 @@ get_xpath(Config) ->
     ok.
 
 get_config(Config) ->
-    DataDir = ?config(data_dir,Config),
-    {ok,Client} = open_success(DataDir),
+    SshDir = ?config(ssh_dir,Config),
+    {ok,Client} = open_success(SshDir),
     Data = [{server,[{xmlns,"myns"}],[{name,[],["myserver"]}]}],
     ?NS:expect_reply('get-config',{data,Data}),
     {ok,Data} = ct_netconfc:get_config(Client,running,
@@ -382,8 +424,8 @@ get_config(Config) ->
     ok.
 
 get_config_xpath(Config) ->
-    DataDir = ?config(data_dir,Config),
-    {ok,Client} = open_success(DataDir),
+    SshDir = ?config(ssh_dir,Config),
+    {ok,Client} = open_success(SshDir),
     Data = [{server,[{xmlns,"myns"}],[{name,[],["myserver"]}]}],
     ?NS:expect_reply({'get-config',xpath},{data,Data}),
     {ok,Data} = ct_netconfc:get_config(Client,running,{xpath,"/server"}),
@@ -392,19 +434,25 @@ get_config_xpath(Config) ->
     ok.
 
 edit_config(Config) ->
-    DataDir = ?config(data_dir,Config),
-    {ok,Client} = open_success(DataDir),
+    SshDir = ?config(ssh_dir,Config),
+    {ok,Client} = open_success(SshDir),
     ?NS:expect_reply('edit-config',ok),
     ?ok = ct_netconfc:edit_config(Client,running,
 				  {server,[{xmlns,"myns"}],
 				   [{name,["myserver"]}]}),
+    ?NS:expect_reply('edit-config',ok),
+    ?ok = ct_netconfc:edit_config(Client,running,
+				  [{server,[{xmlns,"myns"}],
+                                    [{name,["server1"]}]},
+                                   {server,[{xmlns,"myns"}],
+                                    [{name,["server2"]}]}]),
     ?NS:expect_do_reply('close-session',close,ok),
     ?ok = ct_netconfc:close_session(Client),
     ok.
 
 edit_config_opt_params(Config) ->
-    DataDir = ?config(data_dir,Config),
-    {ok,Client} = open_success(DataDir),
+    SshDir = ?config(ssh_dir,Config),
+    {ok,Client} = open_success(SshDir),
     ?NS:expect_reply({'edit-config',{'default-operation',"none"}},ok),
     ?ok = ct_netconfc:edit_config(Client,running,
 				  {server,[{xmlns,"myns"}],
@@ -415,8 +463,8 @@ edit_config_opt_params(Config) ->
     ok.
 
 copy_config(Config) ->
-    DataDir = ?config(data_dir,Config),
-    {ok,Client} = open_success(DataDir),
+    SshDir = ?config(ssh_dir,Config),
+    {ok,Client} = open_success(SshDir),
     ?NS:expect_reply('copy-config',ok),
     ?ok = ct_netconfc:copy_config(Client,startup,running),
     ?NS:expect_do_reply('close-session',close,ok),
@@ -424,8 +472,8 @@ copy_config(Config) ->
     ok.
 
 delete_config(Config) ->
-    DataDir = ?config(data_dir,Config),
-    {ok,Client} = open_success(DataDir),
+    SshDir = ?config(ssh_dir,Config),
+    {ok,Client} = open_success(SshDir),
     ?NS:expect_reply('delete-config',ok),
     ?ok = ct_netconfc:delete_config(Client,startup),
     ?NS:expect_do_reply('close-session',close,ok),
@@ -433,8 +481,8 @@ delete_config(Config) ->
     ok.
 
 lock(Config) ->
-    DataDir = ?config(data_dir,Config),
-    {ok,Client} = open_success(DataDir),
+    SshDir = ?config(ssh_dir,Config),
+    {ok,Client} = open_success(SshDir),
     ?NS:expect_reply('lock',ok),
     ?ok = ct_netconfc:lock(Client,running),
     ?NS:expect_do_reply('close-session',close,ok),
@@ -442,8 +490,8 @@ lock(Config) ->
     ok.
 
 unlock(Config) ->
-    DataDir = ?config(data_dir,Config),
-    {ok,Client} = open_success(DataDir),
+    SshDir = ?config(ssh_dir,Config),
+    {ok,Client} = open_success(SshDir),
     ?NS:expect_reply('unlock',ok),
     ?ok = ct_netconfc:unlock(Client,running),
     ?NS:expect_do_reply('close-session',close,ok),
@@ -451,15 +499,16 @@ unlock(Config) ->
     ok.
 
 kill_session(Config) ->
-    DataDir = ?config(data_dir,Config),
-    {ok,Client} = open_success(DataDir),
+    SshDir = ?config(ssh_dir,Config),
+    {ok,Client} = open_success(SshDir),
 
     ?NS:hello(2),
     ?NS:expect(2,hello),
-    {ok,_OtherClient} = open(DataDir),
+    {ok,OtherClient} = open(SshDir),
 
     ?NS:expect_do_reply('kill-session',{kill,2},ok),
     ?ok = ct_netconfc:kill_session(Client,2),
+    {error,_}=ct_netconfc:get(OtherClient,{server,[{xmlns,"myns"}],[]}),
 
     ?NS:expect_do_reply('close-session',close,ok),
     ?ok = ct_netconfc:close_session(Client),
@@ -467,8 +516,8 @@ kill_session(Config) ->
     ok.
 
 get_no_such_client(Config) ->
-    DataDir = ?config(data_dir,Config),
-    {ok,Client} = open_success(DataDir),
+    SshDir = ?config(ssh_dir,Config),
+    {ok,Client} = open_success(SshDir),
 
     ?NS:expect_do_reply('close-session',close,ok),
     ?ok = ct_netconfc:close_session(Client),
@@ -484,8 +533,8 @@ get_no_such_client(Config) ->
     ok.
 
 action(Config) ->
-    DataDir = ?config(data_dir,Config),
-    {ok,Client} = open_success(DataDir),
+    SshDir = ?config(ssh_dir,Config),
+    {ok,Client} = open_success(SshDir),
     Data = [{myactionreturn,[{xmlns,"myns"}],["value"]}],
     %% test either to receive {data,Data} or {ok,Data},
     %% both need to be handled
@@ -504,8 +553,8 @@ action(Config) ->
     ok.
 
 send_any_rpc(Config) ->
-    DataDir = ?config(data_dir,Config),
-    {ok,Client} = open_success(DataDir),
+    SshDir = ?config(ssh_dir,Config),
+    {ok,Client} = open_success(SshDir),
     Data = [{server,[{xmlns,"myns"}],[{name,[],["myserver"]}]}],
     GetConf = {'get-config',
 	       [{source,["running"]},
@@ -526,8 +575,8 @@ send_any_rpc(Config) ->
     ok.
 
 send_any(Config) ->
-    DataDir = ?config(data_dir,Config),
-    {ok,Client} = open_success(DataDir),
+    SshDir = ?config(ssh_dir,Config),
+    {ok,Client} = open_success(SshDir),
 
     %% Correct get-config rpc
     Data = [{server,[{xmlns,"myns"}],[{name,[],["myserver"]}]}],
@@ -559,8 +608,8 @@ send_any(Config) ->
     ok.
 
 hide_password(Config) ->
-    DataDir = ?config(data_dir,Config),
-    {ok,Client} = open_success(DataDir),
+    SshDir = ?config(ssh_dir,Config),
+    {ok,Client} = open_success(SshDir),
     Password = "my_very_secret_password",
     Data = [{passwords,[{xmlns,"myns"}],
 	     [{password,[{xmlns,"pwdns"}],[Password]},
@@ -588,8 +637,8 @@ hide_password(Config) ->
     ok.
 
 not_proper_xml(Config) ->
-    DataDir = ?config(data_dir,Config),
-    {ok,Client} = open_success(DataDir),
+    SshDir = ?config(ssh_dir,Config),
+    {ok,Client} = open_success(SshDir),
     NS = list_to_binary(?NETCONF_NAMESPACE),
     NotProper = <<"<rpc-reply message-id=\"1\" xmlns=\"",
 		  NS/binary,"\"><data></rpc-reply>">>,
@@ -601,8 +650,8 @@ not_proper_xml(Config) ->
     ok.
 
 prefixed_namespace(Config) ->
-    DataDir = ?config(data_dir,Config),
-    {ok,Client} = open_success(DataDir),
+    SshDir = ?config(ssh_dir,Config),
+    {ok,Client} = open_success(SshDir),
     NS = list_to_binary(?NETCONF_NAMESPACE),
 
     %% Test that data element can be properly decoded and that
@@ -634,8 +683,8 @@ prefixed_namespace(Config) ->
 %% i.e. when the complete rpc-reply is not contained in one single ssh
 %% data message.
 receive_chunked_data(Config) ->
-    DataDir = ?config(data_dir,Config),
-    {ok,Client} = open_success(DataDir),
+    SshDir = ?config(ssh_dir,Config),
+    {ok,Client} = open_success(SshDir),
 
     %% Construct the data to return from netconf server
     Data = [{servers,[{xmlns,"myns"}],
@@ -682,8 +731,8 @@ receive_chunked_data(Config) ->
 
 %% Same as receive_chunked_data, but timeout waiting for last part.
 timeout_receive_chunked_data(Config) ->
-    DataDir = ?config(data_dir,Config),
-    {ok,Client} = open_success(DataDir),
+    SshDir = ?config(ssh_dir,Config),
+    {ok,Client} = open_success(SshDir),
 
     %% Construct the data to return from netconf server
     Data = [{servers,[{xmlns,"myns"}],
@@ -728,8 +777,8 @@ timeout_receive_chunked_data(Config) ->
 
 %% Same as receive_chunked_data, but close while waiting for last part.
 close_while_waiting_for_chunked_data(Config) ->
-    DataDir = ?config(data_dir,Config),
-    {ok,Client} = open_success(DataDir),
+    SshDir = ?config(ssh_dir,Config),
+    {ok,Client} = open_success(SshDir),
 
     %% Construct the data to return from netconf server
     Data = [{servers,[{xmlns,"myns"}],
@@ -767,12 +816,12 @@ close_while_waiting_for_chunked_data(Config) ->
     %% Order server to expect a get - then the process above will make
     %% sure the rpc-reply is sent - but only a part of it - then close.
     ?NS:expect('get'),
-    {error,closed} = ct_netconfc:get(Client,{server,[{xmlns,"myns"}],[]},2000),
+    {error,closed} = ct_netconfc:get(Client,{server,[{xmlns,"myns"}],[]},4000),
     ok.
 
 connection_crash(Config) ->
-    DataDir = ?config(data_dir,Config),
-    {ok,Client} = open_success(DataDir),
+    SshDir = ?config(ssh_dir,Config),
+    {ok,Client} = open_success(SshDir),
 
     %% Test that if the test survives killing the connection
     %% process. Earlier this caused ct_util_server to terminate, and
@@ -783,8 +832,8 @@ connection_crash(Config) ->
     ok.
 
 get_event_streams(Config) ->
-    DataDir = ?config(data_dir,Config),
-    {ok,Client} = open_success(DataDir),
+    SshDir = ?config(ssh_dir,Config),
+    {ok,Client} = open_success(SshDir),
     StreamNames = ["NETCONF","stream1","stream2"],
     Streams = [{N,[{description,"descr of " ++ N}]} || N <- StreamNames],
     StreamsXml = [{stream,[{name,[N]}|[{Tag,[Value]} || {Tag,Value} <- Data]]}
@@ -804,31 +853,31 @@ get_event_streams(Config) ->
     ok.
 
 create_subscription(Config) ->
-    DataDir = ?config(data_dir,Config),
+    SshDir = ?config(ssh_dir,Config),
 
     %% All defaults
-    {ok,Client1} = open_success(DataDir),
+    {ok,Client1} = open_success(SshDir),
     ?NS:expect_reply({'create-subscription',[stream]},ok),
     ?ok = ct_netconfc:create_subscription(Client1),
     ?NS:expect_do_reply('close-session',close,ok),
     ?ok = ct_netconfc:close_session(Client1),
 
     %% All defaults with timeout
-    {ok,Client1a} = open_success(DataDir),
+    {ok,Client1a} = open_success(SshDir),
     ?NS:expect_reply({'create-subscription',[stream]},ok),
     ?ok = ct_netconfc:create_subscription(Client1a,5000),
     ?NS:expect_do_reply('close-session',close,ok),
     ?ok = ct_netconfc:close_session(Client1a),
 
     %% All defaults timing out
-    {ok,Client1b} = open_success(DataDir),
+    {ok,Client1b} = open_success(SshDir),
     ?NS:expect({'create-subscription',[stream]}),
     {error,timeout} = ct_netconfc:create_subscription(Client1b,100),
     ?NS:expect_do_reply('close-session',close,ok),
     ?ok = ct_netconfc:close_session(Client1b),
 
     %% Stream
-    {ok,Client2} = open_success(DataDir),
+    {ok,Client2} = open_success(SshDir),
     ?NS:expect_reply({'create-subscription',[stream]},ok),
     Stream = "some_stream",
     ?ok = ct_netconfc:create_subscription(Client2,Stream),
@@ -836,7 +885,7 @@ create_subscription(Config) ->
     ?ok = ct_netconfc:close_session(Client2),
 
     %% Filter
-    {ok,Client3} = open_success(DataDir),
+    {ok,Client3} = open_success(SshDir),
     ?NS:expect_reply({'create-subscription',[stream,filter]},ok),
     Filter = {notification,?NETMOD_NOTIF_NAMESPACE_ATTR,
 	      [eventTime]},
@@ -845,28 +894,28 @@ create_subscription(Config) ->
     ?ok = ct_netconfc:close_session(Client3),
 
     %% Filter with timeout
-    {ok,Client3a} = open_success(DataDir),
+    {ok,Client3a} = open_success(SshDir),
     ?NS:expect_reply({'create-subscription',[stream,filter]},ok),
     ?ok = ct_netconfc:create_subscription(Client3a,Filter,5000),
     ?NS:expect_do_reply('close-session',close,ok),
     ?ok = ct_netconfc:close_session(Client3a),
 
     %% Filter timing out
-    {ok,Client3b} = open_success(DataDir),
+    {ok,Client3b} = open_success(SshDir),
     ?NS:expect({'create-subscription',[stream,filter]}),
     {error,timeout}=ct_netconfc:create_subscription(Client3b,Filter,100),
     ?NS:expect_do_reply('close-session',close,ok),
     ?ok = ct_netconfc:close_session(Client3b),
 
     %% Stream and filter
-    {ok,Client4} = open_success(DataDir),
+    {ok,Client4} = open_success(SshDir),
     ?NS:expect_reply({'create-subscription',[stream,filter]},ok),
     ?ok = ct_netconfc:create_subscription(Client4,Stream,Filter),
     ?NS:expect_do_reply('close-session',close,ok),
     ?ok = ct_netconfc:close_session(Client4),
 
     %% Start/stop time
-    {ok,Client5} = open_success(DataDir),
+    {ok,Client5} = open_success(SshDir),
     ?NS:expect_reply({'create-subscription',[stream,startTime,stopTime]},ok),
     StartTime = xs_datetime({D,{H,M,S}}= calendar:local_time()),
     StopTime = xs_datetime({D,{H+2,M,S}}),
@@ -875,14 +924,14 @@ create_subscription(Config) ->
     ?ok = ct_netconfc:close_session(Client5),
 
     %% Start/stop time with timeout
-    {ok,Client5a} = open_success(DataDir),
+    {ok,Client5a} = open_success(SshDir),
     ?NS:expect_reply({'create-subscription',[stream,startTime,stopTime]},ok),
     ?ok = ct_netconfc:create_subscription(Client5a,StartTime,StopTime,5000),
     ?NS:expect_do_reply('close-session',close,ok),
     ?ok = ct_netconfc:close_session(Client5a),
 
     %% Start/stop time timing out
-    {ok,Client5b} = open_success(DataDir),
+    {ok,Client5b} = open_success(SshDir),
     ?NS:expect({'create-subscription',[stream,startTime,stopTime]}),
     {error,timeout} =
 	ct_netconfc:create_subscription(Client5b,StartTime,StopTime,100),
@@ -890,14 +939,14 @@ create_subscription(Config) ->
     ?ok = ct_netconfc:close_session(Client5b),
 
     %% Stream and start/stop time
-    {ok,Client6} = open_success(DataDir),
+    {ok,Client6} = open_success(SshDir),
     ?NS:expect_reply({'create-subscription',[stream,startTime,stopTime]},ok),
     ?ok = ct_netconfc:create_subscription(Client6,Stream,StartTime,StopTime),
     ?NS:expect_do_reply('close-session',close,ok),
     ?ok = ct_netconfc:close_session(Client6),
 
     %% Filter and start/stop time
-    {ok,Client7} = open_success(DataDir),
+    {ok,Client7} = open_success(SshDir),
     ?NS:expect_reply({'create-subscription',[stream,filter,startTime,stopTime]},
 		    ok),
     ?ok = ct_netconfc:create_subscription(Client7,Filter,
@@ -906,7 +955,7 @@ create_subscription(Config) ->
     ?ok = ct_netconfc:close_session(Client7),
 
     %% Stream, filter and start/stop time
-    {ok,Client8} = open_success(DataDir),
+    {ok,Client8} = open_success(SshDir),
     ?NS:expect_reply({'create-subscription',[stream,filter,startTime,stopTime]},
 		    ok),
     ?ok = ct_netconfc:create_subscription(Client8,Stream,Filter,
@@ -915,7 +964,7 @@ create_subscription(Config) ->
     ?ok = ct_netconfc:close_session(Client8),
 
     %% Multiple filters
-    {ok,Client9} = open_success(DataDir),
+    {ok,Client9} = open_success(SshDir),
     ?NS:expect_reply({'create-subscription',[stream,filter]},ok),
     MultiFilters = [{event,[{xmlns,"http://my.namespaces.com/event"}],
 		     [{eventClass,["fault"]},
@@ -929,16 +978,16 @@ create_subscription(Config) ->
 
     ok.
 
-receive_event(Config) ->
-    DataDir = ?config(data_dir,Config),
-    {ok,Client} = open_success(DataDir),
+receive_one_event(Config) ->
+    SshDir = ?config(ssh_dir,Config),
+    {ok,Client} = open_success(SshDir),
     ?NS:expect_reply({'create-subscription',[stream]},ok),
     ?ok = ct_netconfc:create_subscription(Client),
 
-    ?NS:hupp(send_event),
+    ?NS:hupp({send_events,1}),
 
     receive
-	%% Matching ?NS:make_msg(event)
+	%% Matching ?NS:make_msg({event,_})
 	{notification,?NETCONF_NOTIF_NAMESPACE_ATTR,
 	 [{eventTime,[],[_Time]},
 	  {event,[{xmlns,"http://my.namespaces.com/event"}],
@@ -956,13 +1005,254 @@ receive_event(Config) ->
 
     ok.
 
+receive_multiple_events(Config) ->
+    SshDir = ?config(ssh_dir,Config),
+    {ok,Client} = open_success(SshDir),
+    ?NS:expect_reply({'create-subscription',[stream]},ok),
+    ?ok = ct_netconfc:create_subscription(Client),
+
+    ?NS:hupp({send_events,3}),
+
+    receive
+	%% Matching ?NS:make_msg({event,_})
+	{notification,_,_} ->
+	    ok;
+	Other1 ->
+	    ct:fail({got_unexpected_while_waiting_for_event, Other1})
+    after 3000 ->
+	    ct:fail(timeout_waiting_for_event)
+    end,
+    receive
+	%% Matching ?NS:make_msg({event,_})
+	{notification,_,_} ->
+	    ok;
+	Other2 ->
+	    ct:fail({got_unexpected_while_waiting_for_event, Other2})
+    after 3000 ->
+	    ct:fail(timeout_waiting_for_event)
+    end,
+    receive
+	%% Matching ?NS:make_msg({event,_})
+	{notification,_,_} ->
+	    ok;
+	Other3 ->
+	    ct:fail({got_unexpected_while_waiting_for_event, Other3})
+    after 3000 ->
+	    ct:fail(timeout_waiting_for_event)
+    end,
+
+    ?NS:expect_do_reply('close-session',close,ok),
+    ?ok = ct_netconfc:close_session(Client),
+
+    ok.
+
+receive_event_and_rpc(Config) ->
+    SshDir = ?config(ssh_dir,Config),
+    {ok,Client} = open_success(SshDir),
+
+    ?NS:expect_reply({'create-subscription',[stream]},ok),
+    ?ok = ct_netconfc:create_subscription(Client),
+
+    %% Construct the data to return from netconf server - one
+    %% rpc-reply and one notification - to be sent in the same ssh
+    %% package.
+    Data = [{servers,[{xmlns,"myns"}],[{server,[],[{name,[],["myserver"]}]}]}],
+    Rpc = {'rpc-reply',?NETCONF_NAMESPACE_ATTR ++ [{'message-id',"2"}],
+	   [{data,Data}]},
+    RpcXml = list_to_binary(xmerl:export_simple_element(Rpc,xmerl_xml)),
+
+    Notification =
+	{notification,?NETCONF_NOTIF_NAMESPACE_ATTR,
+	 [{eventTime,["2012-06-14T14:50:54+02:00"]},
+	  {event,[{xmlns,"http://my.namespaces.com/event"}],
+	   [{severity,["major"]},
+	    {description,["Something terrible happened"]}]}]},
+    NotifXml =
+	list_to_binary(xmerl:export_simple_element(Notification,xmerl_xml)),
+
+    ?NS:expect_reply('get',[RpcXml,NotifXml]),
+    {ok,Data} = ct_netconfc:get(Client,{server,[{xmlns,"myns"}],[]}),
+
+    receive
+	{notification,_,_} ->
+	    ok;
+	Other1 ->
+	    ct:fail({got_unexpected_while_waiting_for_event, Other1})
+    after 3000 ->
+	    ct:fail(timeout_waiting_for_event)
+    end,
+
+
+    %% Then do the same again, but now send notification first then
+    %% the rpc-reply.
+    Rpc2 = {'rpc-reply',?NETCONF_NAMESPACE_ATTR ++ [{'message-id',"3"}],
+	   [{data,Data}]},
+    RpcXml2 = list_to_binary(xmerl:export_simple_element(Rpc2,xmerl_xml)),
+    ?NS:expect_reply('get',[NotifXml,RpcXml2]),
+    {ok,Data} = ct_netconfc:get(Client,{server,[{xmlns,"myns"}],[]}),
+
+    receive
+	{notification,_,_} ->
+	    ok;
+	Other2 ->
+	    ct:fail({got_unexpected_while_waiting_for_event, Other2})
+    after 3000 ->
+	    ct:fail(timeout_waiting_for_event)
+    end,
+
+    ?NS:expect_do_reply('close-session',close,ok),
+    ?ok = ct_netconfc:close_session(Client),
+
+    ok.
+
+
+receive_event_and_rpc_in_chunks(Config) ->
+    SshDir = ?config(ssh_dir,Config),
+    {ok,Client} = open_success(SshDir),
+
+    ?NS:expect_reply({'create-subscription',[stream]},ok),
+    ?ok = ct_netconfc:create_subscription(Client),
+
+    %% Construct the data to return from netconf server
+    Data = [{servers,[{xmlns,"myns"}],
+	     [{server,[],[{name,[],["server0"]}]},
+	      {server,[],[{name,[],["server1"]}]},
+	      {server,[],[{name,[],["server2"]}]},
+	      {server,[],[{name,[],["server3"]}]},
+	      {server,[],[{name,[],["server4"]}]},
+	      {server,[],[{name,[],["server5"]}]},
+	      {server,[],[{name,[],["server6"]}]},
+	      {server,[],[{name,[],["server7"]}]},
+	      {server,[],[{name,[],["server8"]}]},
+	      {server,[],[{name,[],["server9"]}]}]
+	    }],
+    Rpc = {'rpc-reply',?NETCONF_NAMESPACE_ATTR ++ [{'message-id',"2"}],
+	   [{data,Data}]},
+    RpcXml = list_to_binary(xmerl:export_simple_element(Rpc,xmerl_xml)),
+
+    Notification =
+	{notification,?NETCONF_NOTIF_NAMESPACE_ATTR,
+	 [{eventTime,["2012-06-14T14:50:54+02:00"]},
+	  {event,[{xmlns,"http://my.namespaces.com/event"}],
+	   [{severity,["major"]},
+	    {description,["Something terrible happened"]}]}]},
+    NotifXml =
+	list_to_binary(xmerl:export_simple_element(Notification,xmerl_xml)),
+
+
+    %% First part contains a notif, but only parts of the end tag
+    Part1 =
+	<<"<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n",
+	  NotifXml/binary,"\n]]">>,
+
+    %% Second part contains rest of end tag, full rpc-reply and full
+    %% notif except end tag
+    Part2 =
+	<<">]]>\n",RpcXml/binary,"\n",?END_TAG/binary,NotifXml/binary>>,
+
+    %% Third part contains last end tag
+    Part3 = <<"\n",?END_TAG/binary,"\n">>,
+
+    %% Spawn a process which will wait a bit for the client to send
+    %% the request (below), then order the server to the chunks of the
+    %% rpc-reply one by one.
+    spawn(fun() -> ct:sleep(500),?NS:hupp(send,Part1),
+		   ct:sleep(100),?NS:hupp(send,Part2),
+		   ct:sleep(100),?NS:hupp(send,Part3)
+	  end),
+
+    %% Order server to expect a get - then the process above will make
+    %% sure the rpc-reply is sent.
+    ?NS:expect('get'),
+    {ok,Data} = ct_netconfc:get(Client,{server,[{xmlns,"myns"}],[]}),
+
+    receive
+	{notification,_,_} ->
+	    ok;
+	Other1 ->
+	    ct:fail({got_unexpected_while_waiting_for_event, Other1})
+    after 3000 ->
+	    ct:fail(timeout_waiting_for_event)
+    end,
+    receive
+	{notification,_,_} ->
+	    ok;
+	Other2 ->
+	    ct:fail({got_unexpected_while_waiting_for_event, Other2})
+    after 3000 ->
+	    ct:fail(timeout_waiting_for_event)
+    end,
+    ?NS:expect_do_reply('close-session',close,ok),
+    ?ok = ct_netconfc:close_session(Client),
+    ok.
+
+multiple_channels(Config) ->
+    SshDir = ?config(ssh_dir,Config),
+    SshOpts = ?DEFAULT_SSH_OPTS(SshDir),
+    {ok,Conn} = ct_netconfc:connect(SshOpts),
+    ?NS:hello(1),
+    ?NS:expect(hello),
+    {ok,Client1} = ct_netconfc:session(Conn),
+    ?NS:hello(2),
+    ?NS:expect(2,hello),
+    {ok,Client2} = ct_netconfc:session(Conn),
+    ?NS:hello(3),
+    ?NS:expect(3,hello),
+    {ok,Client3} = ct_netconfc:session(Conn),
+
+    Data = [{server,[{xmlns,"myns"}],[{name,[],["myserver"]}]}],
+    ?NS:expect_reply(1,'get',{data,Data}),
+    {ok,Data} = ct_netconfc:get(Client1,{server,[{xmlns,"myns"}],[]}),
+    ?NS:expect_reply(2,'get',{data,Data}),
+    {ok,Data} = ct_netconfc:get(Client2,{server,[{xmlns,"myns"}],[]}),
+    ?NS:expect_reply(3,'get',{data,Data}),
+    {ok,Data} = ct_netconfc:get(Client3,{server,[{xmlns,"myns"}],[]}),
+
+    ?NS:expect_do_reply(2,'close-session',close,ok),
+    ?ok = ct_netconfc:close_session(Client2),
+
+    ?NS:expect_reply(1,'get',{data,Data}),
+    {ok,Data} = ct_netconfc:get(Client1,{server,[{xmlns,"myns"}],[]}),
+    {error,no_such_client}=ct_netconfc:get(Client2,{server,[{xmlns,"myns"}],[]}),
+    ?NS:expect_reply(3,'get',{data,Data}),
+    {ok,Data} = ct_netconfc:get(Client3,{server,[{xmlns,"myns"}],[]}),
+
+    ?NS:expect_do_reply(1,'close-session',close,ok),
+    ?ok = ct_netconfc:close_session(Client1),
+    ?NS:expect_do_reply(3,'close-session',close,ok),
+    ?ok = ct_netconfc:close_session(Client3),
+
+    ?ok = ct_netconfc:disconnect(Conn),
+    ok.
+
+kill_session_same_connection(Config) ->
+    SshDir = ?config(ssh_dir,Config),
+    SshOpts = ?DEFAULT_SSH_OPTS(SshDir),
+    {ok,Conn} = ct_netconfc:connect(SshOpts),
+    ?NS:hello(1),
+    ?NS:expect(hello),
+    {ok,Client1} = ct_netconfc:session(Conn),
+    ?NS:hello(2),
+    ?NS:expect(2,hello),
+    {ok,Client2} = ct_netconfc:session(Conn),
+
+    ?NS:expect_do_reply('kill-session',{kill,2},ok),
+    ?ok = ct_netconfc:kill_session(Client1,2),
+    timer:sleep(1000),
+    {error,no_such_client}=ct_netconfc:get(Client2,{server,[{xmlns,"myns"}],[]}),
+
+    ?NS:expect_do_reply('close-session',close,ok),
+    ?ok = ct_netconfc:close_session(Client1),
+
+    ok.
+
 %%%-----------------------------------------------------------------
 
 break(_Config) ->
-    test_server:break("break test case").
+    ct:break("break test case").
 
 br() ->
-    test_server:break("").
+    ct:break("").
 
 %%%-----------------------------------------------------------------
 %% Open a netconf session which is not specified in a config file

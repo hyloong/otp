@@ -1,7 +1,7 @@
 /*
  * %CopyrightBegin%
  *
- * Copyright Ericsson AB 2005-2012. All Rights Reserved.
+ * Copyright Ericsson AB 2005-2020. All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -18,6 +18,7 @@
  * %CopyrightEnd%
  */
 
+#ifdef __arm__
 
 #include <stddef.h>	/* offsetof() */
 #ifdef HAVE_CONFIG_H
@@ -25,30 +26,44 @@
 #endif
 #include "global.h"
 #include "erl_binary.h"
-#include <sys/mman.h>
 
 #include "hipe_arch.h"
 #include "hipe_native_bif.h"	/* nbif_callemu() */
 #include "hipe_bif0.h"
 
+#ifndef __has_builtin
+# define __has_builtin(x) 0
+#endif
+
 /* Flush dcache and invalidate icache for a range of addresses. */
 void hipe_flush_icache_range(void *address, unsigned int nbytes)
 {
-#if defined(__ARM_EABI__)
+    void* end = (char*)address + nbytes;
+
+#if ERTS_AT_LEAST_GCC_VSN__(4, 3, 0) || __has_builtin(__builtin___clear_cache)
+    __builtin___clear_cache(address, end);
+#elif defined(__clang__)
+    void __clear_cache(void *start, void *end);
+    __clear_cache(address, end);
+#elif defined(__linux__)
+# if defined(__ARM_EABI__)
     register unsigned long beg __asm__("r0") = (unsigned long)address;
-    register unsigned long end __asm__("r1") = (unsigned long)address + nbytes;
+    register unsigned long end __asm__("r1") = (unsigned long)end;
     register unsigned long flg __asm__("r2") = 0;
     register unsigned long scno __asm__("r7") = 0xf0002;
     __asm__ __volatile__("swi 0"	/* sys_cacheflush() */
 			 : "=r"(beg)
 			 : "0"(beg), "r"(end), "r"(flg), "r"(scno));
-#else
+# else
     register unsigned long beg __asm__("r0") = (unsigned long)address;
-    register unsigned long end __asm__("r1") = (unsigned long)address + nbytes;
+    register unsigned long end __asm__("r1") = (unsigned long)end;
     register unsigned long flg __asm__("r2") = 0;
     __asm__ __volatile__("swi 0x9f0002"	/* sys_cacheflush() */
 			 : "=r"(beg)
 			 : "0"(beg), "r"(end), "r"(flg));
+# endif
+#else
+# error "Don't know how to flush instruction cache"
 #endif
 }
 
@@ -57,30 +72,6 @@ void hipe_flush_icache_word(void *address)
     hipe_flush_icache_range(address, 4);
 }
 
-/*
- * Management of 32MB code segments for regular code and trampolines.
- */
-
-#define SEGMENT_NRBYTES	(32*1024*1024)	/* named constant, _not_ a tunable */
-
-static struct segment {
-    unsigned int *base;		/* [base,base+32MB[ */
-    unsigned int *code_pos;	/* INV: base <= code_pos <= tramp_pos  */
-    unsigned int *tramp_pos;	/* INV: tramp_pos <= base+32MB */
-    /* On ARM we always allocate a trampoline at base+32MB-8 for
-       nbif_callemu, so tramp_pos <= base+32MB-8. */
-} curseg;
-
-#define in_area(ptr,start,nbytes)	\
-	((UWord)((char*)(ptr) - (char*)(start)) < (nbytes))
-
-static void *new_code_mapping(void)
-{
-    return mmap(0, SEGMENT_NRBYTES,
-		PROT_EXEC|PROT_READ|PROT_WRITE,
-		MAP_PRIVATE|MAP_ANONYMOUS,
-		-1, 0);
-}
 
 static int check_callees(Eterm callees)
 {
@@ -107,126 +98,53 @@ static int check_callees(Eterm callees)
     return arity;
 }
 
-static unsigned int *try_alloc(Uint nrwords, int nrcallees, Eterm callees, unsigned int **trampvec)
+#define TRAMPOLINE_WORDS 2
+
+static void generate_trampolines(Uint32* address,
+                                 int nrcallees, Eterm callees,
+                                 Uint32** trampvec)
 {
-    unsigned int *base, *address, *tramp_pos, nrfreewords;
-    int trampnr;
-    Eterm mfa, m, f;
-    unsigned int a, *trampoline;
+    Uint32* trampoline = address;
+    int i;
 
-    m = NIL; f = NIL; a = 0; /* silence stupid compiler warning */
-    tramp_pos = curseg.tramp_pos;
-    address = curseg.code_pos;
-    nrfreewords = tramp_pos - address;
-    if (nrwords > nrfreewords)
-	return NULL;
-    curseg.code_pos = address + nrwords;
-    nrfreewords -= nrwords;
-
-    base = curseg.base;
-    for (trampnr = 1; trampnr <= nrcallees; ++trampnr) {
-	mfa = tuple_val(callees)[trampnr];
-	if (is_atom(mfa))
-	    trampoline = hipe_primop_get_trampoline(mfa);
-	else {
-	    m = tuple_val(mfa)[1];
-	    f = tuple_val(mfa)[2];
-	    a = unsigned_val(tuple_val(mfa)[3]);
-	    trampoline = hipe_mfa_get_trampoline(m, f, a);
-	}
-	if (!in_area(trampoline, base, SEGMENT_NRBYTES)) {
-	    if (nrfreewords < 2)
-		return NULL;
-	    nrfreewords -= 2;
-	    tramp_pos = trampoline = tramp_pos - 2;
-	    trampoline[0] = 0xE51FF004; /* ldr pc, [pc,#-4] */
-	    trampoline[1] = 0;		/* callee's address */
-	    hipe_flush_icache_range(trampoline, 2*sizeof(int));
-	    if (is_atom(mfa))
-		hipe_primop_set_trampoline(mfa, trampoline);
-	    else
-		hipe_mfa_set_trampoline(m, f, a, trampoline);
-	}
-	trampvec[trampnr-1] = trampoline;
+    for (i = 0; i < nrcallees; ++i) {
+        trampoline[0] = 0xE51FF004;     /* ldr pc, [pc,#-4] */
+        trampoline[1] = 0;		/* callee's address */
+	trampvec[i] = trampoline;
+        trampoline += TRAMPOLINE_WORDS;
     }
-    curseg.tramp_pos = tramp_pos;
-    return address;
+    hipe_flush_icache_range(address, nrcallees*2*sizeof(Uint32));
 }
 
 void *hipe_alloc_code(Uint nrbytes, Eterm callees, Eterm *trampolines, Process *p)
 {
-    Uint nrwords;
+    Uint code_words;
     int nrcallees;
     Eterm trampvecbin;
-    unsigned int **trampvec;
-    unsigned int *address;
-    unsigned int *base;
-    struct segment oldseg;
+    Uint32 **trampvec;
+    Uint32 *address;
 
     if (nrbytes & 0x3)
 	return NULL;
-    nrwords = nrbytes >> 2;
+    code_words = nrbytes / sizeof(Uint32);
 
     nrcallees = check_callees(callees);
     if (nrcallees < 0)
 	return NULL;
-    trampvecbin = new_binary(p, NULL, nrcallees*sizeof(unsigned int*));
-    trampvec = (unsigned int**)binary_bytes(trampvecbin);
+    trampvecbin = new_binary(p, NULL, nrcallees*sizeof(Uint32*));
+    trampvec = (Uint32**)binary_bytes(trampvecbin);
 
-    address = try_alloc(nrwords, nrcallees, callees, trampvec);
-    if (!address) {
-	base = new_code_mapping();
-	if (base == MAP_FAILED)
-	    return NULL;
-	oldseg = curseg;
-	curseg.base = base;
-	curseg.code_pos = base;
-	curseg.tramp_pos = (unsigned int*)((char*)base + SEGMENT_NRBYTES);
-	curseg.tramp_pos -= 2;
-	curseg.tramp_pos[0] = 0xE51FF004;	/* ldr pc, [pc,#-4] */
-	curseg.tramp_pos[1] = (unsigned int)&nbif_callemu;
+    address = erts_alloc(ERTS_ALC_T_HIPE_EXEC,
+                         (code_words + nrcallees*TRAMPOLINE_WORDS)*sizeof(Uint32));
 
-	address = try_alloc(nrwords, nrcallees, callees, trampvec);
-	if (!address) {
-	    munmap(base, SEGMENT_NRBYTES);
-	    curseg = oldseg;
-	    return NULL;
-	}
-	/* commit to new segment, ignore leftover space in old segment */
-    }
+    generate_trampolines(address + code_words, nrcallees, callees, trampvec);
     *trampolines = trampvecbin;
     return address;
 }
 
-static unsigned int *alloc_stub(Uint nrwords, unsigned int **tramp_callemu)
+void  hipe_free_code(void* code, unsigned int bytes)
 {
-    unsigned int *address;
-    unsigned int *base;
-    struct segment oldseg;
-
-    address = try_alloc(nrwords, 0, NIL, NULL);
-    if (!address) {
-	base = new_code_mapping();
-	if (base == MAP_FAILED)
-	    return NULL;
-	oldseg = curseg;
-	curseg.base = base;
-	curseg.code_pos = base;
-	curseg.tramp_pos = (unsigned int*)((char*)base + SEGMENT_NRBYTES);
-	curseg.tramp_pos -= 2;
-	curseg.tramp_pos[0] = 0xE51FF004;	/* ldr pc, [pc,#-4] */
-	curseg.tramp_pos[1] = (unsigned int)&nbif_callemu;
-
-	address = try_alloc(nrwords, 0, NIL, NULL);
-	if (!address) {
-	    munmap(base, SEGMENT_NRBYTES);
-	    curseg = oldseg;
-	    return NULL;
-	}
-	/* commit to new segment, ignore leftover space in old segment */
-    }
-    *tramp_callemu = (unsigned int*)((char*)curseg.base + SEGMENT_NRBYTES) - 2;
-    return address;
+    erts_free(ERTS_ALC_T_HIPE_EXEC, code);
 }
 
 /*
@@ -266,8 +184,8 @@ int hipe_patch_insn(void *address, Uint32 value, Eterm type)
 void *hipe_make_native_stub(void *callee_exp, unsigned int beamArity)
 {
     unsigned int *code;
-    unsigned int *tramp_callemu;
     int callemu_offset;
+    int is_short_jmp;
 
     /*
      * Native code calls BEAM via a stub looking as follows:
@@ -277,34 +195,55 @@ void *hipe_make_native_stub(void *callee_exp, unsigned int beamArity)
      * b nbif_callemu
      * .long callee_exp
      *
+     * or if nbif_callemu is too far away:
+     *
+     * mov r0, #beamArity
+     * ldr r8, [pc,#0] // callee_exp
+     * ldr pc, [pc,#0] // nbif_callemu
+     * .long callee_exp
+     * .long nbif_callemu
+     *
      * I'm using r0 and r8 since they aren't used for
-     * parameter passing in native code. The branch to
-     * nbif_callemu may need to go via a trampoline.
-     * (Trampolines are allowed to modify r12, but they don't.)
+     * parameter passing in native code.
      */
 
-    code = alloc_stub(4, &tramp_callemu);
+    code = erts_alloc(ERTS_ALC_T_HIPE_EXEC, 5*sizeof(Uint32));
     if (!code)
 	return NULL;
     callemu_offset = ((int)&nbif_callemu - ((int)&code[2] + 8)) >> 2;
-    if (!(callemu_offset >= -0x00800000 && callemu_offset <= 0x007FFFFF)) {
-	callemu_offset = ((int)tramp_callemu - ((int)&code[2] + 8)) >> 2;
-	if (!(callemu_offset >= -0x00800000 && callemu_offset <= 0x007FFFFF))
-	    abort();
+    is_short_jmp = (callemu_offset >= -0x00800000 &&
+                    callemu_offset <= 0x007FFFFF);
+#ifdef DEBUG
+    if (is_short_jmp && (callemu_offset % 3)==0) {
+        is_short_jmp = 0;
     }
+#endif
 
     /* mov r0, #beamArity */
     code[0] = 0xE3A00000 | (beamArity & 0xFF);
     /* ldr r8, [pc,#0] // callee_exp */
     code[1] = 0xE59F8000;
-    /* b nbif_callemu */
-    code[2] = 0xEA000000 | (callemu_offset & 0x00FFFFFF);
+    if (is_short_jmp) {
+        /* b nbif_callemu */
+        code[2] = 0xEA000000 | (callemu_offset & 0x00FFFFFF);
+    }
+    else {
+        /* ldr pc, [pc,#0] // nbif_callemu */
+        code[2] = 0xE59FF000;
+        /* .long nbif_callemu */
+        code[4] = (unsigned int)&nbif_callemu;
+    }
     /* .long callee_exp */
     code[3] = (unsigned int)callee_exp;
 
-    hipe_flush_icache_range(code, 4*sizeof(int));
+    hipe_flush_icache_range(code, 5*sizeof(Uint32));
 
     return code;
+}
+
+void hipe_free_native_stub(void* stub)
+{
+    erts_free(ERTS_ALC_T_HIPE_EXEC, stub);
 }
 
 static void patch_b(Uint32 *address, Sint32 offset, Uint32 AA)
@@ -347,3 +286,5 @@ void hipe_arch_print_pcb(struct hipe_process_state *p)
     U("narity     ", narity);
 #undef U
 }
+
+#endif /*__arm__*/

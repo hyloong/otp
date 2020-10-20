@@ -1,7 +1,7 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2011-2013. All Rights Reserved.
+%% Copyright Ericsson AB 2011-2017. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -18,7 +18,7 @@
 %% %CopyrightEnd%
 -module(observer_app_wx).
 
--export([start_link/2]).
+-export([start_link/3]).
 
 %% wx_object callbacks
 -export([init/1, handle_info/2, terminate/2, code_change/3, handle_call/3,
@@ -29,7 +29,7 @@
 -include("observer_defs.hrl").
 
 %% Import drawing wrappers
--import(observer_perf_wx, [haveGC/0,
+-import(observer_perf_wx, [haveGC/0, make_gc/2, destroy_gc/1,
 			   setPen/2, setFont/3, setBrush/2,
 			   strokeLine/5, strokeLines/2, drawRoundedRectangle/6,
 			   drawText/4, getTextExtent/2]).
@@ -48,7 +48,7 @@
 	  usegc = false
 	}).
 
--record(paint, {font, pen, brush, sel, links}).
+-record(paint, {font, fg, pen, brush, sel, links}).
 
 -record(app, {ptree, n2p, links, dim}).
 -record(box, {x,y, w,h, s1}).
@@ -73,10 +73,10 @@
 
 -define(wxGC, wxGraphicsContext).
 
-start_link(Notebook, Parent) ->
-    wx_object:start_link(?MODULE, [Notebook, Parent], []).
+start_link(Notebook, Parent, Config) ->
+    wx_object:start_link(?MODULE, [Notebook, Parent, Config], []).
 
-init([Notebook, Parent]) ->
+init([Notebook, Parent, _Config]) ->
     Panel = wxPanel:new(Notebook, [{size, wxWindow:getClientSize(Notebook)},
 				   {winid, 1}
 				  ]),
@@ -92,7 +92,8 @@ init([Notebook, Parent]) ->
     Extra = wxBoxSizer:new(?wxVERTICAL),
     DrawingArea = wxScrolledWindow:new(P2, [{winid, ?DRAWAREA},
 					    {style,?wxFULL_REPAINT_ON_RESIZE}]),
-    wxWindow:setBackgroundColour(DrawingArea, ?wxWHITE),
+    BG = wxWindow:getBackgroundColour(Apps),
+    wxWindow:setBackgroundStyle(DrawingArea, ?wxBG_STYLE_PAINT),
     wxWindow:setVirtualSize(DrawingArea, 800, 800),
     wxSplitterWindow:setMinimumPaneSize(Splitter,50),
     wxSizer:add(Extra, DrawingArea, [{flag, ?wxEXPAND},{proportion, 1}]),
@@ -117,16 +118,29 @@ init([Notebook, Parent]) ->
 
     UseGC = haveGC(),
     Version28 = ?wxMAJOR_VERSION =:= 2 andalso ?wxMINOR_VERSION =:= 8,
+    Scale = observer_wx:get_scale(),
     Font = case os:type() of
 	       {unix,_} when UseGC, Version28 ->
-		   wxFont:new(12,?wxFONTFAMILY_DECORATIVE,?wxFONTSTYLE_NORMAL,?wxFONTWEIGHT_NORMAL);
+		   wxFont:new(Scale * 12,?wxFONTFAMILY_DECORATIVE,?wxFONTSTYLE_NORMAL,?wxFONTWEIGHT_NORMAL);
 	       _ ->
-		   wxSystemSettings:getFont(?wxSYS_DEFAULT_GUI_FONT)
+		   Font0 = wxSystemSettings:getFont(?wxSYS_DEFAULT_GUI_FONT),
+           wxFont:setPointSize(Font0, Scale * wxFont:getPointSize(Font0)),
+           Font0
 	   end,
     SelCol   = wxSystemSettings:getColour(?wxSYS_COLOUR_HIGHLIGHT),
-    GreyBrush = wxBrush:new({230,230,240}),
+    {Fg,BGBrush,Pen} =
+        case observer_lib:is_darkmode(BG) of
+            false ->
+                {wxSystemSettings:getColour(?wxSYS_COLOUR_BTNTEXT),
+                 wxBrush:new(wxSystemSettings:getColour(?wxSYS_COLOUR_BTNSHADOW)),
+                 wxPen:new({80,80,80}, [{width, Scale * 2}])};
+            true ->
+                {wxSystemSettings:getColour(?wxSYS_COLOUR_BTNTEXT),
+                 wxBrush:new(wxSystemSettings:getColour(?wxSYS_COLOUR_BTNSHADOW)),
+                 wxPen:new({0,0,0}, [{width, Scale * 2}])}
+        end,
     SelBrush = wxBrush:new(SelCol),
-    LinkPen  = wxPen:new(SelCol, [{width, 2}]),
+    LinkPen  = wxPen:new(SelCol, [{width, Scale * 2}]),
     process_flag(trap_exit, true),
     {Panel, #state{parent=Parent,
 		   panel =Panel,
@@ -134,8 +148,9 @@ init([Notebook, Parent]) ->
 		   app_w =DrawingArea,
 		   usegc = UseGC,
 		   paint=#paint{font = Font,
-				pen  = wxPen:new({80,80,80}, [{width, 2}]),
-				brush= GreyBrush,
+                                fg   = Fg,
+				pen  = Pen,
+				brush= BGBrush,
 				sel  = SelBrush,
 				links= LinkPen
 			       }
@@ -191,8 +206,8 @@ handle_event(#wx{event=#wxMouse{type=Type, x=X0, y=Y0}},
     end;
 
 handle_event(#wx{event=#wxCommand{type=command_menu_selected}},
-	     State = #state{sel=undefined}) ->
-    observer_lib:display_info_dialog("Select process first"),
+	     State = #state{panel=Panel,sel=undefined}) ->
+    observer_lib:display_info_dialog(Panel,"Select process first"),
     {noreply, State};
 
 handle_event(#wx{id=?ID_PROC_INFO, event=#wxCommand{type=command_menu_selected}},
@@ -205,7 +220,7 @@ handle_event(#wx{id=?ID_PROC_MSG, event=#wxCommand{type=command_menu_selected}},
     case observer_lib:user_term(Panel, "Enter message", "") of
 	cancel ->         ok;
 	{ok, Term} ->     Pid ! Term;
-	{error, Error} -> observer_lib:display_info_dialog(Error)
+	{error, Error} -> observer_lib:display_info_dialog(Panel,Error)
     end,
     {noreply, State};
 
@@ -214,28 +229,28 @@ handle_event(#wx{id=?ID_PROC_KILL, event=#wxCommand{type=command_menu_selected}}
     case observer_lib:user_term(Panel, "Enter Exit Reason", "kill") of
 	cancel ->         ok;
 	{ok, Term} ->     exit(Pid, Term);
-	{error, Error} -> observer_lib:display_info_dialog(Error)
+	{error, Error} -> observer_lib:display_info_dialog(Panel,Error)
     end,
     {noreply, State};
 
 %%% Trace api
 handle_event(#wx{id=?ID_TRACE_PID, event=#wxCommand{type=command_menu_selected}},
 	     State = #state{sel={Box,_}}) ->
-    observer_trace_wx:add_processes(observer_wx:get_tracer(), [box_to_pid(Box)]),
+    observer_trace_wx:add_processes([box_to_pid(Box)]),
     {noreply, State};
 handle_event(#wx{id=?ID_TRACE_NAME, event=#wxCommand{type=command_menu_selected}},
 	     State = #state{sel={Box,_}}) ->
-    observer_trace_wx:add_processes(observer_wx:get_tracer(), [box_to_reg(Box)]),
+    observer_trace_wx:add_processes([box_to_reg(Box)]),
     {noreply, State};
 handle_event(#wx{id=?ID_TRACE_TREE_PIDS, event=#wxCommand{type=command_menu_selected}},
 	     State = #state{sel=Sel}) ->
     Get = fun(Box) -> box_to_pid(Box) end,
-    observer_trace_wx:add_processes(observer_wx:get_tracer(), tree_map(Sel, Get)),
+    observer_trace_wx:add_processes(tree_map(Sel, Get)),
     {noreply, State};
 handle_event(#wx{id=?ID_TRACE_TREE_NAMES, event=#wxCommand{type=command_menu_selected}},
 	     State = #state{sel=Sel}) ->
     Get = fun(Box) -> box_to_reg(Box) end,
-    observer_trace_wx:add_processes(observer_wx:get_tracer(), tree_map(Sel, Get)),
+    observer_trace_wx:add_processes(tree_map(Sel, Get)),
     {noreply, State};
 
 handle_event(Event, _State) ->
@@ -244,30 +259,22 @@ handle_event(Event, _State) ->
 %%%%%%%%%%
 handle_sync_event(#wx{event = #wxPaint{}},_,
 		  #state{app_w=DA, app=App, sel=Sel, paint=Paint, usegc=UseGC}) ->
-    %% PaintDC must be created in a callback to work on windows.
-    IsWindows = element(1, os:type()) =:= win32,
-    %% Avoid Windows flickering hack
-    DC = if IsWindows -> wx:typeCast(wxBufferedPaintDC:new(DA), wxPaintDC); 
-	    true -> wxPaintDC:new(DA)
-	 end,
-    IsWindows andalso wxDC:clear(DC),
-    GC = case UseGC of
-	     true  ->
-		 GC0 = ?wxGC:create(DC),
-		 %% Argh must handle scrolling when using ?wxGC
-		 {Sx,Sy} = wxScrolledWindow:calcScrolledPosition(DA, {0,0}),
-		 ?wxGC:translate(GC0, Sx,Sy),
-		 GC0;
-	     false ->
-		 wxScrolledWindow:doPrepareDC(DA,DC),
-		 DC
-	 end,
+    GC = {GC0, DC} = make_gc(DA, UseGC),
+    case UseGC of
+	false ->
+	    wxScrolledWindow:doPrepareDC(DA,DC);
+	true ->
+	    %% Argh must handle scrolling when using ?wxGC
+	    {Sx,Sy} = wxScrolledWindow:calcScrolledPosition(DA, {0,0}),
+	    ?wxGC:translate(GC0, Sx,Sy)
+    end,
     %% Nothing is drawn until wxPaintDC is destroyed.
-    draw({UseGC, GC}, App, Sel, Paint),
-    UseGC andalso ?wxGC:destroy(GC),
-    wxPaintDC:destroy(DC),
+    draw(GC, App, Sel, Paint),
+    destroy_gc(GC),
     ok.
 %%%%%%%%%%
+handle_call(get_config, _, State) ->
+    {reply, #{}, State};
 handle_call(Event, From, _State) ->
     error({unhandled_call, Event, From}).
 
@@ -311,16 +318,13 @@ handle_info({delivery, _Pid, app, _Curr, {[], [], [], []}},
 
 handle_info({delivery, Pid, app, Curr, AppData},
 	    State = #state{panel=Panel, appmon=Pid, current=Curr, usegc=UseGC,
-			   app_w=AppWin, paint=#paint{font=Font}}) ->
-    GC = if UseGC -> ?wxGC:create(AppWin);
-	    true -> wxWindowDC:new(AppWin)
+			   app_w=AppWin, paint=#paint{fg=Fg, font=Font}}) ->
+    GC = if UseGC -> {?wxGC:create(AppWin), false};
+	    true ->  {false, wxWindowDC:new(AppWin)}
 	 end,
-    FontW = {UseGC, GC},
-    setFont(FontW, Font, {0,0,0}),
-    App = build_tree(AppData, FontW),
-    if UseGC -> ?wxGC:destroy(GC);
-       true -> wxWindowDC:destroy(GC)
-    end,
+    setFont(GC, Font, Fg),
+    App = build_tree(AppData, GC),
+    destroy_gc(GC),
     setup_scrollbar(AppWin, App),
     wxWindow:refresh(Panel),
     wxWindow:layout(Panel),
@@ -331,7 +335,7 @@ handle_info({'EXIT', _, noconnection}, State) ->
 handle_info({'EXIT', _, normal}, State) ->
     {noreply, State};
 handle_info(_Event, State) ->
-    %% io:format("~p:~p: ~p~n",[?MODULE,?LINE,_Event]),
+    %% io:format("~p:~p: ~tp~n",[?MODULE,?LINE,_Event]),
     {noreply, State}.
 
 %%%%%%%%%%
@@ -516,13 +520,13 @@ tree_map([], _ , Acc) -> Acc.
 draw(_DC, undefined, _, _) ->
     ok;
 draw(DC, #app{dim={_W,_H}, ptree=Tree, links=Links}, Sel,
-     #paint{font=Font, pen=Pen, brush=Brush, links=LPen, sel=SelBrush}) ->
+     #paint{font=Font, fg=Fg, pen=Pen, brush=Brush, links=LPen, sel=SelBrush}) ->
     setPen(DC, LPen),
     [draw_xlink(Link, DC) || Link <- Links],
     setPen(DC, Pen),
     %% ?wxGC:drawRectangle(DC, 2,2, _W-2,_H-2), %% DEBUG
     setBrush(DC, Brush),
-    setFont(DC, Font, {0,0,0}),
+    setFont(DC, Font, Fg),
     draw_tree(Tree, root, DC),
     case Sel of
 	undefined -> ok;

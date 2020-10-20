@@ -4,14 +4,14 @@
 <chapter>
   <header>
     <copyright>
-      <year>2003</year><year>2015</year>
+      <year>2003</year><year>2019</year>
       <holder>Ericsson AB. All Rights Reserved.</holder>
     </copyright>
     <legalnotice>
       Licensed under the Apache License, Version 2.0 (the "License");
       you may not use this file except in compliance with the License.
       You may obtain a copy of the License at
- 
+
           http://www.apache.org/licenses/LICENSE-2.0
 
       Unless required by applicable law or agreed to in writing, software
@@ -47,7 +47,7 @@
     <list type="bulleted">
       <item>To document function interfaces</item>
       <item>To provide more information for bug detection tools,
-      such as <c>Dialyzer</c></item>
+      such as Dialyzer</item>
       <item>To be exploited by documentation tools, such as EDoc, for
       generating program documentation of various forms</item>
     </list>
@@ -63,13 +63,13 @@
       Types consist of, and are built from, a set of predefined types,
       for example, <c>integer()</c>, <c>atom()</c>, and <c>pid()</c>.
       Predefined types represent a typically infinite set of Erlang terms that
-      belong to this type.  For example, the type <c>atom()</c> stands for the
+      belong to this type.  For example, the type <c>atom()</c> denotes the
       set of all Erlang atoms.
     </p>
     <p>
       For integers and atoms, it is allowed for singleton types; for example,
       the integers
-      <c>-1</c> and <c>42</c>, or the atoms <c>'foo'</c> and <c>'bar'</c>).
+      <c>-1</c> and <c>42</c>, or the atoms <c>'foo'</c> and <c>'bar'</c>.
 
       All other types are built using unions of either predefined
       types or singleton types. In a type union between a type and one
@@ -113,8 +113,8 @@
         | Erlang_Atom           %% 'foo', 'bar', ...
 
   Bitstring :: <<>>
-             | <<_:M>>          %% M is a positive integer
-             | <<_:_*N>>        %% N is a positive integer
+             | <<_:M>>          %% M is an Integer_Value that evaluates to a positive integer
+             | <<_:_*N>>        %% N is an Integer_Value that evaluates to a positive integer
              | <<_:M, _:_*N>>
 
   Fun :: fun()                  %% any function
@@ -123,24 +123,35 @@
        | fun((TList) -> Type)
 
   Integer :: integer()
-           | Erlang_Integer                    %% ..., -1, 0, 1, ... 42 ...
-           | Erlang_Integer..Erlang_Integer    %% specifies an integer range
+           | Integer_Value
+           | Integer_Value..Integer_Value      %% specifies an integer range
+
+  Integer_Value :: Erlang_Integer              %% ..., -1, 0, 1, ... 42 ...
+                 | Erlang_Character            %% $a, $b ...
+                 | Integer_Value BinaryOp Integer_Value
+                 | UnaryOp Integer_Value
+
+  BinaryOp :: '*' | 'div' | 'rem' | 'band' | '+' | '-' | 'bor' | 'bxor' | 'bsl' | 'bsr'
+
+  UnaryOp :: '+' | '-' | 'bnot'
 
   List :: list(Type)                           %% Proper list ([]-terminated)
         | maybe_improper_list(Type1, Type2)    %% Type1=contents, Type2=termination
         | nonempty_improper_list(Type1, Type2) %% Type1 and Type2 as above
         | nonempty_list(Type)                  %% Proper non-empty list
 
-  Map :: map()                                 %% stands for a map of any size
-       | #{}                                   %% stands for a map of any size
-       | #{PairList}
+  Map :: #{}                                   %% denotes the empty map
+       | #{AssociationList}
 
-  Tuple :: tuple()                             %% stands for a tuple of any size
+  Tuple :: tuple()                             %% denotes a tuple of any size
          | {}
          | {TList}
 
-  PairList :: Type => Type
-            | Type => Type, PairList
+  AssociationList :: Association
+                   | Association, AssociationList
+
+  Association :: Type := Type                  %% denotes a mandatory association
+               | Type => Type                  %% denotes an optional association
 
   TList :: Type
          | Type, TList
@@ -148,9 +159,14 @@
   Union :: Type1 | Type2
 ]]></pre>
   <p>
-    The general form of bitstrings is <c>&lt;&lt;_:M, _:_*N&gt;&gt;</c>,
-    where <c>M</c> and <c>N</c> are positive integers. It denotes a
-    bitstring that is <c>M + (k*N)</c> bits long (that is, a bitstring that
+    Integer values are either integer or character literals or expressions
+    consisting of possibily nested unary or binary operations that evaluate to
+    an integer. Such expressions can also be used in bit strings and ranges.
+  </p>
+  <p>
+    The general form of bit strings is <c>&lt;&lt;_:M, _:_*N&gt;&gt;</c>,
+    where <c>M</c> and <c>N</c> must evaluate to positive integers. It denotes a
+    bit string that is <c>M + (k*N)</c> bits long (that is, a bit string that
     starts with <c>M</c> bits and continues with <c>k</c> segments of
     <c>N</c> bits each, where <c>k</c> is also a positive integer).
     The notations <c>&lt;&lt;_:_*N&gt;&gt;</c>, <c>&lt;&lt;_:M&gt;&gt;</c>,
@@ -158,7 +174,7 @@
     that <c>M</c> or <c>N</c>, or both, are zero.
   </p>
   <p>
-    Because lists are commonly used, they have shorthand type notations. 
+    Because lists are commonly used, they have shorthand type notations.
     The types <c>list(T)</c> and <c>nonempty_list(T)</c> have the shorthands
     <c>[T]</c> and <c>[T,...]</c>, respectively.
     The only difference between the two shorthands is that <c>[T]</c> can be an
@@ -166,14 +182,32 @@
   </p>
   <p>
     Notice that the shorthand for <c>list()</c>, that is, the list of
-    elements of unknown type, is <c>[_]</c> (or <c>[any()]</c>), not <c>[]</c>. 
+    elements of unknown type, is <c>[_]</c> (or <c>[any()]</c>), not <c>[]</c>.
     The notation <c>[]</c> specifies the singleton type for the empty list.
   </p>
   <p>
-    For convenience, the following types are also built-in. 
-    They can be thought as predefined aliases for the type unions also shown in 
+    The general form of map types is <c>#{AssociationList}</c>.
+    The key types in
+    <c>AssociationList</c> are allowed to overlap, and if they do, the
+    leftmost association takes precedence. A map association has a key in
+    <c>AssociationList</c> if it belongs to this type.
+    <c>AssociationList</c> can contain both mandatory <c>(:=)</c> and
+    optional <c>(=&gt;)</c> association types.
+    If an association type is mandatory, an association with that type
+    needs to be present.
+    In the case of an optional association type it is not required for
+    the key type to be present.
+  </p>
+  <p>
+    The notation <c>#{}</c> specifies the singleton type for the empty map.
+    Note that this notation is not a shorthand for the <c>map()</c> type.
+  </p>
+  <p>
+    For convenience, the following types are also built-in.
+    They can be thought as predefined aliases for the type unions also shown in
     the table.
   </p>
+  <marker id="builtin_types"/>
   <table>
     <row>
       <cell><em>Built-in type</em></cell><cell><em>Defined as</em></cell>
@@ -187,38 +221,44 @@
     <row>
       <cell><c>bitstring()</c></cell><cell><c>&lt;&lt;_:_*1&gt;&gt;</c></cell>
     </row>
-    <row> 
+    <row>
       <cell><c>boolean()</c></cell><cell><c>'false' | 'true'</c></cell>
     </row>
-    <row> 
+    <row>
       <cell><c>byte()</c></cell><cell><c>0..255</c></cell>
     </row>
     <row>
       <cell><c>char()</c></cell><cell><c>0..16#10ffff</c></cell>
     </row>
-    <row> 
+    <row>
+      <cell><c>nil()</c></cell><cell><c>[]</c></cell>
+    </row>
+    <row>
       <cell><c>number()</c></cell><cell><c>integer() | float()</c></cell>
     </row>
-    <row> 
+    <row>
       <cell><c>list()</c></cell><cell><c>[any()]</c></cell>
     </row>
-    <row> 
+    <row>
       <cell><c>maybe_improper_list()</c></cell><cell><c>maybe_improper_list(any(), any())</c></cell>
     </row>
-    <row> 
+    <row>
       <cell><c>nonempty_list()</c></cell><cell><c>nonempty_list(any())</c></cell>
     </row>
     <row>
       <cell><c>string()</c></cell><cell><c>[char()]</c></cell>
     </row>
-    <row> 
+    <row>
       <cell><c>nonempty_string()</c></cell><cell><c>[char(),...]</c></cell>
     </row>
-    <row> 
+    <row>
       <cell><c>iodata()</c></cell><cell><c>iolist() | binary()</c></cell>
     </row>
     <row>
       <cell><c>iolist()</c></cell><cell><c>maybe_improper_list(byte() | binary() | iolist(), binary() | [])</c></cell>
+    </row>
+    <row>
+      <cell><c>map()</c></cell><cell><c>#{any() =&gt; any()}</c></cell>
     </row>
     <row>
       <cell><c>function()</c></cell><cell><c>fun()</c></cell>
@@ -226,7 +266,7 @@
     <row>
       <cell><c>module()</c></cell><cell><c>atom()</c></cell>
     </row>
-    <row> 
+    <row>
       <cell><c>mfa()</c></cell><cell><c>{module(),atom(),arity()}</c></cell>
     </row>
     <row>
@@ -242,7 +282,7 @@
       <cell><c>timeout()</c></cell><cell><c>'infinity' | non_neg_integer()</c></cell>
     </row>
     <row>
-      <cell><c>no_return()</c></cell><cell><c>none()</c></cell> 
+      <cell><c>no_return()</c></cell><cell><c>none()</c></cell>
     </row>
     <tcaption>Built-in types, predefined aliases</tcaption>
   </table>
@@ -267,11 +307,11 @@
     </row>
     <tcaption>Additional built-in types</tcaption>
   </table>
-  
+
   <p>
     Users are not allowed to define types with the same names as the
     predefined or built-in ones. This is checked by the compiler and
-    its violation results in a compilation error. 
+    its violation results in a compilation error.
   </p>
   <note>
     <p>
@@ -296,15 +336,9 @@
           | #Erlang_Atom{Fields}</pre>
   <p>
     Records are extended to possibly contain type information.
-    This is described in <seealso marker="#typeinrecords">
-    Type Information in Record Declarations</seealso>.
+    This is described in <seeguide marker="#typeinrecords">
+    Type Information in Record Declarations</seeguide>.
   </p>
-  <note>
-    <p>Map types, both <c>map()</c> and <c>#{...}</c>,
-      are considered experimental during OTP 17.</p>
-    <p>No type information of maps pairs, only the containing map types,
-      are used by Dialyzer in OTP 17.</p>
-  </note>
   </section>
 
   <section>
@@ -312,7 +346,7 @@
     <p>
       As seen, the basic syntax of a type is an atom followed by closed
       parentheses. New types are declared using <c>-type</c> and <c>-opaque</c>
-      compiler attributes as in the following:
+      attributes as in the following:
     </p>
     <pre>
   -type my_struct_type() :: Type.
@@ -383,13 +417,13 @@
     <pre>
   -record(rec, {field1 :: Type1, field2, field3 :: Type3}).</pre>
     <p>
-      For fields without type annotations, their type defaults to any(). 
+      For fields without type annotations, their type defaults to any().
       That is, the previous example is a shorthand for the following:
     </p>
     <pre>
   -record(rec, {field1 :: Type1, field2 :: any(), field3 :: Type3}).</pre>
     <p>
-      In the presence of initial values for fields, 
+      In the presence of initial values for fields,
       the type must be declared after the initialization, as follows:
     </p>
     <pre>
@@ -398,11 +432,13 @@
       The initial values for fields are to be compatible
       with (that is, a member of) the corresponding types.
       This is checked by the compiler and results in a compilation error
-      if a violation is detected. For fields without initial values,
-      the singleton type <c>'undefined'</c> is added to all declared types.
-      In other words, the following two record declarations have identical 
-      effects:
+      if a violation is detected.
     </p>
+    <note>
+      <p>Before Erlang/OTP 19, for fields without initial values,
+      the singleton type <c>'undefined'</c> was added to all declared types.
+      In other words, the following two record declarations had identical
+      effects:</p>
     <pre>
   -record(rec, {f1 = 42 :: integer(),
                 f2      :: float(),
@@ -412,31 +448,32 @@
                 f2      :: 'undefined' | float(),
                 f3      :: 'undefined' | 'a' | 'b'}).</pre>
     <p>
-      For this reason, it is recommended that records contain initializers, 
-      whenever possible.
+      This is no longer the case. If you require <c>'undefined'</c> in your record field
+      type, you must explicitly add it to the typespec, as in the 2nd example.
     </p>
+    </note>
     <p>
-      Any record, containing type information or not, once defined, 
+      Any record, containing type information or not, once defined,
       can be used as a type using the following syntax:
     </p>
     <pre>  #rec{}</pre>
     <p>
-      In addition, the record fields can be further specified when using 
+      In addition, the record fields can be further specified when using
       a record type by adding type information about the field
       as follows:
     </p>
     <pre>  #rec{some_field :: Type}</pre>
     <p>
-      Any unspecified fields are assumed to have the type in the original 
+      Any unspecified fields are assumed to have the type in the original
       record declaration.
     </p>
   </section>
-	
+
   <section>
     <title>Specifications for Functions</title>
     <p>
-      A specification (or contract) for a function is given using the new 
-      compiler attribute <c>-spec</c>. The general format is as follows:
+      A specification (or contract) for a function is given using the
+      <c>-spec</c> attribute. The general format is as follows:
     </p>
     <pre>
   -spec Module:Function(ArgType1, ..., ArgTypeN) -> ReturnType.</pre>
@@ -445,13 +482,13 @@
       else a compilation error occurs.
     </p>
     <p>
-      This form can also be used in header files (.hrl) to declare type 
-      information for exported functions. 
-      Then these header files can be included in files that (implicitly or 
+      This form can also be used in header files (.hrl) to declare type
+      information for exported functions.
+      Then these header files can be included in files that (implicitly or
       explicitly) import these functions.
     </p>
     <p>
-      Within a given module, the following shorthand suffice in most cases:
+      Within a given module, the following shorthand suffices in most cases:
     </p>
     <pre>
   -spec Function(ArgType1, ..., ArgTypeN) -> ReturnType.</pre>
@@ -461,14 +498,14 @@
     <pre>
   -spec Function(ArgName1 :: Type1, ..., ArgNameN :: TypeN) -> RT.</pre>
     <p>
-      A function specification can be overloaded. 
+      A function specification can be overloaded.
       That is, it can have several types, separated by a semicolon (<c>;</c>):
     </p>
     <pre>
   -spec foo(T1, T2) -> T3
          ; (T4, T5) -> T6.</pre>
     <p>
-      A current restriction, which currently results in a warning 
+      A current restriction, which currently results in a warning
       (not an error) by the compiler, is that the domains of
       the argument types cannot overlap.
       For example, the following specification results in a warning:
@@ -477,9 +514,9 @@
   -spec foo(pos_integer()) -> pos_integer()
          ; (integer()) -> integer().</pre>
     <p>
-      Type variables can be used in specifications to specify relations for 
-      the input and output arguments of a function. 
-      For example, the following specification defines the type of a 
+      Type variables can be used in specifications to specify relations for
+      the input and output arguments of a function.
+      For example, the following specification defines the type of a
       polymorphic identity function:
     </p>
     <pre>
@@ -492,9 +529,10 @@
     </p>
     <pre>  -spec id(X) -> X when X :: tuple().</pre>
     <p>
-      Currently, the <c>::</c> constraint (read as <c>is_subtype</c>) is
-      the only guard constraint that can be used in the <c>'when'</c>
-      part of a <c>'-spec'</c> attribute.
+      Currently, the <c>::</c> constraint
+      (read as &laquo;is a subtype of&raquo;) is
+      the only guard constraint that can be used in the <c>when</c>
+      part of a <c>-spec</c> attribute.
     </p>
     <note>
       <p>
@@ -510,7 +548,7 @@
 	<em>the same</em> tuple.
       </p>
       <p>
-	However, it is up to the tools that process the specificationss
+	However, it is up to the tools that process the specifications
         to choose whether to take this extra information into account
         or not.
       </p>
@@ -526,19 +564,9 @@
     <pre>
   -spec foo({X, integer()}) -> X when X :: atom()
          ; ([Y]) -> Y when Y :: number().</pre>
-    <note>
-      <p>
-      For backwards compatibility the following form is also allowed:
-      </p>
-      <pre>  -spec id(X) -> X when is_subtype(X, tuple()).</pre>
-      <p>
-	but its use is discouraged. It will be removed in a future
-	Erlang/OTP release.
-      </p>
-    </note>
     <p>
-      Some functions in Erlang are not meant to return; 
-      either because they define servers or because they are used to 
+      Some functions in Erlang are not meant to return;
+      either because they define servers or because they are used to
       throw exceptions, as in the following function:
     </p>
     <pre>  my_error(Err) -> erlang:throw({error, Err}).</pre>
@@ -550,4 +578,3 @@
     <pre>  -spec my_error(term()) -> no_return().</pre>
   </section>
 </chapter>
-

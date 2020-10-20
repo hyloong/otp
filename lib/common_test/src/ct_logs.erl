@@ -1,7 +1,7 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2003-2014. All Rights Reserved.
+%% Copyright Ericsson AB 2003-2020. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -18,34 +18,35 @@
 %% %CopyrightEnd%
 %%
 
-%%% @doc Logging functionality for Common Test Framework.
+%%% Logging functionality for Common Test Framework.
 %%%
-%%% <p>This module implements
-%%% <ul>
-%%% <li>Internal logging of activities in Common Test Framework</li>
-%%% <li>Compilation of test results into index pages on several levels</li>
-%%% </ul>
-%%% </p>
+%%% This module implements:
+%%%
+%%% Internal logging of activities in Common Test Framework, and
+%%% Compilation of test results into index pages on several levels
 
 -module(ct_logs).
 
 -export([init/2, close/2, init_tc/1, end_tc/1]).
 -export([register_groupleader/2, unregister_groupleader/1]).
 -export([get_log_dir/0, get_log_dir/1]).
--export([log/3, start_log/1, cont_log/2, end_log/0]).
+-export([log/3, start_log/1, cont_log/2, cont_log_no_timestamp/2, end_log/0]).
 -export([set_stylesheet/2, clear_stylesheet/1]).
 -export([add_external_logs/1, add_link/3]).
 -export([make_last_run_index/0]).
 -export([make_all_suites_index/1,make_all_runs_index/1]).
--export([get_ts_html_wrapper/5]).
+-export([get_ts_html_wrapper/5, escape_chars/1]).
 -export([xhtml/2, locate_priv_file/1, make_relative/1]).
 -export([insert_javascript/1]).
 -export([uri/1]).
+-export([parse_keep_logs/1]).
 
 %% Logging stuff directly from testcase
--export([tc_log/3, tc_log/4, tc_log/5, tc_log_async/3, tc_log_async/5,
-	 tc_print/3, tc_print/4,
-	 tc_pal/3, tc_pal/4, ct_log/3, basic_html/0]).
+-export([tc_log/3, tc_log/4, tc_log/5, tc_log/6,
+	 tc_log_async/3, tc_log_async/5,
+	 tc_print/3, tc_print/4, tc_print/5,
+	 tc_pal/3, tc_pal/4, tc_pal/5, ct_log/3,
+	 basic_html/0]).
 
 %% Simulate logger process for use without ct environment running
 -export([simulate/0]).
@@ -81,17 +82,17 @@
 		    tests = []}).
 
 %%%-----------------------------------------------------------------
-%%% @spec init(Mode, Verbosity) -> Result
+%%% -spec init(Mode, Verbosity) -> Result
 %%%   Mode = normal | interactive
 %%%   Result = {StartTime,LogDir}
 %%%   StartTime = term()
 %%%   LogDir = string()
 %%%
-%%% @doc Initiate the logging mechanism (tool-internal use only).
+%%% Initiate the logging mechanism (tool-internal use only).
 %%%
-%%% <p>This function is called by ct_util.erl when testing is
-%%% started. A new directory named ct_run.&lt;timestamp&gt; is created
-%%% and all logs are stored under this directory.</p>
+%%% This function is called by ct_util.erl when testing is
+%%% started. A new directory named ct_run.<timestamp> is created
+%%% and all logs are stored under this directory.
 %%%
 init(Mode, Verbosity) ->
     Self = self(),
@@ -126,16 +127,17 @@ datestr_from_dirname([]) ->
     "".
 
 %%%-----------------------------------------------------------------
-%%% @spec close(Info, StartDir) -> ok
+%%% -spec close(Info, StartDir) -> ok
 %%%
-%%% @doc Create index pages with test results and close the CT Log
+%%% Create index pages with test results and close the CT Log
 %%% (tool-internal use only).
 close(Info, StartDir) ->
     %% close executes on the ct_util process, not on the logger process
     %% so we need to use a local copy of the log cache data
     LogCacheBin = 
 	case make_last_run_index() of
-	    {error,_} ->  % log server not responding
+	    {error, Reason} ->  % log server not responding
+		io:format("Warning! ct_logs not responding: ~tp~n", [Reason]),
 		undefined;
 	    LCB ->
 		LCB
@@ -147,7 +149,7 @@ close(Info, StartDir) ->
 				 ok;
 			     CacheBin ->
 				 %% save final version of the log cache to file
-				 file:write_file(?log_cache_name,CacheBin),
+				 write_log_cache(CacheBin),
 				 put(ct_log_cache,undefined)
 			 end
 		 end,
@@ -171,14 +173,14 @@ close(Info, StartDir) ->
 		ok ->
 		    ok;
 		Error ->
-		    io:format("Warning! Cleanup failed: ~p~n", [Error])
+		    io:format("Warning! Cleanup failed: ~tp~n", [Error])
 	    end,
-	    make_all_suites_index(stop),
+	    _ = make_all_suites_index(stop),
 	    make_all_runs_index(stop),
 	    Cache2File();
        true -> 
-	    file:set_cwd(".."),
-	    make_all_suites_index(stop),
+	    ok = file:set_cwd(".."),
+	    _ = make_all_suites_index(stop),
 	    make_all_runs_index(stop),
 	    Cache2File(),
 	    case ct_util:get_profile_data(browser, StartDir) of
@@ -200,22 +202,22 @@ close(Info, StartDir) ->
     ok.
 
 %%%-----------------------------------------------------------------
-%%% @spec set_stylesheet(TC,SSFile) -> ok
+%%% -spec set_stylesheet(TC,SSFile) -> ok
 set_stylesheet(TC, SSFile) ->
     cast({set_stylesheet,TC,SSFile}).
 
 %%%-----------------------------------------------------------------
-%%% @spec clear_stylesheet(TC) -> ok
+%%% -spec clear_stylesheet(TC) -> ok
 clear_stylesheet(TC) ->
     cast({clear_stylesheet,TC}).
 
 %%%-----------------------------------------------------------------
-%%% @spec get_log_dir() -> {ok,Dir} | {error,Reason}
+%%% -spec get_log_dir() -> {ok,Dir} | {error,Reason}
 get_log_dir() ->
     get_log_dir(false).
 
 %%%-----------------------------------------------------------------
-%%% @spec get_log_dir(ReturnAbsName) -> {ok,Dir} | {error,Reason}
+%%% -spec get_log_dir(ReturnAbsName) -> {ok,Dir} | {error,Reason}
 get_log_dir(ReturnAbsName) ->
     case call({get_log_dir,ReturnAbsName}) of
 	{error,does_not_exist} when ReturnAbsName == true ->
@@ -238,7 +240,7 @@ call(Msg) ->
 	Pid ->
 	    MRef = erlang:monitor(process,Pid),
 	    Ref = make_ref(),
-	    ?MODULE ! {Msg,{self(),Ref}},
+	    Pid ! {Msg,{self(),Ref}},
 	    receive
 		{Ref, Result} -> 
 		    erlang:demonitor(MRef, [flush]),
@@ -249,134 +251,158 @@ call(Msg) ->
     end.
 
 return({To,Ref},Result) ->
-    To ! {Ref, Result}.
+    To ! {Ref, Result},
+    ok.
 
 cast(Msg) ->
     case whereis(?MODULE) of
 	undefined ->
-	    {error,does_not_exist};
+	    io:format("Warning: ct_logs not started~n"),
+	    {_,_,_,_,_,_,Content,_} = Msg,
+	    FormatArgs = get_format_args(Content),
+	    _ = [io:format(Format, Args) || {Format, Args} <- FormatArgs],
+	    ok;
 	_Pid ->
-	    ?MODULE ! Msg
+	    ?MODULE ! Msg,
+	    ok
     end.
 
+get_format_args(Content) ->
+    lists:map(fun(C) ->
+		  case C of
+		      {_, FA, _} -> FA;
+		      {_, _} -> C
+		  end
+	      end, Content).
+
 %%%-----------------------------------------------------------------
-%%% @spec init_tc(RefreshLog) -> ok
+%%% -spec init_tc(RefreshLog) -> ok
 %%%
-%%% @doc Test case initiation (tool-internal use only).
+%%% Test case initiation (tool-internal use only).
 %%%
-%%% <p>This function is called by ct_framework:init_tc/3</p>
+%%% This function is called by ct_framework:init_tc/3
 init_tc(RefreshLog) ->
     call({init_tc,self(),group_leader(),RefreshLog}),
-    io:format(xhtml("", "<br />")),
+    tc_io_format(group_leader(), xhtml("", "<br />"), []),
     ok.
 
 %%%-----------------------------------------------------------------
-%%% @spec end_tc(TCPid) -> ok
+%%% -spec end_tc(TCPid) -> ok
 %%%
-%%% @doc Test case clean up (tool-internal use only).
+%%% Test case clean up (tool-internal use only).
 %%%
-%%% <p>This function is called by ct_framework:end_tc/3</p>
+%%% This function is called by ct_framework:end_tc/3
 end_tc(TCPid) ->
     %% use call here so that the TC process will wait and receive
     %% possible exit signals from ct_logs before end_tc returns ok 
     call({end_tc,TCPid}).
 
 %%%-----------------------------------------------------------------
-%%% @spec register_groupleader(Pid,GroupLeader) -> ok
+%%% -spec register_groupleader(Pid,GroupLeader) -> ok
 %%%
-%%% @doc To enable logging to a group leader (tool-internal use only).
+%%% To enable logging to a group leader (tool-internal use only).
 %%%
-%%% <p>This function is called by ct_framework:report/2</p>
+%%% This function is called by ct_framework:report/2
 register_groupleader(Pid,GroupLeader) ->
     call({register_groupleader,Pid,GroupLeader}),
     ok.
 
 %%%-----------------------------------------------------------------
-%%% @spec unregister_groupleader(Pid) -> ok
+%%% -spec unregister_groupleader(Pid) -> ok
 %%%
-%%% @doc To disable logging to a group leader (tool-internal use only).
+%%% To disable logging to a group leader (tool-internal use only).
 %%%
-%%% <p>This function is called by ct_framework:report/2</p>
+%%% This function is called by ct_framework:report/2
 unregister_groupleader(Pid) ->
     call({unregister_groupleader,Pid}),
     ok.
 
 %%%-----------------------------------------------------------------
-%%% @spec log(Heading,Format,Args) -> ok
+%%% -spec log(Heading,Format,Args) -> ok
 %%%
-%%% @doc Log internal activity (tool-internal use only).
+%%% Log internal activity (tool-internal use only).
 %%%
-%%% <p>This function writes an entry to the currently active log,
-%%% i.e. either the CT log or a test case log.</p>
+%%% This function writes an entry to the currently active log,
+%%% i.e. either the CT log or a test case log.
 %%%
-%%% <p><code>Heading</code> is a short string indicating what type of
-%%% activity it is. <code>Format</code> and <code>Args</code> is the
-%%% data to log (as in <code>io:format(Format,Args)</code>).</p>
+%%% Heading is a short string indicating what type of
+%%% activity it is. Format and Args is the
+%%% data to log (as in io:format(Format,Args)).
 log(Heading,Format,Args) ->
     cast({log,sync,self(),group_leader(),ct_internal,?MAX_IMPORTANCE,
-	  [{int_header(),[log_timestamp(?now),Heading]},
+	  [{hd,int_header(),[log_timestamp(?now),Heading]},
 	   {Format,Args},
-	   {int_footer(),[]}]}),
+	   {ft,int_footer(),[]}],
+	 true}),
     ok.
 
 %%%-----------------------------------------------------------------
-%%% @spec start_log(Heading) -> ok
+%%% -spec start_log(Heading) -> ok
 %%% 
-%%% @doc Starts the logging of an activity (tool-internal use only).
+%%% Starts the logging of an activity (tool-internal use only).
 %%%
-%%% <p>This function must be used in combination with
-%%% <code>cont_log/2</code> and <code>end_log/0</code>. The intention
-%%% is to call <code>start_log</code> once, then <code>cont_log</code>
-%%% any number of times and finally <code>end_log</code> once.</p>
+%%% This function must be used in combination with
+%%% cont_log/2 and end_log/0. The intention
+%%% is to call start_log once, then cont_log
+%%% any number of times and finally end_log once.
 %%% 
-%%% <p>For information about the parameters, see <code>log/3</code>.</p>
+%%% For information about the parameters, see log/3.
 %%%
-%%% @see log/3
-%%% @see cont_log/2
-%%% @see end_log/0
+%%% See log/3, cont_log/2, and end_log/0.
 start_log(Heading) ->
     cast({log,sync,self(),group_leader(),ct_internal,?MAX_IMPORTANCE,
-	  [{int_header(),[log_timestamp(?now),Heading]}]}),
+	  [{hd,int_header(),[log_timestamp(?now),Heading]}],false}),
     ok.
 
 %%%-----------------------------------------------------------------
-%%% @spec cont_log(Format,Args) -> ok
+%%% -spec cont_log(Format,Args) -> ok
 %%% 
-%%% @doc Adds information about an activity (tool-internal use only).
+%%% Adds information about an activity (tool-internal use only).
 %%%
-%%% @see start_log/1
-%%% @see end_log/0
+%%% See start_log/1 and end_log/0.
 cont_log([],[]) ->
     ok;
 cont_log(Format,Args) ->
     maybe_log_timestamp(),
     cast({log,sync,self(),group_leader(),ct_internal,?MAX_IMPORTANCE,
-	  [{Format,Args}]}),
+	  [{Format,Args}],true}),
     ok.
 
 %%%-----------------------------------------------------------------
-%%% @spec end_log() -> ok
+%%% -spec cont_log_no_timestamp(Format,Args) -> ok
 %%% 
-%%% @doc Ends the logging of an activity (tool-internal use only).
+%%% Adds information about an activity (tool-internal use only).
 %%%
-%%% @see start_log/1
-%%% @see cont_log/2
+%%% See start_log/1 and end_log/0.
+cont_log_no_timestamp([],[]) ->
+    ok;
+cont_log_no_timestamp(Format,Args) ->
+    cast({log,sync,self(),group_leader(),ct_internal,?MAX_IMPORTANCE,
+	  [{Format,Args}],true}),
+    ok.
+
+%%%-----------------------------------------------------------------
+%%% -spec end_log() -> ok
+%%% 
+%%% Ends the logging of an activity (tool-internal use only).
+%%%
+%%% See start_log/1 and cont_log/2.
 end_log() ->
     cast({log,sync,self(),group_leader(),ct_internal,?MAX_IMPORTANCE,
-	  [{int_footer(), []}]}),
+	  [{ft,int_footer(), []}],false}),
     ok.
     
 
 %%%-----------------------------------------------------------------
-%%% @spec add_external_logs(Logs) -> ok
+%%% -spec add_external_logs(Logs) -> ok
 %%%      Logs = [Log]
 %%%      Log = string()
 %%%
-%%% @doc Print a link to each given <code>Log</code> in the test case
+%%% Print a link to each given Log in the test case
 %%% log.
 %%%
-%%% <p>The given <code>Logs</code> must exist in the priv dir of the
-%%% calling test suite.</p>
+%%% The given Logs must exist in the priv dir of the
+%%% calling test suite.
 add_external_logs(Logs) ->
     start_log("External Logs"),
     [cont_log("<a href=\"~ts\">~ts</a>\n",
@@ -384,95 +410,122 @@ add_external_logs(Logs) ->
     end_log().
 
 %%%-----------------------------------------------------------------
-%%% @spec add_link(Heading,File,Type) -> ok
+%%% -spec add_link(Heading,File,Type) -> ok
 %%%      Heading = string()
 %%%      File = string()
 %%%      Type = string()
 %%%
-%%% @doc Print a link to a given file stored in the priv_dir of the
+%%% Print a link to a given file stored in the priv_dir of the
 %%% calling test suite.
 add_link(Heading,File,Type) ->
-    log(Heading,"<a href=\"~ts\" type=~p>~ts</a>\n",
+    log(Heading,"<a href=\"~ts\" type=~tp>~ts</a>\n",
 	[uri(filename:join("log_private",File)),Type,File]).
 
 
 %%%-----------------------------------------------------------------
-%%% @spec tc_log(Category,Format,Args) -> ok
-%%% @equiv tc_log(Category,?STD_IMPORTANCE,Format,Args)
+%%% -spec tc_log(Category,Format,Args) -> ok
+%%% Equivalent to tc_log(Category,?STD_IMPORTANCE,Format,Args)
 tc_log(Category,Format,Args) ->
-    tc_log(Category,?STD_IMPORTANCE,Format,Args).
+    tc_log(Category,?STD_IMPORTANCE,"User",Format,Args,[]).
 
 %%%-----------------------------------------------------------------
-%%% @spec tc_log(Category,Importance,Format,Args) -> ok
-%%% @equiv tc_log(Category,Importance,"User",Format,Args)
+%%% -spec tc_log(Category,Importance,Format,Args) -> ok
+%%% Equivalent to tc_log(Category,Importance,"User",Format,Args)
 tc_log(Category,Importance,Format,Args) ->
-    tc_log(Category,Importance,"User",Format,Args).
+    tc_log(Category,Importance,"User",Format,Args,[]).
 
 %%%-----------------------------------------------------------------
-%%% @spec tc_log(Category,Importance,Printer,Format,Args) -> ok
+%%% -spec tc_log(Category,Importance,Format,Args) -> ok
+%%% Equivalent to tc_log(Category,Importance,"User",Format,Args)
+tc_log(Category,Importance,Format,Args,Opts) ->
+    tc_log(Category,Importance,"User",Format,Args,Opts).
+
+%%%-----------------------------------------------------------------
+%%% -spec tc_log(Category,Importance,Heading,Format,Args,Opts) -> ok
 %%%      Category = atom()
 %%%      Importance = integer()
-%%%      Printer = string()
+%%%      Heading = string()
 %%%      Format = string()
 %%%      Args = list()
+%%%      Opts = list()
 %%%
-%%% @doc Printout from a testcase. 
+%%% Printout from a testcase.
 %%%
-%%% <p>This function is called by <code>ct</code> when logging
+%%% This function is called by ct when logging
 %%% stuff directly from a testcase (i.e. not from within the CT
-%%% framework).</p>
-tc_log(Category,Importance,Printer,Format,Args) ->
-    cast({log,sync,self(),group_leader(),Category,Importance,
-	  [{div_header(Category,Printer),[]},
-	   {Format,Args},
-	   {div_footer(),[]}]}),
+%%% framework).
+tc_log(Category,Importance,Heading,Format,Args,Opts) ->
+    Data = 
+	case lists:member(no_css, Opts) of
+	    true ->
+		[{Format,Args}];
+	    false ->
+                Heading1 =
+                    case proplists:get_value(heading, Opts) of
+                        undefined -> Heading;
+                        Str       -> Str
+                    end,
+		[{hd,div_header(Category,Heading1),[]},
+		 {Format,Args},
+		 {ft,div_footer(),[]}]
+	end,
+    cast({log,sync,self(),group_leader(),Category,Importance,Data,
+	  lists:member(esc_chars, Opts)}),
     ok.
 
 %%%-----------------------------------------------------------------
-%%% @spec tc_log_async(Category,Format,Args) -> ok
-%%% @equiv tc_log_async(Category,?STD_IMPORTANCE,"User",Format,Args)
+%%% -spec tc_log_async(Category,Format,Args) -> ok
+%%% Equivalent to tc_log_async(Category,?STD_IMPORTANCE,"User",Format,Args)
 tc_log_async(Category,Format,Args) ->
     tc_log_async(Category,?STD_IMPORTANCE,"User",Format,Args).
 
 %%%-----------------------------------------------------------------
-%%% @spec tc_log_async(Category,Importance,Format,Args) -> ok
+%%% -spec tc_log_async(Category,Importance,Format,Args) -> ok
 %%%      Category = atom()
 %%%      Importance = integer()
-%%%      Printer = string()
+%%%      Heading = string()
 %%%      Format = string()
 %%%      Args = list()
 %%%
-%%% @doc Internal use only.
+%%% Internal use only.
 %%%
-%%% <p>This function is used to perform asynchronous printouts
+%%% This function is used to perform asynchronous printouts
 %%% towards the test server IO handler. This is necessary in order
 %%% to avoid deadlocks when e.g. the hook that handles SASL printouts
 %%% prints to the test case log file at the same time test server
-%%% asks ct_logs for an html wrapper.</p>
-tc_log_async(Category,Importance,Printer,Format,Args) ->
+%%% asks ct_logs for an html wrapper.
+tc_log_async(Category,Importance,Heading,Format,Args) ->
     cast({log,async,self(),group_leader(),Category,Importance,
-	  [{div_header(Category,Printer),[]},
+	  [{hd,div_header(Category,Heading),[]},
 	   {Format,Args},
-	   {div_footer(),[]}]}),
+	   {ft,div_footer(),[]}],
+	  true}),
     ok.
 %%%-----------------------------------------------------------------
-%%% @spec tc_print(Category,Format,Args)
-%%% @equiv tc_print(Category,?STD_IMPORTANCE,Format,Args)
+%%% -spec tc_print(Category,Format,Args)
+%%% Equivalent to tc_print(Category,?STD_IMPORTANCE,Format,Args,[])
 tc_print(Category,Format,Args) ->
-    tc_print(Category,?STD_IMPORTANCE,Format,Args).
+    tc_print(Category,?STD_IMPORTANCE,Format,Args,[]).
 
 %%%-----------------------------------------------------------------
-%%% @spec tc_print(Category,Importance,Format,Args) -> ok
+%%% -spec tc_print(Category,Importance,Format,Args)
+%%% Equivalent to tc_print(Category,Importance,Format,Args,[])
+tc_print(Category,Importance,Format,Args) ->
+    tc_print(Category,Importance,Format,Args,[]).
+
+%%%-----------------------------------------------------------------
+%%% -spec tc_print(Category,Importance,Format,Args,Opts) -> ok
 %%%      Category = atom()
 %%%      Importance = integer()
 %%%      Format = string()
 %%%      Args = list()
+%%%      Opts = list()
 %%%
-%%% @doc Console printout from a testcase. 
+%%% Console printout from a testcase.
 %%%
-%%% <p>This function is called by <code>ct</code> when printing
-%%% stuff from a testcase on the user console.</p>
-tc_print(Category,Importance,Format,Args) ->
+%%% This function is called by ct when printing
+%%% stuff from a testcase on the user console.
+tc_print(Category,Importance,Format,Args,Opts) ->
     VLvl = case ct_util:get_verbosity(Category) of
 	       undefined -> 
 		   ct_util:get_verbosity('$unspecified');
@@ -484,82 +537,94 @@ tc_print(Category,Importance,Format,Args) ->
 		   Val
 	   end,
     if Importance >= (100-VLvl) ->
-	    Head = get_heading(Category),
-	    io:format(user, lists:concat([Head,Format,"\n\n"]), Args),
+            Heading =
+                case proplists:get_value(heading, Opts) of
+                    undefined -> atom_to_list(Category);
+                    Hd        -> Hd
+                end,
+            Str = lists:flatten([get_header(Heading),Format,"\n\n"]),
+            try
+                io:format(?def_gl, Str, Args)
+            catch
+                %% default group leader probably not started, or has stopped
+                _:_ -> io:format(user, Str, Args)
+            end,
 	    ok;
        true ->
 	    ok
     end.
 
-get_heading(default) ->
+get_header("default") ->
     io_lib:format("\n-----------------------------"
 		  "-----------------------\n~s\n",
 		  [log_timestamp(?now)]);
-get_heading(Category) ->
+get_header(Heading) ->
     io_lib:format("\n-----------------------------"
-		  "-----------------------\n~s  ~w\n",
-		  [log_timestamp(?now),Category]).    
+		  "-----------------------\n~ts ~s\n",
+		  [Heading,log_timestamp(?now)]).    
     
 
 %%%-----------------------------------------------------------------
-%%% @spec tc_pal(Category,Format,Args) -> ok
-%%% @equiv tc_pal(Category,?STD_IMPORTANCE,Format,Args) -> ok
+%%% -spec tc_pal(Category,Format,Args) -> ok
+%%% Equivalent to tc_pal(Category,?STD_IMPORTANCE,Format,Args,[]) -> ok
 tc_pal(Category,Format,Args) ->
-    tc_pal(Category,?STD_IMPORTANCE,Format,Args).
+    tc_pal(Category,?STD_IMPORTANCE,Format,Args,[]).
 
 %%%-----------------------------------------------------------------
-%%% @spec tc_pal(Category,Importance,Format,Args) -> ok
+%%% -spec tc_pal(Category,Importance,Format,Args) -> ok
+%%% Equivalent to tc_pal(Category,Importance,Format,Args,[]) -> ok
+tc_pal(Category,Importance,Format,Args) ->
+    tc_pal(Category,Importance,Format,Args,[]).
+
+%%%-----------------------------------------------------------------
+%%% -spec tc_pal(Category,Importance,Format,Args,Opts) -> ok
 %%%      Category = atom()
 %%%      Importance = integer()
 %%%      Format = string()
 %%%      Args = list()
+%%%      Opts = list()
 %%%
-%%% @doc Print and log from a testcase. 
+%%% Print and log from a testcase.
 %%%
-%%% <p>This function is called by <code>ct</code> when logging
+%%% This function is called by ct when logging
 %%% stuff directly from a testcase. The info is written both in the
-%%% log and on the console.</p>
-tc_pal(Category,Importance,Format,Args) ->
-    tc_print(Category,Importance,Format,Args),
-    cast({log,sync,self(),group_leader(),Category,Importance,
-	  [{div_header(Category),[]},
-	   {Format,Args},
-	   {div_footer(),[]}]}),
-    ok.
-
+%%% log and on the console.
+tc_pal(Category,Importance,Format,Args,Opts) ->
+    tc_print(Category,Importance,Format,Args,Opts),
+    tc_log(Category,Importance,"User",Format,Args,[esc_chars|Opts]).
 
 %%%-----------------------------------------------------------------
-%%% @spec ct_pal(Category,Format,Args) -> ok
+%%% -spec ct_log(Category,Format,Args) -> ok
 %%%      Category = atom()
 %%%      Format = string()
 %%%      Args = list()
 %%%
-%%% @doc Print and log to the ct framework log
+%%% Print to the ct framework log
 %%%
-%%% <p>This function is called by internal ct functions to
-%%% force logging to the ct framework log</p>
+%%% This function is called by internal ct functions to
+%%% force logging to the ct framework log
 ct_log(Category,Format,Args) ->
-    cast({ct_log,[{div_header(Category),[]},
+    cast({ct_log,[{hd,div_header(Category),[]},
 		  {Format,Args},
-		  {div_footer(),[]}]}),
+		  {ft,div_footer(),[]}],
+	  true}),
     ok.
 
 
 %%%=================================================================
 %%% Internal functions
 int_header() ->
-    "<div class=\"ct_internal\"><b>*** CT ~s *** ~ts</b>".
+    "</pre>\n<div class=\"ct_internal\"><pre><b>*** CT ~s *** ~ts</b>".
 int_footer() ->
-    "</div>".
+    "</pre></div>\n<pre>".
 
 div_header(Class) ->
     div_header(Class,"User").
-div_header(Class,Printer) ->
-    "\n<div class=\"" ++ atom_to_list(Class) ++ "\"><b>*** " ++ Printer ++
-    " " ++ log_timestamp(?now) ++ " ***</b>".
+div_header(Class,Heading) ->
+    "\n</pre>\n<div class=\"" ++ atom_to_list(Class) ++ "\"><pre><b>*** "
+	++ Heading ++ " " ++ log_timestamp(?now) ++ " ***</b>".
 div_footer() ->
-    "</div>".
-
+    "</pre></div>\n<pre>".
 
 maybe_log_timestamp() ->
     {MS,S,US} = ?now,
@@ -568,7 +633,7 @@ maybe_log_timestamp() ->
 	    ok;
 	_ ->
 	    cast({log,sync,self(),group_leader(),ct_internal,?MAX_IMPORTANCE,
-		  [{"<i>~s</i>",[log_timestamp({MS,S,US})]}]})
+		  [{hd,"<i>~s</i>",[log_timestamp({MS,S,US})]}],false})
     end.
 
 log_timestamp({MS,S,US}) ->
@@ -589,10 +654,12 @@ log_timestamp({MS,S,US}) ->
 		      ct_log_fd,
 		      tc_groupleaders,
 		      stylesheet,
-		      async_print_jobs}).
+		      async_print_jobs,
+		      tc_esc_chars}).
 
 logger(Parent, Mode, Verbosity) ->
     register(?MODULE,self()),
+    ct_util:mark_process(),
     %%! Below is a temporary workaround for the limitation of
     %%! max one test run per second. 
     %%! --->
@@ -610,7 +677,7 @@ logger(Parent, Mode, Verbosity) ->
 	end,
     %%! <---
 
-    file:make_dir(Dir),
+    _ = file:make_dir(Dir),
     AbsDir = ?abs(Dir),
     put(ct_run_dir, AbsDir),
 
@@ -630,18 +697,18 @@ logger(Parent, Mode, Verbosity) ->
 	    PrivFilesDestRun = [filename:join(AbsDir, F) || F <- PrivFiles],
 	    case copy_priv_files(PrivFilesSrc, PrivFilesDestTop) of
 		{error,Src1,Dest1,Reason1} ->
-		    io:format(user, "ERROR! "++
-				  "Priv file ~p could not be copied to ~p. "++
-				  "Reason: ~p~n",
+		    io:format(?def_gl, "ERROR! "++
+				  "Priv file ~tp could not be copied to ~tp. "++
+				  "Reason: ~tp~n",
 			      [Src1,Dest1,Reason1]),
 		    exit({priv_file_error,Dest1});
 		ok ->
 		    case copy_priv_files(PrivFilesSrc, PrivFilesDestRun) of
 			{error,Src2,Dest2,Reason2} ->
-			    io:format(user,
+			    io:format(?def_gl,
 				      "ERROR! "++
-				      "Priv file ~p could not be copied to ~p. "
-				      ++"Reason: ~p~n",
+				      "Priv file ~tp could not be copied to ~tp. "
+				      ++"Reason: ~tp~n",
 				      [Src2,Dest2,Reason2]),
 			    exit({priv_file_error,Dest2});
 			ok ->
@@ -650,7 +717,7 @@ logger(Parent, Mode, Verbosity) ->
 	    end
     end,
 
-    test_server_io:start_link(),
+    _ = test_server_io:start_link(),
     MiscIoName = filename:join(Dir, ?misc_io_log),
     {ok,MiscIoFd} = file:open(MiscIoName,
 			      [write,{encoding,utf8}]),
@@ -680,13 +747,13 @@ logger(Parent, Mode, Verbosity) ->
     ct_event:notify(#event{name=start_logging,node=node(),
 			   data=AbsDir}),
     make_all_runs_index(start),
-    make_all_suites_index(start),
+    _ = make_all_suites_index(start),
     case Mode of
 	interactive -> interactive_link();
 	_ -> ok
     end,
-    file:set_cwd(Dir),
-    make_last_run_index(Time),
+    ok = file:set_cwd(Dir),
+    _ = make_last_run_index(Time),
     CtLogFd = open_ctlog(?misc_io_log),
     io:format(CtLogFd,int_header()++int_footer(),
 	      [log_timestamp(?now),"Common Test Logger started"]),
@@ -700,22 +767,26 @@ logger(Parent, Mode, Verbosity) ->
 	GenLvl    -> io:format(CtLogFd, "~-25s~3w~n",
 			       ["general level",GenLvl])
     end,
-    [begin put({verbosity,Cat},VLvl),
-	   if Cat == '$unspecified' ->
+    _ = [begin put({verbosity,Cat},VLvl),
+	     if Cat == '$unspecified' ->
 		   ok;
-	      true ->
+		true ->
 		   io:format(CtLogFd, "~-25w~3w~n", [Cat,VLvl])
-	   end
-     end || {Cat,VLvl} <- Verbosity],
+	     end
+	 end || {Cat,VLvl} <- Verbosity],
     io:nl(CtLogFd),
-
+    TcEscChars = case application:get_env(common_test, esc_chars) of
+		   {ok,ECBool} -> ECBool;
+		   _           -> true
+	       end,
     logger_loop(#logger_state{parent=Parent,
 			      log_dir=AbsDir,
 			      start_time=Time,
 			      orig_GL=group_leader(),
 			      ct_log_fd=CtLogFd,
 			      tc_groupleaders=[],
-			      async_print_jobs=[]}).
+			      async_print_jobs=[],
+			      tc_esc_chars=TcEscChars}).
 
 copy_priv_files([SrcF | SrcFs], [DestF | DestFs]) ->
     case file:copy(SrcF, DestF) of
@@ -729,7 +800,7 @@ copy_priv_files([], []) ->
 
 logger_loop(State) ->
     receive
-	{log,SyncOrAsync,Pid,GL,Category,Importance,List} ->
+	{log,SyncOrAsync,Pid,GL,Category,Importance,Content,EscChars} ->
 	    VLvl = case Category of
 		       ct_internal ->
 			   ?MAX_VERBOSITY;
@@ -741,20 +812,21 @@ logger_loop(State) ->
 		end,
 	    if Importance >= (100-VLvl) ->
 		    CtLogFd = State#logger_state.ct_log_fd,
+		    DoEscChars = State#logger_state.tc_esc_chars and EscChars,
 		    case get_groupleader(Pid, GL, State) of
 			{tc_log,TCGL,TCGLs} ->
 			    case erlang:is_process_alive(TCGL) of
 				true ->
 				    State1 = print_to_log(SyncOrAsync, Pid,
-							  Category,
-							  TCGL, List, State),
+							  Category, TCGL, Content,
+							  DoEscChars, State),
 				    logger_loop(State1#logger_state{
 						  tc_groupleaders = TCGLs});
 				false ->
 				    %% Group leader is dead, so write to the
 				    %% CtLog or unexpected_io log instead
-				    unexpected_io(Pid,Category,Importance,
-						  List,CtLogFd),
+				    unexpected_io(Pid, Category, Importance,
+						  Content, CtLogFd, DoEscChars),
 
 				    logger_loop(State)			    
 			    end;
@@ -762,7 +834,8 @@ logger_loop(State) ->
 			    %% If category is ct_internal then write
 			    %% to ct_log, else write to unexpected_io
 			    %% log
-			    unexpected_io(Pid,Category,Importance,List,CtLogFd),
+			    unexpected_io(Pid, Category, Importance, Content,
+					  CtLogFd, DoEscChars),
 			    logger_loop(State#logger_state{
 					  tc_groupleaders = TCGLs})
 		    end;
@@ -773,10 +846,11 @@ logger_loop(State) ->
 	    %% make sure no IO for this test case from the
 	    %% CT logger gets rejected
 	    test_server:permit_io(GL, self()),
-	    print_style(GL, State#logger_state.stylesheet),
+	    IoFormat = fun tc_io_format/3,
+	    print_style(GL, IoFormat, State#logger_state.stylesheet),
 	    set_evmgr_gl(GL),
 	    TCGLs = add_tc_gl(TCPid,GL,State),
-	    if not RefreshLog ->
+	    _ = if not RefreshLog ->
 		    ok;
 	       true ->
 		    make_last_run_index(State#logger_state.start_time)
@@ -803,7 +877,7 @@ logger_loop(State) ->
 	    return(From,{ok,filename:basename(State#logger_state.log_dir)}),
 	    logger_loop(State);
 	{make_last_run_index,From} ->
-	    make_last_run_index(State#logger_state.start_time),
+	    _ = make_last_run_index(State#logger_state.start_time),
 	    return(From,get(ct_log_cache)),
 	    logger_loop(State);
 	{set_stylesheet,_,SSFile} when State#logger_state.stylesheet ==
@@ -811,17 +885,24 @@ logger_loop(State) ->
 	    logger_loop(State);
 	{set_stylesheet,TC,SSFile} ->
 	    Fd = State#logger_state.ct_log_fd,
-	    io:format(Fd, "~p loading external style sheet: ~ts~n",
+	    io:format(Fd, "~tp loading external style sheet: ~ts~n",
 		      [TC,SSFile]),
 	    logger_loop(State#logger_state{stylesheet = SSFile});
 	{clear_stylesheet,_} when State#logger_state.stylesheet == undefined ->
 	    logger_loop(State);
 	{clear_stylesheet,_} ->
 	    logger_loop(State#logger_state{stylesheet = undefined});
-	{ct_log, List} ->
+	{ct_log,Content,EscChars} ->
+	    Str = lists:map(fun({_HdOrFt,Str,Args}) ->
+				    [io_lib:format(Str,Args),io_lib:nl()];
+			       ({Str,Args}) when EscChars ->
+				    Io = io_lib:format(Str,Args),
+				    [escape_chars(Io),io_lib:nl()];
+			       ({Str,Args}) ->
+				    [io_lib:format(Str,Args),io_lib:nl()]
+			    end, Content),
 	    Fd = State#logger_state.ct_log_fd,
-	    [begin io:format(Fd,Str,Args),io:nl(Fd) end ||
-				{Str,Args} <- List],
+	    io:format(Fd, "~ts", [Str]),
 	    logger_loop(State);
 	{'DOWN',Ref,_,_Pid,_} ->
 	    %% there might be print jobs executing in parallel with ct_logs
@@ -843,46 +924,81 @@ logger_loop(State) ->
 	    ok
     end.
 
-create_io_fun(FromPid, CtLogFd) ->
+create_io_fun(FromPid, CtLogFd, EscChars) ->
     %% we have to build one io-list of all strings
     %% before printing, or other io printouts (made in
     %% parallel) may get printed between this header 
     %% and footer
-    fun({Str,Args}, IoList) ->
-	    case catch io_lib:format(Str,Args) of
-		{'EXIT',_Reason} ->
-		    io:format(CtLogFd, "Logging fails! Str: ~p, Args: ~p~n",
+    fun(FormatData, IoList) ->
+	    {Escapable,Str,Args} =
+		case FormatData of
+		    {_HdOrFt,S,A} -> {false,S,A};
+		    {S,A}         -> {true,S,A}
+		end,
+	    try io_lib:format(lists:flatten(Str), Args) of
+		IoStr when Escapable, EscChars, IoList == [] ->
+		    escape_chars(IoStr);
+		IoStr when Escapable, EscChars ->
+		    [IoList,"\n",escape_chars(IoStr)];
+		IoStr when IoList == [] ->
+		    IoStr;
+		IoStr ->
+		    [IoList,"\n",IoStr]
+	    catch
+		_:_Reason ->
+		    io:format(CtLogFd, "Logging fails! Str: ~tp, Args: ~tp~n",
 			      [Str,Args]),
 		    %% stop the testcase, we need to see the fault
 		    exit(FromPid, {log_printout_error,Str,Args}),
-		    [];
-		IoStr when IoList == [] ->
-		    [IoStr];
-		IoStr ->
-		    [IoList,"\n",IoStr]
+		    []
 	    end
     end.
 
-print_to_log(sync, FromPid, Category, TCGL, List, State) ->
+escape_chars([Bin | Io]) when is_binary(Bin) ->
+    [Bin | escape_chars(Io)];
+escape_chars([List | Io]) when is_list(List) ->
+    [escape_chars(List) | escape_chars(Io)];
+escape_chars([$< | Io]) ->
+    ["&lt;" | escape_chars(Io)];
+escape_chars([$> | Io]) ->
+    ["&gt;" | escape_chars(Io)];
+escape_chars([$& | Io]) ->
+    ["&amp;" | escape_chars(Io)];
+escape_chars([Char | Io]) when is_integer(Char) ->
+    [Char | escape_chars(Io)];
+escape_chars([]) ->
+    [];
+escape_chars(Bin) ->
+    Bin.
+
+print_to_log(sync, FromPid, Category, TCGL, Content, EscChars, State) ->
     %% in some situations (exceptions), the printout is made from the
     %% test server IO process and there's no valid group leader to send to
     CtLogFd = State#logger_state.ct_log_fd,
     if FromPid /= TCGL ->
-	    IoFun = create_io_fun(FromPid, CtLogFd),
-	    io:format(TCGL,"~ts", [lists:foldl(IoFun, [], List)]);
+	    IoFun = create_io_fun(FromPid, CtLogFd, EscChars),
+	    IoList = lists:foldl(IoFun, [], Content),
+	    try tc_io_format(TCGL, "~ts", [IoList]) of
+		ok -> ok
+	    catch
+		_:_ ->
+		    io:format(TCGL,"~ts", [IoList])
+	    end;
        true ->
-	    unexpected_io(FromPid,Category,?MAX_IMPORTANCE,List,CtLogFd)
+	    unexpected_io(FromPid, Category, ?MAX_IMPORTANCE, Content,
+			  CtLogFd, EscChars)
     end,
     State;
 
-print_to_log(async, FromPid, Category, TCGL, List, State) ->
+print_to_log(async, FromPid, Category, TCGL, Content, EscChars, State) ->
     %% in some situations (exceptions), the printout is made from the
     %% test server IO process and there's no valid group leader to send to
     CtLogFd = State#logger_state.ct_log_fd,
     Printer =
 	if FromPid /= TCGL ->
-		IoFun = create_io_fun(FromPid, CtLogFd),
+		IoFun = create_io_fun(FromPid, CtLogFd, EscChars),
 		fun() ->
+                        ct_util:mark_process(),
 			test_server:permit_io(TCGL, self()),
 
 			%% Since asynchronous io gets can get buffered if
@@ -894,25 +1010,29 @@ print_to_log(async, FromPid, Category, TCGL, List, State) ->
 
 			case erlang:is_process_alive(TCGL) of
 			    true ->
-				try io:format(TCGL, "~ts",
-					      [lists:foldl(IoFun,[],List)]) of
+				try tc_io_format(TCGL, "~ts",
+					      [lists:foldl(IoFun,[],Content)]) of
 				    _ -> ok
 				catch
 				    _:terminated ->
 					unexpected_io(FromPid, Category,
 						      ?MAX_IMPORTANCE,
-						      List, CtLogFd)
+						      Content, CtLogFd, EscChars);
+				    _:_ ->
+					io:format(TCGL, "~ts",
+						  [lists:foldl(IoFun,[],Content)])
 				end;
 			    false ->
 				unexpected_io(FromPid, Category,
 					      ?MAX_IMPORTANCE,
-					      List, CtLogFd)
+					      Content, CtLogFd, EscChars)
 			end
 		end;
 	   true ->
 		fun() ->
+                        ct_util:mark_process(),
 			unexpected_io(FromPid, Category, ?MAX_IMPORTANCE,
-				      List, CtLogFd)
+				      Content, CtLogFd, EscChars)
 		end
 	end,
     case State#logger_state.async_print_jobs of
@@ -1018,16 +1138,16 @@ set_evmgr_gl(GL) ->
 
 open_ctlog(MiscIoName) ->
     {ok,Fd} = file:open(?ct_log_name,[write,{encoding,utf8}]),
-    io:format(Fd, header("Common Test Framework Log", {[],[1,2],[]}), []),
+    io:format(Fd, "~ts", [header("Common Test Framework Log", {[],[1,2],[]})]),
     case file:consult(ct_run:variables_file_name("../")) of
 	{ok,Vars} ->
-	    io:format(Fd, config_table(Vars), []);
+	    io:format(Fd, "~ts", [config_table(Vars)]);
 	{error,Reason} ->
 	    {ok,Cwd} = file:get_cwd(),
 	    Dir = filename:dirname(Cwd),
 	    Variables = ct_run:variables_file_name(Dir),
 	    io:format(Fd,
-		      "Can not read the file \'~ts\' Reason: ~w\n"
+		      "Can not read the file \'~ts\' Reason: ~tw\n"
 		      "No configuration found for test!!\n",
 		      [Variables,Reason])
     end,
@@ -1042,66 +1162,82 @@ open_ctlog(MiscIoName) ->
 	      "View I/O logged after the test run</a></li>\n</ul>\n",
 	      [MiscIoName,MiscIoName]),
 
-    print_style(Fd,undefined),
+    print_style(Fd, fun io:format/3, undefined),
     io:format(Fd, 
 	      xhtml("<br><h2>Progress Log</h2>\n<pre>\n",
 		    "<br />\n<h4>PROGRESS LOG</h4>\n<pre>\n"), []),
     Fd.
 
-print_style(Fd,undefined) ->
+print_style(Fd, IoFormat, undefined) ->
     case basic_html() of
 	true ->
-	    io:format(Fd,
-		      "<style>\n"
-		      "div.ct_internal { background:lightgrey; color:black; }\n"
-		      "div.default     { background:lightgreen; color:black; }\n"
-		      "</style>\n",
-		      []);
+	    Style = "<style>\n
+		div.ct_internal { background:lightgrey; color:black; }\n
+		div.default     { background:lightgreen; color:black; }\n
+		</style>\n",
+	    IoFormat(Fd, Style, []);
 	_ ->
 	    ok
     end;
 
-print_style(Fd,StyleSheet) ->
+print_style(Fd, IoFormat, StyleSheet) ->
     case file:read_file(StyleSheet) of
 	{ok,Bin} ->
 	    Str = b2s(Bin,encoding(StyleSheet)),
-	    Pos0 = case string:str(Str,"<style>") of
-		       0 -> string:str(Str,"<STYLE>");
-		       N0 -> N0
-		   end,
-	    Pos1 = case string:str(Str,"</style>") of
-		       0 -> string:str(Str,"</STYLE>");
-		       N1 -> N1
-		   end,
-	    if (Pos0 == 0) and (Pos1 /= 0) ->
-		    print_style_error(Fd,StyleSheet,missing_style_start_tag);
-	       (Pos0 /= 0) and (Pos1 == 0) ->
-		    print_style_error(Fd,StyleSheet,missing_style_end_tag);
-	       Pos0 /= 0 ->
-		    Style = string:sub_string(Str,Pos0,Pos1+7),
-		    io:format(Fd,"~ts\n",[Style]);
-	       Pos0 == 0 ->
-		    io:format(Fd,"<style>~ts</style>\n",[Str])
-	    end;
+            case re:run(Str,"<style>.*</style>",
+                        [dotall,caseless,{capture,all,list}]) of
+                nomatch ->
+                    case re:run(Str,"</?style>",[caseless,{capture,all,list}]) of
+                        nomatch ->
+                            IoFormat(Fd,"<style>\n~ts</style>\n",[Str]);
+                        {match,["</"++_]} ->
+                            print_style_error(Fd, IoFormat,
+                                              StyleSheet,
+                                              missing_style_start_tag);
+                        {match,[_]} ->
+                            print_style_error(Fd, IoFormat,
+                                              StyleSheet,missing_style_end_tag)
+                    end;
+                {match,[Style]} ->
+                    IoFormat(Fd,"~ts\n",[Style])
+            end;
 	{error,Reason} ->
-	    print_style_error(Fd,StyleSheet,Reason)  
+	    print_style_error(Fd,IoFormat,StyleSheet,Reason)
     end.
 
-%% Simple link version, doesn't work with all browsers unfortunately. :-(
-%% print_style(Fd, StyleSheet) ->
-%%    io:format(Fd,
-%%	      "<link href=~p rel=\"stylesheet\" type=\"text/css\">",
-%%	      [StyleSheet]).
-
-print_style_error(Fd,StyleSheet,Reason) ->
-    io:format(Fd,"\n<!-- Failed to load stylesheet ~ts: ~p -->\n",
-	      [StyleSheet,Reason]),
-    print_style(Fd,undefined).    
+print_style_error(Fd, IoFormat, StyleSheet, Reason) ->
+    IO = io_lib:format("\n<!-- Failed to load stylesheet ~ts: ~tp -->\n",
+		       [StyleSheet,Reason]),
+    IoFormat(Fd, IO, []),
+    print_style(Fd, IoFormat, undefined).
 
 close_ctlog(Fd) ->
     io:format(Fd, "\n</pre>\n", []),
-    io:format(Fd, [xhtml("<br><br>\n", "<br /><br />\n") | footer()], []),
-    file:close(Fd).
+    io:format(Fd, "~ts", [[xhtml("<br><br>\n", "<br /><br />\n") | footer()]]),
+    ok = file:close(Fd).
+
+%%%-----------------------------------------------------------------
+%%% tc_io_format/3
+%%% Tell common_test's IO server (group leader) not to escape
+%%% HTML characters.
+
+-spec tc_io_format(io:device(), io:format(), [term()]) -> 'ok'.
+
+tc_io_format(Fd, Format0, Args) ->
+    %% We know that the specially wrapped format string is handled
+    %% by our IO server, but Dialyzer does not and would tell us
+    %% that the call to io:format/3 would fail. Therefore, we must
+    %% fool dialyzer.
+
+    Format = case cloaked_true() of
+		 true -> ["$tc_html",Format0];
+		 false -> Format0		%Never happens.
+	     end,
+    io:format(Fd, Format, Args).
+
+%% Return 'true', but let dialyzer think that a boolean is returned.
+cloaked_true() ->
+    is_process_alive(self()).
 
 
 %%%-----------------------------------------------------------------
@@ -1113,11 +1249,11 @@ make_last_run_index(StartTime) ->
 	case catch make_last_run_index1(StartTime,IndexName) of
 	    {'EXIT', Reason} ->
 		io:put_chars("CRASHED while updating " ++ AbsIndexName ++ "!\n"),
-		io:format("~p~n", [Reason]),
+		io:format("~tp~n", [Reason]),
 		{error, Reason};
 	    {error, Reason} ->
 		io:put_chars("FAILED while updating " ++ AbsIndexName ++ "\n"),
-		io:format("~p~n", [Reason]),
+		io:format("~tp~n", [Reason]),
 		{error, Reason};
 	    ok ->
 		ok;
@@ -1271,9 +1407,9 @@ make_one_index_entry1(SuiteName, Link, Label, Success, Fail, UserSkip, AutoSkip,
     {Lbl,Timestamp,Node,AllInfo} =
 	case All of
 	    {true,OldRuns} -> 
-		[_Prefix,NodeOrDate|_] = string:tokens(Link,"."),
-		Node1 = case string:chr(NodeOrDate,$@) of
-			    0 -> "-";
+		[_Prefix,NodeOrDate|_] = string:lexemes(Link,"."),
+		Node1 = case string:find(NodeOrDate,[$@]) of
+			    nomatch -> "-";
 			    _ -> NodeOrDate
 			end,
 
@@ -1364,11 +1500,11 @@ total_row(Success, Fail, UserSkip, AutoSkip, NotBuilt, All) ->
     [xhtml("<tr valign=top>\n", 
 	   ["</tbody>\n<tfoot>\n<tr class=\"",odd_or_even(),"\">\n"]),
      "<td><b>Total</b></td>\n", Label, TimestampCell,
-     "<td align=right><b>",integer_to_list(Success),"<b></td>\n",
-     "<td align=right><b>",integer_to_list(Fail),"<b></td>\n",
+     "<td align=right><b>",integer_to_list(Success),"</b></td>\n",
+     "<td align=right><b>",integer_to_list(Fail),"</b></td>\n",
      "<td align=right>",integer_to_list(AllSkip),
      " (",UserSkipStr,"/",AutoSkipStr,")</td>\n",  
-     "<td align=right><b>",integer_to_list(NotBuilt),"<b></td>\n",
+     "<td align=right><b>",integer_to_list(NotBuilt),"</b></td>\n",
      AllInfo, "</tr>\n",
      xhtml("","</tfoot>\n")].
 
@@ -1380,7 +1516,7 @@ not_built(BaseName,_LogDir,_All,Missing) ->
     %%            Top.ObjDir | Top.ObjDir.suites | Top.ObjDir.Suite | 
     %%            Top.ObjDir.Suite.cases | Top.ObjDir.Suite.Case    
     Failed =
-	case string:tokens(BaseName,".") of
+	case string:lexemes(BaseName,".") of
 	    [T,O] when is_list(T) ->		% all under Top.ObjDir
 		locate_info({T,O},all,Missing);
 	    [T,O,"suites"] ->
@@ -1418,7 +1554,7 @@ get_missing_suites(_,_) ->
     [].
 
 term_to_text(Term) ->
-    lists:flatten(io_lib:format("~p.\n", [Term])).
+    lists:flatten(io_lib:format("~tp.\n", [Term])).
 
 
 %%% Headers and footers.
@@ -1560,10 +1696,12 @@ header1(Title, SubTitle, TableCols) ->
      "<!-- autogenerated by '"++atom_to_list(?MODULE)++"' -->\n",
      "<head>\n",
      "<title>" ++ Title ++ " " ++ SubTitle ++ "</title>\n",
-     "<meta http-equiv=\"cache-control\" content=\"no-cache\">\n",
-     "<meta http-equiv=\"content-type\" content=\"text/html; charset=utf-8\">\n",
+     "<meta http-equiv=\"cache-control\" content=\"no-cache\"></meta>\n",
+     "<meta http-equiv=\"content-type\" content=\"text/html; "
+            "charset=utf-8\"></meta>\n",
      xhtml("",
-	   ["<link rel=\"stylesheet\" href=\"",uri(CSSFile),"\" type=\"text/css\">\n"]),
+	   ["<link rel=\"stylesheet\" href=\"",uri(CSSFile),
+	    "\" type=\"text/css\"></link>\n"]),
      xhtml("",
 	   ["<script type=\"text/javascript\" src=\"",JQueryFile,
 	    "\"></script>\n"]),
@@ -1610,7 +1748,7 @@ footer() ->
       "Copyright &copy; ", year(),
       " <a href=\"http://www.erlang.org\">Open Telecom Platform</a>",
       xhtml("<br>\n", "<br />\n"),
-      "Updated: <!date>", current_time(), "<!/date>",
+      "Updated: <!--date-->", current_time(), "<!--/date-->",
       xhtml("<br>\n", "<br />\n"),
       xhtml("</font></p>\n", "</div>\n"),
       "</center>\n"
@@ -1680,11 +1818,11 @@ count_cases(Dir) ->
 			    %% file yet.
 			    {0,0,0,0};
 			Summary ->
-			    write_summary(SumFile, Summary),
+			    _ = write_summary(SumFile, Summary),
 			    Summary
 		    end;
 		{error, Reason} ->
-		    io:format("\nFailed to read ~p: ~p (skipped)\n",
+		    io:format("\nFailed to read ~tp: ~tp (skipped)\n",
 			      [LogFile,Reason]),
 		    error
 	    end
@@ -1766,10 +1904,10 @@ config_table_header() ->
 
 config_table1([{Key,Value}|Vars]) ->
     [xhtml(["<tr><td>", atom_to_list(Key), "</td>\n",
-	   "<td><pre>",io_lib:format("~p",[Value]),"</pre></td></tr>\n"],
+	   "<td><pre>",io_lib:format("~tp",[Value]),"</pre></td></tr>\n"],
 	   ["<tr class=\"", odd_or_even(), "\">\n",
 	    "<td>", atom_to_list(Key), "</td>\n",
-	    "<td>", io_lib:format("~p",[Value]), "</td>\n</tr>\n"]) |
+	    "<td>", io_lib:format("~tp",[Value]), "</td>\n</tr>\n"]) |
      config_table1(Vars)];
 config_table1([]) ->
     [xhtml("","</tbody>\n"),"</table>\n"].
@@ -1780,7 +1918,7 @@ make_all_runs_index(When) ->
     AbsName = ?abs(?all_runs_name),
     notify_and_lock_file(AbsName),
     if When == start -> ok;
-       true -> io:put_chars("Updating " ++ AbsName ++ "... ")
+       true -> io:put_chars("Updating " ++ AbsName ++ " ... ")
     end,
 
     %% check if log cache should be used, and if it exists
@@ -1802,7 +1940,11 @@ make_all_runs_index(When) ->
 	end,	
 
     Dirs = filelib:wildcard(logdir_prefix()++"*.*"),
-    DirsSorted = (catch sort_all_runs(Dirs)),
+    DirsSorted0 = (catch sort_all_runs(Dirs)),
+    DirsSorted =
+        if When == start -> DirsSorted0;
+           true -> maybe_delete_old_dirs(DirsSorted0)
+        end,
 
     LogCacheInfo = get_cache_data(UseCache),
 	
@@ -1880,7 +2022,7 @@ update_all_runs_in_cache(AllRunsData) ->
 		    %% read from file as long as this logger process is alive
 		    put(ct_log_cache,term_to_binary(LogCache));
 		_ ->
-		    file:write_file(?log_cache_name,term_to_binary(LogCache))
+		    write_log_cache(term_to_binary(LogCache))
 	    end;		    
 	SavedLogCache ->
 	    update_all_runs_in_cache(AllRunsData,binary_to_term(SavedLogCache))
@@ -1894,7 +2036,7 @@ update_all_runs_in_cache(AllRunsData, LogCache) ->
 	    %% read from file as long as this logger process is alive
 	    put(ct_log_cache,term_to_binary(LogCache1));
 	_ ->
-	    file:write_file(?log_cache_name,term_to_binary(LogCache1))
+	    write_log_cache(term_to_binary(LogCache1))
     end.
 
 sort_all_runs(Dirs) ->
@@ -1902,9 +2044,9 @@ sort_all_runs(Dirs) ->
     %% "YYYY-MM-DD_HH.MM.SS"
     lists:sort(fun(Dir1,Dir2) ->
 		       [SS1,MM1,HH1,Date1|_] =
-			   lists:reverse(string:tokens(Dir1,[$.,$_])),
+			   lists:reverse(string:lexemes(Dir1,[$.,$_])),
 		       [SS2,MM2,HH2,Date2|_] =
-			   lists:reverse(string:tokens(Dir2,[$.,$_])),
+			   lists:reverse(string:lexemes(Dir2,[$.,$_])),
 		       {Date1,HH1,MM1,SS1} > {Date2,HH2,MM2,SS2}
 	       end, Dirs).
 
@@ -1914,11 +2056,41 @@ sort_ct_runs(Dirs) ->
     lists:sort(
       fun(Dir1,Dir2) ->
 	      [SS1,MM1,DateHH1 | _] =
-		  lists:reverse(string:tokens(filename:dirname(Dir1),[$.])),
+		  lists:reverse(string:lexemes(filename:dirname(Dir1),[$.])),
 	      [SS2,MM2,DateHH2 | _] =
-		  lists:reverse(string:tokens(filename:dirname(Dir2),[$.])),
+		  lists:reverse(string:lexemes(filename:dirname(Dir2),[$.])),
 	      {DateHH1,MM1,SS1} =< {DateHH2,MM2,SS2}
       end, Dirs).
+
+parse_keep_logs([Str="all"]) ->
+    parse_keep_logs(list_to_atom(Str));
+parse_keep_logs([NStr]) ->
+    parse_keep_logs(list_to_integer(NStr));
+parse_keep_logs(all) ->
+    all;
+parse_keep_logs(N) when is_integer(N), N>0 ->
+    N.
+
+maybe_delete_old_dirs(Sorted) ->
+    {Keep,Delete} =
+        case application:get_env(common_test, keep_logs) of
+            {ok,MaxN} when is_integer(MaxN), length(Sorted)>MaxN ->
+                lists:split(MaxN,Sorted);
+            _ ->
+                {Sorted,[]}
+        end,
+    delete_old_dirs(Delete),
+    Keep.
+
+delete_old_dirs([]) ->
+    ok;
+delete_old_dirs(Dirs) ->
+    io:put_chars("\n  Removing old test directories:\n"),
+    [begin
+         io:put_chars("    " ++ Dir ++ "\n"),
+         rm_dir(Dir)
+     end|| Dir <- Dirs],
+    ok.
 
 dir_diff_all_runs(Dirs, LogCache) ->
     case LogCache#log_cache.all_runs of
@@ -1985,9 +2157,9 @@ interactive_link() ->
 	 "<!-- autogenerated by '"++atom_to_list(?MODULE)++"' -->\n",
 	 "<head>\n",
 	 "<title>Last interactive run</title>\n",
-	 "<meta http-equiv=\"cache-control\" content=\"no-cache\">\n",
+	 "<meta http-equiv=\"cache-control\" content=\"no-cache\"></meta>\n",
 	 "<meta http-equiv=\"content-type\" content=\"text/html; "
-	 "charset=utf-8\">\n",
+	        "charset=utf-8\"></meta>\n",
 	 "</head>\n",
 	 "<body>\n",
 	 "Log from last interactive run: <a href=\"",uri(CtLog),"\">",
@@ -1995,7 +2167,7 @@ interactive_link() ->
 	 "</body>\n",
 	 "</html>\n"
 	],
-    file:write_file("last_interactive.html",unicode:characters_to_binary(Body)),
+    _ = file:write_file("last_interactive.html",unicode:characters_to_binary(Body)),
     io:format("~n~nUpdated ~ts\n"
 	      "Any CT activities will be logged here\n",
 	      [?abs("last_interactive.html")]).
@@ -2032,27 +2204,15 @@ runentry(Dir, Totals={Node,Label,Logs,
 		    0 -> "-";
 		    N -> integer_to_list(N)
 		end,
-    StripExt = 
-	fun(File) ->
-		string:sub_string(File,1,
-				  length(File)-
-				      length(?logdir_ext)) ++ ", "
-	end,
-    Polish =  fun(S) -> case lists:reverse(S) of
-			    [32,$,|Rev] -> lists:reverse(Rev);
-			    [$,|Rev] -> lists:reverse(Rev);
-			    _ -> S
-			end 
-	      end,
-    TestNames = Polish(lists:flatten(lists:map(StripExt,Logs))),
+
+    RootNames = lists:map(fun(F) -> filename:rootname(F,?logdir_ext) end, Logs),
+    TestNames = lists:flatten(lists:join(", ", RootNames)),
     TestNamesTrunc =
-	if TestNames=="" -> 
-		"";
-	   length(TestNames) < ?testname_width ->
+	if length(TestNames) < ?testname_width ->
 		TestNames;
 	   true ->
-		Trunc = Polish(string:substr(TestNames,1,
-					     ?testname_width-3)),
+		Trunc = string:trim(string:slice(TestNames,0,?testname_width-3),
+                                    trailing,",\s"),
 		lists:flatten(io_lib:format("~ts...",[Trunc]))
 	end,
     TotMissingStr =
@@ -2126,9 +2286,9 @@ runentry(Dir, _, _) ->
 write_totals_file(Name,Label,Logs,Totals) ->
     AbsName = ?abs(Name),
     notify_and_lock_file(AbsName),
-    force_write_file(AbsName,
-		     term_to_binary({atom_to_list(node()),
-				     Label,Logs,Totals})),
+    _ = force_write_file(AbsName,
+			 term_to_binary({atom_to_list(node()),
+					 Label,Logs,Totals})),
     notify_and_unlock_file(AbsName).
 
 %% this function needs to convert from old formats to new so that old
@@ -2173,7 +2333,7 @@ read_totals_file(Name) ->
     Result.
 
 force_write_file(Name,Contents) ->
-    force_delete(Name),
+    _ = force_delete(Name),
     file:write_file(Name,Contents).
 
 force_delete(Name) ->
@@ -2195,7 +2355,7 @@ force_rename(From,To,Number) ->
 
 
 timestamp(Dir) ->
-    TsR = lists:reverse(string:tokens(Dir,".-_")),
+    TsR = lists:reverse(string:lexemes(Dir,".-_")),
     [S,Min,H,D,M,Y] = [list_to_integer(N) || N <- lists:sublist(TsR,6)],
     format_time({{Y,M,D},{H,Min,S}}).
 
@@ -2295,17 +2455,17 @@ make_all_suites_index(NewTestData = {_TestName,DirName}) ->
 					   LogDirData) of
 	    {'EXIT',Reason} ->
 		io:put_chars("CRASHED while updating " ++ AbsIndexName ++ "!\n"),
-		io:format("~p~n", [Reason]),
+		io:format("~tp~n", [Reason]),
 		{error,Reason};
 	    {error,Reason} ->
 		io:put_chars("FAILED while updating " ++ AbsIndexName ++ "\n"),
-		io:format("~p~n", [Reason]),
+		io:format("~tp~n", [Reason]),
 		{error,Reason};
 	    ok ->
 		ok;
 	    Err ->
 		io:format("Unknown internal error while updating ~ts. "
-			  "Please report.\n(Err: ~p, ID: 1)",
+			  "Please report.\n(Err: ~tp, ID: 1)",
 			  [AbsIndexName,Err]),
 		{error, Err}
 	end,
@@ -2508,7 +2668,7 @@ update_tests_in_cache(TempData,LogCache=#log_cache{tests=Tests}) ->
 	{_Pid,_Pid} ->
 	    put(ct_log_cache,CacheBin);
 	_ ->
-	    file:write_file(?log_cache_name,CacheBin)
+	    write_log_cache(CacheBin)
     end.
 
 %%
@@ -2519,16 +2679,16 @@ update_tests_in_cache(TempData,LogCache=#log_cache{tests=Tests}) ->
 make_all_suites_index1(When, AbsIndexName, AllTestLogDirs) ->
     IndexName = ?index_name,
     if When == start -> ok;
-       true -> io:put_chars("Updating " ++ AbsIndexName ++ "... ")
+       true -> io:put_chars("Updating " ++ AbsIndexName ++ " ... ")
     end,
     case catch make_all_suites_index2(IndexName, AllTestLogDirs) of
 	{'EXIT', Reason} ->
 	    io:put_chars("CRASHED while updating " ++ AbsIndexName ++ "!\n"),
-	    io:format("~p~n", [Reason]),
+	    io:format("~tp~n", [Reason]),
 	    {error, Reason};
 	{error, Reason} ->
 	    io:put_chars("FAILED while updating " ++ AbsIndexName ++ "\n"),
-	    io:format("~p~n", [Reason]),
+	    io:format("~tp~n", [Reason]),
 	    {error, Reason};
 	{ok,TempData} ->
 	    case When of
@@ -2542,7 +2702,7 @@ make_all_suites_index1(When, AbsIndexName, AllTestLogDirs) ->
 	    end;
 	Err ->
 	    io:format("Unknown internal error while updating ~ts. "
-		      "Please report.\n(Err: ~p, ID: 1)",
+		      "Please report.\n(Err: ~tp, ID: 1)",
 		      [AbsIndexName,Err]),
 	    {error, Err}
     end.
@@ -2724,18 +2884,18 @@ get_cache_data({ok,CacheBin}) ->
 		true ->
 		    {ok,CacheRec};
 		false ->
-		    file:delete(?log_cache_name),
+		    _ = file:delete(?log_cache_name),
 		    {error,old_cache_file}
 	    end;				    
 	_ ->
-	    file:delete(?log_cache_name),
+	    _ = file:delete(?log_cache_name),
 	    {error,invalid_cache_file}
     end;
 get_cache_data(NoCache) ->
     NoCache.
 
 cache_vsn() ->
-    application:load(common_test),
+    _ = application:load(common_test),
     case application:get_key(common_test,vsn) of
 	{ok,VSN} ->
 	    VSN;
@@ -2744,7 +2904,7 @@ cache_vsn() ->
 	    VSNfile = filename:join([EbinDir,"..","vsn.mk"]),
 	    case file:read_file(VSNfile) of
 		{ok,Bin} ->
-		    [_,VSN] = string:tokens(binary_to_list(Bin),[$=,$\n,$ ]),
+		    [_,VSN] = string:lexemes(binary_to_list(Bin),[$=,$\n,$ ]),
 		    VSN;
 		_ ->
 		    undefined
@@ -2826,18 +2986,19 @@ rm_files([]) ->
     ok.    
 
 %%%-----------------------------------------------------------------
-%%% @spec simulate() -> pid()
+%%% -spec simulate() -> pid()
 %%%
-%%% @doc Simulate the logger process.
+%%% Simulate the logger process.
 %%%
-%%% <p>Simulate the logger process - for use when testing code using
+%%% Simulate the logger process - for use when testing code using
 %%% ct_logs logging mechanism without using the ct
-%%% environment. (E.g. when testing code with ts)</p>
+%%% environment. (E.g. when testing code with ts)
 simulate() ->
     cast(stop),
     S = self(),
     Pid = spawn(fun() -> 
 			register(?MODULE,self()),
+                        ct_util:mark_process(),
 			S ! {self(),started},
 			simulate_logger_loop() 
 		end),
@@ -2846,8 +3007,12 @@ simulate() ->
 
 simulate_logger_loop() ->
     receive 
-    	{log,_,_,_,_,_,List} ->
-	    S = [[io_lib:format(Str,Args),io_lib:nl()] || {Str,Args} <- List],
+    	{log,_,_,_,_,_,Content,_} ->
+	    S = lists:map(fun({_,Str,Args}) ->
+				  [io_lib:format(Str,Args),io_lib:nl()];
+			     ({Str,Args}) ->
+				  [io_lib:format(Str,Args),io_lib:nl()]
+			  end, Content),
 	    io:format("~ts",[S]),
 	    simulate_logger_loop();
 	stop ->
@@ -2855,9 +3020,7 @@ simulate_logger_loop() ->
     end.
 
 %%%-----------------------------------------------------------------
-%%% @spec notify_and_lock_file(Files) -> ok
-%%%
-%%% @doc
+%%% -spec notify_and_lock_file(Files) -> ok
 %%%
 notify_and_lock_file(File) ->    
     case ct_event:is_alive() of
@@ -2870,9 +3033,7 @@ notify_and_lock_file(File) ->
     end.
 
 %%%-----------------------------------------------------------------
-%%% @spec notify_and_unlock_file(Files) -> ok
-%%%
-%%% @doc
+%%% -spec notify_and_unlock_file(Files) -> ok
 %%%
 notify_and_unlock_file(File) ->    
     case ct_event:is_alive() of
@@ -2885,9 +3046,7 @@ notify_and_unlock_file(File) ->
     end.
 
 %%%-----------------------------------------------------------------
-%%% @spec get_run_dirs(Dir) -> [string()] | false
-%%%
-%%% @doc
+%%% -spec get_run_dirs(Dir) -> [string()] | false
 %%%
 get_run_dirs(Dir) ->
     case filelib:wildcard(filename:join(Dir, "run.[1-2]*")) of
@@ -2898,9 +3057,7 @@ get_run_dirs(Dir) ->
     end.
 
 %%%-----------------------------------------------------------------
-%%% @spec xhtml(HTML, XHTML) -> HTML | XHTML
-%%%
-%%% @doc
+%%% -spec xhtml(HTML, XHTML) -> HTML | XHTML
 %%%
 xhtml(HTML, XHTML) when is_function(HTML),
 			is_function(XHTML) ->
@@ -2915,9 +3072,7 @@ xhtml(HTML, XHTML) ->
     end.
 
 %%%-----------------------------------------------------------------
-%%% @spec odd_or_even() -> "odd" | "even"
-%%%
-%%% @doc
+%%% -spec odd_or_even() -> "odd" | "even"
 %%%
 odd_or_even() ->
     case get(odd_or_even) of
@@ -2930,9 +3085,7 @@ odd_or_even() ->
     end.
 
 %%%-----------------------------------------------------------------
-%%% @spec basic_html() -> true | false
-%%%
-%%% @doc
+%%% -spec basic_html() -> true | false
 %%%
 basic_html() ->
     case application:get_env(common_test, basic_html) of
@@ -2943,9 +3096,7 @@ basic_html() ->
     end.
 
 %%%-----------------------------------------------------------------
-%%% @spec locate_priv_file(FileName) -> PrivFile
-%%%
-%%% @doc
+%%% -spec locate_priv_file(FileName) -> PrivFile
 %%%
 locate_priv_file(FileName) ->
     {ok,CWD} = file:get_cwd(),
@@ -2961,8 +3112,8 @@ locate_priv_file(FileName) ->
 			filename:join(get(ct_run_dir), FileName);
 		    _ ->			
 			%% executed on other process than ct_logs
-			{ok,RunDir} = get_log_dir(true),
-			filename:join(RunDir, FileName)
+			{ok,LogDir} = get_log_dir(true),
+			filename:join(LogDir, FileName)
 		end,
 	    case filelib:is_file(PrivResultFile) of
 		true ->
@@ -2975,13 +3126,13 @@ locate_priv_file(FileName) ->
     end.
 
 %%%-----------------------------------------------------------------
-%%% @spec make_relative(AbsDir, Cwd) -> RelDir
+%%% -spec make_relative(AbsDir, Cwd) -> RelDir
 %%%
-%%% @doc Return directory path to File (last element of AbsDir), which
-%%%      is the path relative to Cwd. Examples when Cwd == "/ldisk/test/logs":
-%%%      make_relative("/ldisk/test/logs/run/trace.log") -> "run/trace.log"
-%%%      make_relative("/ldisk/test/trace.log") -> "../trace.log"
-%%%      make_relative("/ldisk/test/logs/trace.log") -> "trace.log"
+%%% Return directory path to File (last element of AbsDir), which
+%%% is the path relative to Cwd. Examples when Cwd == "/ldisk/test/logs":
+%%% make_relative("/ldisk/test/logs/run/trace.log") -> "run/trace.log"
+%%% make_relative("/ldisk/test/trace.log") -> "../trace.log"
+%%% make_relative("/ldisk/test/logs/trace.log") -> "trace.log"
 make_relative(AbsDir) ->
     {ok,Cwd} = file:get_cwd(),
     make_relative(AbsDir, Cwd).
@@ -3005,10 +3156,8 @@ make_relative1(DirTs, CwdTs) ->
     Ups ++ DirTs.
 
 %%%-----------------------------------------------------------------
-%%% @spec get_ts_html_wrapper(TestName, PrintLabel, Cwd, TableCols, Encoding)
+%%% -spec get_ts_html_wrapper(TestName, PrintLabel, Cwd, TableCols, Encoding)
 %%%           -> {Mode,Header,Footer}
-%%%
-%%% @doc
 %%%
 get_ts_html_wrapper(TestName, PrintLabel, Cwd, TableCols, Encoding) ->
     get_ts_html_wrapper(TestName, undefined, PrintLabel, Cwd, TableCols, Encoding).
@@ -3017,7 +3166,7 @@ get_ts_html_wrapper(TestName, Logdir, PrintLabel, Cwd, TableCols, Encoding) ->
     TestName1 = if is_list(TestName) ->
 			lists:flatten(TestName);
 		   true ->
-			lists:flatten(io_lib:format("~p", [TestName]))
+			lists:flatten(io_lib:format("~tp", [TestName]))
 		end,
     Basic = basic_html(),
     LabelStr =
@@ -3044,6 +3193,10 @@ get_ts_html_wrapper(TestName, Logdir, PrintLabel, Cwd, TableCols, Encoding) ->
 					  ?all_runs_name), Cwd),
     TestIndex = make_relative(filename:join(filename:dirname(CtLogdir),
 					    ?index_name), Cwd),
+    LatestTest = make_relative(filename:join(filename:dirname(CtLogdir),
+                                           ?suitelog_name++".latest.html"),
+                             Cwd),
+
     case Basic of
 	true ->
 	    TileFile = filename:join(filename:join(CTPath,"priv"),"tile1.jpg"),
@@ -3053,15 +3206,15 @@ get_ts_html_wrapper(TestName, Logdir, PrintLabel, Cwd, TableCols, Encoding) ->
 		      "Copyright &copy; ", year(),
 		      " <a href=\"http://www.erlang.org\">",
 		      "Open Telecom Platform</a><br>\n",
-		      "Updated: <!date>", current_time(), "<!/date>",
+		      "Updated: <!--date-->", current_time(), "<!--/date-->",
 		      "<br>\n</font></p>\n"],
 	    {basic_html,
 	     ["<!DOCTYPE HTML PUBLIC \"-//W3C//DTD HTML 3.2 Final//EN\">\n",
 	      "<html>\n",
 	      "<head><title>", TestName1, "</title>\n",
-	      "<meta http-equiv=\"cache-control\" content=\"no-cache\">\n",
+	      "<meta http-equiv=\"cache-control\" content=\"no-cache\"></meta>\n",
 	      "<meta http-equiv=\"content-type\" content=\"text/html; charset=",
-	      html_encoding(Encoding),"\">\n",
+	      html_encoding(Encoding),"\"></meta>\n",
 	      "</head>\n",
 	      "<body", Bgr, " bgcolor=\"white\" text=\"black\" ",
 	      "link=\"blue\" vlink=\"purple\" alink=\"red\">\n",
@@ -3070,7 +3223,9 @@ get_ts_html_wrapper(TestName, Logdir, PrintLabel, Cwd, TableCols, Encoding) ->
 	      "<a href=\"", uri(AllRuns),
 	      "\">Test run history\n</a>  |  ",
 	      "<a href=\"", uri(TestIndex),
-	      "\">Top level test index\n</a>\n</p>\n",
+	      "\">Top level test index\n</a>  |  ",
+	      "<a href=\"", uri(LatestTest),
+              "\">Latest test result</a>\n</p>\n",
 	      Copyright,"</center>\n</body>\n</html>\n"]};
 	_ ->
 	    Copyright = 
@@ -3078,7 +3233,7 @@ get_ts_html_wrapper(TestName, Logdir, PrintLabel, Cwd, TableCols, Encoding) ->
 		 "Copyright &copy; ", year(),
 		 " <a href=\"http://www.erlang.org\">",
 		 "Open Telecom Platform</a><br />\n",
-		 "Updated: <!date>", current_time(), "<!/date>",
+		 "Updated: <!--date-->", current_time(), "<!--/date-->",
 		 "<br />\n</div>\n"],
 	    CSSFile =
 		xhtml(fun() -> "" end, 
@@ -3105,9 +3260,11 @@ get_ts_html_wrapper(TestName, Logdir, PrintLabel, Cwd, TableCols, Encoding) ->
 	      "\"http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd\">\n",
 	      "<html xmlns=\"http://www.w3.org/1999/xhtml\" xml:lang=\"en\" lang=\"en\">\n",
 	      "<head>\n<title>", TestName1, "</title>\n",
-	      "<meta http-equiv=\"cache-control\" content=\"no-cache\">\n",
-	      "<meta http-equiv=\"content-type\" content=\"text/html; charset=utf-8\">\n",
-	      "<link rel=\"stylesheet\" href=\"", uri(CSSFile), "\" type=\"text/css\">\n",
+	      "<meta http-equiv=\"cache-control\" content=\"no-cache\"></meta>\n",
+	      "<meta http-equiv=\"content-type\" content=\"text/html; ",
+	      "charset=utf-8\"></meta>\n",
+	      "<link rel=\"stylesheet\" href=\"", uri(CSSFile),
+	      "\" type=\"text/css\"></link>\n",
 	      "<script type=\"text/javascript\" src=\"", JQueryFile, "\"></script>\n",
 	      "<script type=\"text/javascript\" src=\"", TableSorterFile, "\"></script>\n"] ++
 	      TableSorterScript ++ ["</head>\n","<body>\n", LabelStr, "\n"],
@@ -3115,7 +3272,9 @@ get_ts_html_wrapper(TestName, Logdir, PrintLabel, Cwd, TableCols, Encoding) ->
 	      "<a href=\"", uri(AllRuns),
 	      "\">Test run history\n</a>  |  ",
 	      "<a href=\"", uri(TestIndex),
-	      "\">Top level test index\n</a>\n</p>\n",
+	      "\">Top level test index\n</a>  |  ",
+	      "<a href=\"", uri(LatestTest),
+              "\">Latest test result</a>\n</p>\n",
 	      Copyright,"</center>\n</body>\n</html>\n"]}
     end.
 
@@ -3135,7 +3294,7 @@ insert_javascript({tablesorter,TableName,
 			  end, [{"CTDateSorter",DateCols},
 				{"CTTextSorter",TextCols},
 				{"CTValSorter",ValCols}]))),
-    Headers1 = string:substr(Headers, 1, length(Headers)-2),
+    Headers1 = string:trim(Headers, trailing, ",\n"),
 
     ["<script type=\"text/javascript\">\n",
      "// Parser for date format, e.g: Wed Jul 4 2012 11:24:15\n",
@@ -3233,11 +3392,17 @@ html_encoding(latin1) ->
 html_encoding(utf8) ->
     "utf-8".
 
-unexpected_io(Pid,ct_internal,_Importance,List,CtLogFd) ->
-    IoFun = create_io_fun(Pid,CtLogFd),
-    io:format(CtLogFd, "~ts", [lists:foldl(IoFun, [], List)]);
-unexpected_io(Pid,_Category,_Importance,List,CtLogFd) ->
-    IoFun = create_io_fun(Pid,CtLogFd),
-    Data = io_lib:format("~ts", [lists:foldl(IoFun, [], List)]),
+unexpected_io(Pid, ct_internal, _Importance, Content, CtLogFd, EscChars) ->
+    IoFun = create_io_fun(Pid, CtLogFd, EscChars),
+    io:format(CtLogFd, "~ts", [lists:foldl(IoFun, [], Content)]);
+unexpected_io(Pid, _Category, _Importance, Content, CtLogFd, EscChars) ->
+    IoFun = create_io_fun(Pid, CtLogFd, EscChars),
+    Data = io_lib:format("~ts", [lists:foldl(IoFun, [], Content)]),
     test_server_io:print_unexpected(Data),
+    ok.
+
+write_log_cache(LogCacheBin) when is_binary(LogCacheBin) ->
+    TmpFile = ?log_cache_name++".tmp",
+    _ = file:write_file(TmpFile,LogCacheBin),
+    _ = file:rename(TmpFile,?log_cache_name),
     ok.

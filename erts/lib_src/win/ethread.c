@@ -1,7 +1,7 @@
 /*
  * %CopyrightBegin%
  *
- * Copyright Ericsson AB 2010-2011. All Rights Reserved.
+ * Copyright Ericsson AB 2010-2017. All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -56,6 +56,7 @@ typedef struct {
     void *(*thr_func)(void *);
     void *arg;
     void *prep_func_res;
+    size_t stacksize;
 } ethr_thr_wrap_data__;
 
 #define ETHR_INVALID_TID_ID -1
@@ -94,6 +95,7 @@ static void thr_exit_cleanup(ethr_tid *tid, void *res)
 
 static unsigned __stdcall thr_wrapper(LPVOID vtwd)
 {
+    char c;
     ethr_tid my_tid;
     ethr_sint32_t result;
     void *res;
@@ -102,7 +104,9 @@ static unsigned __stdcall thr_wrapper(LPVOID vtwd)
     void *arg = twd->arg;
     ethr_ts_event *tsep = NULL;
 
-    result = (ethr_sint32_t) ethr_make_ts_event__(&tsep);
+    ethr_set_stacklimit__(&c, twd->stacksize);
+
+    result = (ethr_sint32_t) ethr_make_ts_event__(&tsep, 0);
 
     if (result == 0) {
 	tsep->iflgs |= ETHR_TS_EV_ETHREAD;
@@ -199,6 +203,8 @@ ethr_init(ethr_init_data *id)
     if (!ethr_not_inited__)
 	return EINVAL;
 
+    ethr_not_inited__ = 0;
+
 #ifdef _WIN32_WINNT
     os_version.dwOSVersionInfoSize = sizeof(OSVERSIONINFO);
     GetVersionEx(&os_version);
@@ -233,8 +239,6 @@ ethr_init(ethr_init_data *id)
     child_wait_spin_count = ETHR_CHILD_WAIT_SPIN_COUNT;
     if (erts_get_cpu_configured(ethr_cpu_info__) == 1)
 	child_wait_spin_count = 0;
-
-    ethr_not_inited__ = 0;
 
     return 0;
 
@@ -305,18 +309,21 @@ ethr_thr_create(ethr_tid *tid, void * (*func)(void *), void *arg,
 	tid->jdata->res = NULL;
     }
 
+    twd.stacksize = 0;
+
     if (use_stack_size >= 0) {
 	size_t suggested_stack_size = (size_t) use_stack_size;
 #ifdef ETHR_DEBUG
 	suggested_stack_size /= 2; /* Make sure we got margin */
 #endif
-	if (suggested_stack_size < ethr_min_stack_size__)
-	    stack_size = (unsigned) ETHR_KW2B(ethr_min_stack_size__);
-	else if (suggested_stack_size > ethr_max_stack_size__)
-	    stack_size = (unsigned) ETHR_KW2B(ethr_max_stack_size__);
-	else
-	    stack_size = (unsigned)
-	      ETHR_PAGE_ALIGN(ETHR_KW2B(suggested_stack_size));
+        stack_size = (unsigned) ETHR_PAGE_ALIGN(ETHR_KW2B(suggested_stack_size));
+
+	if (stack_size < (unsigned) ethr_min_stack_size__)
+	    stack_size = (unsigned) ethr_min_stack_size__;
+	else if (stack_size > (unsigned) ethr_max_stack_size__)
+	    stack_size = (unsigned) ethr_max_stack_size__;
+
+        twd.stacksize = stack_size;
     }
 
     ethr_atomic32_init(&twd.result, -1);
@@ -600,6 +607,30 @@ ethr_tsd_get(ethr_tsd_key key)
  */
 
 ethr_ts_event *
+ethr_lookup_ts_event__(int busy_dup)
+{
+    return ethr_lookup_ts_event____(busy_dup);
+}
+
+ethr_ts_event *
+ethr_peek_ts_event(void)
+{
+    return ethr_peek_ts_event__();
+}
+
+void
+ethr_unpeek_ts_event(ethr_ts_event *tsep)
+{
+    ethr_unpeek_ts_event__(tsep);
+}
+
+ethr_ts_event *
+ethr_use_ts_event(ethr_ts_event *tsep)
+{
+    return ethr_use_ts_event__(tsep);
+}
+
+ethr_ts_event *
 ethr_get_ts_event(void)
 {
     return ethr_get_ts_event__();
@@ -611,10 +642,3 @@ ethr_leave_ts_event(ethr_ts_event *tsep)
     ethr_leave_ts_event__(tsep);
 }
 
-ethr_ts_event *
-ethr_create_ts_event__(void)
-{
-    ethr_ts_event *tsep;
-    ethr_make_ts_event__(&tsep);
-    return tsep;
-}

@@ -1,7 +1,7 @@
 %%
 %% %CopyrightBegin%
 %% 
-%% Copyright Ericsson AB 2001-2014. All Rights Reserved.
+%% Copyright Ericsson AB 2001-2016. All Rights Reserved.
 %% 
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -23,7 +23,8 @@
 -include("inets_test_lib.hrl").
 
 %% Poll functions
--export([verify_request/6, verify_request/7, verify_request/8, is_expect/1]).
+-export([verify_request/6, verify_request/7, verify_request/8, is_expect/1,
+	 verify_request_N/9]).
 
 -record(state, {request,        % string()
 		socket,         % socket()
@@ -96,10 +97,10 @@ verify_request(SocketType, Host, Port, TranspOpts, Node, RequestStr, Options, Ti
     try inets_test_lib:connect_bin(SocketType, Host, Port, TranspOpts) of
 	{ok, Socket} ->
 	    ok = inets_test_lib:send(SocketType, Socket, RequestStr),
-	    State = case inets_regexp:match(RequestStr, "printenv") of
+	    State = case re:run(RequestStr, "printenv", [{capture, none}]) of
 			nomatch ->
 			    #state{};
-			_ ->
+			match ->
 			    #state{print = true}
 		    end,
 	    
@@ -109,21 +110,61 @@ verify_request(SocketType, Host, Port, TranspOpts, Node, RequestStr, Options, Ti
 		    {error, Reason};
 		NewState ->
 		    ValidateResult = 
-			validate(RequestStr, NewState, Options, Node, Port),
+		   	validate(RequestStr, NewState, Options, Node, Port),
 		    inets_test_lib:close(SocketType, Socket),
-		    ValidateResult
+		    ValidateResult 
 	    end;
 
 	ConnectError ->
 	    ct:fail({connect_error, ConnectError, 
 		     [SocketType, Host, Port, TranspOpts]})
     catch
-	T:E ->
+	T:E:Stk ->
 	    ct:fail({connect_failure, 
 		     [{type,       T}, 
 		      {error,      E}, 
-		      {stacktrace, erlang:get_stacktrace()}, 
+		      {stacktrace, Stk},
 		      {args,       [SocketType, Host, Port, TranspOpts]}]}) 
+    end.
+
+verify_request_N(SocketType, Host, Port, TranspOpts, Node, RequestStr, Options, TimeOut, N) ->
+    State = #state{},
+     try inets_test_lib:connect_bin(SocketType, Host, Port, TranspOpts) of
+	{ok, Socket} ->
+	     request_N(SocketType, Socket, RequestStr, Options, TimeOut, Node, Port, State, N); 
+	ConnectError ->
+	    ct:fail({connect_error, ConnectError, 
+		     [SocketType, Host, Port, TranspOpts]})
+    catch
+	T:E:Stk ->
+	    ct:fail({connect_failure, 
+		     [{type,       T}, 
+		      {error,      E}, 
+		      {stacktrace, Stk},
+		      {args,       [SocketType, Host, Port, TranspOpts]}]}) 
+    end.
+
+request_N(SocketType, Socket, RequestStr, Options, TimeOut, Node, Port, State, 0) ->
+    ok = inets_test_lib:send(SocketType, Socket, RequestStr),
+    case request(State#state{request = RequestStr, 
+			     socket  = Socket}, TimeOut) of
+	{error, Reason} ->
+	    {error, Reason};	
+	NewState ->
+	    ValidateResult = 
+		validate(RequestStr, NewState, Options, Node, Port),
+	    inets_test_lib:close(SocketType, Socket),
+	    ValidateResult
+    end;
+request_N(SocketType, Socket, RequestStr, Options, TimeOut, Node, Port, State, N) ->
+    ok = inets_test_lib:send(SocketType, Socket, RequestStr),
+    case request(State#state{request = RequestStr, 
+			     socket  = Socket}, TimeOut) of
+	{error, Reason} ->
+	    {error, Reason};
+	_NewState ->
+	    request_N(SocketType, Socket, RequestStr, Options, TimeOut, Node, Port, 
+		      #state{}, N-1)
     end.
 
 request(#state{mfa = {Module, Function, Args}, 
@@ -160,12 +201,34 @@ request(#state{mfa = {Module, Function, Args},
 	{ssl_closed, Socket} ->
 	    exit({test_failed, connection_closed});
 	{ssl_error, Socket, Reason} ->
-	    ct:fail({ssl_error, Reason})
+	    ct:fail({ssl_error, Reason});
+	{Socket, {data, Data}} when is_port(Socket) ->
+	    case Module:Function([list_to_binary(Data) | Args]) of
+		{ok, Parsed} ->
+		    port_handle_http_msg(Parsed, State); 
+		{_, whole_body, _} when HeadRequest =:= "HEAD" ->
+		    State#state{body = <<>>}; 
+		NewMFA ->
+		    request(State#state{mfa = NewMFA}, TimeOut)
+	    end;
+	{Socket, closed}  when Function =:= whole_body -> 
+	    State#state{body = hd(Args)};
+	{Socket, closed} ->
+	    exit({test_failed, connection_closed})
     after TimeOut ->
 	    ct:pal("~p ~w[~w]request -> timeout"
-		   "~n", [self(), ?MODULE, ?LINE]),
+		   "~p~n", [self(), ?MODULE, ?LINE, Args]),
 	    ct:fail(connection_timed_out)    
     end.
+
+
+port_handle_http_msg({Version, StatusCode, ReasonPharse, Headers, Body}, State) ->
+    State#state{status_line = {Version, 
+			       StatusCode,
+			       ReasonPharse},
+		headers = Headers,
+		body = Body}.
+
 
 handle_http_msg({Version, StatusCode, ReasonPharse, Headers, Body}, 
 		State = #state{request = RequestStr}) ->
@@ -235,11 +298,17 @@ validate(RequestStr, #state{status_line = {Version, StatusCode, _},
 	_ ->
 	    ok
     end,
-    do_validate(http_response:header_list(Headers), Options, N, P),
-    check_body(RequestStr, StatusCode, 
-	       Headers#http_response_h.'content-type',
-	       list_to_integer(Headers#http_response_h.'content-length'),
-	       Body).
+    HList = http_response:header_list(Headers),
+    do_validate(HList, Options, N, P),
+    case lists:keysearch("warning", 1, HList) of
+	{value, _} ->
+	    ok;
+	_ ->
+	    check_body(RequestStr, StatusCode, 
+		       Headers#http_response_h.'content-type',
+		       list_to_integer(Headers#http_response_h.'content-length'),
+		       Body)
+    end.
 
 %--------------------------------------------------------------------
 %% Internal functions
@@ -294,9 +363,9 @@ do_validate(Header, [{header, HeaderField, Value}|Rest],N,P) ->
 	{value, {LowerHeaderField, Value}} ->
 	    ok;
 	false ->
-	    ct:fail({wrong_header_field_value, LowerHeaderField, Header});
+	    ct:fail({wrong_header_field_value, LowerHeaderField, Header, Value});
 	_ ->
-	    ct:fail({wrong_header_field_value, LowerHeaderField, Header})
+	    ct:fail({wrong_header_field_value, LowerHeaderField, Header, Value})
     end,
     do_validate(Header, Rest, N, P);
 do_validate(Header,[{no_header, HeaderField}|Rest],N,P) ->
@@ -311,16 +380,16 @@ do_validate(Header, [_Unknown | Rest], N, P) ->
     do_validate(Header, Rest, N, P).
 
 is_expect(RequestStr) ->
-    case inets_regexp:match(RequestStr, "xpect:100-continue") of
-	{match, _, _}->
+    case re:run(RequestStr, "xpect:100-continue", [{capture, none}]) of
+	match->
 	    true;
-	_ ->
+	nomatch ->
 	    false
     end.
 
 %% OTP-5775, content-length
-check_body("GET /cgi-bin/erl/httpd_example:get_bin HTTP/1.0\r\n\r\n", 200, "text/html", Length, _Body) when (Length =/= 274) ->
-    ct:fail(content_length_error);
+check_body("GET /cgi-bin/erl/httpd_example:get_bin HTTP/1.1\r\n\r\n", 200, "text/html", Length, _Body) when (Length =/= 274) ->
+    ct:fail({content_length_error, Length});
 check_body("GET /cgi-bin/cgi_echo HTTP/1.0\r\n\r\n", 200, "text/plain", 
 	   _, Body) ->
     case size(Body) of

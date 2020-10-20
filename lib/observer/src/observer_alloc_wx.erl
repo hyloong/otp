@@ -1,7 +1,7 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2015. All Rights Reserved.
+%% Copyright Ericsson AB 2015-2018. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -18,7 +18,7 @@
 %% %CopyrightEnd%
 -module(observer_alloc_wx).
 
--export([start_link/2]).
+-export([start_link/3]).
 
 %% wx_object callbacks
 -export([init/1, handle_info/2, terminate/2, code_change/3, handle_call/3,
@@ -30,55 +30,79 @@
 
 -record(state,
 	{
-	  offset = 0.0,
+	  time = #ti{},
 	  active = false,
 	  parent,
-	  windows,
-	  data = {0, queue:new()},
+	  wins,
+	  mem,
+	  samples,
+          max,
 	  panel,
 	  paint,
 	  appmon,
 	  async
 	}).
 
--define(ALLOC_W,  1).
--define(UTIL_W,  2).
+-define(ID_REFRESH_INTERVAL, 102).
 
-start_link(Notebook, Parent) ->
-    wx_object:start_link(?MODULE, [Notebook, Parent], []).
+-import(observer_perf_wx,
+	[make_win/4, setup_graph_drawing/1, refresh_panel/4, interval_dialog/2,
+	 add_data/5, precalc/4]).
 
-init([Notebook, Parent]) ->
+start_link(Notebook, Parent, Config) ->
+    wx_object:start_link(?MODULE, [Notebook, Parent, Config], []).
+
+init([Notebook, Parent, Config]) ->
     try
-	Panel = wxPanel:new(Notebook),
+	TopP  = wxPanel:new(Notebook),
 	Main  = wxBoxSizer:new(?wxVERTICAL),
-	Style = ?wxFULL_REPAINT_ON_RESIZE bor ?wxCLIP_CHILDREN,
-	Carrier = wxPanel:new(Panel, [{winid, ?ALLOC_W}, {style,Style}]),
-	Utilz = wxPanel:new(Panel, [{winid, ?UTIL_W}, {style,Style}]),
+	Panel = wxPanel:new(TopP),
+	GSzr  = wxBoxSizer:new(?wxVERTICAL),
 	BorderFlags = ?wxLEFT bor ?wxRIGHT,
-	wxSizer:add(Main, Carrier, [{flag, ?wxEXPAND bor BorderFlags bor ?wxTOP},
-				    {proportion, 1}, {border, 5}]),
+	Carrier = make_win(alloc, Panel, GSzr, BorderFlags bor ?wxTOP),
+	Utilz = make_win(utilz, Panel, GSzr, BorderFlags),
+	wxWindow:setSizer(Panel, GSzr),
+	wxSizer:add(Main, Panel, [{flag, ?wxEXPAND},{proportion,2}]),
 
-	wxSizer:add(Main, Utilz, [{flag, ?wxEXPAND bor BorderFlags},
-				  {proportion, 1}, {border, 5}]),
-
-	MemWin = {MemPanel,_} = create_mem_info(Panel),
-	wxSizer:add(Main, MemPanel, [{flag, ?wxEXPAND bor BorderFlags bor ?wxBOTTOM},
-				     {proportion, 1}, {border, 5}]),
-	wxWindow:setSizer(Panel, Main),
-
-	PaintInfo = observer_perf_wx:setup_graph_drawing([Carrier, Utilz]),
-	{Panel, #state{parent=Parent,
-		       panel =Panel,
-		       windows = {Carrier, Utilz, MemWin},
-		       paint=PaintInfo}
+	MemWin = create_mem_info(TopP),
+	wxSizer:add(Main, MemWin, [{flag, ?wxEXPAND bor BorderFlags bor ?wxBOTTOM},
+				   {proportion, 1}, {border, 5}]),
+	wxWindow:setSizer(TopP, Main),
+	Windows = [Carrier, Utilz],
+	PaintInfo = setup_graph_drawing(Windows),
+	{TopP, #state{parent= Parent,
+		      panel = Panel,
+		      wins  = Windows,
+		      mem   = MemWin,
+		      paint = PaintInfo,
+		      time  = setup_time(Config),
+                      max   = #{}
+		     }
 	}
-    catch _:Err ->
-	    io:format("~p crashed ~p: ~p~n",[?MODULE, Err, erlang:get_stacktrace()]),
+    catch _:Err:Stacktrace ->
+	    io:format("~p crashed ~tp: ~tp~n",[?MODULE, Err, Stacktrace]),
 	    {stop, Err}
     end.
 
-%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+setup_time(Config) ->
+    Freq = maps:get(fetch, Config, 1),
+    #ti{disp=?DISP_FREQ/Freq,
+        fetch=Freq,
+        secs=maps:get(secs, Config, ?DISP_SECONDS)}.
 
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+handle_event(#wx{id=?ID_REFRESH_INTERVAL, event=#wxCommand{type=command_menu_selected}},
+	     #state{active=Active, panel=Panel, appmon=Old, wins=Wins0, time=#ti{fetch=F0} = Ti0} = State) ->
+    case interval_dialog(Panel, Ti0) of
+	Ti0 -> {noreply, State};
+	#ti{fetch=F0} = Ti -> %% Same fetch interval force refresh
+	    Wins = [W#win{max=undefined} || W <- Wins0],
+	    {noreply, precalc(State#state{time=Ti, wins=Wins})};
+	Ti when not Active ->
+	    {noreply, State#state{time=Ti}};
+	Ti -> %% Changed fetch interval, drop all data
+	    {noreply, restart_fetcher(Old, State#state{time=Ti})}
+    end;
 handle_event(#wx{event=#wxCommand{type=command_menu_selected}},
 	     State = #state{}) ->
     {noreply, State};
@@ -88,15 +112,17 @@ handle_event(Event, _State) ->
 
 %%%%%%%%%%
 handle_sync_event(#wx{obj=Panel, event = #wxPaint{}},_,
-		  #state{active=Active, offset=Offset, paint=Paint,
-			 windows=Windows, data=Data}) ->
+		  #state{active=Active, time=Ti, paint=Paint,
+			 wins = Windows}) ->
     %% Sigh workaround bug on MacOSX (Id in paint event is always 0)
-    Id = if Panel =:= element(?ALLOC_W, Windows)  -> alloc;
-	    Panel =:= element(?UTIL_W, Windows)  -> utilz
-	 end,
-    observer_perf_wx:refresh_panel(Panel, Id, Offset, Data, Active, Paint),
+    Win = lists:keyfind(Panel, #win.panel, Windows),
+    refresh_panel(Active, Win, Ti, Paint),
     ok.
 %%%%%%%%%%
+handle_call(get_config, _, #state{time=Ti}=State) ->
+    #ti{fetch=Fetch, secs=Range} = Ti,
+    {reply, #{fetch=>Fetch, secs=>Range}, State};
+
 handle_call(Event, From, _State) ->
     error({unhandled_call, Event, From}).
 
@@ -107,24 +133,37 @@ handle_cast(Event, _State) ->
 handle_info({Key, {promise_reply, {badrpc, _}}}, #state{async=Key} = State) ->
     {noreply, State#state{active=false, appmon=undefined}};
 
-handle_info({Key, {promise_reply, SysInfo}}, #state{async=Key, data=Data} = State) ->
+handle_info({Key, {promise_reply, SysInfo}},
+	    #state{async=Key, samples=Data, max=Max0,
+                   active=Active, wins=Wins0, time=#ti{tick=Tick, disp=Disp0}=Ti} = S0) ->
+    Disp = trunc(Disp0),
+    Next = max(Tick - Disp, 0),
+    erlang:send_after(1000 div ?DISP_FREQ, self(), {refresh, Next}),
     Info = alloc_info(SysInfo),
-    update_alloc(State, Info),
-    {noreply, State#state{offset=0.0, data = add_data(Info, Data), async=undefined}};
-
-handle_info({refresh, Seq, Freq, Node}, #state{panel=Panel, appmon=Node, async=Key} = State) ->
-    wxWindow:refresh(Panel),
-    Next = Seq+1,
-    if
-	Next > Freq, Key =:= undefined ->
-	    erlang:send_after(trunc(1000 / Freq), self(), {refresh, 1, Freq, Node}),
-	    Req = rpc:async_call(Node, observer_backend, sys_info, []),
-	    {noreply, State#state{offset=Seq/Freq, async=Req}};
+    Max = lists:foldl(fun calc_max/2, Max0, Info),
+    {Wins, Samples} = add_data(Info, Data, Wins0, Ti, Active),
+    S1 = S0#state{time=Ti#ti{tick=Next}, wins=Wins, samples=Samples, max=Max, async=undefined},
+    if Active ->
+	    update_alloc(S0, Info, Max),
+	    State = precalc(S1),
+	    {noreply, State};
        true ->
-	    erlang:send_after(trunc(1000 / Freq), self(), {refresh, Next, Freq, Node}),
-	    {noreply, State#state{offset=Seq/Freq}}
+	    {noreply, S1}
     end;
-handle_info({refresh, _Seq, _Freq, _Node}, State) ->
+
+handle_info({refresh, Seq},
+	    State = #state{panel=Panel, appmon=Node, time=#ti{tick=Seq, disp=DispF}=Ti})
+  when (Seq+1) < (DispF*1.5) ->
+    Next = Seq+1,
+    State#state.active andalso (catch wxWindow:refresh(Panel)),
+    erlang:send_after(1000 div ?DISP_FREQ, self(), {refresh, Next}),
+    if Seq =:= (trunc(DispF)-1) ->
+	    Req = request_info(Node),
+	    {noreply, State#state{time=Ti#ti{tick=Next}, async=Req}};
+       true ->
+	    {noreply, State#state{time=Ti#ti{tick=Next}}}
+    end;
+handle_info({refresh, _S}, #state{}=State) ->
     {noreply, State};
 
 handle_info({active, Node}, State = #state{parent=Parent, panel=Panel, appmon=Old}) ->
@@ -132,15 +171,9 @@ handle_info({active, Node}, State = #state{parent=Parent, panel=Panel, appmon=Ol
     try
 	Node = Old,
 	wxWindow:refresh(Panel),
-	{noreply, State#state{active=true}}
+	{noreply, precalc(State#state{active=true})}
     catch _:_ ->
-	    SysInfo = observer_wx:try_rpc(Node, observer_backend, sys_info, []),
-	    Info = alloc_info(SysInfo),
-	    Freq = 6,
-	    erlang:send_after(trunc(1000 / Freq), self(), {refresh, 1, Freq, Node}),
-	    wxWindow:refresh(Panel),
-	    {noreply, State#state{active=true, appmon=Node, offset=0.0,
-				  data = add_data(Info, {0, queue:new()})}}
+	    {noreply, restart_fetcher(Node, State)}
     end;
 
 handle_info(not_active, State = #state{appmon=_Pid}) ->
@@ -150,7 +183,7 @@ handle_info({'EXIT', Old, _}, State = #state{appmon=Old}) ->
     {noreply, State#state{active=false, appmon=undefined}};
 
 handle_info(_Event, State) ->
-    %% io:format("~p:~p: ~p~n",[?MODULE,?LINE,_Event]),
+    %% io:format("~p:~p: ~tp~n",[?MODULE,?LINE,_Event]),
     {noreply, State}.
 
 terminate(_Event, #state{}) ->
@@ -160,21 +193,52 @@ code_change(_, _, State) ->
 
 %%%%%%%%%%
 
-add_data(Stats, {N, Q}) when N > 60 ->
-    {N, queue:drop(queue:in(Stats, Q))};
-add_data(Stats, {N, Q}) ->
-    {N+1, queue:in(Stats, Q)}.
+request_info(Node) ->
+    ReplyTo = self(),
+    spawn(fun() ->
+                  Res = rpc:call(Node, observer_backend, sys_info, []),
+                  ReplyTo ! {self(), {promise_reply, Res}}
+          end).
 
-update_alloc(#state{windows={_, _, {_, Grid}}}, Fields) ->
-    Max = wxListCtrl:getItemCount(Grid),
+restart_fetcher(Node, #state{panel=Panel, wins=Wins0, time=Ti} = State) ->
+    case rpc:call(Node, observer_backend, sys_info, []) of
+        {badrpc, _} -> State;
+        SysInfo ->
+            Info = alloc_info(SysInfo),
+            Max = lists:foldl(fun calc_max/2, #{}, Info),
+            {Wins, Samples} = add_data(Info, {0, queue:new()}, Wins0, Ti, true),
+            erlang:send_after(1000 div ?DISP_FREQ, self(), {refresh, 0}),
+            wxWindow:refresh(Panel),
+            precalc(State#state{active=true, appmon=Node, time=Ti#ti{tick=0},
+                                wins=Wins, samples=Samples, max=Max})
+    end.
+
+precalc(#state{samples=Data0, paint=Paint, time=Ti, wins=Wins0}=State) ->
+    Wins = [precalc(Ti, Data0, Paint, Win) || Win <- Wins0],
+    State#state{wins=Wins}.
+
+calc_max({Name, _, Cs}, Max0) ->
+    case maps:get(Name, Max0, 0) of
+        Value when Value < Cs ->
+            Max0#{Name=>Cs};
+        _V ->
+            Max0
+    end.
+
+update_alloc(#state{mem=Grid}, Fields, Max) ->
+    wxWindow:freeze(Grid),
+    Last = wxListCtrl:getItemCount(Grid),
     Update = fun({Name, BS, CS}, Row) ->
-		     (Row >= Max) andalso wxListCtrl:insertItem(Grid, Row, ""),
+		     (Row >= Last) andalso wxListCtrl:insertItem(Grid, Row, ""),
+                     MaxV = maps:get(Name, Max, CS),
 		     wxListCtrl:setItem(Grid, Row, 0, observer_lib:to_str(Name)),
 		     wxListCtrl:setItem(Grid, Row, 1, observer_lib:to_str(BS div 1024)),
 		     wxListCtrl:setItem(Grid, Row, 2, observer_lib:to_str(CS div 1024)),
+                     wxListCtrl:setItem(Grid, Row, 3, observer_lib:to_str(MaxV div 1024)),
 		     Row + 1
 	     end,
-    lists:foldl(Update, 0, Fields),
+    wx:foldl(Update, 0, Fields),
+    wxWindow:thaw(Grid),
     Fields.
 
 alloc_info(SysInfo) ->
@@ -204,54 +268,58 @@ sum_alloc_instances([{_,_,Data}|Instances],BS,CS,TotalBS,TotalCS) ->
 sum_alloc_instances([],BS,CS,TotalBS,TotalCS) ->
     {BS,CS,TotalBS,TotalCS,true}.
 
-sum_alloc_one_instance([{sbmbcs,[{blocks_size,BS,_,_},{carriers_size,CS,_,_}]}|
+sum_alloc_one_instance([{_,[{blocks,TypedBlocks},{carriers_size,CS,_,_}]}|
 			Rest],OldBS,OldCS,TotalBS,TotalCS) ->
-    sum_alloc_one_instance(Rest,OldBS+BS,OldCS+CS,TotalBS,TotalCS);
+    %% OTP 23 and later.
+    BS = sum_alloc_block_list(TypedBlocks, 0),
+    sum_alloc_one_instance(Rest,OldBS+BS,OldCS+CS,TotalBS+BS,TotalCS+CS);
 sum_alloc_one_instance([{_,[{blocks_size,BS,_,_},{carriers_size,CS,_,_}]}|
 			Rest],OldBS,OldCS,TotalBS,TotalCS) ->
-    sum_alloc_one_instance(Rest,OldBS+BS,OldCS+CS,TotalBS+BS,TotalCS+CS);
-sum_alloc_one_instance([{_,[{blocks_size,BS},{carriers_size,CS}]}|
-			Rest],OldBS,OldCS,TotalBS,TotalCS) ->
+    %% OTP 22 and earlier.
     sum_alloc_one_instance(Rest,OldBS+BS,OldCS+CS,TotalBS+BS,TotalCS+CS);
 sum_alloc_one_instance([_|Rest],BS,CS,TotalBS,TotalCS) ->
     sum_alloc_one_instance(Rest,BS,CS,TotalBS,TotalCS);
 sum_alloc_one_instance([],BS,CS,TotalBS,TotalCS) ->
     {BS,CS,TotalBS,TotalCS}.
 
+sum_alloc_block_list([{_Type, [{size, Current, _, _}]} | Rest], Acc) ->
+    %% We ignore the type since we're returning a summary of all blocks in the
+    %% carriers employed by a certain instance.
+    sum_alloc_block_list(Rest, Current + Acc);
+sum_alloc_block_list([{_Type, [{size, Current}]} | Rest], Acc) ->
+    sum_alloc_block_list(Rest, Current + Acc);
+sum_alloc_block_list([_ | Rest], Acc) ->
+    sum_alloc_block_list(Rest, Acc);
+sum_alloc_block_list([], Acc) ->
+    Acc.
+
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
 create_mem_info(Parent) ->
-    Panel = wxPanel:new(Parent),
-    wxWindow:setBackgroundColour(Panel, {255,255,255}),
     Style = ?wxLC_REPORT bor ?wxLC_SINGLE_SEL bor ?wxLC_HRULES bor ?wxLC_VRULES,
-    Grid = wxListCtrl:new(Panel, [{style, Style}]),
+    Grid = wxListCtrl:new(Parent, [{style, Style}]),
+
     Li = wxListItem:new(),
+    Scale = observer_wx:get_scale(),
     AddListEntry = fun({Name, Align, DefSize}, Col) ->
 			   wxListItem:setText(Li, Name),
 			   wxListItem:setAlign(Li, Align),
 			   wxListCtrl:insertColumn(Grid, Col, Li),
-			   wxListCtrl:setColumnWidth(Grid, Col, DefSize),
+			   wxListCtrl:setColumnWidth(Grid, Col, DefSize*Scale),
 			   Col + 1
 		   end,
     ListItems = [{"Allocator Type",  ?wxLIST_FORMAT_LEFT,  200},
 		 {"Block size (kB)",  ?wxLIST_FORMAT_RIGHT, 150},
-		 {"Carrier size (kB)",?wxLIST_FORMAT_RIGHT, 150}],
+		 {"Carrier size (kB)",?wxLIST_FORMAT_RIGHT, 150},
+                 {"Max Carrier size (kB)",?wxLIST_FORMAT_RIGHT, 150}
+                ],
     lists:foldl(AddListEntry, 0, ListItems),
     wxListItem:destroy(Li),
 
-    Sizer = wxBoxSizer:new(?wxVERTICAL),
-    wxSizer:add(Sizer, Grid, [{flag, ?wxEXPAND bor ?wxLEFT bor ?wxRIGHT},
-			      {border, 5}, {proportion, 1}]),
-    wxWindow:setSizerAndFit(Panel, Sizer),
-    {Panel, Grid}.
-
+    Grid.
 
 create_menus(Parent, _) ->
-    MenuEntries =
-	[{"File",
-	  [
-	  ]}
-	],
-    observer_wx:create_menus(Parent, MenuEntries).
+    View = {"View", [#create_menu{id = ?ID_REFRESH_INTERVAL, text = "Graph Settings"}]},
+    observer_wx:create_menus(Parent, [{"File", []}, View]).
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%

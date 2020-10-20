@@ -1,7 +1,7 @@
 %%
 %% %CopyrightBegin%
 %% 
-%% Copyright Ericsson AB 1997-2014. All Rights Reserved.
+%% Copyright Ericsson AB 1997-2016. All Rights Reserved.
 %% 
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -37,6 +37,12 @@
 -record(pending, {log, pid, req, from, attach, clients}). % [{Request,From}]
 
 -record(state, {pending = [] :: [#pending{}]}).
+
+-compile({nowarn_deprecated_function, [{pg2, create, 1}]}).
+-compile({nowarn_deprecated_function, [{pg2, join, 2}]}).
+-compile({nowarn_deprecated_function, [{pg2, leave, 2}]}).
+-compile({nowarn_deprecated_function, [{pg2, which_groups, 0}]}).
+-compile({nowarn_deprecated_function, [{pg2, get_members, 1}]}).
 
 %%%-----------------------------------------------------------------
 %%% This module implements the disk_log server.  Its primary purpose

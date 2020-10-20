@@ -1,7 +1,7 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2010. All Rights Reserved.
+%% Copyright Ericsson AB 2010-2016. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -44,18 +44,17 @@
 %% this to work is that the 'erl' program can be found in PATH.
 %%
 %% If the master and slave are on different hosts, start/N uses
-%% the 'rsh' program to spawn an Erlang node on the other host.
+%% the 'ssh' program to spawn an Erlang node on the other host.
 %% Alternative, if the master was started as
 %% 'erl -sname xxx -rsh my_rsh...', then 'my_rsh' will be used instead
-%% of 'rsh' (this is useful for systems where the rsh program is named
-%% 'remsh').
+%% of 'ssh' (this is useful for systems still using rsh or remsh).
 %%
 %% For this to work, the following conditions must be fulfilled:
 %%
-%% 1. There must be an Rsh program on computer; if not an error
+%% 1. There must be an ssh program on computer; if not an error
 %%    is returned.
 %%
-%% 2. The hosts must be configured to allowed 'rsh' access without
+%% 2. The hosts must be configured to allow 'ssh' access without
 %%    prompts for password.
 %%
 %% The slave node will have its filer and user server redirected
@@ -244,7 +243,7 @@ register_unique_name(Number) ->
 
 %% Makes up the command to start the nodes.
 %% If the node should run on the local host, there is
-%% no need to use rsh.
+%% no need to use ssh.
 
 mk_cmd(Host, Name, Paths, Args, Waiter, Prog) ->
     PaPaths = [[" -pa ", Path] || Path <- Paths], 

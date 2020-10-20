@@ -4,14 +4,14 @@
 <chapter>
   <header>
     <copyright>
-      <year>1996</year><year>2014</year>
+      <year>1996</year><year>2020</year>
       <holder>Ericsson AB. All Rights Reserved.</holder>
     </copyright>
     <legalnotice>
       Licensed under the Apache License, Version 2.0 (the "License");
       you may not use this file except in compliance with the License.
       You may obtain a copy of the License at
- 
+
           http://www.apache.org/licenses/LICENSE-2.0
 
       Unless required by applicable law or agreed to in writing, software
@@ -19,7 +19,7 @@
       WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
       See the License for the specific language governing permissions and
       limitations under the License.
-    
+
     </legalnotice>
 
     <title>SNMP Release Notes</title>
@@ -34,7 +34,676 @@
   </header>
 
 
-  <section><title>SNMP 5.2</title>
+  <section><title>SNMP 5.6.1</title>
+
+    <section><title>Fixed Bugs and Malfunctions</title>
+      <list>
+        <item>
+          <p>
+	    For agent fix PrivParams for SNMPv3 USM with AES privacy,
+	    as earlier fixed for the manager in OTP_16541.</p>
+          <p>
+	    Own Id: OTP-15130 Aux Id: ERIERL-524, OTP-16541 </p>
+        </item>
+        <item>
+          <p>
+	    The SNMP Agent missed to re-activate datagram reception
+	    in an odd timeout case and went deaf. This bug has been
+	    fixed.</p>
+          <p>
+	    Own Id: OTP-15767 Aux Id: ERIERL-523 </p>
+        </item>
+        <item>
+          <p>
+	    Use of deprecated functions in example 2 has been removed
+	    (no more compiler warnings).</p>
+          <p>
+	    Own Id: OTP-16716</p>
+        </item>
+        <item>
+          <p>
+	    A file descriptor leak has been plugged. When calling the
+	    reconfigure function of a mib, it opened the config
+	    file(s) but never closed them on successful read.</p>
+          <p>
+	    Own Id: OTP-16760 Aux Id: ERIERL-511 </p>
+        </item>
+      </list>
+    </section>
+
+</section>
+
+<section><title>SNMP 5.6</title>
+
+    <section><title>Fixed Bugs and Malfunctions</title>
+      <list>
+        <item>
+          <p>
+	    For manager, fix PrivParams for SNMPv3 USM with AES
+	    privacy; * In `snmp_usm:do_decrypt/3`, pass full
+	    UsmSecParams to `snmp_usm:try_decrypt/5` as expected by
+	    AES clause. * Change `snmpm_usm:aes_encrypt/3` to use
+	    EngineBoots and EngineTime as cached by
+	    `snmpm_config:get_usm_eboots/1` and
+	    `snmpm_config:get_usm_etime/1` instead of
+	    `snmpm_config:get_engine_boots/0` and
+	    `snmpm_config:get_engine_time/0`. This ensures correct
+	    msgPrivacyParameters are sent when AES is used. * Add
+	    test `snmp.snmp_manager_SUITE.usm_priv_aes/1` to avoid
+	    regression.</p>
+          <p>
+	    Own Id: OTP-16541 Aux Id: #2544 </p>
+        </item>
+        <item>
+          <p>
+	    Invalid character in (manager) usm config entry generator
+	    function.</p>
+          <p>
+	    Own Id: OTP-16552 Aux Id: ERL-1196 </p>
+        </item>
+      </list>
+    </section>
+
+
+    <section><title>Improvements and New Features</title>
+      <list>
+        <item>
+          <p>
+	    Remove usage and documentation of old requests of the
+	    I/O-protocol.</p>
+          <p>
+	    Own Id: OTP-15695</p>
+        </item>
+        <item>
+          <p>
+	    Calls of deprecated functions in the <seeguide
+	    marker="crypto:new_api#the-old-api">Old Crypto
+	    API</seeguide> are replaced by calls of their <seeguide
+	    marker="crypto:new_api#the-new-api">substitutions</seeguide>.</p>
+          <p>
+	    Own Id: OTP-16346</p>
+        </item>
+        <item>
+          <p>
+	    Finalize deprecation. Already deprecated functions has a
+	    "remove version 24" set and "new" functions added to list
+	    of deprecated functions.</p>
+          <p>
+	    Own Id: OTP-16463</p>
+        </item>
+        <item>
+	    <p>Refactored the internal handling of deprecated and
+	    removed functions.</p>
+          <p>
+	    Own Id: OTP-16469</p>
+        </item>
+      </list>
+    </section>
+
+</section>
+
+  <section><title>SNMP 5.5.0.3</title>
+
+    <section><title>Fixed Bugs and Malfunctions</title>
+      <list>
+        <item>
+          <p>
+	    For agent fix PrivParams for SNMPv3 USM with AES privacy,
+	    as earlier fixed for the manager in OTP_16541.</p>
+          <p>
+	    Own Id: OTP-15130 Aux Id: ERIERL-524, OTP-16541 </p>
+        </item>
+      </list>
+    </section>
+
+</section>
+
+  <section><title>SNMP 5.5.0.2</title>
+
+    <section><title>Fixed Bugs and Malfunctions</title>
+      <list>
+        <item>
+          <p>
+	    The SNMP Agent missed to re-activate datagram reception
+	    in an odd timeout case and went deaf. This bug has been
+	    fixed.</p>
+          <p>
+	    Own Id: OTP-15767 Aux Id: ERIERL-523 </p>
+        </item>
+      </list>
+    </section>
+
+</section>
+
+  <section><title>SNMP 5.5.0.1</title>
+
+    <section><title>Fixed Bugs and Malfunctions</title>
+      <list>
+        <item>
+          <p>
+	    A file descriptor leak has been plugged. When calling the
+	    reconfigure function of a mib, it opened the config
+	    file(s) but never closed them on successful read.</p>
+          <p>
+	    Own Id: OTP-16760 Aux Id: ERIERL-511 </p>
+        </item>
+      </list>
+    </section>
+
+</section>
+
+<section><title>SNMP 5.5</title>
+
+    <section><title>Improvements and New Features</title>
+      <list>
+        <item>
+          <p>
+	    A simple supervision of the snmp manager net-if process
+	    has been added. Also, a way to forcibly restart the
+	    net-if process has been added. This could be useful if
+	    the net-if process hangs for some reason.</p>
+          <p>
+	    Own Id: OTP-16447 Aux Id: ERIERL-455, OTP-16382 </p>
+        </item>
+        <item>
+          <p>
+	    Misc documentation corrections</p>
+          <p>
+	    Own Id: OTP-16450</p>
+        </item>
+      </list>
+    </section>
+
+</section>
+
+<section><title>SNMP 5.4.5</title>
+
+    <section><title>Improvements and New Features</title>
+      <list>
+        <item>
+          <p>
+	    Its now possible to remove selected varbinds (from the
+	    final message) when sending a notification. This is done
+	    by setting the 'value' (in the varbind(s) of the varbinds
+	    list) to '?NOTIFICATION_IGNORE_VB_VALUE'.</p>
+          <p>
+	    Own Id: OTP-16349 Aux Id: ERIERL-444 </p>
+        </item>
+        <item>
+          <p>
+	    Its now possible to specify that an oid shall be
+	    "truncated" (trailing ".0" to be removed) when sending an
+	    notification.</p>
+          <p>
+	    Own Id: OTP-16360 Aux Id: ERIERL-451 </p>
+        </item>
+      </list>
+    </section>
+
+</section>
+
+<section><title>SNMP 5.4.4</title>
+
+    <section><title>Improvements and New Features</title>
+      <list>
+        <item>
+          <p>
+	    [manager] The callbacks where executed in a (new)
+	    'temporary' process, that executed the callback call and
+	    then exited. This has now been made configurable so that
+	    is also possible to specify a 'permanent' callback proxy
+	    process. All callback calls will then be executed in this
+	    (permanent) process (in sequence).</p>
+          <p>
+	    Own Id: OTP-15947 Aux Id: ERIERL-378 </p>
+        </item>
+      </list>
+    </section>
+
+</section>
+
+  <section><title>SNMP 5.4.3.1</title>
+
+    <section><title>Improvements and New Features</title>
+      <list>
+        <item>
+          <p>
+	    Its now possible to remove selected varbinds (from the
+	    final message) when sending a notification. This is done
+	    by setting the 'value' (in the varbind(s) of the varbinds
+	    list) to '?NOTIFICATION_IGNORE_VB_VALUE'.</p>
+          <p>
+	    Own Id: OTP-16349 Aux Id: ERIERL-444 </p>
+        </item>
+        <item>
+          <p>
+	    Its now possible to specify that an oid shall be
+	    "truncated" (trailing ".0" to be removed) when sending an
+	    notification.</p>
+          <p>
+	    Own Id: OTP-16360 Aux Id: ERIERL-451 </p>
+        </item>
+      </list>
+    </section>
+
+</section>
+
+<section><title>SNMP 5.4.3</title>
+
+    <section><title>Fixed Bugs and Malfunctions</title>
+      <list>
+        <item>
+          <p>
+	    Agent discovery cleanup. If there is no receiver of
+	    INFORM then #state.reqs in snmpa_net_if keeps on growing
+	    for DISCOVERY.</p>
+          <p>
+	    Own Id: OTP-16228 Aux Id: ERIERL-427 </p>
+        </item>
+      </list>
+    </section>
+
+</section>
+
+<section><title>SNMP 5.4.2</title>
+
+    <section><title>Fixed Bugs and Malfunctions</title>
+      <list>
+        <item>
+          <p>
+	    The agent discovery process has been made to work with
+	    snmptrapd..</p>
+          <p>
+	    Own Id: OTP-16207 Aux Id: ERIERL-427 </p>
+        </item>
+      </list>
+    </section>
+
+</section>
+
+<section><title>SNMP 5.4.1</title>
+
+    <section><title>Improvements and New Features</title>
+      <list>
+        <item>
+          <p>
+	    Made it possible to add 'extra socket options' to the
+	    (gen_udp) socket open call (for both manager and agent).
+	    A new option has been added, extra_sock_opts, which makes
+	    it possible for the user to add a list of extra socket
+	    options that will be appended to the other socket options
+	    for the open call. See the snmp application config man
+	    page (erl -man 6 snmp) or the "Configuring the
+	    application" chapter of the Users Guide for more info.</p>
+          <p>
+	    Own Id: OTP-16092 Aux Id: ERIERL-410 </p>
+        </item>
+      </list>
+    </section>
+
+</section>
+
+<section><title>SNMP 5.4</title>
+
+    <section><title>Fixed Bugs and Malfunctions</title>
+      <list>
+        <item>
+          <p>
+	    Fix various minor issues related to Dialyzer. Mostly
+	    these are dialyzer warnings, but there was also some
+	    minor bugs detected by Dialyzer.</p>
+          <p>
+	    Own Id: OTP-15932</p>
+        </item>
+      </list>
+    </section>
+
+
+    <section><title>Improvements and New Features</title>
+      <list>
+        <item>
+          <p>
+	    Fixed a dets usage problem detected by dialyzer.</p>
+          <p>
+	    Own Id: OTP-10400 Aux Id: kunagi-253 [164] </p>
+        </item>
+        <item>
+          <p>
+	    The function snmp:print_version_info() prints various
+	    version info. For each module a number of items are
+	    printed, such as app vsn and md5 digest. And an attempt
+	    was also made to print "compile time". This used to be
+	    available in the module_info for each module, but has now
+	    been removed.</p>
+          <p>
+	    Own Id: OTP-15330</p>
+        </item>
+        <item>
+          <p>
+	    The use of the deprecated random module has been replaced
+	    the with rand module.</p>
+          <p>
+	    Own Id: OTP-15331</p>
+        </item>
+        <item>
+          <p>
+	    Removed use of the deprecated function
+	    erlang:get_stacktrace(). Instead make use of the 'catch
+	    Class:Error:Stacktrace' feature.</p>
+          <p>
+	    Own Id: OTP-15332</p>
+        </item>
+      </list>
+    </section>
+
+</section>
+
+<section><title>SNMP 5.3</title>
+
+    <section><title>Improvements and New Features</title>
+      <list>
+        <item>
+          <p>
+	    The application otp_mibs has been removed from OTP. Some
+	    of its components (mibs) have been moved to other apps
+	    (snmp), or removed completely (os_mon).</p>
+          <p>
+	    Own Id: OTP-14984 Aux Id: OTP-15329 </p>
+        </item>
+        <item>
+          <p>
+	    [snmp|agent] Add a get-mechanism callback module (and a
+	    corresponding behaviour). The agent calls this module to
+	    handle each get (get, get-next and get-bulk) request.</p>
+          <p>
+	    Own Id: OTP-15691 Aux Id: ERIERL-324 </p>
+        </item>
+      </list>
+    </section>
+
+</section>
+
+<section><title>SNMP 5.2.12</title>
+
+    <section><title>Fixed Bugs and Malfunctions</title>
+      <list>
+        <item>
+	    <p>Conversion of (agent) Audit Trail Log (ATL) failed due
+	    to invalid log entries.</p> <p>The conversion aborted
+	    completely midway because the ATL contained invalid
+	    entries. The conversion has been improved so that it now
+	    firstly handles encountered errors and write an
+	    informative message (into the converted stream) and
+	    secondly keeps count of the number of successful or
+	    failed entry conversions. See <seeerl
+	    marker="snmpa#log_to_txt">log_to_txt</seeerl> for more
+	    info. </p> <p>The reason the ATL contained invalid
+	    entries have also been fixed. The reason was that for
+	    some outgoing messages (not response):</p> <list
+	    type="bulleted"> <item> <p>encrypted (v3 messages)</p>
+	    <p>Was logged "as is" (encrypted) without the info to
+	    decrypt, making conversion impossible (which was the
+	    reason the log contained bad entries).</p> </item> <item>
+	    <p>un-encrypted</p> <p>Was not logged at all. </p>
+	    </item> </list>
+          <p>
+	    Own Id: OTP-15287 Aux Id: ERIERL-206 </p>
+        </item>
+        <item>
+          <p>
+	    [compiler] Spurious version message removed. The snmp mib
+	    compiler printed an spurious version message if the
+	    'version' option was provided.</p>
+          <p>
+	    Own Id: OTP-15290</p>
+        </item>
+      </list>
+    </section>
+
+</section>
+
+  <section><title>SNMP 5.2.11.2</title>
+
+    <section><title>Improvements and New Features</title>
+      <list>
+        <item>
+          <p>
+	    [manager] The callbacks where executed in a (new)
+	    'temporary' process, that executed the callback call and
+	    then exited. This has now been made configurable so that
+	    is also possible to specify a 'permanent' callback proxy
+	    process. All callback calls will then be executed in this
+	    (permanent) process (in sequence).</p>
+          <p>
+	    Own Id: OTP-15947 Aux Id: ERIERL-378 </p>
+        </item>
+      </list>
+    </section>
+
+</section>
+
+  <section><title>SNMP 5.2.11.1</title>
+
+    <section><title>Improvements and New Features</title>
+      <list>
+        <item>
+          <p>
+	    [snmp|agent] Add a get-mechanism callback module (and a
+	    corresponding behaviour). The agent calls this module to
+	    handle each get (get, get-next and get-bulk) request.</p>
+          <p>
+	    Own Id: OTP-15691 Aux Id: ERIERL-324 </p>
+        </item>
+      </list>
+    </section>
+
+</section>
+
+<section><title>SNMP 5.2.11</title>
+
+    <section><title>Fixed Bugs and Malfunctions</title>
+      <list>
+        <item>
+          <p>
+	    The Snmp MIB compiler now allows using a
+	    TEXTUAL-CONVENTION type before defining it.</p>
+          <p>
+	    Own Id: OTP-14196 Aux Id: ERIERL-161 </p>
+        </item>
+      </list>
+    </section>
+
+  </section>
+
+<section><title>SNMP 5.2.10</title>
+
+    <section><title>Fixed Bugs and Malfunctions</title>
+      <list>
+        <item>
+          <p>
+	    The example MIB EX1-MIB in the SNMP application has been
+	    corrected to match its example.</p>
+          <p>
+	    Own Id: OTP-14204 Aux Id: PR-1726 </p>
+        </item>
+      </list>
+    </section>
+
+</section>
+
+<section><title>SNMP 5.2.9</title>
+
+    <section><title>Fixed Bugs and Malfunctions</title>
+      <list>
+        <item>
+	    <p> Removed all old unused files in the documentation.
+	    </p>
+          <p>
+	    Own Id: OTP-14475 Aux Id: ERL-409, PR-1493 </p>
+        </item>
+      </list>
+    </section>
+
+</section>
+
+<section><title>SNMP 5.2.8</title>
+
+    <section><title>Fixed Bugs and Malfunctions</title>
+      <list>
+        <item>
+          <p>
+	    The <c>recbuf</c> configuration option was not propagated
+	    correctly to the socket for the SNMP Manager.</p>
+          <p>
+	    Own Id: OTP-13372 Aux Id: ERIERL-73 </p>
+        </item>
+      </list>
+    </section>
+
+</section>
+
+<section><title>SNMP 5.2.7</title>
+
+    <section><title>Fixed Bugs and Malfunctions</title>
+      <list>
+        <item>
+          <p>
+	    A bug in the SNMP MIB compiler has been fixed. An
+	    AUGMENTS referring to a table defined later in the MIB
+	    did not work.</p>
+          <p>
+	    Own Id: OTP-13014 Aux Id: ERL-375 </p>
+        </item>
+      </list>
+    </section>
+
+</section>
+
+<section><title>SNMP 5.2.6</title>
+
+    <section><title>Fixed Bugs and Malfunctions</title>
+      <list>
+        <item>
+	    <p>Internal code change: Calls to <c>catch</c> followed
+	    by a call to <c>erlang:get_stacktrace/0</c> has been
+	    rewritten to use <c>try</c> instead of <c>catch</c> to
+	    make the code future-proof.</p>
+          <p>
+	    Own Id: OTP-14400</p>
+        </item>
+      </list>
+    </section>
+
+</section>
+
+<section><title>SNMP 5.2.5</title>
+
+    <section><title>Fixed Bugs and Malfunctions</title>
+      <list>
+        <item>
+          <p>
+	    The SNMP MIB compiler has been fixed to compile MIBS with
+	    refinements on user types such as in RFC 4669
+	    RADIUS-AUTH-SERVER-MIB.mib. Problem reported and
+	    researched by Kenneth Lakin and Daniel Goertzen.</p>
+          <p>
+	    See also: https://bugs.erlang.org/browse/ERL-325</p>
+          <p>
+	    Own Id: OTP-14145 Aux Id: ERL-325 </p>
+        </item>
+      </list>
+    </section>
+
+</section>
+
+<section><title>SNMP 5.2.4</title>
+
+    <section><title>Fixed Bugs and Malfunctions</title>
+      <list>
+        <item>
+	    <p> Correct bugs when path to mib or idl spec files
+	    contains UTF-8 characters. </p>
+          <p>
+	    Own Id: OTP-13718 Aux Id: ERL-179 </p>
+        </item>
+      </list>
+    </section>
+
+
+    <section><title>Improvements and New Features</title>
+      <list>
+        <item>
+          <p>
+	    Solves snmp config string handling as reported by ERL-164
+	    and solved by PR-1100</p>
+          <p>
+	    Own Id: OTP-13706</p>
+        </item>
+      </list>
+    </section>
+
+</section>
+
+<section><title>SNMP 5.2.3</title>
+
+    <section><title>Improvements and New Features</title>
+      <list>
+        <item>
+          <p>
+	    Internal changes</p>
+          <p>
+	    Own Id: OTP-13551</p>
+        </item>
+      </list>
+    </section>
+
+</section>
+
+<section><title>SNMP 5.2.2</title>
+
+    <section><title>Fixed Bugs and Malfunctions</title>
+      <list>
+        <item>
+          <p>
+	    Snmp agent now properly handles <c>vacmViewTreeFamily</c>
+	    masks.</p>
+          <p>
+	    Own Id: OTP-13264</p>
+        </item>
+      </list>
+    </section>
+
+</section>
+
+<section><title>SNMP 5.2.1</title>
+
+    <section><title>Fixed Bugs and Malfunctions</title>
+      <list>
+        <item>
+          <p>
+	    Small documentation fixes</p>
+          <p>
+	    Own Id: OTP-13017</p>
+        </item>
+      </list>
+    </section>
+
+
+    <section><title>Improvements and New Features</title>
+      <list>
+        <item>
+          <p>
+	    Update configuration check of imask ( list of ones and
+	    zeros) to allow the empty list.</p>
+          <p>
+	    Own Id: OTP-13101</p>
+        </item>
+      </list>
+    </section>
+
+</section>
+
+<section><title>SNMP 5.2</title>
 
     <section><title>Improvements and New Features</title>
       <list>
@@ -96,8 +765,8 @@
       <list type="bulleted">
         <item>
           <p>[compiler] Refinement of type Opaque was not allowed. </p>
-          <p>MIB constructs such as '<c>SYNTAX Opaque (SIZE(0..65535))</c>' 
-	  was previously not allowed, 
+          <p>MIB constructs such as '<c>SYNTAX Opaque (SIZE(0..65535))</c>'
+	  was previously not allowed,
 	  see the standard <c>ALARM-MIB</c> for eaxmple. </p>
           <p>Own Id: OTP-12066</p>
           <p>Aux Id: Seq 12669</p>
@@ -114,9 +783,9 @@
 <!--
       <list type="bulleted">
         <item>
-          <p>[agent] 
-	  see <seealso marker="snmpa#load_mibs">load_mibs</seealso> and 
-	  <seealso marker="snmpa#unload_mibs">unload_mibs</seealso>. </p>
+          <p>[agent]
+	  see <seeerl marker="snmpa#load_mibs">load_mibs</seeerl> and
+	  <seeerl marker="snmpa#unload_mibs">unload_mibs</seeerl>. </p>
           <p>Own Id: OTP-11216</p>
         </item>
 
@@ -246,18 +915,18 @@
 <!--
       <list type="bulleted">
         <item>
-          <p>Wrong block cypher type used for AES ('aes_cbf128' 
-	  instead of 'aes_cfb128') when performing AES block 
-	  encrypt/decrypt which breaks SNMP usmAesCfb128Protocol 
+          <p>Wrong block cypher type used for AES ('aes_cbf128'
+	  instead of 'aes_cfb128') when performing AES block
+	  encrypt/decrypt which breaks SNMP usmAesCfb128Protocol
 	  in agent and manager. </p>
           <p>Own Id: OTP-11412</p>
         </item>
 
         <item>
-          <p>[manager] When performing the AES encryption, invalid values for 
+          <p>[manager] When performing the AES encryption, invalid values for
 	  the EngineBoots and EngineTime was used. </p>
-	  <p>The values of the local agent was used, which would have produced 
-	  "some" values if an agent was actually running. 
+	  <p>The values of the local agent was used, which would have produced
+	  "some" values if an agent was actually running.
 	  If not it would have caused a crash. </p>
 	  <p>Own Id: OTP-11413</p>
         </item>
@@ -301,16 +970,16 @@
       <list type="bulleted">
         <item>
           <p>[agent] Enable SNMP to create missing database directories. </p>
-	  <p>Add 
-	  <seealso marker="snmp_app#db_init_error">
-	  {db_init_error, create_db_and_dir}</seealso> option to SNMP 
-	  <seealso marker="snmp_app#manager_opts_and_types">manager</seealso> 
+	  <p>Add
+	  <seeguide marker="snmp_config#db_init_error">
+	  {db_init_error, create_db_and_dir}</seeguide> option to SNMP
+	  <seeguide marker="snmp_config#manager_opts_and_types">manager</seeguide>
 	  and
-	  <seealso marker="snmp_app#agent_opts_and_types">agent</seealso>. 
+	  <seeguide marker="snmp_config#agent_opts_and_types">agent</seeguide>.
 	  This allows them to create any missing parent directories for
-	  <c>db_dir</c>, rather than treating any missing directories 
+	  <c>db_dir</c>, rather than treating any missing directories
 	  as a fatal error.
-	  The default for <c>db_init_error</c>, which is <c>terminate</c>, 
+	  The default for <c>db_init_error</c>, which is <c>terminate</c>,
 	  is unchanged. </p>
 	  <p>Steve Vinoski</p>
           <p>Own Id: OTP-11352</p>
@@ -318,9 +987,9 @@
 
         <item>
           <p>[manager] Improved handling of unexpected return values from
-	  <seealso marker="snmpm_user">snmpm_user</seealso>
+	  <seeerl marker="snmpm_user">snmpm_user</seeerl>
 	  callback functions. </p>
-	  <p>Violations of the documented API (crashes or invalid return 
+	  <p>Violations of the documented API (crashes or invalid return
 	  values) will now result in an error message. </p>
           <p>Own Id: OTP-11307</p>
         </item>
@@ -328,16 +997,16 @@
         <item>
           <p>Add (atl) log conversion block option. </p>
 	  <p>It is now possible to request that the Audit Trail Log should
-	  be blocked during conversion (<c>log_to_txt</c> or <c>log_to_io</c>). 
-	  This could be usefull when coverting an entire large log (when 
+	  be blocked during conversion (<c>log_to_txt</c> or <c>log_to_io</c>).
+	  This could be usefull when coverting an entire large log (when
 	  there is a chance it may otherwise wrap during conversion). </p>
-	  <p>See 
-	  agent 
-	  <seealso marker="snmpa#log_to_txt">log_to_txt</seealso> and
-	  <seealso marker="snmpa#log_to_io">log_to_io</seealso> and also 
-	  manager 
-	  <seealso marker="snmpm#log_to_txt">log_to_txt</seealso> and
-	  <seealso marker="snmpm#log_to_io">log_to_io</seealso> 
+	  <p>See
+	  agent
+	  <seeerl marker="snmpa#log_to_txt">log_to_txt</seeerl> and
+	  <seeerl marker="snmpa#log_to_io">log_to_io</seeerl> and also
+	  manager
+	  <seeerl marker="snmpm#log_to_txt">log_to_txt</seeerl> and
+	  <seeerl marker="snmpm#log_to_io">log_to_io</seeerl>
 	  for details. </p>
           <p>Own Id: OTP-11396</p>
           <p>Own Id: seq12433</p>
@@ -346,9 +1015,9 @@
         <item>
           <p>When converting an Audit Trail Log to text, a corrupt
 	  log entry could cause the entire conversion to fail. </p>
-	  <p>Also, for a log with sequence numbers, failing to 
+	  <p>Also, for a log with sequence numbers, failing to
 	  decode a log entry would cause the conversion to fail
-	  (not because of the failed decode, but because of the 
+	  (not because of the failed decode, but because of the
 	  failure to write the error message). </p>
           <p>Own Id: OTP-111453</p>
           <p>Aux Id: Seq 12459</p>
@@ -366,18 +1035,18 @@
 
       <list type="bulleted">
         <item>
-          <p>Wrong block cypher type used for AES ('aes_cbf128' 
-	  instead of 'aes_cfb128') when performing AES block 
-	  encrypt/decrypt which breaks SNMP usmAesCfb128Protocol 
+          <p>Wrong block cypher type used for AES ('aes_cbf128'
+	  instead of 'aes_cfb128') when performing AES block
+	  encrypt/decrypt which breaks SNMP usmAesCfb128Protocol
 	  in agent and manager. </p>
           <p>Own Id: OTP-11412</p>
         </item>
 
         <item>
-          <p>[manager] When performing the AES encryption, invalid values for 
+          <p>[manager] When performing the AES encryption, invalid values for
 	  the EngineBoots and EngineTime was used. </p>
-	  <p>The values of the local agent was used, which would have produced 
-	  "some" values if an agent was actually running. 
+	  <p>The values of the local agent was used, which would have produced
+	  "some" values if an agent was actually running.
 	  If not it would have caused a crash. </p>
 	  <p>Own Id: OTP-11413</p>
         </item>
@@ -419,14 +1088,14 @@
 
       <list type="bulleted">
         <item>
-          <p>[agent] Improved documentation for the functions for 
-	  loading and unloading mibs, 
-	  see <seealso marker="snmpa#load_mibs">load_mibs</seealso> and 
-	  <seealso marker="snmpa#unload_mibs">unload_mibs</seealso> for 
+          <p>[agent] Improved documentation for the functions for
+	  loading and unloading mibs,
+	  see <seeerl marker="snmpa#load_mibs">load_mibs</seeerl> and
+	  <seeerl marker="snmpa#unload_mibs">unload_mibs</seeerl> for
 	  more info. </p>
-          <p>Also added new functions for loading and unloading a single mib, 
-	  see <seealso marker="snmpa#load_mib">load_mib</seealso> and 
-	  <seealso marker="snmpa#unload_mib">unload_mib</seealso> for 
+          <p>Also added new functions for loading and unloading a single mib,
+	  see <seeerl marker="snmpa#load_mib">load_mib</seeerl> and
+	  <seeerl marker="snmpa#unload_mib">unload_mib</seeerl> for
 	  more info. </p>
           <p>Own Id: OTP-11216</p>
         </item>
@@ -442,9 +1111,9 @@
 <!--
       <list type="bulleted">
         <item>
-          <p>[agent] 
-	  see <seealso marker="snmpa#load_mibs">load_mibs</seealso> and 
-	  <seealso marker="snmpa#unload_mibs">unload_mibs</seealso>. </p>
+          <p>[agent]
+	  see <seeerl marker="snmpa#load_mibs">load_mibs</seeerl> and
+	  <seeerl marker="snmpa#unload_mibs">unload_mibs</seeerl>. </p>
           <p>Own Id: OTP-11216</p>
         </item>
 
@@ -469,7 +1138,7 @@
       </list>
 -->
     </section>
-    
+
   </section> <!-- 4.24.2 -->
 
 
@@ -502,29 +1171,29 @@
 
       <list type="bulleted">
         <item>
-          <p>[agent] Reading the value of the vacmViewTreeFamilyMask returns 
+          <p>[agent] Reading the value of the vacmViewTreeFamilyMask returns
 	  it in the wrong (internal bitlist) format. </p>
 	  <p>The vacmViewTreeFamilyMask is defined as a bit string in the MIB
-	  (OCTET STRING). Internally a bitlist (list of 1's and 0's, 
-	  see <seealso marker="snmp_agent_config_files#vacm">vacm config file</seealso>
-	  for more info) is used. 
+	  (OCTET STRING). Internally a bitlist (list of 1's and 0's,
+	  see <seeguide marker="snmp_agent_config_files#vacm">vacm config file</seeguide>
+	  for more info) is used.
 	  However, the MIB implementation assumed the latter, effectively
 	  rendering all attempts to read/set masks via SNMP unsuccessful. </p>
-	  <p>Since the mask is used in hot paths (e.g. access permission checks 
-	  for each SNMP operation, the bitlist representation of the mask has 
-	  benefits (e.g. faster processing). Reading/writing the view mask 
-	  objects is less time-critical. Therefore, to fix the issue, convert 
-	  between the bitlist (internal) representation and bitstring 
+	  <p>Since the mask is used in hot paths (e.g. access permission checks
+	  for each SNMP operation, the bitlist representation of the mask has
+	  benefits (e.g. faster processing). Reading/writing the view mask
+	  objects is less time-critical. Therefore, to fix the issue, convert
+	  between the bitlist (internal) representation and bitstring
 	  (external) when the vacmViewTreeFamilyMask objects are accessed. </p>
-	  <p>Also, the check of the vacm config file was invalid with 
-	  regard to the mask value. It was assumed to be a proper oid, which 
+	  <p>Also, the check of the vacm config file was invalid with
+	  regard to the mask value. It was assumed to be a proper oid, which
 	  is not strictly the case (see bitlist above). </p>
           <p>Own Id: OTP-11177</p>
 	  <p>Stefan Zegenhagen</p>
         </item>
 
         <item>
-          <p>[agent] The counter increment function in the local-db was  
+          <p>[agent] The counter increment function in the local-db was
 	  incorrect. It did not handle counter wrap correctly. </p>
           <p>Own Id: OTP-11192</p>
         </item>
@@ -571,26 +1240,26 @@
         </item>
 
         <item>
-          <p>[agent] Introduced a documented behaviour for the mib-server 
-	  <seealso marker="snmpa_mib_data">mib-data backend</seealso>. 
+          <p>[agent] Introduced a documented behaviour for the mib-server
+	  <seeerl marker="snmpa_mib_data">mib-data backend</seeerl>.
 	  At present only the default module (<c>snmpa_mib_data_tttn</c>) is
 	  provided. </p>
-	  <p>A config option for the (agent) 
-	  <seealso marker="snmp_config#agent_mib_server">mib-servers</seealso> 
-	  mib-data backend module has been added to the agent config options, 
-	  <seealso marker="snmp_config#agent_ms_data_module">data_module</seealso>. </p>
+	  <p>A config option for the (agent)
+	  <seeguide marker="snmp_config#agent_mib_server">mib-servers</seeguide>
+	  mib-data backend module has been added to the agent config options,
+	  <seeguide marker="snmp_config#agent_ms_data_module">data_module</seeguide>. </p>
 	  <p>Own Id: OTP-11101</p>
         </item>
 
         <item>
-          <p>[agent] Introduced a documented behaviour for the 
-	  <seealso marker="snmpa_mib_storage">mib storage</seealso>. 
-	  At present there are three simple modules 
-	  (<c>snmpa_mib_storage_ets</c>, <c>snmpa_mib_storage_dets</c> and 
+          <p>[agent] Introduced a documented behaviour for the
+	  <seeerl marker="snmpa_mib_storage">mib storage</seeerl>.
+	  At present there are three simple modules
+	  (<c>snmpa_mib_storage_ets</c>, <c>snmpa_mib_storage_dets</c> and
 	  <c>snmpa_mib_storage_mnesia</c>) implementing this behaviour,
 	  provided with the app. </p>
-	  <p>A config option for the (agent) 
-	  <seealso marker="snmp_config#agent_mib_storage">mib storage</seealso> 
+	  <p>A config option for the (agent)
+	  <seeguide marker="snmp_config#agent_mib_storage">mib storage</seeguide>
 	  has been added to the agent config options. </p>
 	  <p>Own Id: OTP-11107</p>
         </item>
@@ -648,14 +1317,14 @@
       <list type="bulleted">
         <item>
           <p>[agent] Errors in <c>vacmAccessTable</c> RowStatus handling.
-	  There are problems with the handling of vacmAccessTableStatus 
+	  There are problems with the handling of vacmAccessTableStatus
 	  that cause some SNMP test suites to report errors.
-	  Most notably, erroneous set operations frequently cause "genErr" 
-	  errors to be returned. These "genErr" errors are usually caused 
-	  by badmatch exceptions coming from 
-	  <c>{ok, Row} = snmpa_vacm:get_row(RowIndex)</c> 
+	  Most notably, erroneous set operations frequently cause "genErr"
+	  errors to be returned. These "genErr" errors are usually caused
+	  by badmatch exceptions coming from
+	  <c>{ok, Row} = snmpa_vacm:get_row(RowIndex)</c>
 	  if the row does not exist. </p>
-	  <p>The semantics of the RowStatus handling in that table has 
+	  <p>The semantics of the RowStatus handling in that table has
 	  been adjusted to be compliant with the RowStatus
 	  textual description of SNPMv2-TC MIB. </p>
 	  <p>Stefan Zegenhagen</p>
@@ -679,7 +1348,7 @@
         </item>
 
         <item>
-          <p>[compiler] The MIB compiler could not handle a table index 
+          <p>[compiler] The MIB compiler could not handle a table index
 	  that was defined later in the MIB. </p>
           <p>Own Id: OTP-10808</p>
         </item>
@@ -712,7 +1381,7 @@
     <title>SNMP Development Toolkit 4.23</title>
 <!--
     <p>Version 4.23 supports code replacement in runtime from/to
-    version 4.22.1, 
+    version 4.22.1,
     4.22, 4.21.7 4.21.6 4.21.5, 4.21.4, 4.21.3, 4.21.2, 4.21.1 and 4.21. </p>
 -->
 
@@ -724,14 +1393,14 @@
 
       <list type="bulleted">
         <item>
-          <p>[manager] Polish return values of snmpm_user_default according 
+          <p>[manager] Polish return values of snmpm_user_default according
 	  to snmpm_user doc.</p>
 	  <p>Luca Favatella</p>
 	  <p>Own Id: OTP-10671</p>
         </item>
 
         <item>
-          <p>[agent] Remove runtime warning in snmpa_agent because of 
+          <p>[agent] Remove runtime warning in snmpa_agent because of
 	  tuple fun usage. </p>
 	  <p>Luca Favatella</p>
 	  <p>Own Id: OTP-10672</p>
@@ -753,10 +1422,10 @@
       <!--
       <list type="bulleted">
         <item>
-          <p>[agent] Simultaneous 
-          <seealso marker="snmpa#backup">snmpa:backup/1,2</seealso> 
+          <p>[agent] Simultaneous
+          <seeerl marker="snmpa#backup">snmpa:backup/1,2</seeerl>
           calls can interfere.
-          The master agent did not check if a backup was already in 
+          The master agent did not check if a backup was already in
           progress when a backup request was accepted. </p>
           <p>Own Id: OTP-9884</p>
           <p>Aux Id: Seq 11995</p>
@@ -789,7 +1458,7 @@
   <section>
     <title>SNMP Development Toolkit 4.22.1</title>
     <p>Version 4.22.1 supports code replacement in runtime from/to
-    version 4.22, 4.21.7 4.21.6 4.21.5, 4.21.4, 4.21.3, 4.21.2, 4.21.1 and 
+    version 4.22, 4.21.7 4.21.6 4.21.5, 4.21.4, 4.21.3, 4.21.2, 4.21.1 and
     4.21. </p>
 
     <section>
@@ -801,15 +1470,15 @@
       <list type="bulleted">
         <item>
           <p>[agent] Sematic fixes to SNMP-USER-BASED-SM-MIB.
-	  The semantics allow the <c>usmUserAuthKeyChange</c> and 
-	  <c>usmUserPrivKeyChange</c> objects to be written to in the 
-	  same set requests that also creates and clones the user. 
-	  This was not possible beforehand, causing test tools checking 
+	  The semantics allow the <c>usmUserAuthKeyChange</c> and
+	  <c>usmUserPrivKeyChange</c> objects to be written to in the
+	  same set requests that also creates and clones the user.
+	  This was not possible beforehand, causing test tools checking
 	  semantic SNMPv3 behaviour to fail on a lot of test cases. </p>
-	  <p>Furthermore, once the user has been cloned by writing to an 
-	  instance of <c>usmUserCloneFrom</c>, further set-operations to 
-	  the same object will not return an error, but be no-ops. 
-	  Especially, it must be avoided to copy security parameters 
+	  <p>Furthermore, once the user has been cloned by writing to an
+	  instance of <c>usmUserCloneFrom</c>, further set-operations to
+	  the same object will not return an error, but be no-ops.
+	  Especially, it must be avoided to copy security parameters
 	  again (possibly even from a different user). </p>
 	  <p>Stefan Zegenhagen</p>
 	  <p>Own Id: OTP-10166</p>
@@ -817,14 +1486,14 @@
 
         <item>
           <p>[agent] Errors in <c>vacmAccessTable</c> RowStatus handling.
-	  There are problems with the handling of vacmAccessTableStatus 
+	  There are problems with the handling of vacmAccessTableStatus
 	  that cause some SNMP test suites to report errors.
-	  Most notably, erroneous set operations frequently cause "genErr" 
-	  errors to be returned. These "genErr" errors are usually caused 
-	  by badmatch exceptions coming from 
-	  <c>{ok, Row} = snmpa_vacm:get_row(RowIndex)</c> 
+	  Most notably, erroneous set operations frequently cause "genErr"
+	  errors to be returned. These "genErr" errors are usually caused
+	  by badmatch exceptions coming from
+	  <c>{ok, Row} = snmpa_vacm:get_row(RowIndex)</c>
 	  if the row does not exist. </p>
-	  <p>The semantics of the RowStatus handling in that table has 
+	  <p>The semantics of the RowStatus handling in that table has
 	  been adjusted to be compliant with the RowStatus
 	  textual description of SNPMv2-TC MIB. </p>
 	  <p>Stefan Zegenhagen</p>
@@ -843,24 +1512,24 @@
       <list type="bulleted">
         <item>
           <p>[agent] Fix walk over vacmAccessTable.
-	  Fix the get_next implementation of vacmAccessTable to 
+	  Fix the get_next implementation of vacmAccessTable to
 	  return all table entries. </p>
-	  <p>The get_next implementation of vacmAccessTable did not return 
-	  all available table data. Instead, it only returned the first 
+	  <p>The get_next implementation of vacmAccessTable did not return
+	  all available table data. Instead, it only returned the first
 	  column for each row, and all columns for the last row available. </p>
 	  <p>Stefan Zegenhagen</p>
           <p>Own Id: OTP-10165</p>
         </item>
 
         <item>
-          <p>[manager] 
-	  <seealso marker="snmpm#log_to_io">snmpm:log_to_io/6</seealso> 
+          <p>[manager]
+	  <seeerl marker="snmpm#log_to_io">snmpm:log_to_io/6</seeerl>
 	  did not use the LogName argument. </p>
           <p>Own Id: OTP-10066</p>
         </item>
 
         <item>
-          <p>Incorrect TimeTicks decode. Also bad handling of 
+          <p>Incorrect TimeTicks decode. Also bad handling of
 	  invalid encode (value outside of value range) for both
 	  <c>TimeTicks</c> and <c>Unsigned32</c>. </p>
           <p>Own Id: OTP-10132</p>
@@ -891,38 +1560,38 @@
 
       <list type="bulleted">
         <item>
-          <p>[compiler] The table information the MIB compiler provides with 
-	  augmented tables has been extended with <c>nbr_of_cols</c>, 
+          <p>[compiler] The table information the MIB compiler provides with
+	  augmented tables has been extended with <c>nbr_of_cols</c>,
 	  <c>first_accessible</c> and <c>not_accessible</c>. </p>
           <p>Own Id: OTP-9969</p>
         </item>
 
         <item>
-          <p>Added the <c>log_to_io</c> audit-trail-log converter function 
-	  to the api modules of both the 
-	  <seealso marker="snmpm#log_to_io">manager</seealso> 
-	  and 
-	  <seealso marker="snmpa#log_to_io">agent</seealso>. </p>
+          <p>Added the <c>log_to_io</c> audit-trail-log converter function
+	  to the api modules of both the
+	  <seeerl marker="snmpm#log_to_io">manager</seeerl>
+	  and
+	  <seeerl marker="snmpa#log_to_io">agent</seeerl>. </p>
           <p>Own Id: OTP-9940</p>
         </item>
 
         <item>
-          <p>[manager] Introduced a new transport module, 
-	  <c>snmpm_net_if_mt</c>, 
-	  which handles all incomming and outgoing 
+          <p>[manager] Introduced a new transport module,
+	  <c>snmpm_net_if_mt</c>,
+	  which handles all incomming and outgoing
 	  traffic in newly created processes. The message/request is
 	  processed and then the process exits. </p>
           <p>Own Id: OTP-9876</p>
 	</item>
 
         <item>
-          <p>[agent] Documenting previously existing but undocumented function, 
-	  <seealso marker="snmp_generic#get_table_info">snmp_generic:get_table_info/2</seealso>. </p>
+          <p>[agent] Documenting previously existing but undocumented function,
+	  <seeerl marker="snmp_generic#get_table_info">snmp_generic:get_table_info/2</seeerl>. </p>
 	  <p>Own Id: OTP-9942</p>
         </item>
 
         <item>
-          <p>[agent] Improve error handling while reading agent config files. 
+          <p>[agent] Improve error handling while reading agent config files.
 	  Some files contain mandatory information and is therefor themself
 	  mandatory. </p>
 	  <p>Own Id: OTP-9943</p>
@@ -938,10 +1607,10 @@
       <!--
       <list type="bulleted">
         <item>
-          <p>[agent] Simultaneous 
-          <seealso marker="snmpa#backup">snmpa:backup/1,2</seealso> 
+          <p>[agent] Simultaneous
+          <seeerl marker="snmpa#backup">snmpa:backup/1,2</seeerl>
           calls can interfere.
-          The master agent did not check if a backup was already in 
+          The master agent did not check if a backup was already in
           progress when a backup request was accepted. </p>
           <p>Own Id: OTP-9884</p>
           <p>Aux Id: Seq 11995</p>
@@ -963,7 +1632,7 @@
   <section>
     <title>SNMP Development Toolkit 4.21.7</title>
     <p>Version 4.21.7 supports code replacement in runtime from/to
-    version 4.21.6, 4.21.5, 4.21.4, 4.21.3, 4.21.2, 4.21.1, 4.21, 4.20.1 and 
+    version 4.21.6, 4.21.5, 4.21.4, 4.21.3, 4.21.2, 4.21.1, 4.21, 4.20.1 and
     4.20. </p>
 
     <section>
@@ -973,13 +1642,13 @@
       <!--
       <list type="bulleted">
         <item>
-          <p>[agent] DoS attack using GET-BULK with large value of 
+          <p>[agent] DoS attack using GET-BULK with large value of
           MaxRepetitions.
-          A preventive method has been implementing by simply 
-          limit the number of varbinds that can be included in 
-          a Get-BULK response message. This is specified by the 
-          new config option, 
-          <seealso marker="snmp_app#agent_gb_max_vbs">gb_max_vbs</seealso>. 
+          A preventive method has been implementing by simply
+          limit the number of varbinds that can be included in
+          a Get-BULK response message. This is specified by the
+          new config option,
+          <seeerl marker="snmp_config#agent_gb_max_vbs">gb_max_vbs</seeerl>.
           </p>
           <p>Own Id: OTP-9700</p>
         </item>
@@ -997,10 +1666,10 @@
 
       <list type="bulleted">
         <item>
-          <p>[agent] Simultaneous 
-          <seealso marker="snmpa#backup">snmpa:backup/1,2</seealso> 
+          <p>[agent] Simultaneous
+          <seeerl marker="snmpa#backup">snmpa:backup/1,2</seeerl>
           calls can interfere.
-          The master agent did not check if a backup was already in 
+          The master agent did not check if a backup was already in
           progress when a backup request was accepted. </p>
           <p>Own Id: OTP-9884</p>
           <p>Aux Id: Seq 11995</p>
@@ -1021,7 +1690,7 @@
   <section>
     <title>SNMP Development Toolkit 4.21.6</title>
     <p>Version 4.21.6 supports code replacement in runtime from/to
-    version 4.21.5, 4.21.4, 4.21.3, 4.21.2, 4.21.1, 4.21, 4.20.1 and 
+    version 4.21.5, 4.21.4, 4.21.3, 4.21.2, 4.21.1, 4.21, 4.20.1 and
     4.20. </p>
 
     <section>
@@ -1032,13 +1701,13 @@
 
       <list type="bulleted">
         <item>
-          <p>[agent] DoS attack using GET-BULK with large value of 
+          <p>[agent] DoS attack using GET-BULK with large value of
           MaxRepetitions.
-          A preventive method has been implementing by simply 
-          limit the number of varbinds that can be included in 
-          a Get-BULK response message. This is specified by the 
-          new config option, 
-          <seealso marker="snmp_app#agent_gb_max_vbs">gb_max_vbs</seealso>. 
+          A preventive method has been implementing by simply
+          limit the number of varbinds that can be included in
+          a Get-BULK response message. This is specified by the
+          new config option,
+          <seeguide marker="snmp_config#agent_gb_max_vbs">gb_max_vbs</seeguide>.
           </p>
           <p>Own Id: OTP-9700</p>
         </item>
@@ -1055,12 +1724,12 @@
 
       <list type="bulleted">
         <item>
-          <p>[agent] Mib server cache gclimit update function incorrectly calls 
-          age update function. 
-          The gclimit update function, 
-          <seealso marker="snmpa#update_mibs_cache_gclimit">update_mibs_cache_gclimit/1</seealso>, 
-          <em>incorrectly</em> called the age update function, 
-          <seealso marker="snmpa#update_mibs_cache_age">update_mibs_cache_age/2</seealso>. </p>
+          <p>[agent] Mib server cache gclimit update function incorrectly calls
+          age update function.
+          The gclimit update function,
+          <seeerl marker="snmpa#update_mibs_cache_gclimit">update_mibs_cache_gclimit/1</seeerl>,
+          <em>incorrectly</em> called the age update function,
+          <seeerl marker="snmpa#update_mibs_cache_age">update_mibs_cache_age/2</seeerl>. </p>
           <p>Johan Claesson</p>
           <p>Own Id: OTP-9868</p>
         </item>
@@ -1101,18 +1770,18 @@
     <section>
       <title>Fixed Bugs and Malfunctions</title>
 <!--
-      <p>-</p> 
+      <p>-</p>
 -->
 
       <list type="bulleted">
         <item>
-          <p>[agent] Repeated vacm table dumping fails due to file name 
-          conflict. When dumping the vacm table to disk, a temoporary 
-          file with a fixed name was used. If the table dumping 
-          (snmpa_vacm:dump_table/0) was initiated from several different 
-          processes in rapid succesion, the dumping could fail because the 
-          different processes was simultaniously trying to write to the 
-          same file. This problem has been eliminated by creating a unique 
+          <p>[agent] Repeated vacm table dumping fails due to file name
+          conflict. When dumping the vacm table to disk, a temoporary
+          file with a fixed name was used. If the table dumping
+          (snmpa_vacm:dump_table/0) was initiated from several different
+          processes in rapid succesion, the dumping could fail because the
+          different processes was simultaniously trying to write to the
+          same file. This problem has been eliminated by creating a unique
           name for the temporary file. </p>
           <p>Own Id: OTP-9851</p>
           <p>Aux Id: Seq 11980</p>
@@ -1153,7 +1822,7 @@
 <!--
       <list type="bulleted">
         <item>
-          <p>[compiler] Improved version info printout from the 
+          <p>[compiler] Improved version info printout from the
           <seealso marker="snmpc(command)#">MIB compiler frontend escript</seealso>. </p>
           <p>Own Id: OTP-9618</p>
         </item>
@@ -1166,7 +1835,7 @@
     <section>
       <title>Fixed Bugs and Malfunctions</title>
 <!--
-      <p>-</p> 
+      <p>-</p>
 -->
 
       <list type="bulleted">
@@ -1210,8 +1879,8 @@
 
       <list type="bulleted">
         <item>
-          <p>[compiler] Improved version info printout from the 
-	  <seealso marker="snmpc(command)#">MIB compiler frontend escript</seealso>. </p>
+          <p>[compiler] Improved version info printout from the
+	  <seecom marker="snmpc(command)#">MIB compiler frontend escript</seecom>. </p>
           <p>Own Id: OTP-9618</p>
         </item>
 
@@ -1222,27 +1891,27 @@
     <section>
       <title>Fixed Bugs and Malfunctions</title>
 <!--
-      <p>-</p> 
+      <p>-</p>
 -->
 
       <list type="bulleted">
         <item>
-          <p>[agent] Version 4.20 introduced a change that broke trap 
-	  sending from subagents. Due to a bug in the test code, 
+          <p>[agent] Version 4.20 introduced a change that broke trap
+	  sending from subagents. Due to a bug in the test code,
 	  this was not discovered, until that bug was fixed. </p>
           <p>Own Id: OTP-9745</p>
         </item>
 
         <item>
-          <p>[agent] When sending an error message (reply) regarding 
+          <p>[agent] When sending an error message (reply) regarding
 	  <c>snmpUnknownPDUHandlers</c>, the agent used the wrong OID. </p>
           <p>Own Id: OTP-9747</p>
         </item>
 
         <item>
-          <p>[compiler] Fix the <c>--warnings/--W</c> option parsing in the 
-          <seealso marker="snmpc(command)#option_warnings">snmpc</seealso>
-          wrapper (e)script. 
+          <p>[compiler] Fix the <c>--warnings/--W</c> option parsing in the
+          <seecom marker="snmpc(command)#option_warnings">snmpc</seecom>
+          wrapper (e)script.
           The short warning option was incorrectly <c>--w</c>, instead
           of as documented <c>--W</c>. This has now been corrected. </p>
           <p>*** POTENTIAL INCOMPATIBILITY ***</p>
@@ -1262,7 +1931,7 @@
 
       <list type="bulleted">
         <item>
-          <p>[compiler] The short warning option has been changed from 
+          <p>[compiler] The short warning option has been changed from
           <c>--w</c> to <c>--W</c> to comply with the documentation. </p>
           <p>Tuncer Ayaz</p>
           <p>Own Id: OTP-9718</p>
@@ -1286,7 +1955,7 @@
 <!--
       <list type="bulleted">
         <item>
-          <p>Bad note store GC timer deactivation. 
+          <p>Bad note store GC timer deactivation.
 	  Wrong field in the state record was set (timeout instead active). </p>
           <p>Stefan Grundmann</p>
           <p>Own Id: OTP-9690</p>
@@ -1300,12 +1969,12 @@
     <section>
       <title>Fixed Bugs and Malfunctions</title>
 <!--
-      <p>-</p> 
+      <p>-</p>
 -->
 
       <list type="bulleted">
         <item>
-          <p>Bad note store GC timer deactivation. 
+          <p>Bad note store GC timer deactivation.
 	  Wrong field in the state record was set (timeout instead active). </p>
           <p>Stefan Grundmann</p>
           <p>Own Id: OTP-9690</p>
@@ -1335,13 +2004,13 @@
 -->
       <list type="bulleted">
         <item>
-          <p>[compiler] Used wrong variable name (for 
-	  warnings-as-errors variable), which caused the 
+          <p>[compiler] Used wrong variable name (for
+	  warnings-as-errors variable), which caused the
 	  compiler to crash when using the snmpc (e)script. </p>
-	  <p>Also added the option 
-	  <seealso marker="snmpc(command)#option_werror">--Werror</seealso>
-	  for the SNMP MIB compiler (escript) frontend (to mimic 
-	  <seealso marker="erts:erlc">erlc</seealso>), 
+	  <p>Also added the option
+	  <seecom marker="snmpc(command)#option_werror">--Werror</seecom>
+	  for the SNMP MIB compiler (escript) frontend (to mimic
+	  <seecom marker="erts:erlc">erlc</seecom>),
 	  which specifies whether warnings should be treated as errors. </p>
           <p>Own Id: OTP-9447</p>
         </item>
@@ -1356,12 +2025,12 @@
 
     <section>
       <title>Fixed Bugs and Malfunctions</title>
-      <p>-</p> 
+      <p>-</p>
 
 <!--
       <list type="bulleted">
         <item>
-          <p>The snmp config tool could not handle (manager) audit trail config 
+          <p>The snmp config tool could not handle (manager) audit trail config
 	  because the option seqno was not handled. </p>
 	  <p>Own Id: OTP-9354</p>
 	</item>
@@ -1391,15 +2060,15 @@
 -->
       <list type="bulleted">
         <item>
-          <p>[manager] There was no way to specify transport domain. 
+          <p>[manager] There was no way to specify transport domain.
 	  The transport domains was assumed to be IPv4 (transportDomainUdpIpv4).
-	  This has now been changed so that it can also be IPv6 
-	  (transportDomainUdpIpv6). 
-	  To facilitate this, the transport domain, <c>tdomain</c>, 
-	  is now a (new) valid option when 
-	  <seealso marker="snmpm#register_agent">registering</seealso>
-	  a new agent (and 
-	  <seealso marker="snmpm#update_agent_info">updating</seealso> 
+	  This has now been changed so that it can also be IPv6
+	  (transportDomainUdpIpv6).
+	  To facilitate this, the transport domain, <c>tdomain</c>,
+	  is now a (new) valid option when
+	  <seeerl marker="snmpm#register_agent">registering</seeerl>
+	  a new agent (and
+	  <seeerl marker="snmpm#update_agent_info">updating</seeerl>
 	  agent info). </p>
 	  <p>This also mean that the transport behaviour has changed. </p>
           <p>Own Id: OTP-9305</p>
@@ -1407,10 +2076,10 @@
         </item>
 
         <item>
-          <p>[compiler] Added the option 
-	  <seealso marker="snmpc#compile">warnings_as_errors</seealso> 
-	  (for the SNMP MIB compiler (escript) frontend, the option 
-	  <seealso marker="snmpc(command)#option_wae">--wae</seealso> is used) 
+          <p>[compiler] Added the option
+	  <seeerl marker="snmpc#compile">warnings_as_errors</seeerl>
+	  (for the SNMP MIB compiler (escript) frontend, the option
+	  <seecom marker="snmpc(command)#option_wae">--wae</seecom> is used)
 	  which specifies whether warnings should be treated as errors. </p>
           <p>Tuncer Ayaz</p>
           <p>Own Id: OTP-9437</p>
@@ -1422,12 +2091,12 @@
     <section>
       <title>Fixed Bugs and Malfunctions</title>
 <!--
-      <p>-</p> 
+      <p>-</p>
 -->
 
       <list type="bulleted">
         <item>
-          <p>The snmp config tool could not handle (manager) audit trail config 
+          <p>The snmp config tool could not handle (manager) audit trail config
 	  because the option seqno was not handled. </p>
 	  <p>Own Id: OTP-9354</p>
 	</item>
@@ -1481,11 +2150,11 @@
     <section>
       <title>Fixed Bugs and Malfunctions</title>
 <!--
-      <p>-</p> 
+      <p>-</p>
 -->
       <list type="bulleted">
         <item>
-          <p>[agent] Did not handle transport domains properly in some cases, 
+          <p>[agent] Did not handle transport domains properly in some cases,
 	  for instance trap sending. </p>
 	  <p>Own Id: OTP-9400</p>
 	</item>
@@ -1522,10 +2191,10 @@
       <list type="bulleted">
         <item>
           <p>[agent] Added support for sending traps to IPv6 targets. </p>
-	  <p>See the 
-	  <seealso marker="snmp_agent_config_files#target_addr">target address config file</seealso>, 
-	  the <seealso marker="snmpa_conf#target_addr_entry">target_addr_entry/11</seealso> function or 
-	  <seealso marker="snmp_target_mib#add_addr">add_addr/11</seealso> for more info. </p>
+	  <p>See the
+	  <seeguide marker="snmp_agent_config_files#target_addr">target address config file</seeguide>,
+	  the <seeerl marker="snmpa_conf#target_addr_entry">target_addr_entry/11</seeerl> function or
+	  <seeerl marker="snmp_target_mib#add_addr">add_addr/11</seeerl> for more info. </p>
           <p>Own Id: OTP-9088</p>
           <p>Aux Id: Seq 11790</p>
 	</item>
@@ -1533,9 +2202,9 @@
 
         <item>
           <p>[agent] To be able to handle multiple engine-id(s) when
-	  sending trap(s), the function 
-          <seealso marker="snmp_community_mib#add_community">
-	  add_community/6</seealso> has been added. </p>
+	  sending trap(s), the function
+          <seeerl marker="snmp_community_mib#add_community">
+	  add_community/6</seeerl> has been added. </p>
           <p>Own Id: OTP-9119</p>
           <p>Aux Id: Seq 11792</p>
         </item>
@@ -1543,23 +2212,23 @@
         <item>
           <p>[manager] The API for snmp requests has been augmented to
 	  allow the caller to override some configuration. </p>
-	  <p>This has been done by introducing a new set of API functions, see 
-	  <seealso marker="snmpm#sync_get2">sync_get2/3,4</seealso>, 
-	  <seealso marker="snmpm#async_get2">async_get2/3,4</seealso>, 
-	  <seealso marker="snmpm#sync_get_next2">sync_get_next2/3,4</seealso>, 
-	  <seealso marker="snmpm#async_get_next2">async_get_next2/3,4</seealso>, 
-	  <seealso marker="snmpm#sync_get_bulk2">sync_get_bulk2/5,6</seealso>, 
-	  <seealso marker="snmpm#async_get_bulk2">async_get_bulk2/5,6</seealso>, 
-	  <seealso marker="snmpm#sync_set2">sync_set2/3,4</seealso> and 
-	  <seealso marker="snmpm#async_set2">async_set2/3,4</seealso>
+	  <p>This has been done by introducing a new set of API functions, see
+	  <seeerl marker="snmpm#sync_get2">sync_get2/3,4</seeerl>,
+	  <seeerl marker="snmpm#async_get2">async_get2/3,4</seeerl>,
+	  <seeerl marker="snmpm#sync_get_next2">sync_get_next2/3,4</seeerl>,
+	  <seeerl marker="snmpm#async_get_next2">async_get_next2/3,4</seeerl>,
+	  <seeerl marker="snmpm#sync_get_bulk2">sync_get_bulk2/5,6</seeerl>,
+	  <seeerl marker="snmpm#async_get_bulk2">async_get_bulk2/5,6</seeerl>,
+	  <seeerl marker="snmpm#sync_set2">sync_set2/3,4</seeerl> and
+	  <seeerl marker="snmpm#async_set2">async_set2/3,4</seeerl>
 	  for more info. </p>
           <p>Own Id: OTP-9162</p>
         </item>
 
         <item>
           <p>[manager] The old API functions (for get and set
-	  requests: 
-	  snmpm:g/3,4,5,6,7, snmpm:ag/3,4,5,6,7, 
+	  requests:
+	  snmpm:g/3,4,5,6,7, snmpm:ag/3,4,5,6,7,
 	  snmpm:gn/3,4,5,6,7, snmpm:agn/3,4,5,6,7,
 	  snmpm:s/3,4,5,6,7, snmpm:s/3,4,5,6,7,
 	  snmpm:gb/5,6,7,8,9 and snmpm:agb/5,6,7,8,9)
@@ -1571,14 +2240,14 @@
         <item>
           <p>[agent] Pass extra info through the agent to the net-if
 	  process when sending notifications. </p>
-	  <p>See 
-	  <seealso marker="snmpa#send_notification2">
-	  snmpa:send_notification2/3</seealso> for more info. 
-	  See also the incomming net-if messages when sending a 
-	  <seealso marker="snmp_agent_netif#im_send_pdu">trap</seealso> 
-	  (send_pdu message) and 
-	  <seealso marker="snmp_agent_netif#im_send_pdu_req">
-	  notification</seealso> (send_pdu_req message). </p>
+	  <p>See
+	  <seeerl marker="snmpa#send_notification2">
+	  snmpa:send_notification2/3</seeerl> for more info.
+	  See also the incomming net-if messages when sending a
+	  <seeguide marker="snmp_agent_netif#im_send_pdu">trap</seeguide>
+	  (send_pdu message) and
+	  <seeguide marker="snmp_agent_netif#im_send_pdu_req">
+	  notification</seeguide> (send_pdu_req message). </p>
           <p>Own Id: OTP-9183</p>
           <p>Aux Id: Seq 11817</p>
         </item>
@@ -1594,15 +2263,15 @@
     <section>
       <title>Fixed Bugs and Malfunctions</title>
 <!--
-      <p>-</p> 
+      <p>-</p>
 -->
 
       <list type="bulleted">
         <item>
           <p>Fixed endode/decode of values of type <c>Counter32</c>. </p>
-	  <p>This type (<c>Counter32</c>) is an unsigned integer 32, 
-	  but is actually encoded as an signed integer 32. 
-	  The encode/decode functions however, treated it as if it was 
+	  <p>This type (<c>Counter32</c>) is an unsigned integer 32,
+	  but is actually encoded as an signed integer 32.
+	  The encode/decode functions however, treated it as if it was
 	  encodeded as an unsigned integer 32. </p>
 	  <p>Own Id: OTP-9022</p>
 	</item>
@@ -1617,12 +2286,4 @@
     </section>
 
   </section> <!-- 4.20 -->
-
-
-  <!-- section>
-    <title>Release notes history</title>
-    <p>For information about older versions see
-      <url href="part_notes_history_frame.html">release notes history</url>.</p>
-  </section -->
 </chapter>
-

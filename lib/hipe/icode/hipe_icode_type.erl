@@ -1,9 +1,5 @@
 %% -*- erlang-indent-level: 2 -*-
 %%
-%% %CopyrightBegin%
-%% 
-%% Copyright Ericsson AB 2003-2014. All Rights Reserved.
-%%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
 %% You may obtain a copy of the License at
@@ -15,8 +11,6 @@
 %% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 %% See the License for the specific language governing permissions and
 %% limitations under the License.
-%%
-%% %CopyrightEnd%
 %%
 %%%--------------------------------------------------------------------
 %%% File    : hipe_icode_type.erl
@@ -100,11 +94,12 @@
 
 -record(state, {info_map  = gb_trees:empty() :: gb_trees:tree(),
 		cfg                          :: cfg(),
-		liveness  = gb_trees:empty() :: gb_trees:tree(),
+		liveness                     :: hipe_icode_ssa:liveness(),
 		arg_types                    :: [erl_types:erl_type()],
 		ret_type  = [t_none()]       :: [erl_types:erl_type()],
 		lookupfun                    :: call_fun(),
 		resultaction                 :: final_fun()}).
+-type state() :: #state{}.
 
 %%-----------------------------------------------------------------------
 %% The main exported function
@@ -193,7 +188,7 @@ analyse(Cfg, Data) ->
   catch throw:no_input -> ok % No need to do anything since we have no input
   end.
 
--spec safe_analyse(cfg(), data()) -> #state{}.
+-spec safe_analyse(cfg(), data()) -> state().
 
 safe_analyse(Cfg, {MFA,_,_,_}=Data) ->
   State = new_state(Cfg, Data),
@@ -363,6 +358,7 @@ call_always_fails(#icode_call{} = I, Info) ->
     %% These can actually be calls too.
     {erlang, halt, 0} -> false;
     {erlang, halt, 1} -> false;
+    {erlang, halt, 2} -> false;
     {erlang, exit, 1} -> false;
     {erlang, error, 1} -> false;
     {erlang, error, 2} -> false;
@@ -460,24 +456,24 @@ integer_range_inequality_propagation(Op, A1, A2, TrueLab, FalseLab, Info) ->
   NonIntArg1 = t_subtract(Arg1, t_integer()),
   NonIntArg2 = t_subtract(Arg2, t_integer()),
   ?ineq_debug("nonintargs", [NonIntArg1,NonIntArg2]),
-  case t_is_none(IntArg1) or t_is_none(IntArg2) of
+  case t_is_none(IntArg1) orelse t_is_none(IntArg2) of
     true ->
       ?ineq_debug("one is none", [IntArg1,IntArg2]),
       [{TrueLab, Info}, {FalseLab, Info}];
     false ->
-      case Op of
-	'>=' ->
- 	  {FalseArg1, FalseArg2, TrueArg1, TrueArg2} =
- 	    integer_range_less_then_propagator(IntArg1, IntArg2);
- 	'>' ->
- 	  {TrueArg2, TrueArg1, FalseArg2, FalseArg1} =
- 	    integer_range_less_then_propagator(IntArg2, IntArg1);
- 	'<' ->
- 	  {TrueArg1, TrueArg2, FalseArg1, FalseArg2} =
- 	    integer_range_less_then_propagator(IntArg1, IntArg2);
- 	'=<' ->
- 	  {FalseArg2, FalseArg1, TrueArg2, TrueArg1} =
- 	    integer_range_less_then_propagator(IntArg2, IntArg1)
+      {TrueArg1, TrueArg2, FalseArg1, FalseArg2} =
+	case Op of
+	  '>=' ->
+	    {FA1, FA2, TA1, TA2} = int_range_lt_propagator(IntArg1, IntArg2),
+	    {TA1, TA2, FA1, FA2};
+	  '>' ->
+	    {TA2, TA1, FA2, FA1} = int_range_lt_propagator(IntArg2, IntArg1),
+	    {TA1, TA2, FA1, FA2};
+	  '<' ->
+	    int_range_lt_propagator(IntArg1, IntArg2);
+	  '=<' ->
+	    {FA2, FA1, TA2, TA1} = int_range_lt_propagator(IntArg2, IntArg1),
+	    {TA1, TA2, FA1, FA2}
 	end,
       ?ineq_debug("int res", [TrueArg1, TrueArg2, FalseArg1, FalseArg2]),
       False = {FalseLab, enter(A1, t_sup(FalseArg1, NonIntArg1),
@@ -487,7 +483,7 @@ integer_range_inequality_propagation(Op, A1, A2, TrueLab, FalseLab, Info) ->
       [True, False]
   end.
 
-integer_range_less_then_propagator(IntArg1, IntArg2) ->
+int_range_lt_propagator(IntArg1, IntArg2) ->
   Min1 = number_min(IntArg1),
   Max1 = number_max(IntArg1),
   Min2 = number_min(IntArg2),
@@ -1414,9 +1410,10 @@ transform_element2(I) ->
   NewIndex =
     case test_type(integer, IndexType) of
       true ->
-	case t_number_vals(IndexType) of
-	  unknown -> unknown;
-	  [_|_] = Vals -> {number, Vals}
+	case {number_min(IndexType), number_max(IndexType)} of
+	  {Lb0, Ub0} when is_integer(Lb0), is_integer(Ub0) ->
+	    {number, Lb0, Ub0};
+	  {_, _} -> unknown
 	end;
       _ -> unknown
     end,
@@ -1431,19 +1428,19 @@ transform_element2(I) ->
       _ -> unknown
     end,
   case {NewIndex, MinSize} of
-    {{number, [_|_] = Ns}, {tuple, A}} when is_integer(A) ->
-      case lists:all(fun(X) -> 0 < X andalso X =< A end, Ns) of
+    {{number, Lb, Ub}, {tuple, A}} when is_integer(A) ->
+      case 0 < Lb andalso Ub =< A of
 	true ->
-	  case Ns of
-	    [Idx] ->
+	  case {Lb, Ub} of
+	    {Idx, Idx} ->
 	      [_, Tuple] = hipe_icode:args(I),
 	      update_call_or_enter(I, #unsafe_element{index = Idx}, [Tuple]);
-	    [_|_] ->
+	    {_, _} ->
 	      NewFun = {element, [MinSize, valid]},
 	      update_call_or_enter(I, NewFun)
 	  end;
 	false ->
-	  case lists:all(fun(X) -> hipe_tagscheme:is_fixnum(X) end, Ns) of
+	  case lists:all(fun(X) -> hipe_tagscheme:is_fixnum(X) end, [Lb, Ub]) of
 	    true ->
 	      NewFun = {element, [MinSize, fixnums]},
 	      update_call_or_enter(I, NewFun);
@@ -1458,7 +1455,7 @@ transform_element2(I) ->
 	  NewFun = {element, [MinSize, fixnums]},
 	  update_call_or_enter(I, NewFun);
 	false ->
-	  NewFun = {element, [MinSize, NewIndex]},	  
+	  NewFun = {element, [MinSize, NewIndex]},
 	  update_call_or_enter(I, NewFun)
       end
   end.

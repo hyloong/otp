@@ -1,7 +1,7 @@
 %%
 %% %CopyrightBegin%
 %% 
-%% Copyright Ericsson AB 2009-2012. All Rights Reserved.
+%% Copyright Ericsson AB 2009-2018. All Rights Reserved.
 %% 
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -47,40 +47,53 @@ init(Config) ->
 -define(pi, wxAuiPaneInfo).
 
 do_init(Config) ->
-    Parent = proplists:get_value(parent, Config),  
+    Parent = proplists:get_value(parent, Config),
     Panel = wxPanel:new(Parent, []),
     %% Setup sizers
     MainSizer = wxBoxSizer:new(?wxVERTICAL),
 
     Manager = wxAuiManager:new([{managed_wnd, Panel}]),
+    try
+	Art = wxAuiManager:getArtProvider(Manager),
+	wxAuiDockArt:setColour(Art, ?wxAUI_DOCKART_BACKGROUND_COLOUR, {200, 100, 100}),
+	wxAuiDockArt:setColour(Art, ?wxAUI_DOCKART_ACTIVE_CAPTION_COLOUR, {200, 100, 100}),
+	wxAuiDockArt:setColour(Art, ?wxAUI_DOCKART_INACTIVE_CAPTION_COLOUR, {100, 200, 100}),
 
-    Pane = ?pi:new(),
-    ?pi:closeButton(Pane),
-    ?pi:right(Pane),
-    ?pi:dockable(Pane, [{b, true}]),
-    ?pi:floatingSize(Pane, 300,200),
-    ?pi:minSize(Pane, {50,50}),
-    ?pi:paneBorder(Pane),
-    ?pi:floatable(Pane, [{b, true}]),
 
-    create_pane(Panel, Manager, Pane),
-    create_pane(Panel, Manager,
-		?pi:caption(?pi:top(?pi:new(Pane)), "One")),
-    create_pane(Panel, Manager,
-		?pi:caption(?pi:left(?pi:new(Pane)), "two")),
-    create_pane(Panel, Manager,
-		?pi:caption(?pi:bottom(?pi:new(Pane)), "Three")),
-    Pane2 = wxAuiPaneInfo:new(Pane),
-    ?pi:centrePane(Pane2),
-    create_notebook(Panel, Manager, ?pi:new(Pane2)),
+	Pane = ?pi:new(),
+	?pi:closeButton(Pane),
+	?pi:right(Pane),
+	?pi:dockable(Pane, [{b, true}]),
+	?pi:floatingSize(Pane, 300,200),
+	?pi:minSize(Pane, {50,50}),
+	?pi:paneBorder(Pane),
+	?pi:floatable(Pane, [{b, true}]),
 
-    wxPanel:setSizer(Panel, MainSizer),
+	create_pane(Panel, Manager, Pane),
+	create_pane(Panel, Manager,
+		    ?pi:caption(?pi:top(?pi:new(Pane)), "One")),
+	create_pane(Panel, Manager,
+		    ?pi:caption(?pi:left(?pi:new(Pane)), "two")),
+	create_pane(Panel, Manager,
+		    ?pi:caption(?pi:bottom(?pi:new(Pane)), "Three")),
+	Pane2 = wxAuiPaneInfo:new(Pane),
+	?pi:centrePane(Pane2),
+	create_notebook(Panel, Manager, ?pi:new(Pane2)),
 
-    wxAuiManager:connect(Manager, aui_pane_button, [{skip,true}]),
-    wxAuiManager:connect(Manager, aui_pane_maximize, [{skip,true}]),
-    wxAuiManager:update(Manager),
-    process_flag(trap_exit, true),
-    {Panel, #state{parent=Panel, config=Config, aui=Manager}}.
+	wxPanel:setSizer(Panel, MainSizer),
+
+	wxAuiManager:connect(Manager, aui_pane_button, [{skip,true}]),
+	wxAuiManager:connect(Manager, aui_pane_maximize, [{skip,true}]),
+	wxAuiManager:update(Manager),
+	process_flag(trap_exit, true),
+	{Panel, #state{parent=Panel, config=Config, aui=Manager}}
+    catch Class:Reason:ST ->
+	    io:format("AUI Crashed ~p ~p~n",[Reason, ST]),
+	    wxAuiManager:unInit(Manager),
+	    wxAuiManager:destroy(Manager),
+	    wxPanel:destroy(Panel),
+	    erlang:raise(Class, Reason, ST)
+    end.
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %% Callbacks handled as normal gen_server callbacks
@@ -162,6 +175,15 @@ create_notebook(Parent, Manager, Pane) ->
 	    ),
     
     Notebook = wxAuiNotebook:new(Parent, [{style, Style}]),
+
+    Art = wxAuiSimpleTabArt:new(),
+    case ?wxMAJOR_VERSION > 2 of
+	true ->
+	    wxAuiSimpleTabArt:setColour(Art, {200, 0, 0}),
+	    wxAuiSimpleTabArt:setActiveColour(Art, {0, 0, 200});
+	false -> ignore
+    end,
+    ok = wxAuiNotebook:setArtProvider(Notebook, Art),
 
     Tab1 = wxPanel:new(Notebook, []),
     wxPanel:setBackgroundColour(Tab1, ?wxBLACK),

@@ -1,8 +1,4 @@
 %% -*- erlang-indent-level: 2 -*-
-%%-----------------------------------------------------------------------
-%% %CopyrightBegin%
-%%
-%% Copyright Ericsson AB 2006-2014. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -15,9 +11,6 @@
 %% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 %% See the License for the specific language governing permissions and
 %% limitations under the License.
-%%
-%% %CopyrightEnd%
-%%
 
 %%%-------------------------------------------------------------------
 %%% File    : dialyzer_callgraph.erl
@@ -47,7 +40,7 @@
 	 module_postorder_from_funs/2,
 	 new/0,
 	 get_depends_on/2,
-	 get_required_by/2,
+	 %% get_required_by/2,
 	 in_neighbours/2,
 	 renew_race_info/4,
 	 renew_race_code/2,
@@ -96,28 +89,34 @@
 %%		   whenever applicable.
 %%-----------------------------------------------------------------------------
 
+%% Types with comment 'race' are due to dialyzer_races.erl.
 -record(callgraph, {digraph        = digraph:new() :: digraph:graph(),
-		    active_digraph                 :: active_digraph(),
-                    esc	                           :: ets:tid(),
-                    letrec_map                     :: ets:tid(),
+		    active_digraph                 :: active_digraph()
+                                                    | 'undefined', % race
+                    esc	                           :: ets:tid()
+                                                    | 'undefined', % race
+                    letrec_map                     :: ets:tid()
+                                                    | 'undefined', % race
                     name_map	                   :: ets:tid(),
                     rev_name_map                   :: ets:tid(),
-                    rec_var_map                    :: ets:tid(),
-                    self_rec	                   :: ets:tid(),
-                    calls                          :: ets:tid(),
+                    rec_var_map                    :: ets:tid()
+                                                    | 'undefined', % race
+                    self_rec	                   :: ets:tid()
+                                                    | 'undefined', % race
+                    calls                          :: ets:tid()
+                                                    | 'undefined', % race
                     race_detection = false         :: boolean(),
-		    race_data_server = new_race_data_server() :: pid()}).
-
--record(race_data_state, {race_code     = dict:new() :: dict:dict(),
-			  public_tables = []         :: [label()],
-			  named_tables  = []         :: [string()],
-			  beh_api_calls = []         :: [{mfa(), mfa()}]}).
+		    race_data_server = dialyzer_race_data_server:new() :: pid()}).
 
 %% Exported Types
 
--type callgraph() :: #callgraph{}.
+-opaque callgraph() :: #callgraph{}.
 
--type active_digraph() :: {'d', digraph:graph()} | {'e', ets:tid(), ets:tid()}.
+-type active_digraph() :: {'d', digraph:graph()}
+                        | {'e',
+                           Out :: ets:tid(),
+                           In :: ets:tid(),
+                           Map :: ets:tid()}.
 
 %%----------------------------------------------------------------------
 
@@ -246,23 +245,29 @@ find_non_local_calls([], Set) ->
 
 -spec get_depends_on(scc() | module(), callgraph()) -> [scc()].
 
-get_depends_on(SCC, #callgraph{active_digraph = {'e', Out, _In}}) ->
-  case ets_lookup_dict(SCC, Out) of
-    {ok, Value} -> Value;
-    error -> []
-  end;
+get_depends_on(SCC, #callgraph{active_digraph = {'e', Out, _In, Maps}}) ->
+  lookup_scc(SCC, Out, Maps);
 get_depends_on(SCC, #callgraph{active_digraph = {'d', DG}}) ->
   digraph:out_neighbours(DG, SCC).
 
--spec get_required_by(scc() | module(), callgraph()) -> [scc()].
+%% -spec get_required_by(scc() | module(), callgraph()) -> [scc()].
 
-get_required_by(SCC, #callgraph{active_digraph = {'e', _Out, In}}) ->
-  case ets_lookup_dict(SCC, In) of
-    {ok, Value} -> Value;
+%% get_required_by(SCC, #callgraph{active_digraph = {'e', _Out, In, Maps}}) ->
+%%   lookup_scc(SCC, In, Maps);
+%% get_required_by(SCC, #callgraph{active_digraph = {'d', DG}}) ->
+%%   digraph:in_neighbours(DG, SCC).
+
+lookup_scc(SCC, Table, Maps) ->
+  case ets_lookup_dict({'scc', SCC}, Maps) of
+    {ok, SCCInt} ->
+      case ets_lookup_dict(SCCInt, Table) of
+        {ok, Ints} ->
+          [ets:lookup_element(Maps, Int, 2) || Int <- Ints];
+        error ->
+          []
+      end;
     error -> []
-  end;
-get_required_by(SCC, #callgraph{active_digraph = {'d', DG}}) ->
-  digraph:in_neighbours(DG, SCC).
+  end.
 
 %%----------------------------------------------------------------------
 %% Handling of modules & SCCs
@@ -280,9 +285,11 @@ module_postorder(#callgraph{digraph = DG}) ->
   Nodes = sets:from_list([M || {M,_F,_A} <- digraph_vertices(DG)]),
   MDG = digraph:new([acyclic]),
   digraph_confirm_vertices(sets:to_list(Nodes), MDG),
-  Foreach = fun({M1,M2}) -> digraph:add_edge(MDG, M1, M2) end,
+  Foreach = fun({M1,M2}) -> _ = digraph:add_edge(MDG, M1, M2) end,
   lists:foreach(Foreach, sets:to_list(Edges)),
-  {digraph_utils:topsort(MDG), {'d', MDG}}.
+  %% The out-neighbors of a vertex are the vertices called directly.
+  %% The used vertices are to occur *before* the calling vertex:
+  {lists:reverse(digraph_utils:topsort(MDG)), {'d', MDG}}.
 
 edge_fold({{M1,_,_},{M2,_,_}}, Set) ->
   case M1 =/= M2 of
@@ -300,7 +307,7 @@ module_deps(#callgraph{digraph = DG}) ->
   Nodes = sets:from_list([M || {M,_F,_A} <- digraph_vertices(DG)]),
   MDG = digraph:new(),
   digraph_confirm_vertices(sets:to_list(Nodes), MDG),
-  Foreach = fun({M1,M2}) -> digraph:add_edge(MDG, M1, M2) end,
+  Foreach = fun({M1,M2}) -> check_add_edge(MDG, M1, M2) end,
   lists:foreach(Foreach, sets:to_list(Edges)),
   Deps = [{N, ordsets:from_list(digraph:in_neighbours(MDG, N))}
 	  || N <- sets:to_list(Nodes)],
@@ -358,7 +365,7 @@ ets_lookup_set(Key, Table) ->
 
 %% The core tree must be labeled as by cerl_trees:label/1 (or /2).
 %% The set of labels in the tree must be disjoint from the set of
-%% labels already occuring in the callgraph.
+%% labels already occurring in the callgraph.
 
 -spec scan_core_tree(cerl:c_module(), callgraph()) ->
         {[mfa_or_funlbl()], [callgraph_edge()]}.
@@ -478,14 +485,37 @@ scan_one_core_fun(TopTree, FunName) ->
 		  call ->
 		    CalleeM = cerl:call_module(Tree),
 		    CalleeF = cerl:call_name(Tree),
-		    A = length(cerl:call_args(Tree)),
+		    CalleeArgs = cerl:call_args(Tree),
+		    A = length(CalleeArgs),
 		    case (cerl:is_c_atom(CalleeM) andalso 
 			  cerl:is_c_atom(CalleeF)) of
 		      true -> 
 			M = cerl:atom_val(CalleeM),
 			F = cerl:atom_val(CalleeF),
 			case erl_bif_types:is_known(M, F, A) of
-			  true -> Acc;
+			  true ->
+			    case {M, F, A} of
+			      {erlang, make_fun, 3} ->
+				[CA1, CA2, CA3] = CalleeArgs,
+				case
+				  cerl:is_c_atom(CA1) andalso
+				  cerl:is_c_atom(CA2) andalso
+				  cerl:is_c_int(CA3)
+				of
+				  true ->
+				    MM = cerl:atom_val(CA1),
+				    FF = cerl:atom_val(CA2),
+				    AA = cerl:int_val(CA3),
+				    case erl_bif_types:is_known(MM, FF, AA) of
+				      true -> Acc;
+				      false -> [{FunName, {MM, FF, AA}}|Acc]
+				    end;
+				  false ->
+				    Acc
+				end;
+			      _ ->
+				Acc
+			    end;
 			  false -> [{FunName, {M, F, A}}|Acc]
 			end;
 		      false -> 
@@ -524,8 +554,20 @@ digraph_add_edge(From, To, DG) ->
     false -> digraph:add_vertex(DG, To);
     {To, _} -> ok
   end,
-  digraph:add_edge(DG, {From, To}, From, To, []),
+  check_add_edge(DG, {From, To}, From, To, []),
   ok.
+
+check_add_edge(G, V1, V2) ->
+  case digraph:add_edge(G, V1, V2) of
+    {error, Error} -> exit({add_edge, V1, V2, Error});
+    _Edge -> ok
+  end.
+
+check_add_edge(G, E, V1, V2, L) ->
+  case digraph:add_edge(G, E, V1, V2, L) of
+    {error, Error} -> exit({add_edge, E, V1, V2, L, Error});
+    _Edge -> ok
+  end.
 
 digraph_confirm_vertices([MFA|Left], DG) ->
   digraph:add_vertex(DG, MFA, confirmed),
@@ -557,9 +599,10 @@ digraph_delete(DG) ->
 
 active_digraph_delete({'d', DG}) ->
   digraph:delete(DG);
-active_digraph_delete({'e', Out, In}) ->
+active_digraph_delete({'e', Out, In, Maps}) ->
   ets:delete(Out),
-  ets:delete(In).
+  ets:delete(In),
+  ets:delete(Maps).
 
 digraph_edges(DG) ->
   digraph:edges(DG).
@@ -586,16 +629,10 @@ digraph_reaching_subgraph(Funs, DG) ->
 
 renew_race_info(#callgraph{race_data_server = RaceDataServer} = CG,
 		RaceCode, PublicTables, NamedTables) ->
-  ok = race_data_server_cast(
+  ok = dialyzer_race_data_server:cast(
 	 {renew_race_info, {RaceCode, PublicTables, NamedTables}},
 	 RaceDataServer),
   CG.
-
-renew_race_info({RaceCode, PublicTables, NamedTables},
-		#race_data_state{} = State) ->
-  State#race_data_state{race_code = RaceCode,
-			public_tables = PublicTables,
-			named_tables = NamedTables}.
 
 -spec renew_race_code(dialyzer_races:races(), callgraph()) -> callgraph().
 
@@ -603,27 +640,18 @@ renew_race_code(Races, #callgraph{race_data_server = RaceDataServer} = CG) ->
   Fun = dialyzer_races:get_curr_fun(Races),
   FunArgs = dialyzer_races:get_curr_fun_args(Races),
   Code = lists:reverse(dialyzer_races:get_race_list(Races)),
-  ok = race_data_server_cast(
+  ok = dialyzer_race_data_server:cast(
 	 {renew_race_code, {Fun, FunArgs, Code}},
 	 RaceDataServer),
   CG.
-
-renew_race_code_handler({Fun, FunArgs, Code},
-		      #race_data_state{race_code = RaceCode} = State) ->
-  State#race_data_state{race_code = dict:store(Fun, [FunArgs, Code], RaceCode)}.
 
 -spec renew_race_public_tables(label(), callgraph()) -> callgraph().
 
 renew_race_public_tables(VarLabel,
 			 #callgraph{race_data_server = RaceDataServer} = CG) ->
   ok =
-    race_data_server_cast({renew_race_public_tables, VarLabel}, RaceDataServer),
+    dialyzer_race_data_server:cast({renew_race_public_tables, VarLabel}, RaceDataServer),
   CG.
-
-renew_race_public_tables_handler(VarLabel,
-				 #race_data_state{public_tables = PT}
-				 = State) ->
-  State#race_data_state{public_tables = ordsets:add_element(VarLabel, PT)}.
 
 -spec cleanup(callgraph()) -> callgraph().
 
@@ -634,18 +662,18 @@ cleanup(#callgraph{digraph = Digraph,
   #callgraph{digraph = Digraph,
 	     name_map = NameMap,
              rev_name_map = RevNameMap,
-	     race_data_server = race_data_server_call(dup, RaceDataServer)}.
+	     race_data_server = dialyzer_race_data_server:duplicate(RaceDataServer)}.
 
 -spec duplicate(callgraph()) -> callgraph().
 
 duplicate(#callgraph{race_data_server = RaceDataServer} = Callgraph) ->
   Callgraph#callgraph{
-    race_data_server = race_data_server_call(dup, RaceDataServer)}.
+    race_data_server = dialyzer_race_data_server:duplicate(RaceDataServer)}.
 
 -spec dispose_race_server(callgraph()) -> ok.
 
 dispose_race_server(#callgraph{race_data_server = RaceDataServer}) ->
-  race_data_server_cast(stop, RaceDataServer).
+  dialyzer_race_data_server:stop(RaceDataServer).
 
 -spec get_digraph(callgraph()) -> digraph:graph().
 
@@ -655,17 +683,17 @@ get_digraph(#callgraph{digraph = Digraph}) ->
 -spec get_named_tables(callgraph()) -> [string()].
 
 get_named_tables(#callgraph{race_data_server = RaceDataServer}) ->
-  race_data_server_call(get_named_tables, RaceDataServer).
+  dialyzer_race_data_server:call(get_named_tables, RaceDataServer).
 
 -spec get_public_tables(callgraph()) -> [label()].
 
 get_public_tables(#callgraph{race_data_server = RaceDataServer}) ->
-  race_data_server_call(get_public_tables, RaceDataServer).
+  dialyzer_race_data_server:call(get_public_tables, RaceDataServer).
 
 -spec get_race_code(callgraph()) -> dict:dict().
 
 get_race_code(#callgraph{race_data_server = RaceDataServer}) ->
-  race_data_server_call(get_race_code, RaceDataServer).
+  dialyzer_race_data_server:call(get_race_code, RaceDataServer).
 
 -spec get_race_detection(callgraph()) -> boolean().
 
@@ -675,12 +703,12 @@ get_race_detection(#callgraph{race_detection = RD}) ->
 -spec get_behaviour_api_calls(callgraph()) -> [{mfa(), mfa()}].
 
 get_behaviour_api_calls(#callgraph{race_data_server = RaceDataServer}) ->
-  race_data_server_call(get_behaviour_api_calls, RaceDataServer).
+  dialyzer_race_data_server:call(get_behaviour_api_calls, RaceDataServer).
 
 -spec race_code_new(callgraph()) -> callgraph().
 
 race_code_new(#callgraph{race_data_server = RaceDataServer} = CG) ->
-  ok = race_data_server_cast(race_code_new, RaceDataServer),
+  ok = dialyzer_race_data_server:cast(race_code_new, RaceDataServer),
   CG.
 
 -spec put_digraph(digraph:graph(), callgraph()) -> callgraph().
@@ -691,7 +719,7 @@ put_digraph(Digraph, Callgraph) ->
 -spec put_race_code(dict:dict(), callgraph()) -> callgraph().
 
 put_race_code(RaceCode, #callgraph{race_data_server = RaceDataServer} = CG) ->
-  ok = race_data_server_cast({put_race_code, RaceCode}, RaceDataServer),
+  ok = dialyzer_race_data_server:cast({put_race_code, RaceCode}, RaceDataServer),
   CG.
 
 -spec put_race_detection(boolean(), callgraph()) -> callgraph().
@@ -703,77 +731,22 @@ put_race_detection(RaceDetection, Callgraph) ->
 
 put_named_tables(NamedTables,
 		 #callgraph{race_data_server = RaceDataServer} = CG) ->
-  ok = race_data_server_cast({put_named_tables, NamedTables}, RaceDataServer),
+  ok = dialyzer_race_data_server:cast({put_named_tables, NamedTables}, RaceDataServer),
   CG.
 
 -spec put_public_tables([label()], callgraph()) -> callgraph().
 
 put_public_tables(PublicTables,
 		 #callgraph{race_data_server = RaceDataServer} = CG) ->
-  ok = race_data_server_cast({put_public_tables, PublicTables}, RaceDataServer),
+  ok = dialyzer_race_data_server:cast({put_public_tables, PublicTables}, RaceDataServer),
   CG.
 
 -spec put_behaviour_api_calls([{mfa(), mfa()}], callgraph()) -> callgraph().
 
 put_behaviour_api_calls(Calls,
 		 #callgraph{race_data_server = RaceDataServer} = CG) ->
-  ok = race_data_server_cast({put_behaviour_api_calls, Calls}, RaceDataServer),
+  ok = dialyzer_race_data_server:cast({put_behaviour_api_calls, Calls}, RaceDataServer),
   CG.
-
-
-new_race_data_server() ->
-  spawn_link(fun() -> race_data_server_loop(#race_data_state{}) end).
-
-race_data_server_loop(State) ->
-  receive
-    {call, From, Ref, Query} ->
-      Reply = race_data_server_handle_call(Query, State),
-      From ! {Ref, Reply},
-      race_data_server_loop(State);
-    {cast, stop} ->
-      ok;
-    {cast, Message} ->
-      NewState = race_data_server_handle_cast(Message, State),
-      race_data_server_loop(NewState)
-  end.
-
-race_data_server_call(Query, Server) ->
-  Ref = make_ref(),
-  Server ! {call, self(), Ref, Query},
-  receive
-    {Ref, Reply} -> Reply
-  end.
-
-race_data_server_cast(Message, Server) ->
-  Server ! {cast, Message},
-  ok.
-
-race_data_server_handle_cast(race_code_new, State) ->
-  State#race_data_state{race_code = dict:new()};
-race_data_server_handle_cast({Tag, Data}, State) ->
-  case Tag of
-    renew_race_info -> renew_race_info(Data, State);
-    renew_race_code -> renew_race_code_handler(Data, State);
-    renew_race_public_tables -> renew_race_public_tables_handler(Data, State);
-    put_race_code -> State#race_data_state{race_code = Data};
-    put_public_tables -> State#race_data_state{public_tables = Data};
-    put_named_tables -> State#race_data_state{named_tables = Data};
-    put_behaviour_api_calls -> State#race_data_state{beh_api_calls = Data}
-  end.
-
-race_data_server_handle_call(Query,
-			     #race_data_state{race_code = RaceCode,
-					      public_tables = PublicTables,
-					      named_tables = NamedTables,
-					      beh_api_calls = BehApiCalls}
-			     = State) ->
-  case Query of
-    dup -> spawn_link(fun() -> race_data_server_loop(State) end);
-    get_race_code -> RaceCode;
-    get_public_tables -> PublicTables;
-    get_named_tables -> NamedTables;
-    get_behaviour_api_calls -> BehApiCalls
-  end.
 
 %%=============================================================================
 %% Utilities for 'dot'
@@ -782,6 +755,7 @@ race_data_server_handle_call(Query,
 -spec to_dot(callgraph(), file:filename()) -> 'ok'.
 
 to_dot(#callgraph{digraph = DG, esc = Esc} = CG, File) ->
+  %% TODO: handle Unicode names.
   Fun = fun(L) ->
 	    case lookup_name(L, CG) of
 	      error -> L;
@@ -796,44 +770,60 @@ to_dot(#callgraph{digraph = DG, esc = Esc} = CG, File) ->
 -spec to_ps(callgraph(), file:filename(), string()) -> 'ok'.
 
 to_ps(#callgraph{} = CG, File, Args) ->
+  %% TODO: handle Unicode names.
   Dot_File = filename:rootname(File) ++ ".dot",
   to_dot(CG, Dot_File),
-  Command = io_lib:format("dot -Tps ~s -o ~s ~s", [Args, File, Dot_File]),
+  Command = io_lib:format("dot -Tps ~ts -o ~ts ~ts", [Args, File, Dot_File]),
   _ = os:cmd(Command),
   ok.
 
 condensation(G) ->
-  SCs = digraph_utils:strong_components(G),
-  V2I = ets:new(condensation_v2i, []),
-  I2C = ets:new(condensation_i2c, []),
-  I2I = ets:new(condensation_i2i, [bag]),
-  CFun =
-    fun(SC, N) ->
-	lists:foreach(fun(V) -> true = ets:insert(V2I, {V,N}) end, SC),
-	true = ets:insert(I2C, {N, SC}),
-	N + 1
-    end,
-  lists:foldl(CFun, 1, SCs),
-  Fun1 =
-    fun({V1, V2}) ->
-        I1 = ets:lookup_element(V2I, V1, 2),
-        I2 = ets:lookup_element(V2I, V2, 2),
-	I1 =:= I2 orelse ets:insert(I2I, {I1, I2})
-    end,
-  lists:foreach(Fun1, digraph:edges(G)),
-  Fun3 =
-    fun({I1, I2}, {Out, In}) ->
-        SC1 = ets:lookup_element(I2C, I1, 2),
-        SC2 = ets:lookup_element(I2C, I2, 2),
-        {dict:append(SC1, SC2, Out), dict:append(SC2, SC1, In)}
-    end,
-  {OutDict, InDict} = ets:foldl(Fun3, {dict:new(), dict:new()}, I2I),
-  [OutETS, InETS] =
-    [ets:new(Name,[{read_concurrency, true}]) ||
-      Name <- [callgraph_deps_out, callgraph_deps_in]],
-  ets:insert(OutETS, dict:to_list(OutDict)),
-  ets:insert(InETS, dict:to_list(InDict)),
-  ets:delete(V2I),
-  ets:delete(I2C),
-  ets:delete(I2I),
-  {{'e', OutETS, InETS}, SCs}.
+  {Pid, Ref} = erlang:spawn_monitor(do_condensation(G, self())),
+  receive {'DOWN', Ref, process, Pid, Result} ->
+      {SCCInts, OutETS, InETS, MapsETS} = Result,
+      NewSCCs = [ets:lookup_element(MapsETS, SCCInt, 2) || SCCInt <- SCCInts],
+      {{'e', OutETS, InETS, MapsETS}, NewSCCs}
+  end.
+
+-spec do_condensation(digraph:graph(), pid()) -> fun(() -> no_return()).
+
+do_condensation(G, Parent) ->
+  fun() ->
+      [OutETS, InETS, MapsETS] =
+        [ets:new(Name,[{read_concurrency, true}]) ||
+          Name <- [callgraph_deps_out, callgraph_deps_in, callgraph_scc_map]],
+      SCCs = digraph_utils:strong_components(G),
+      %% Assign unique numbers to SCCs:
+      Ints = lists:seq(1, length(SCCs)),
+      IntToSCC = lists:zip(Ints, SCCs),
+      IntScc = sofs:relation(IntToSCC, [{int, scc}]),
+      %% Create mapping from unique integers to SCCs:
+      ets:insert(MapsETS, IntToSCC),
+      %% Subsitute strong components for vertices in edges using the
+      %% unique numbers:
+      C2V = sofs:relation([{SC, V} || SC <- SCCs, V <- SC], [{scc, v}]),
+      I2V = sofs:relative_product(IntScc, C2V), % [{v, int}]
+      Es = sofs:relation(digraph:edges(G), [{v, v}]),
+      R1 = sofs:relative_product(I2V, Es),
+      R2 = sofs:relative_product(I2V, sofs:converse(R1)),
+      R2Strict = sofs:strict_relation(R2),
+      %% Create out-neighbours:
+      Out = sofs:relation_to_family(sofs:converse(R2Strict)),
+      ets:insert(OutETS, sofs:to_external(Out)),
+      %% Sort the SCCs topologically:
+      DG = sofs:family_to_digraph(Out),
+      lists:foreach(fun(I) -> digraph:add_vertex(DG, I) end, Ints),
+      SCCInts0 = digraph_utils:topsort(DG),
+      digraph:delete(DG),
+      %% The out-neighbors of a vertex are the vertices called directly.
+      %% The used vertices are to occur *before* the calling vertex:
+      SCCInts = lists:reverse(SCCInts0),
+      %% Create in-neighbours:
+      In = sofs:relation_to_family(R2Strict),
+      ets:insert(InETS, sofs:to_external(In)),
+      %% Create mapping from SCCs to unique integers:
+      ets:insert(MapsETS, lists:zip([{'scc', SCC} || SCC<- SCCs], Ints)),
+      lists:foreach(fun(E) -> true = ets:give_away(E, Parent, any)
+                    end, [OutETS, InETS, MapsETS]),
+      exit({SCCInts, OutETS, InETS, MapsETS})
+  end.

@@ -1,7 +1,7 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2004-2013. All Rights Reserved.
+%% Copyright Ericsson AB 2004-2016. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -135,23 +135,18 @@ child_spec(HttpdService) ->
     httpd_child_spec(Config, AcceptTimeout, Debug).
 
 httpd_config([Value| _] = Config) when is_tuple(Value) ->
-    case proplists:get_value(file, Config) of
-	undefined -> 
-	    case proplists:get_value(proplist_file, Config) of
-		undefined ->
-		    httpd_conf:validate_properties(Config);
-		File ->
-		   try file:consult(File) of
-		       {ok, [PropList]} ->
-			   httpd_conf:validate_properties(PropList)
-		   catch 
-		       exit:_ ->
-			   throw({error, 
-				  {could_not_consult_proplist_file, File}})  
-		   end
-	    end;
-	File -> 
-	    {ok, File}
+    case proplists:get_value(proplist_file, Config) of
+        undefined ->
+            httpd_conf:validate_properties(Config);
+        File ->
+            try file:consult(File) of
+                {ok, [PropList]} ->
+                    httpd_conf:validate_properties(PropList)
+            catch 
+                exit:_ ->
+                    throw({error, 
+                           {could_not_consult_proplist_file, File}})  
+            end
     end.
 
 httpd_child_spec([Value| _] = Config, AcceptTimeout, Debug)  
@@ -159,38 +154,20 @@ httpd_child_spec([Value| _] = Config, AcceptTimeout, Debug)
     Address = proplists:get_value(bind_address, Config, any),
     Port    = proplists:get_value(port, Config, 80),
     Profile =  proplists:get_value(profile, Config, ?DEFAULT_PROFILE),
-    httpd_child_spec(Config, AcceptTimeout, Debug, Address, Port, Profile);
+    httpd_child_spec(Config, AcceptTimeout, Debug, Address, Port, Profile).
 
-%% In this case the AcceptTimeout and Debug will only have default values...
-httpd_child_spec(ConfigFile, AcceptTimeoutDef, DebugDef) ->
-    case httpd_conf:load(ConfigFile) of
-	{ok, ConfigList} ->
-	    case (catch httpd_conf:validate_properties(ConfigList)) of
-		{ok, Config} ->
-		    Address = proplists:get_value(bind_address, Config, any), 
-		    Port    = proplists:get_value(port, Config, 80),
-		    Profile = proplists:get_value(profile, Config, ?DEFAULT_PROFILE),
-		    AcceptTimeout = 
-			proplists:get_value(accept_timeout, Config, 
-					    AcceptTimeoutDef),
-		    Debug   = 
-			proplists:get_value(debug, Config, DebugDef),
-		    httpd_child_spec([{file, ConfigFile} | Config], 
-				     AcceptTimeout, Debug, Address, Port, Profile);
-		Error ->
-		    Error
+
+httpd_child_spec(Config, AcceptTimeout, Debug, Addr, Port, Profile) ->
+    case get_fd(Port) of
+	{ok, Fd} ->
+	    case Port == 0 orelse Fd =/= undefined of
+		true ->
+		    httpd_child_spec_listen(Config, AcceptTimeout, Debug, Addr, Port, Profile);
+		false ->
+		    httpd_child_spec_nolisten(Config, AcceptTimeout, Debug, Addr, Port, Profile)
 	    end;
 	Error ->
 	    Error
-    end.
-
-httpd_child_spec(Config, AcceptTimeout, Debug, Addr, Port, Profile) ->
-    Fd  = proplists:get_value(fd, Config, undefined),
-    case Port == 0 orelse Fd =/= undefined of
-	true ->
-	    httpd_child_spec_listen(Config, AcceptTimeout, Debug, Addr, Port, Profile);
-	false ->
-	    httpd_child_spec_nolisten(Config, AcceptTimeout, Debug, Addr, Port, Profile)
     end.
 
 httpd_child_spec_listen(Config, AcceptTimeout, Debug, Addr, Port, Profile) ->
@@ -236,8 +213,8 @@ listen(Address, Port, Config)  ->
 	SocketType ->
 	    case http_transport:start(SocketType) of
 		ok ->
-		    Fd = proplists:get_value(fd, Config),
-		    IpFamily =  proplists:get_value(ipfamily, Config, inet6fb4),
+		    {ok, Fd} = get_fd(Port),
+		    IpFamily =  proplists:get_value(ipfamily, Config, inet),
 		    case http_transport:listen(SocketType, Address, Port, Fd, IpFamily) of
 			{ok, ListenSocket} ->
 			    NewConfig = proplists:delete(port, Config),
@@ -281,6 +258,8 @@ socket_type(Config) ->
     socket_type(SocketType, Config).
 
 socket_type(ip_comm = SocketType, _) ->
+    SocketType;
+socket_type({ip_comm, _} = SocketType, _) ->
     SocketType;
 socket_type({essl, _} = SocketType, _) ->
     SocketType;
@@ -354,4 +333,20 @@ ssl_ca_certificate_file(Config) ->
 	    [];
 	File ->
 	    [{cacertfile, File}]
+    end.
+
+get_fd(0) ->
+    {ok, undefined};
+get_fd(Port) ->
+    FdKey = list_to_atom("httpd_" ++ integer_to_list(Port)),
+    case init:get_argument(FdKey) of
+	{ok, [[Value]]} ->
+	    case (catch list_to_integer(Value)) of
+		N when is_integer(N) ->
+		    {ok, N};
+		_ ->
+		    {error, {bad_descriptor, Value}}
+	    end;
+	_ ->
+	    {ok, undefined}
     end.

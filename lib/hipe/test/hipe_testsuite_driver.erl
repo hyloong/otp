@@ -1,6 +1,6 @@
 -module(hipe_testsuite_driver).
 
--export([create_all_suites/0, run/3]).
+-export([create_all_suites/1, run/3]).
 
 -include_lib("kernel/include/file.hrl").
 
@@ -16,34 +16,22 @@
 		outputfile :: file:io_device(),
 		testcases  :: [testcase()]}).
 
--spec create_all_suites() -> 'ok'.
+-spec create_all_suites([string()]) -> 'ok'.
 
-create_all_suites() ->
-    {ok, Cwd} = file:get_cwd(),
-    Suites = get_suites(Cwd),
+create_all_suites(SuitesWithSuiteSuffix) ->
+    Suites = get_suites(SuitesWithSuiteSuffix),
     lists:foreach(fun create_suite/1, Suites).
 
--spec get_suites(file:filename()) -> [string()].
+-spec get_suites([string()]) -> [string()].
 
-get_suites(Dir) ->
-    case file:list_dir(Dir) of
-	{error, _} -> [];
-	{ok, Filenames} ->
-	    FullFilenames = [filename:join(Dir, F) || F <- Filenames],
-	    Dirs = [suffix(filename:basename(F), ?suite_data) ||
-		       F <- FullFilenames,
-		       file_type(F) =:= {ok, 'directory'}],
-	    [S || {yes, S} <- Dirs]
-    end.
+get_suites(SuitesWithSuiteSuffix) ->
+    Prefixes = [suffix(F, ?suite_suffix) || F <- SuitesWithSuiteSuffix],
+    [S || {yes, S} <- Prefixes].
 
 suffix(String, Suffix) ->
-    case string:rstr(String, Suffix) of
-	0 -> no;
-	Index ->
-	    case string:substr(String, Index) =:= Suffix of
-		true -> {yes, string:sub_string(String, 1, Index-1)};
-		false -> no
-	    end
+    case string:split(String, Suffix, trailing) of
+	[Prefix,[]] -> {yes, Prefix};
+        _ -> no
     end.
 
 -spec file_type(file:filename()) -> {ok, file_type()} | {error, ext_posix()}.
@@ -107,7 +95,7 @@ write_suite(Suite) ->
 write_header(#suite{suitename = SuiteName, outputfile = OutputFile,
 		    testcases = TestCases}) ->
     Exports = format_export(TestCases),
-    TimeLimit = 2,	%% with 1 it fails on some slow machines...
+    TimeLimit = 6,	%% with 1, 2, or 3 it fails on some slow machines...
     io:format(OutputFile,
 	      "%% ATTENTION!\n"
 	      "%% This is an automatically generated file. Do not edit.\n\n"
@@ -173,10 +161,16 @@ run(TestCase, Dir, _OutDir) ->
     %% 		  end, DataFiles),
     %% try
     ok = TestCase:test(),
-    HiPEOpts = try TestCase:hipe_options() catch error:undef -> [] end,
+    HiPEOpts0 = try TestCase:hipe_options() catch error:undef -> [] end,
+    HiPEOpts = HiPEOpts0 ++ hipe_options(),
     {ok, TestCase} = hipe:c(TestCase, HiPEOpts),
     ok = TestCase:test(),
-    case is_llvm_opt_available() of
+    {ok, TestCase} = hipe:c(TestCase, [o1|HiPEOpts]),
+    ok = TestCase:test(),
+    {ok, TestCase} = hipe:c(TestCase, [o0|HiPEOpts]),
+    ok = TestCase:test(),
+    ToLLVM = try TestCase:to_llvm() catch error:undef -> true end,
+    case ToLLVM andalso hipe:erllvm_is_supported() of
 	true ->
 	    {ok, TestCase} = hipe:c(TestCase, [to_llvm|HiPEOpts]),
 	    ok = TestCase:test();
@@ -187,15 +181,5 @@ run(TestCase, Dir, _OutDir) ->
     %% 		      [filename:join(OutDir, D) || D <- DataFiles])
     %% end.
 
-
-%% This function, which is supposed to check whether the right LLVM
-%% infrastructure is available, should be probably written in a better
-%% and more portable way and moved to the hipe application.
-
-is_llvm_opt_available() ->
-    OptStr = os:cmd("opt -version"),
-    SubStr = "LLVM version ", N = length(SubStr),
-    case string:str(OptStr, SubStr) of
-	0 -> false;
-	S -> P = S + N, string:sub_string(OptStr, P, P + 2) >= "3.4"
-    end.
+hipe_options() ->
+    [verify_gcsafe].

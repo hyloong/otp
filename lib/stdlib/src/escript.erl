@@ -1,7 +1,7 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2007-2015. All Rights Reserved.
+%% Copyright Ericsson AB 2007-2019. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -38,7 +38,7 @@
 -record(state, {file         :: file:filename(),
                 module       :: module(),
                 forms_or_bin,
-                source       :: source(),
+                source       :: source() | 'undefined',
                 n_errors     :: non_neg_integer(),
                 mode         :: mode(),
                 exports_main :: boolean(),
@@ -49,9 +49,9 @@
 -type emu_args() :: string().
 
 -record(sections, {type,
-		   shebang  :: shebang(),
-		   comment  :: comment(),
-		   emu_args :: emu_args(),
+		   shebang  :: shebang() | 'undefined',
+		   comment  :: comment() | 'undefined',
+		   emu_args :: emu_args() | 'undefined',
 		   body}).
 
 -record(extract_options, {compile_source}).
@@ -224,8 +224,8 @@ return_sections(S, Bin) ->
 normalize_section(Name, undefined) ->
     {Name, undefined};
 normalize_section(shebang, "#!" ++ Chars) ->
-    Chopped = string:strip(Chars, right, $\n),
-    Stripped = string:strip(Chopped, both),
+    Chopped = string:trim(Chars, trailing, "$\n"),
+    Stripped = string:trim(Chopped, both),
     if
 	Stripped =:= ?SHEBANG ->
 	    {shebang, default};
@@ -233,8 +233,8 @@ normalize_section(shebang, "#!" ++ Chars) ->
 	    {shebang, Stripped}
     end;
 normalize_section(comment, Chars) ->
-    Chopped = string:strip(Chars, right, $\n),
-    Stripped = string:strip(string:strip(Chopped, left, $%), both),
+    Chopped = string:trim(Chars, trailing, "$\n"),
+    Stripped = string:trim(string:trim(Chopped, leading, "$%"), both),
     if
 	Stripped =:= ?COMMENT ->
 	    {comment, default};
@@ -242,8 +242,8 @@ normalize_section(comment, Chars) ->
 	    {comment, Stripped}
     end;
 normalize_section(emu_args, "%%!" ++ Chars) ->
-    Chopped = string:strip(Chars, right, $\n),
-    Stripped = string:strip(Chopped, both),
+    Chopped = string:trim(Chars, trailing, "$\n"),
+    Stripped = string:trim(Chopped, both),
     {emu_args, Stripped};
 normalize_section(Name, Chars) ->
     {Name, Chars}.
@@ -281,11 +281,11 @@ start(EscriptOptions) ->
         end
     catch
         throw:Str ->
-            io:format("escript: ~s\n", [Str]),
+            put_chars(io_lib:format("escript: ~ts\n", [Str])),
             my_halt(127);
-        _:Reason ->
-            io:format("escript: Internal error: ~p\n", [Reason]),
-            io:format("~p\n", [erlang:get_stacktrace()]),
+        _:Reason:Stk ->
+            put_chars(io_lib:format("escript: Internal error: ~tp\n", [Reason])),
+            put_chars(io_lib:format("~tp\n", [Stk])),
             my_halt(127)
     end.
 
@@ -481,46 +481,49 @@ find_first_body_line(Fd, HeaderSz0, LineNo, KeepFirst, Sections) ->
     %% Look for special comment on second line
     Line2 = get_line(Fd),
     {ok, HeaderSz2} = file:position(Fd, cur),
-    case classify_line(Line2) of
-	emu_args ->
-	    %% Skip special comment on second line
-	    Line3 = get_line(Fd),
-	    {HeaderSz2, LineNo + 2, Fd,
-	     Sections#sections{type = guess_type(Line3),
-			       comment = undefined,
-			       emu_args = Line2}};
-	Line2Type ->
-	    %% Look for special comment on third line
-	    Line3 = get_line(Fd),
-	    {ok, HeaderSz3} = file:position(Fd, cur),
-	    Line3Type = classify_line(Line3),
-	    if
-		Line3Type =:= emu_args ->
-		    %% Skip special comment on third line
-		    Line4 = get_line(Fd),
-		    {HeaderSz3, LineNo + 3, Fd,
-		     Sections#sections{type = guess_type(Line4),
-				       comment = Line2,
-				       emu_args = Line3}};
-		Sections#sections.shebang =:= undefined,
-		KeepFirst =:= true ->
-		    %% No shebang. Use the entire file
-		    {HeaderSz0, LineNo, Fd,
-		     Sections#sections{type = guess_type(Line2)}};
-		Sections#sections.shebang =:= undefined ->
-		    %% No shebang. Skip the first line
-		    {HeaderSz1, LineNo, Fd,
-		     Sections#sections{type = guess_type(Line2)}};
-		Line2Type =:= comment ->
-		    %% Skip shebang on first line and comment on second
-		    {HeaderSz2, LineNo + 2, Fd,
-		     Sections#sections{type = guess_type(Line3),
-				       comment = Line2}};
-		true ->
-		    %% Just skip shebang on first line
-		    {HeaderSz1, LineNo + 1, Fd,
-		     Sections#sections{type = guess_type(Line2)}}
-	    end
+    if
+        Sections#sections.shebang =:= undefined,
+        KeepFirst =:= true ->
+            %% No shebang. Use the entire file
+            {HeaderSz0, LineNo, Fd,
+             Sections#sections{type = guess_type(Line2)}};
+        Sections#sections.shebang =:= undefined ->
+            %% No shebang. Skip the first line
+            {HeaderSz1, LineNo, Fd,
+             Sections#sections{type = guess_type(Line2)}};
+        true ->
+            case classify_line(Line2) of
+                emu_args ->
+                    %% Skip special comment on second line
+                    Line3 = get_line(Fd),
+                    {HeaderSz2, LineNo + 2, Fd,
+                     Sections#sections{type = guess_type(Line3),
+                                       comment = undefined,
+                                       emu_args = Line2}};
+                comment ->
+                    %% Look for special comment on third line
+                    Line3 = get_line(Fd),
+                    {ok, HeaderSz3} = file:position(Fd, cur),
+                    Line3Type = classify_line(Line3),
+                    if
+                        Line3Type =:= emu_args ->
+                            %% Skip special comment on third line
+                            Line4 = get_line(Fd),
+                            {HeaderSz3, LineNo + 3, Fd,
+                             Sections#sections{type = guess_type(Line4),
+                                               comment = Line2,
+                                               emu_args = Line3}};
+                        true ->
+                            %% Skip shebang on first line and comment on second
+                            {HeaderSz2, LineNo + 2, Fd,
+                             Sections#sections{type = guess_type(Line3),
+                                               comment = Line2}}
+                    end;
+                _ ->
+                    %% Just skip shebang on first line
+                    {HeaderSz1, LineNo + 1, Fd,
+                     Sections#sections{type = guess_type(Line2)}}
+            end
     end.
 
 classify_line(Line) ->
@@ -626,8 +629,7 @@ parse_source(S, File, Fd, StartLine, HeaderSz, CheckOnly) ->
                     {error, _} ->
                         epp_parse_file2(Epp, S2, [FileForm], OptModRes);
                     {eof, LastLine} ->
-                        Anno = anno(LastLine),
-                        S#state{forms_or_bin = [FileForm, {eof, Anno}]}
+                        S#state{forms_or_bin = [FileForm, {eof, LastLine}]}
                 end,
             ok = epp:close(Epp),
             ok = file:close(Fd),
@@ -725,8 +727,7 @@ epp_parse_file2(Epp, S, Forms, Parsed) ->
                       [S#state.file,Ln,Mod:format_error(Args)]),
             epp_parse_file(Epp, S#state{n_errors = S#state.n_errors + 1}, [Form | Forms]);
         {eof, LastLine} ->
-            Anno = anno(LastLine),
-            S#state{forms_or_bin = lists:reverse([{eof, Anno} | Forms])}
+            S#state{forms_or_bin = lists:reverse([{eof, LastLine} | Forms])}
     end.
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
@@ -757,8 +758,8 @@ run(Module, Args) ->
         Module:main(Args),
         my_halt(0)
     catch
-        Class:Reason ->
-            fatal(format_exception(Class, Reason))
+        Class:Reason:StackTrace ->
+            fatal(format_exception(Class, Reason, StackTrace))
     end.
 
 -spec interpret(_, _, _, _) -> no_return().
@@ -779,7 +780,7 @@ interpret(Forms, HasRecs,  File, Args) ->
 	    false -> Forms;
 	    true  -> erl_expand_records:module(Forms, [])
 	end,
-    Dict = parse_to_dict(Forms2),
+    Dict = parse_to_map(Forms2),
     ArgsA = erl_parse:abstract(Args, 0),
     Anno = a0(),
     Call = {call,Anno,{atom,Anno,main},[ArgsA]},
@@ -791,8 +792,8 @@ interpret(Forms, HasRecs,  File, Args) ->
                                  end}),
         my_halt(0)
     catch
-        Class:Reason ->
-            fatal(format_exception(Class, Reason))
+        Class:Reason:StackTrace ->
+            fatal(format_exception(Class, Reason, StackTrace))
     end.
 
 report_errors(Errors) ->
@@ -823,29 +824,29 @@ format_message(F, [{Mod,E}|Es]) ->
     [M|format_message(F, Es)];
 format_message(_, []) -> [].
 
-parse_to_dict(L) -> parse_to_dict(L, dict:new()).
+parse_to_map(L) -> parse_to_map(L, maps:new()).
 
-parse_to_dict([{function,_,Name,Arity,Clauses}|T], Dict0) ->
-    Dict = dict:store({local, Name,Arity}, Clauses, Dict0),
-    parse_to_dict(T, Dict);
-parse_to_dict([{attribute,_,import,{Mod,Funcs}}|T], Dict0) ->
-    Dict = lists:foldl(fun(I, D) ->
-                               dict:store({remote,I}, Mod, D)
-                       end, Dict0, Funcs),
-    parse_to_dict(T, Dict);
-parse_to_dict([_|T], Dict) ->
-    parse_to_dict(T, Dict);
-parse_to_dict([], Dict) ->
-    Dict.
+parse_to_map([{function,_,Name,Arity,Clauses}|T], Map0) ->
+    Map = maps:put({local, Name,Arity}, Clauses, Map0),
+    parse_to_map(T, Map);
+parse_to_map([{attribute,_,import,{Mod,Funcs}}|T], Map0) ->
+    Map = lists:foldl(fun(I, D) ->
+                              maps:put({remote,I}, Mod, D)
+                       end, Map0, Funcs),
+    parse_to_map(T, Map);
+parse_to_map([_|T], Map) ->
+    parse_to_map(T, Map);
+parse_to_map([], Map) ->
+    Map.
 
 code_handler(local, [file], _, File) ->
     File;
-code_handler(Name, Args, Dict, File) ->
+code_handler(Name, Args, Map, File) ->
     %%io:format("code handler=~p~n",[{Name, Args}]),
     Arity = length(Args),
-    case dict:find({local,Name,Arity}, Dict) of
+    case maps:find({local,Name,Arity}, Map) of
         {ok, Cs} ->
-            LF = {value,fun(I, J) -> code_handler(I, J, Dict, File) end},
+            LF = {value,fun(I, J) -> code_handler(I, J, Map, File) end},
             case erl_eval:match_clause(Cs, Args,erl_eval:new_bindings(),LF) of
                 {Body, Bs} ->
                     eval_exprs(Body, Bs, LF, none, none);
@@ -853,12 +854,12 @@ code_handler(Name, Args, Dict, File) ->
                     erlang:error({function_clause,[{local,Name,Args}]})
             end;
         error ->
-            case dict:find({remote,{Name,Arity}}, Dict) of
+            case maps:find({remote,{Name,Arity}}, Map) of
                 {ok, Mod} ->
                     %% io:format("Calling:~p~n",[{Mod,Name,Args}]),
                     apply(Mod, Name, Args);
                 error ->
-                    io:format("Script does not export ~w/~w\n", [Name,Arity]),
+                    io:format("Script does not export ~tw/~w\n", [Name,Arity]),
                     my_halt(127)
             end
     end.
@@ -871,7 +872,7 @@ eval_exprs([E|Es], Bs0, Lf, Ef, RBs) ->
     {value,_V,Bs} = erl_eval:expr(E, Bs0, Lf, Ef, RBs1),
     eval_exprs(Es, Bs, Lf, Ef, RBs).
 
-format_exception(Class, Reason) ->
+format_exception(Class, Reason, StackTrace) ->
     Enc = encoding(),
     P = case Enc of
             latin1 -> "P";
@@ -880,18 +881,26 @@ format_exception(Class, Reason) ->
     PF = fun(Term, I) ->
                  io_lib:format("~." ++ integer_to_list(I) ++ P, [Term, 50])
          end,
-    StackTrace = erlang:get_stacktrace(),
     StackFun = fun(M, _F, _A) -> (M =:= erl_eval) or (M =:= ?MODULE) end,
-    lib:format_exception(1, Class, Reason, StackTrace, StackFun, PF, Enc).
+    erl_error:format_exception(1, Class, Reason, StackTrace, StackFun, PF, Enc).
 
 encoding() ->
-    [{encoding, Encoding}] = enc(),
-    Encoding.
+    case io:getopts() of
+        {error, _}=_Err ->
+            latin1;
+        Opts ->
+            case lists:keyfind(encoding, 1, Opts) of
+                false -> latin1;
+                {encoding, Encoding} -> Encoding
+            end
+    end.
 
-enc() ->
-    case lists:keyfind(encoding, 1, io:getopts()) of
-        false -> [{encoding,latin1}]; % should never happen
-        Enc -> [Enc]
+put_chars(String) ->
+    try
+        io:put_chars(String)
+    catch
+        _:_ ->
+            erlang:display(lists:flatten(String))
     end.
 
 a0() ->
@@ -906,6 +915,7 @@ anno(L) ->
 fatal(Str) ->
     throw(Str).
 
+-spec my_halt(_) -> no_return().
 my_halt(Reason) ->
     erlang:halt(Reason).
 
@@ -913,8 +923,8 @@ hidden_apply(App, M, F, Args) ->
     try
 	apply(fun() -> M end(), F, Args)
     catch
-	error:undef ->
-	    case erlang:get_stacktrace() of
+	error:undef:StackTrace ->
+	    case StackTrace of
 		[{M,F,Args,_} | _] ->
 		    Arity = length(Args),
 		    Text = io_lib:format("Call to ~w:~w/~w in application ~w failed.\n",

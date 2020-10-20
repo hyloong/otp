@@ -1,7 +1,7 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2003-2013. All Rights Reserved.
+%% Copyright Ericsson AB 2003-2020. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -27,9 +27,9 @@
 -define(privdir, "warnings_SUITE_priv").
 -define(t, test_server).
 -else.
--include_lib("test_server/include/test_server.hrl").
--define(datadir, ?config(data_dir, Conf)).
--define(privdir, ?config(priv_dir, Conf)).
+-include_lib("common_test/include/ct.hrl").
+-define(datadir, proplists:get_value(data_dir, Conf)).
+-define(privdir, proplists:get_value(priv_dir, Conf)).
 -endif.
 
 -export([all/0, suite/0,groups/0,init_per_suite/1, end_per_suite/1, 
@@ -41,24 +41,20 @@
          files/1,effect/1,bin_opt_info/1,bin_construction/1,
 	 comprehensions/1,maps/1,maps_bin_opt_info/1,
          redundant_boolean_clauses/1,
-	 latin1_fallback/1,underscore/1,no_warnings/1]).
-
-% Default timetrap timeout (set in init_per_testcase).
--define(default_timeout, ?t:minutes(2)).
+	 latin1_fallback/1,underscore/1,no_warnings/1,
+	 bit_syntax/1,inlining/1,tuple_calls/1]).
 
 init_per_testcase(_Case, Config) ->
-    ?line Dog = ?t:timetrap(?default_timeout),
-    [{watchdog, Dog} | Config].
+    Config.
 
-end_per_testcase(_Case, Config) ->
-    Dog = ?config(watchdog, Config),
-    test_server:timetrap_cancel(Dog),
+end_per_testcase(_Case, _Config) ->
     ok.
 
-suite() -> [{ct_hooks,[ts_install_cth]}].
+suite() ->
+    [{ct_hooks,[ts_install_cth]},
+     {timetrap,{minutes,2}}].
 
 all() -> 
-    test_lib:recompile(?MODULE),
     [{group,p}].
 
 groups() -> 
@@ -68,9 +64,11 @@ groups() ->
        bin_opt_info,bin_construction,comprehensions,maps,
        maps_bin_opt_info,
        redundant_boolean_clauses,latin1_fallback,
-       underscore,no_warnings]}].
+       underscore,no_warnings,bit_syntax,inlining,
+       tuple_calls]}].
 
 init_per_suite(Config) ->
+    test_lib:recompile(?MODULE),
     Config.
 
 end_per_suite(_Config) ->
@@ -103,7 +101,7 @@ pattern(Config) when is_list(Config) ->
 	    [{2,v3_core,nomatch},
 	     {6,v3_core,nomatch},
 	     {11,v3_core,nomatch} ] }}],
-    ?line [] = run(Config, Ts),
+    [] = run(Config, Ts),
     ok.
 
 pattern2(Config) when is_list(Config) ->
@@ -123,11 +121,11 @@ pattern2(Config) when is_list(Config) ->
     Ts = [{pattern2,
 	   Source,
 	   [nowarn_unused_vars],
-	   {warnings,[{2,sys_core_fold,{nomatch_shadow,1}},
+	   {warnings,[{2,sys_core_fold,{nomatch_shadow,1,{f,1}}},
 		      {4,sys_core_fold,no_clause_match},
 		      {5,sys_core_fold,nomatch_clause_type},
 		      {6,sys_core_fold,nomatch_clause_type}]}}],
-    ?line [] = run(Config, Ts),
+    [] = run(Config, Ts),
 
     %% Disable Core Erlang optimizations. v3_kernel should produce
     %% a warning for the clause that didn't match.
@@ -136,7 +134,7 @@ pattern2(Config) when is_list(Config) ->
 	    [nowarn_unused_vars,no_copt],
 	    {warnings,
 	     [{2,v3_kernel,{nomatch_shadow,1}}]}}],
-    ?line [] = run(Config, Ts2),
+    [] = run(Config, Ts2),
     ok.
 
 pattern3(Config) when is_list(Config) ->
@@ -152,7 +150,7 @@ pattern3(Config) when is_list(Config) ->
 	   [nowarn_unused_vars],
 	   {warnings,
 	    [{4,v3_kernel,{nomatch_shadow,2}}]}}],
-    ?line [] = run(Config, Ts),
+    [] = run(Config, Ts),
 
     ok.
 
@@ -213,7 +211,7 @@ pattern4(Config) when is_list(Config) ->
 	     {23,sys_core_fold,no_clause_match},
 	     {33,sys_core_fold,no_clause_match}
 	    ]}}],
-    ?line [] = run(Config, Ts),
+    [] = run(Config, Ts),
 
     ok.
 
@@ -242,21 +240,9 @@ guard(Config) when is_list(Config) ->
 	     {4,sys_core_fold,nomatch_guard},
 	     {6,sys_core_fold,no_clause_match},
 	     {6,sys_core_fold,nomatch_guard},
-	     {6,sys_core_fold,{eval_failure,badarg}},
-	     {8,sys_core_fold,no_clause_match},
-	     {8,sys_core_fold,nomatch_guard},
-	     {8,sys_core_fold,{eval_failure,badarg}},
-	     {9,sys_core_fold,no_clause_match},
-	     {9,sys_core_fold,nomatch_guard},
-	     {9,sys_core_fold,{eval_failure,badarg}},
-	     {10,sys_core_fold,no_clause_match},
-	     {10,sys_core_fold,nomatch_guard},
-	     {10,sys_core_fold,{eval_failure,badarg}},
-	     {11,sys_core_fold,no_clause_match},
-	     {11,sys_core_fold,nomatch_guard},
-	     {11,sys_core_fold,{eval_failure,badarg}}
+	     {6,sys_core_fold,{eval_failure,badarg}}
 	    ]}}],
-    ?line [] = run(Config, Ts),
+    [] = run(Config, Ts),
 
     ok.
 
@@ -321,7 +307,7 @@ bool_cases(Config) when is_list(Config) ->
 	    [{6,sys_core_fold,nomatch_shadow},
 	     {13,sys_core_fold,nomatch_shadow},
 	     {18,sys_core_fold,nomatch_clause_type} ]} }],
-    ?line [] = run(Config, Ts),
+    [] = run(Config, Ts),
     ok.
 
 bad_apply(Config) when is_list(Config) ->
@@ -340,11 +326,11 @@ bad_apply(Config) when is_list(Config) ->
 	     {4,v3_kernel,bad_call},
 	     {5,v3_kernel,bad_call},
 	     {6,v3_kernel,bad_call}]}}],
-    ?line [] = run(Config, Ts),
+    [] = run(Config, Ts),
 
     %% Also verify that the generated code generates the correct error.
-    ?line try erlang:42() of
-	      _ -> ?line ?t:fail()
+    try erlang:42() of
+	      _ -> ct:fail(should_fail)
 	  catch
 	      error:badarg -> ok
 	  end,
@@ -368,7 +354,7 @@ files(Config) when is_list(Config) ->
             [{"file1",[{17,sys_core_fold,{eval_failure,badarith}}]},
              {"file2",[{10,sys_core_fold,{eval_failure,badarith}}]}]}}],
 
-    ?line [] = run(Config, Ts),
+    [] = run(Config, Ts),
     ok.
 
 %% Test warnings for term construction and BIF calls in effect context.
@@ -514,7 +500,7 @@ effect(Config) when is_list(Config) ->
 		      {28,sys_core_fold,useless_building},
 		      {36,sys_core_fold,{no_effect,{erlang,'=:=',2}}},
 		      {38,sys_core_fold,{no_effect,{erlang,get_cookie,0}}}]}}],
-    ?line [] = run(Config, Ts),
+    [] = run(Config, Ts),
     ok.
 
 bin_opt_info(Config) when is_list(Config) ->
@@ -526,25 +512,43 @@ bin_opt_info(Config) when is_list(Config) ->
 	         <<>> -> ok
              end.
 
+             %% We use a tail in a BIF instruction, remote call, function
+             %% return, and an optimizable tail call for better coverage.
+             t2(<<A,B,T/bytes>>) ->
+                 if
+                     A > B -> t2(T);
+                     A =< B -> T
+                 end;
+             t2(<<_,T/bytes>>) when byte_size(T) < 4 ->
+                 foo;
              t2(<<_,T/bytes>>) ->
-               split_binary(T, 4).
+                 split_binary(T, 4).
            ">>,
-    Ts1 = [{bsm1,
-	    Code,
-	    [bin_opt_info],
-	    {warnings,
-	     [{4,sys_core_fold,orig_bin_var_used_in_guard},
-	      {5,beam_bsm,{no_bin_opt,{{t1,1},no_suitable_bs_start_match}}},
-	      {9,beam_bsm,{no_bin_opt,
-			   {binary_used_in,{extfunc,erlang,split_binary,2}}}} ]}}],
-    ?line [] = run(Config, Ts1),
+
+    Ws = (catch run_test(Config, Code, [bin_opt_info])),
+
+    %% This is an inexact match since the pass reports exact instructions as
+    %% part of the warnings, which may include annotations that vary from run
+    %% to run.
+    {warnings,
+     [{5,beam_ssa_bsm,{unsuitable_call,
+                        {{b_local,{b_literal,t1},1},
+                         {used_before_match,
+                            {b_set,_,_,{bif,byte_size},[_]}}}}},
+      {5,beam_ssa_bsm,{binary_created,_,_}},
+      {11,beam_ssa_bsm,{binary_created,_,_}}, %% A =< B -> T
+      {13,beam_ssa_bsm,context_reused},       %% A > B -> t2(T);
+      {16,beam_ssa_bsm,{binary_created,_,_}}, %% when byte_size(T) < 4 ->
+      {19,beam_ssa_bsm,{remote_call,
+                         {b_remote,
+                          {b_literal,erlang},
+                           {b_literal,split_binary},2}}},
+      {19,beam_ssa_bsm,{binary_created,_,_}}  %% split_binary(T, 4)
+     ]} = Ws,
 
     %% For coverage: don't give the bin_opt_info option.
-    Ts2 = [{bsm2,
-	    Code,
-	    [],
-	    []}],
-    ?line [] = run(Config, Ts2),
+    [] = (catch run_test(Config, Code, [])),
+
     ok.
 
 bin_construction(Config) when is_list(Config) ->
@@ -561,7 +565,7 @@ bin_construction(Config) when is_list(Config) ->
 	   [],
 	   {warnings,[{4,sys_core_fold,embedded_binary_size},
 		      {8,sys_core_fold,{embedded_unit,8,28}}]}}],
-    ?line [] = run(Config, Ts),
+    [] = run(Config, Ts),
     
     ok.
 
@@ -618,8 +622,8 @@ maps(Config) when is_list(Config) ->
 		 ok.
            ">>,
            [],
-	   {warnings,[{3,v3_core,badmap}]}},
-	   {ok_map_literal_key,
+	   {warnings,[{3,sys_core_fold,{eval_failure,badmap}}]}},
+           {ok_map_literal_key,
            <<"
              t() ->
 		 V = id(1),
@@ -632,7 +636,112 @@ maps(Config) when is_list(Config) ->
 	     id(I) -> I.
            ">>,
            [],
-	   []}],
+	   []},
+           {repeated_keys1,
+           <<"
+             foo1() ->
+                 #{a=>1,
+                   b=> 2,
+                   a=>3}.
+             
+             bar1(M) ->
+                 M#{a=>1, b=> 2, a:=3}.
+             
+             baz1(M) ->
+                 M#{a=>1, b=> 2, a:=3}.
+             
+             foo2() ->
+                 #{\"a\"=>1, \"b\"=> 2, \"a\"=>3}.
+             
+             bar2(M) ->
+                 M#{\"a\"=>1, \"b\"=> 2, \"a\":=3}.
+             
+             baz2(M) ->
+                 M#{\"a\"=>1, \"b\"=> 2, \"a\":=3}.
+             
+             foo3() ->
+                 #{\"a\"=>1,
+                   \"b\"=> 2,
+                   \"a\"=>3}.
+             
+             bar3(M) ->
+                 M#{\"a\"=>1, \"b\"=> 2, \"a\":=3}.
+             
+             baz3(M) ->
+                 M#{<<\"a\">>=>1, <<\"b\">>=> 2, <<\"a\">>:=3}.
+           ">>,
+           [],
+           {warnings,[{3,v3_core,{map_key_repeated,a}},
+                      {8,v3_core,{map_key_repeated,a}},
+                      {11,v3_core,{map_key_repeated,a}},
+                      {14,v3_core,{map_key_repeated,"a"}},
+                      {17,v3_core,{map_key_repeated,"a"}},
+                      {20,v3_core,{map_key_repeated,"a"}},
+                      {23,v3_core,{map_key_repeated,"a"}},
+                      {28,v3_core,{map_key_repeated,"a"}},
+                      {31,v3_core,{map_key_repeated,<<"a">>}}]}},
+           {repeated_keys2,
+           <<"
+             foo4(K) ->
+                 #{\"a\"=>1, K => 1, \"b\"=> 2, \"a\"=>3, K=>2}.
+             
+             bar4(M,K) ->
+                 M#{a=>1, K =>1, b=> 2, a:=3, K=>2}.
+             
+             baz4(M,K) ->
+                 M#{<<\"a\">>=>1,
+                     K => 1, <<\"b\">>=> 2,
+                     <<\"a\">>:=3, K=>2}.
+             
+             foo5(K) ->
+                 #{{\"a\",1}=>1, K => 1, \"b\"=> 2, {\"a\",1}=>3, K=>2}.
+             
+             bar5(M,K) ->
+                 M#{{\"a\",<<\"b\">>}=>1, K =>1,
+                    \"b\"=> 2, {\"a\",<<\"b\">>}:=3, K=>2}.
+             
+             baz5(M,K) ->
+                 M#{{<<\"a\">>,1}=>1, K => 1,
+                    <<\"b\">>=> 2, {<<\"a\">>,1}:=3,K=>2}.
+             
+             foo6(K) ->
+                 #{#{\"a\"=>1}=>1, K => 1, \"b\"=> 2, #{\"a\"=>1}=>3, K=>2}.
+             
+             bar6(M,K) ->
+                 M#{#{\"a\"=><<\"b\">>}=>1, K =>1,
+                    \"b\"=> 2, #{\"a\"=><<\"b\">>}:=3, K=>2}.
+             
+             baz6(M,K) ->
+                 M#{#{<<\"a\">>=>1}=>1,
+                    K => 1,
+                    <<\"b\">>=> 2,
+                    #{<<\"a\">>=>1}:=3,K=>2}.
+             
+             foo7(K) ->
+                 M1 = #{#{\"a\"=>1}=>1, K => 1, \"b\"=> 2},
+                 M1#{#{\"a\"=>1}=>3, K=>2}.
+             
+             bar7(M,K) ->
+                 M1 = M#{#{\"a\"=><<\"b\">>}=>1, K =>1, \"b\"=> 2},
+                 M1#{#{\"a\"=><<\"b\">>}:=3, K=>2}.
+             
+             baz7(M,K) ->
+                 M1 = M#{#{<<\"a\">>=>1}=>1,
+                    K => 1,
+                    <<\"b\">>=> 2},
+                 M1#{#{<<\"a\">>=>1}:=3,K=>2}.
+          ">>,
+           [],
+           {warnings,[{3,v3_core,{map_key_repeated,"a"}},
+                      {6,v3_core,{map_key_repeated,a}},
+                      {9,v3_core,{map_key_repeated,<<"a">>}},
+                      {14,v3_core,{map_key_repeated,{"a",1}}},
+                      {17,v3_core,{map_key_repeated,{"a",<<"b">>}}},
+                      {21,v3_core,{map_key_repeated,{<<"a">>,1}}},
+                      {25,v3_core,{map_key_repeated,#{"a" => 1}}},
+                      {28,v3_core,{map_key_repeated,#{"a" => <<"b">>}}},
+                      {32,v3_core,{map_key_repeated,#{<<"a">> => 1}}}]}}
+         ],
     run(Config, Ts),
     ok.
 
@@ -645,7 +754,7 @@ maps_bin_opt_info(Config) when is_list(Config) ->
                  M.
            ">>,
            [bin_opt_info],
-           {warnings,[{2,beam_bsm,bin_opt}]}}],
+           {warnings,[{3,beam_ssa_bsm,context_reused}]}}],
     [] = run(Config, Ts),
     ok.
 
@@ -678,7 +787,7 @@ latin1_fallback(Conf) when is_list(Conf) ->
               ">>,
 	    [],
 	    {warnings,[{1,compile,reparsing_invalid_unicode},
-		       {3,sys_core_fold,{nomatch_shadow,2}}]}}],
+		       {3,sys_core_fold,{nomatch_shadow,2,{t,1}}}]}}],
     [] = run(Conf, Ts1),
 
     Ts2 = [{latin1_fallback2,
@@ -783,6 +892,88 @@ no_warnings(Config) when is_list(Config) ->
     run(Config, Ts),
     ok.
 
+bit_syntax(Config) ->
+    Ts = [{?FUNCTION_NAME,
+	   <<"a(<<-1>>) -> ok;
+              a(<<1023>>) -> ok;
+              a(<<777/signed>>) -> ok;
+              a(<<a/binary>>) -> ok;
+              a(<<a/integer>>) -> ok;
+              a(<<a/float>>) -> ok;
+              a(<<a/utf8>>) -> ok;
+              a(<<a/utf16>>) -> ok;
+              a(<<a/utf32>>) -> ok;
+              a(<<a/utf32>>) -> ok.
+              b(Bin) -> Sz = bad, <<42:Sz>> = Bin.
+              c(Sz, Bin) ->
+                case Bin of
+                  <<-42:Sz/unsigned>> -> ok;
+                  <<42:Sz/float>> -> ok;
+                  <<42:Sz/binary>> -> ok
+                end.
+             ">>,
+	   [],
+	   {warnings,[{1,sys_core_fold,no_clause_match},
+		      {1,sys_core_fold,{nomatch_bit_syntax_unsigned,-1}},
+		      {2,sys_core_fold,{nomatch_bit_syntax_truncated,
+					unsigned,1023,8}},
+		      {3,sys_core_fold,{nomatch_bit_syntax_truncated,
+					signed,777,8}},
+		      {4,sys_core_fold,{nomatch_bit_syntax_type,a,binary}},
+		      {5,sys_core_fold,{nomatch_bit_syntax_type,a,integer}},
+		      {6,sys_core_fold,{nomatch_bit_syntax_type,a,float}},
+		      {7,sys_core_fold,{nomatch_bit_syntax_type,a,utf8}},
+		      {8,sys_core_fold,{nomatch_bit_syntax_type,a,utf16}},
+		      {9,sys_core_fold,{nomatch_bit_syntax_type,a,utf32}},
+		      {10,sys_core_fold,{nomatch_bit_syntax_type,a,utf32}},
+		      {11,sys_core_fold,no_clause_match},
+		      {11,sys_core_fold,{nomatch_bit_syntax_size,bad}},
+		      {14,sys_core_fold,{nomatch_bit_syntax_unsigned,-42}},
+		      {16,sys_core_fold,{nomatch_bit_syntax_type,42,binary}}
+		     ]}
+	  }],
+    run(Config, Ts),
+    ok.
+
+inlining(Config) ->
+    %% Make sure that no spurious warnings are generated
+    %% when inlining.
+    Ts = [{inlining_1,
+           <<"-compile(inline).
+              compute1(X) -> add(X, 0).
+              add(1, 0) -> 1;
+              add(1, Y) -> 1 + Y;
+              add(X, Y) -> X + Y.
+           ">>,
+           [],
+           []},
+	  {inlining_2,
+           <<"-compile({inline,[add/2]}).
+              compute1(X) -> add(X, 0).
+              add(1, 0) -> 1;
+              add(1, Y) -> 1 + Y;
+              add(X, Y) -> X + Y.
+           ">>,
+           [],
+           []}
+	 ],
+    run(Config, Ts),
+    ok.
+
+tuple_calls(Config) ->
+    %% Make sure that no spurious warnings are generated.
+    Ts = [{inlining_1,
+           <<"-compile(tuple_calls).
+              dispatch(X) ->
+                (list_to_atom(\"prefix_\" ++
+                atom_to_list(suffix))):doit(X).
+           ">>,
+           [],
+           []}
+	 ],
+    run(Config, Ts),
+    ok.
+
 %%%
 %%% End of test cases.
 %%%
@@ -793,46 +984,44 @@ run(Config, Tests) ->
                     E -> 
                         BadL;
                     Bad -> 
-                        ?t:format("~nTest ~p failed. Expected~n  ~p~n"
+                        io:format("~nTest ~p failed. Expected~n  ~p~n"
                                   "but got~n  ~p~n", [N, E, Bad]),
 			fail()
                 end
         end,
     lists:foldl(F, [], Tests).
 
-
 %% Compiles a test module and returns the list of errors and warnings.
 
 run_test(Conf, Test0, Warnings) ->
     Module = "warnings_"++test_lib:uniq(),
     Filename = Module ++ ".erl",
-    ?line DataDir = ?privdir,
+    DataDir = ?privdir,
     Test = ["-module(", Module, "). ", Test0],
-    ?line File = filename:join(DataDir, Filename),
-    ?line Opts = [binary,export_all,return|Warnings],
-    ?line ok = file:write_file(File, Test),
+    File = filename:join(DataDir, Filename),
+    Opts = [binary,export_all,return|Warnings],
+    ok = file:write_file(File, Test),
 
     %% Compile once just to print all warnings.
-    ?line compile:file(File, [binary,export_all,report|Warnings]),
+    compile:file(File, [binary,export_all,report|Warnings]),
 
     %% Test result of compilation.
-    ?line Res = case compile:file(File, Opts) of
-		    {ok, _M, Bin, []} when is_binary(Bin) ->
-			[];
-		    {ok, _M, Bin, Ws0} when is_binary(Bin) ->
-			%% We are not interested in warnings from
-			%% erl_lint here.
-			WsL = [{F,[W || {_,Mod,_}=W <- Ws, 
-					Mod =/= erl_lint]} ||
-				  {F,Ws} <- Ws0],
-                        case WsL of 
-                            [{_File,Ws}] -> {warnings, Ws};
-                            _ -> list_to_tuple([warnings, WsL])
-                        end
-		end,
+    Res = case compile:file(File, Opts) of
+	      {ok, _M, Bin, []} when is_binary(Bin) ->
+		  [];
+	      {ok, _M, Bin, Ws0} when is_binary(Bin) ->
+		  %% We are not interested in warnings from
+		  %% erl_lint here.
+		  WsL = [{F,[W || {_,Mod,_}=W <- Ws,
+				  Mod =/= erl_lint]} ||
+			    {F,Ws} <- Ws0],
+		  case WsL of
+		      [{_File,Ws}] -> {warnings, Ws};
+		      _ -> list_to_tuple([warnings, WsL])
+		  end
+	  end,
     file:delete(File),
     Res.
 
 fail() ->
-    io:format("failed~n"),
-    ?t:fail().
+    ct:fail(failed).

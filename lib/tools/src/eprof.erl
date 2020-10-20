@@ -1,7 +1,7 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 1996-2013. All Rights Reserved.
+%% Copyright Ericsson AB 1996-2018. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -26,11 +26,11 @@
 
 -export([start/0,
 	 stop/0,
-	 dump/0,
+	 dump/0, dump_data/0,
 	 start_profiling/1, start_profiling/2, start_profiling/3,
-	 profile/1, profile/2, profile/3, profile/4, profile/5,
+	 profile/1, profile/2, profile/3, profile/4, profile/5, profile/6,
 	 stop_profiling/0,
-	 analyze/0, analyze/1, analyze/2,
+	 analyze/0, analyze/1, analyze/2, analyze/4,
 	 log/1]).
 
 %% Internal exports 
@@ -74,7 +74,6 @@
 start() -> gen_server:start({local, ?MODULE}, ?MODULE, [], []).
 stop()  -> gen_server:call(?MODULE, stop, infinity).
 
-
 analyze() ->
     analyze(procs).
 
@@ -112,11 +111,14 @@ profile(Rootset, M, F, A, Pattern) when is_list(Rootset), is_atom(M), is_atom(F)
 
 %% Returns when M:F/A has terminated
 profile(Rootset, M, F, A, Pattern, Options) ->
-    start(),
+    ok = start_internal(),
     gen_server:call(?MODULE, {profile_start, Rootset, Pattern, {M,F,A}, Options}, infinity).
 
 dump() -> 
     gen_server:call(?MODULE, dump, infinity).
+
+dump_data() ->
+    gen_server:call(?MODULE, dump_data, infinity).
 
 log(File) ->
     gen_server:call(?MODULE, {logfile, File}, infinity).
@@ -127,7 +129,7 @@ start_profiling(Rootset) ->
 start_profiling(Rootset, Pattern) ->
     start_profiling(Rootset, Pattern, ?default_options).
 start_profiling(Rootset, Pattern, Options) ->
-    start(),
+    ok = start_internal(),
     gen_server:call(?MODULE, {profile_start, Rootset, Pattern, undefined, Options}, infinity).
 
 stop_profiling() ->
@@ -152,22 +154,18 @@ init([]) ->
 
 %% analyze
 
-handle_call({analyze, _, _}, _, #state{ bpd = #bpd{ p = {0,nil}, us = 0, n = 0} = Bpd } = S) when is_record(Bpd, bpd) ->
+handle_call(
+  {analyze, _, _}, _,
+  #state{ bpd = #bpd{ p = {0,nil}, us = 0, n = 0 } } = S) ->
     {reply, nothing_to_analyze, S};
 
-handle_call({analyze, procs, Opts}, _, #state{ bpd = #bpd{ p = Ps, us = Tus} = Bpd, fd = Fd} = S) when is_record(Bpd, bpd) ->
-    lists:foreach(fun
-	    ({Pid, Mfas}) ->
-		{Pn, Pus} =  sum_bp_total_n_us(Mfas),
-		format(Fd, "~n****** Process ~w    -- ~s % of profiled time *** ~n", [Pid, s("~.2f", [100.0*divide(Pus,Tus)])]),
-		print_bp_mfa(Mfas, {Pn,Pus}, Fd, Opts),
-		ok
-	end, gb_trees:to_list(Ps)),
-    {reply, ok, S};
+handle_call({analyze, procs, Opts}, _, #state{ bpd = Bpd, fd = Fd } = S)
+  when is_record(Bpd, bpd) ->
+    {reply, analyze(Fd, procs, Opts, Bpd), S};
 
-handle_call({analyze, total, Opts}, _, #state{ bpd = #bpd{ mfa = Mfas, n = Tn, us = Tus} = Bpd, fd = Fd} = S) when is_record(Bpd, bpd) ->
-    print_bp_mfa(Mfas, {Tn, Tus}, Fd, Opts),
-    {reply, ok, S};
+handle_call({analyze, total, Opts}, _, #state{ bpd = Bpd, fd = Fd } = S)
+  when is_record(Bpd, bpd) ->
+    {reply, analyze(Fd, total, Opts, Bpd), S};
 
 handle_call({analyze, Type, _Opts}, _, S) ->
     {reply, {error, {undefined, Type}}, S};
@@ -247,19 +245,23 @@ handle_call(profile_stop, _From, #state{ profiling = true } = S) ->
 
 %% logfile
 handle_call({logfile, File}, _From, #state{ fd = OldFd } = S) ->
-    case file:open(File, [write]) of
+    case file:open(File, [write, {encoding, utf8}]) of
 	{ok, Fd} ->
 	    case OldFd of
 		undefined -> ok;
-		OldFd -> file:close(OldFd)
+		OldFd -> ok = file:close(OldFd)
 	    end,
-	    {reply, ok, S#state{ fd = Fd}};
+	    {reply, ok, S#state{fd = Fd}};
 	Error ->
 	    {reply, Error, S}
     end;
 
 handle_call(dump, _From, #state{ bpd = Bpd } = S) when is_record(Bpd, bpd) ->
     {reply, gb_trees:to_list(Bpd#bpd.p), S};
+
+handle_call(dump_data, _, #state{ bpd = #bpd{} = Bpd } = S)
+  when is_record(Bpd, bpd) ->
+    {reply, Bpd, S};
 
 handle_call(stop, _FromTag, S) ->
     {stop, normal, stopped, S}.
@@ -396,7 +398,7 @@ collect_bpd() ->
     collect_bpd([M || M <- [element(1, Mi) || Mi <- code:all_loaded()], M =/= ?MODULE]).
 
 collect_bpd(Ms) when is_list(Ms) ->
-    collect_bpdf(collect_mfas(Ms) ++ erlang:system_info(snifs)).
+    collect_bpdf(collect_mfas(Ms)).
 
 collect_mfas(Ms) ->
     lists:foldl(fun
@@ -439,6 +441,23 @@ collect_bpdfp(Mfa, Tree, Data) ->
 	    {PTno + Ni, PTuso + Time, Ti1}
     end, {0,0, Tree}, Data).
 
+
+
+analyze(Fd, procs, Opts, #bpd{ p = Ps, us = Tus }) ->
+    lists:foreach(
+      fun
+          ({Pid, Mfas}) ->
+              {Pn, Pus} =  sum_bp_total_n_us(Mfas),
+              format(
+                Fd,
+                "~n****** Process ~w    -- ~s % of profiled time *** ~n",
+                [Pid, s("~.2f", [100.0*divide(Pus, Tus)])]),
+              print_bp_mfa(Mfas, {Pn,Pus}, Fd, Opts),
+              ok
+      end, gb_trees:to_list(Ps));
+analyze(Fd, total, Opts, #bpd{ mfa = Mfas, n = Tn, us = Tus } ) ->
+    print_bp_mfa(Mfas, {Tn, Tus}, Fd, Opts).
+
 %% manipulators
 sort_mfa(Bpfs, mfa) when is_list(Bpfs) ->
     lists:sort(fun
@@ -479,11 +498,11 @@ string_bp_mfa([{Mfa, {Count, Time}}|Mfas], Tus, {MfaW, CountW, PercW, TimeW, TpC
 	Stpc   = s("~.2f", [divide(Time,Count)]),
 
 	string_bp_mfa(Mfas, Tus, {
-		erlang:max(MfaW,  length(Smfa)),
-		erlang:max(CountW,length(Scount)),
-		erlang:max(PercW, length(Sperc)),
-		erlang:max(TimeW, length(Stime)),
-		erlang:max(TpCW,  length(Stpc))
+		erlang:max(MfaW,  string:length(Smfa)),
+		erlang:max(CountW,string:length(Scount)),
+		erlang:max(PercW, string:length(Sperc)),
+		erlang:max(TimeW, string:length(Stime)),
+		erlang:max(TpCW,  string:length(Stpc))
 	    }, [[Smfa, Scount, Sperc, Stime, Stpc] | Strings]).
 
 print_bp_mfa(Mfas, {Tn, Tus}, Fd, Opts) ->
@@ -492,11 +511,11 @@ print_bp_mfa(Mfas, {Tn, Tus}, Fd, Opts) ->
     TnStr    = s(Tn),
     TusStr   = s(Tus),
     TuspcStr = s("~.2f", [divide(Tus,Tn)]),
-    Ws = {erlang:max(length("FUNCTION"), MfaW),
-          lists:max([length("CALLS"), CountW, length(TnStr)]),
-          erlang:max(length("      %"), PercW),
-          lists:max([length("TIME"), TimeW, length(TusStr)]),
-          lists:max([length("uS / CALLS"), TpCW, length(TuspcStr)])},
+    Ws = {erlang:max(string:length("FUNCTION"), MfaW),
+          lists:max([string:length("CALLS"), CountW, string:length(TnStr)]),
+          erlang:max(string:length("      %"), PercW),
+          lists:max([string:length("TIME"), TimeW, string:length(TusStr)]),
+          lists:max([string:length("uS / CALLS"), TpCW, string:length(TuspcStr)])},
     format(Fd, Ws, ["FUNCTION", "CALLS", "      %", "TIME", "uS / CALLS"]),
     format(Fd, Ws, ["--------", "-----", "-------", "----", "----------"]),
     lists:foreach(fun (String) -> format(Fd, Ws, String) end, Strs),
@@ -504,13 +523,13 @@ print_bp_mfa(Mfas, {Tn, Tus}, Fd, Opts) ->
     format(Fd, Ws, ["Total:", TnStr, "100.00%", TusStr, TuspcStr]),
     ok.
 
-s({M,F,A}) -> s("~w:~w/~w",[M,F,A]);
-s(Term) -> s("~p", [Term]).
+s({M,F,A}) -> s("~w:~tw/~w",[M,F,A]);
+s(Term) -> s("~tp", [Term]).
 s(Format, Terms) -> lists:flatten(io_lib:format(Format, Terms)).
 
 
 format(Fd, {MfaW, CountW, PercW, TimeW, TpCW}, Strings) ->
-    format(Fd, s("~~.~ps  ~~~ps  ~~~ps  ~~~ps  [~~~ps]~~n", [MfaW, CountW, PercW, TimeW, TpCW]), Strings);
+    format(Fd, s("~~.~wts  ~~~ws  ~~~ws  ~~~ws  [~~~ws]~~n", [MfaW, CountW, PercW, TimeW, TpCW]), Strings);
 format(undefined, Format, Strings) ->
     io:format(Format, Strings),
     ok;
@@ -521,3 +540,10 @@ format(Fd, Format, Strings) ->
 
 divide(_,0) -> 0.0;
 divide(T,N) -> T/N.
+
+start_internal() ->
+    case start() of
+        {ok, _} -> ok;
+        {error, {already_started,_}} -> ok;
+        Error -> Error
+    end.

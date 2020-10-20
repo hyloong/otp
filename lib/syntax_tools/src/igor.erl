@@ -1,18 +1,23 @@
 %% =====================================================================
-%% This library is free software; you can redistribute it and/or modify
-%% it under the terms of the GNU Lesser General Public License as
-%% published by the Free Software Foundation; either version 2 of the
-%% License, or (at your option) any later version.
+%% Licensed under the Apache License, Version 2.0 (the "License"); you may
+%% not use this file except in compliance with the License. You may obtain
+%% a copy of the License at <http://www.apache.org/licenses/LICENSE-2.0>
 %%
-%% This library is distributed in the hope that it will be useful, but
-%% WITHOUT ANY WARRANTY; without even the implied warranty of
-%% MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
-%% Lesser General Public License for more details.
+%% Unless required by applicable law or agreed to in writing, software
+%% distributed under the License is distributed on an "AS IS" BASIS,
+%% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+%% See the License for the specific language governing permissions and
+%% limitations under the License.
 %%
-%% You should have received a copy of the GNU Lesser General Public
-%% License along with this library; if not, write to the Free Software
-%% Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307
-%% USA
+%% Alternatively, you may use this file under the terms of the GNU Lesser
+%% General Public License (the "LGPL") as published by the Free Software
+%% Foundation; either version 2.1, or (at your option) any later version.
+%% If you wish to allow use of your version of this file only under the
+%% terms of the LGPL, you should delete the provisions above and replace
+%% them with the notice and other provisions required by the LGPL; see
+%% <http://www.gnu.org/licenses/>. If you do not delete the provisions
+%% above, a recipient may use your version of this file under the terms of
+%% either the Apache License or the LGPL.
 %%
 %% @copyright 1998-2014 Richard Carlsson
 %% @author Richard Carlsson <carlsson.richard@gmail.com>
@@ -151,7 +156,8 @@ default_printer(Tree, Options) ->
 %% @spec parse_transform(Forms::[syntaxTree()], Options::[term()]) ->
 %%           [syntaxTree()]
 %%
-%%         syntaxTree() = erl_syntax:syntaxTree()
+%% @type syntaxTree() = erl_syntax:syntaxTree(). An abstract syntax
+%% tree. See the {@link erl_syntax} module for details.
 %%
 %% @doc Allows Igor to work as a component of the Erlang compiler.
 %% Including the term `{parse_transform, igor}' in the
@@ -212,7 +218,7 @@ merge(Name, Files) ->
 %% @spec merge(Name::atom(), Files::[filename()], Options::[term()]) ->
 %%           [filename()]
 %%
-%%	    filename() = file:filename()
+%% @type filename() = file:filename()
 %%
 %% @doc Merges source code files to a single file. `Name'
 %% specifies the name of the resulting module - not the name of the
@@ -367,6 +373,7 @@ merge_files(Name, Files, Options) ->
 %% @spec merge_files(Name::atom(), Sources::[Forms],
 %%                   Files::[filename()], Options::[term()]) ->
 %%           {syntaxTree(), [stubDescriptor()]}
+%%
 %%     Forms = syntaxTree() | [syntaxTree()]
 %%
 %% @doc Merges source code files and syntax trees to a single syntax
@@ -410,7 +417,7 @@ merge_files(Name, Files, Options) ->
 %%
 %%     <dd>Specifies a list of rules for associating object files with
 %%     source files, to be passed to the function
-%%     `filename:find_src/2'. This can be used to change the
+%%     `filelib:find_source/2'. This can be used to change the
 %%     way Igor looks for source files. If this option is not specified,
 %%     the default system rules are used. The first occurrence of this
 %%     option completely overrides any later in the option list.</dd>
@@ -455,7 +462,7 @@ merge_files(Name, Files, Options) ->
 %% @see merge/3
 %% @see merge_files/3
 %% @see merge_sources/3
-%% @see //stdlib/filename:find_src/2
+%% @see //stdlib/filelib:find_source/2
 %% @see epp_dodger
 
 -spec merge_files(atom(), erl_syntax:forms(), [file:filename()], [option()]) ->
@@ -653,7 +660,7 @@ merge_files1(Files, Opts) ->
 %% transitions), code replacement is expected to be detected. Then, if
 %% we in the merged code do not check at these points if the
 %% <em>target</em> module (the result of the merge) has been replaced,
-%% we can not be sure in general that we will be able to do code
+%% we cannot be sure in general that we will be able to do code
 %% replacement of the merged state machine - it could run forever
 %% without detecting the code change. Therefore, all such calls must
 %% remain remote-calls (detecting code changes), but may call the target
@@ -827,7 +834,7 @@ merge_sources_1(Name, Modules, Trees, Opts) ->
 		       dict:from_list(Rs);
 		   false ->
 		       report_error("bad value for `redirect' option: "
-				    "~P.",
+				    "~tP.",
 				    [Rs, 10]),
 		       exit(error)
 	       end,
@@ -1062,7 +1069,7 @@ filter_forms_2(Forms, Env) ->
 		    comment -> kill;
 		    _ ->
 			report_error("invalid value for option "
-				     "`file_attributes': ~w.",
+				     "`file_attributes': ~tw.",
 				     [FileAttrsOpt]),
 			exit(error)
 		end,
@@ -1173,7 +1180,7 @@ merge_namespaces(Modules, Env) ->
 	[] ->
 	    ok;
 	Fs ->
-	    report_warning("interface functions renamed:\n\t~p.", [Fs])
+	    report_warning("interface functions renamed:\n\t~tp.", [Fs])
     end,
     {M4, Acc2} = merge_namespaces_1(M2, Acc1),
     Ms = M3 ++ M4,
@@ -1594,10 +1601,11 @@ alias_expansions_2(Modules, Table) ->
 	       preserved  :: boolean(),
 	       no_headers :: boolean(),
 	       notes      :: notes(),
-	       map        :: map_fun(),
+	       map        :: map_fun() | 'undefined',
 	       renaming   :: fun((atom()) -> map_fun()),
 	       expand     :: dict:dict({atom(), integer()},
-                                       {atom(), {atom(), integer()}}),
+                                       {atom(), {atom(), integer()}})
+                           | 'undefined',
 	       redirect	  :: dict:dict(atom(), atom())
 	      }).
 
@@ -1770,7 +1778,7 @@ transform_function(T, Env, St) ->
     {maybe_modified(V, T1, 2, Text, Env), St1}.
 
 renaming_note(Name) ->
-    [lists:flatten(io_lib:fwrite("renamed function to `~w'",
+    [lists:flatten(io_lib:fwrite("renamed function to `~tw'",
 				 [Name]))].
 
 rename_atom(Node, Atom) ->
@@ -2480,7 +2488,7 @@ rename(Files, Renamings, Opts) ->
 	       true ->
 		   dict:from_list(Renamings);
 	       false ->
-		   report_error("bad module renaming: ~P.",
+		   report_error("bad module renaming: ~tP.",
 				[Renamings, 10]),
 		   exit(error)
 	   end,
@@ -2611,6 +2619,19 @@ get_module_info(Forms) ->
 fold_record_fields(Rs) ->
     [{N, [fold_record_field(F) || F <- Fs]} || {N, Fs} <- Rs].
 
+fold_record_field({_Name, {none, _Type}} = None) ->
+    None;
+fold_record_field({Name, {F, Type}}) ->
+    case erl_syntax:is_literal(F) of
+	true ->
+	    {Name, {value, erl_syntax:concrete(F)}, Type};
+	false ->
+	    %% The default value for the field is not a constant, so we
+	    %% represent it by a hash value instead. (We don't want to
+	    %% do this in the general case.)
+	    {Name, {hash, erlang:phash(F, 16#ffffff)}, Type}
+    end;
+%% The following two clauses handle code before Erlang/OTP 19.0.
 fold_record_field({_Name, none} = None) ->
     None;
 fold_record_field({Name, F}) ->
@@ -2651,7 +2672,7 @@ error_text(D, Name) ->
     end.
 
 error_text_1(D, Name) ->
-    io_lib:fwrite("error: `~w', ~P.", [Name, D, 15]).
+    io_lib:fwrite("error: `~w', ~tP.", [Name, D, 15]).
 
 check_records(Rs, Name) ->
     case duplicates([N || {N, _} <- Rs]) of
@@ -2659,7 +2680,7 @@ check_records(Rs, Name) ->
 	    ok;
 	Ns ->
 	    report_error("in module `~w': "
-			 "multiply defined records: ~p.",
+			 "multiply defined records: ~tp.",
 			 [Name, Ns]),
 	    exit(error)
     end.
@@ -2673,7 +2694,7 @@ expand_imports(Is, Name) ->
 	    ordsets:from_list(As);
 	Ns ->
 	    report_error("in module `~w': "
-			 "multiply imported functions: ~p.",
+			 "multiply imported functions: ~tp.",
 			 [Name, Ns]),
 	    exit(error)
     end.
@@ -2725,8 +2746,8 @@ read_module(Name, Options) ->
 		    %% It seems that we have no file - go on anyway,
 		    %% just to get a decent error message.
 		    read_module_1(Name, Options);
-		{Name1, _} ->
-		    read_module_1(Name1 ++ ".erl", Options)
+		{ok, Name1} ->
+		    read_module_1(Name1, Options)
 	    end
     end.
 
@@ -2786,9 +2807,9 @@ check_forms([], _) ->
     ok.
 
 find_src(Name, undefined) ->
-    filename:find_src(filename(Name));
+    filelib:find_source(filename(Name));
 find_src(Name, Rules) ->
-    filename:find_src(filename(Name), Rules).
+    filelib:find_source(filename(Name), Rules).
 
 %% file_type(filename()) -> {value, Type} | none
 
@@ -2947,7 +2968,7 @@ filename([]) ->
 filename(N) when is_atom(N) ->
     atom_to_list(N);
 filename(N) ->
-    report_error("bad filename: `~P'.", [N, 25]),
+    report_error("bad filename: `~tP'.", [N, 25]),
     exit(error).
 
 duplicates(Xs) ->
@@ -3010,7 +3031,7 @@ split_lines_1(Cs, Cs1, Ls) ->
 %% Reporting
 
 warning_unsafe_call(Name, Module, Target) ->
-    report_warning("call to `~w' in module `~w' "
+    report_warning("call to `~tw' in module `~w' "
 		   "possibly unsafe in `~s'.", [Name, Module, Target]).
 
 warning_apply_2(Module, Target) ->

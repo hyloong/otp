@@ -1,7 +1,7 @@
 #
 # %CopyrightBegin%
 #
-# Copyright Ericsson AB 2001-2012. All Rights Reserved.
+# Copyright Ericsson AB 2001-2016. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -75,3 +75,6 @@ distclean:
 realclean:
 	$(V_at)$(MAKE) MAKETARGET="realclean" all-subdirs all-subdirs-x
 
+DIA_PLT_APPS=compiler syntax_tools
+
+include $(ERL_TOP)/make/app_targets.mk

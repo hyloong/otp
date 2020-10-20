@@ -2,7 +2,7 @@
 #
 # %CopyrightBegin%
 # 
-# Copyright Ericsson AB 1999-2012. All Rights Reserved.
+# Copyright Ericsson AB 1999-2017. All Rights Reserved.
 # 
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -40,7 +40,6 @@ use File::Basename;
 my $gen_rc = 0;
 my $gen_old = 0;
 my $windres = 0;
-my $msys = 0;
 my $file;
 
 my $progname = basename($0);
@@ -51,8 +50,6 @@ while (@ARGV && $ARGV[0] =~ /^-(\w+)/) {
 	$gen_rc = 1;
     } elsif ($opt eq '-windres') {
 	$windres = 1;
-    } elsif ($opt eq '-msys') {
-	$msys = 1;
     } elsif ($opt eq '-old') {
 	$gen_old = 1;
     } else {
@@ -73,12 +70,7 @@ foreach $file (@ARGV) {
     my $module = basename($file, ".beam");
     if ($gen_rc) {
 	my $win_file;
-	if ($msys) {
-	    ($win_file) = split("\n", `(msys2win_path.sh $file)`);
-	} else {
-	    ($win_file) = split("\n", `(cygpath -d $file 2>/dev/null || cygpath -w $file)`);
-	}
-	$win_file =~ s&\\&\\\\&g;
+        ($win_file) = split("\n", `(w32_path.sh -d $file)`);
 	print "$num ERLANG_CODE \"$win_file\"\n";
 	push(@modules, "   ", -s $file, "L, $num, ",
 	     length($module), ",\"$module\",\n");
@@ -90,12 +82,12 @@ foreach $file (@ARGV) {
 	open(FILE, $file) or error("failed to read $file: $!");
 	binmode(FILE);
 	$_ = <FILE>;
-	$_ = beam_strip($_);
+	$_ = beam_strip($_, $file);
 	close(FILE);
 	
 	push(@modules, "  {\"$module\", " . length($_) . ", preloaded_$module},\n");
-	print "unsigned preloaded_size_$module = ", length($_), ";\n";
-	print "unsigned char preloaded_$module", "[] = {\n";
+	print "const unsigned preloaded_size_$module = ", length($_), ";\n";
+	print "const unsigned char preloaded_$module", "[] = {\n";
 	for ($i = 0; $i < length($_); $i++) {
 	    if ($i % 8 == 0 && $comment ne '') {
 		$comment =~ s@/\*@..@g; # Comment start -- avoid warning.
@@ -125,10 +117,10 @@ if ($gen_rc) {
     print @modules;
     print "END\n";
 } elsif ($gen_old) {
-    print "struct {\n";
+    print "const struct {\n";
     print "   char* name;\n";
     print "   int size;\n";
-    print "   unsigned char* code;\n";
+    print "   const unsigned char* code;\n";
     print "} pre_loaded[] = {\n";
     foreach (@modules) {
 	print;
@@ -147,20 +139,20 @@ sub error {
 }
 
 sub beam_strip {
-    my($beam) = @_;
+    my($beam,$file) = @_;
 
 
     my $size_left = length($beam);
     my %chunk;
     my %needed_chunk = ('Code' => 1,
-			'Atom' => 1,
+			'AtU8' => 1,
 			'ImpT' => 1,
 			'ExpT' => 1,
 			'StrT' => 1,
 			'FunT' => 1,
 			'LitT' => 1);
 
-    die "can't read Beam files for OTP R4 or earlier (sorry)"
+    die "$file: can't read Beam files for OTP R4 or earlier (sorry)"
 	if $beam =~ /^\x7fBEAM!/;
 
     #
@@ -177,7 +169,7 @@ sub beam_strip {
     die "form size $size greater than size ", $size_left, " of module"
 	if $size > $size_left;
     $size_left -= 4;
-    die "not a BEAM file: IFF form type is not 'BEAM'"
+    die "$file: not a BEAM file: IFF form type is not 'BEAM'"
 	unless $beam_id eq 'BEAM';
 
     #
@@ -195,6 +187,14 @@ sub beam_strip {
 	$beam = substr($beam, 8+$size);
 	$size_left = length($beam);
     }
+
+    #
+    # Abort if there is no new-style 'AtU8' atom chunk.
+    #
+
+    exists $chunk{'AtU8'} or
+        die "$file: no 'AtU8' chunk (re-compile with " .
+        "OTP 20 or later)\n";
 
     #
     # Create a new beam file with only the useful chunk types.

@@ -1,7 +1,7 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 1997-2010. All Rights Reserved.
+%% Copyright Ericsson AB 1997-2016. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -336,6 +336,8 @@ script_elements(#mod{method = "GET"}, {PathInfo, []}) ->
 script_elements(#mod{method = "GET"}, {PathInfo, QueryString}) ->
     [{query_string, QueryString}, {path_info, PathInfo}];
 script_elements(#mod{method = "POST", entity_body = Body}, _) ->
+    [{entity_body, Body}];
+script_elements(#mod{method = "PATCH", entity_body = Body}, _) ->
     [{entity_body, Body}];
 script_elements(#mod{method = "PUT", entity_body = Body}, _) ->
     [{entity_body, Body}];

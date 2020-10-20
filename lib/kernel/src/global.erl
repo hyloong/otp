@@ -1,7 +1,7 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 1996-2014. All Rights Reserved.
+%% Copyright Ericsson AB 1996-2019. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -50,22 +50,25 @@
 %% This is for backward compatibility only; the functionality is broken.
 -define(WARN_DUPLICATED_NAME, global_multi_name_action).
 
-%% Undocumented Kernel variable. Set this to 0 (zero) to get the old
-%% behaviour.
+%% Undocumented Kernel variable.
 -define(N_CONNECT_RETRIES, global_connect_retries).
--define(DEFAULT_N_CONNECT_RETRIES, 5).
+-define(DEFAULT_N_CONNECT_RETRIES, 0).
 
 %%% In certain places in the server, calling io:format hangs everything,
 %%% so we'd better use erlang:display/1.
 %%% my_tracer is used in testsuites
--define(trace(_), ok).
 
+%% uncomment this if tracing is wanted
+%%-define(DEBUG, true).
+-ifdef(DEBUG).
+-define(trace(T), erlang:display({format, node(), cs(), T})).
+  cs() ->
+     {_Big, Small, Tiny} = erlang:timestamp(),
+     (Small rem 100) * 100 + (Tiny div 10000).
 %-define(trace(T), (catch my_tracer ! {node(), {line,?LINE}, T})).
-
-%-define(trace(T), erlang:display({format, node(), cs(), T})).
-%cs() ->
-%    {_Big, Small, Tiny} = now(),
-%    (Small rem 100) * 100 + (Tiny div 10000).
+-else.
+-define(trace(_), ok).
+-endif.
 
 %% These are the protocol versions:
 %% Vsn 1 is the original protocol.
@@ -121,16 +124,12 @@
 %%% There are also ETS tables used for bookkeeping of locks and names
 %%% (the first position is the key):
 %%%
-%%% global_locks (set): {ResourceId, LockRequesterId, [{Pid,RPid,ref()]}
+%%% global_locks (set): {ResourceId, LockRequesterId, [{Pid,ref()]}
 %%%   Pid is locking ResourceId, ref() is the monitor ref.
-%%%   RPid =/= Pid if there is an extra process calling erlang:monitor().
-%%% global_names (set):  {Name, Pid, Method, RPid, ref()}
+%%% global_names (set):  {Name, Pid, Method, ref()}
 %%%   Registered names. ref() is the monitor ref.
-%%%   RPid =/= Pid if there is an extra process calling erlang:monitor().
 %%% global_names_ext (set): {Name, Pid, RegNode}
 %%%   External registered names (C-nodes).
-%%%   (The RPid:s can be removed when/if erlang:monitor() returns before 
-%%%    trying to connect to the other node.)
 %%% 
 %%% Helper tables:
 %%% global_pid_names (bag): {Pid, Name} | {ref(), Name}
@@ -258,7 +257,7 @@ check_dupname(Name, Pid) ->
                 {ok, allow} ->
                     true;
                 _ ->
-                    S = "global: ~w registered under several names: ~w\n",
+                    S = "global: ~w registered under several names: ~tw\n",
                     Names = [Name | [Name1 || {_Pid, Name1} <- PidNames]],
                     error_logger:error_msg(S, [Pid, Names]),
                     false
@@ -306,7 +305,7 @@ re_register_name(Name, Pid, Method0) when is_pid(Pid) ->
 -spec registered_names() -> [Name] when
       Name :: term().
 registered_names() ->
-    MS = ets:fun2ms(fun({Name,_Pid,_M,_RP,_R}) -> Name end),
+    MS = ets:fun2ms(fun({Name,_Pid,_M,_R}) -> Name end),
     ets:select(global_names, MS).
 
 %%-----------------------------------------------------------------
@@ -443,7 +442,8 @@ info() ->
 init([]) ->
     process_flag(trap_exit, true),
     _ = ets:new(global_locks, [set, named_table, protected]),
-    _ = ets:new(global_names, [set, named_table, protected]),
+    _ = ets:new(global_names, [set, named_table, protected,
+                               {read_concurrency, true}]),
     _ = ets:new(global_names_ext, [set, named_table, protected]),
 
     _ = ets:new(global_pid_names, [bag, named_table, protected]),
@@ -459,17 +459,17 @@ init([]) ->
                  no_trace
          end,
 
+    Ca = case init:get_argument(connect_all) of
+             {ok, [["false"]]} ->
+                 false;
+             _ ->
+                 true
+         end,
     S = #state{the_locker = start_the_locker(DoTrace),
                trace = T0,
-               the_registrar = start_the_registrar()},
-    S1 = trace_message(S, {init, node()}, []),
-
-    case init:get_argument(connect_all) of
-	{ok, [["false"]]} ->
-	    {ok, S1#state{connect_all = false}};
-	_ ->
-	    {ok, S1#state{connect_all = true}}
-    end.
+               the_registrar = start_the_registrar(),
+               connect_all = Ca},
+    {ok, trace_message(S, {init, node()}, [])}.
 
 %%-----------------------------------------------------------------
 %% Connection algorithm
@@ -654,7 +654,7 @@ handle_call(stop, _From, S) ->
 handle_call(Request, From, S) ->
     error_logger:warning_msg("The global_name_server "
                              "received an unexpected message:\n"
-                             "handle_call(~p, ~p, _)\n", 
+                             "handle_call(~tp, ~tp, _)\n",
                              [Request, From]),
     {noreply, S}.
 
@@ -823,7 +823,7 @@ handle_cast({async_del_lock, _ResourceId, _Pid}, S) ->
 handle_cast(Request, S) ->
     error_logger:warning_msg("The global_name_server "
                              "received an unexpected message:\n"
-                             "handle_cast(~p, _)\n", [Request]),
+                             "handle_cast(~tp, _)\n", [Request]),
     {noreply, S}.
 
 %%========================================================================
@@ -909,7 +909,7 @@ handle_info({nodeup, Node}, S0) when S0#state.connect_all ->
     end;
 
 handle_info({whereis, Name, From}, S) ->
-    do_whereis(Name, From),
+    _ = do_whereis(Name, From),
     {noreply, S};
 
 handle_info(known, S) ->
@@ -950,7 +950,7 @@ handle_info({'DOWN', MonitorRef, process, _Pid, _Info}, S0) ->
 handle_info(Message, S) ->
     error_logger:warning_msg("The global_name_server "
                              "received an unexpected message:\n"
-                             "handle_info(~p, _)\n", [Message]),
+                             "handle_info(~tp, _)\n", [Message]),
     {noreply, S}.
 
 
@@ -1230,7 +1230,7 @@ ins_name_ext(Name, Pid, Method, RegNode, FromPidOrNode, ExtraInfo, S0) ->
 
 where(Name) ->
     case ets:lookup(global_names, Name) of
-	[{_Name, Pid, _Method, _RPid, _Ref}] ->
+	[{_Name, Pid, _Method, _Ref}] ->
 	    if node(Pid) == node() ->
 		    case is_process_alive(Pid) of
 			true  -> Pid;
@@ -1267,10 +1267,10 @@ can_set_lock({ResourceId, LockRequesterId}) ->
     end.
 
 insert_lock({ResourceId, LockRequesterId}=Id, Pid, PidRefs, S) ->
-    {RPid, Ref} = do_monitor(Pid),
+    Ref = erlang:monitor(process, Pid),
     true = ets:insert(global_pid_ids, {Pid, ResourceId}),
     true = ets:insert(global_pid_ids, {Ref, ResourceId}),
-    Lock = {ResourceId, LockRequesterId, [{Pid,RPid,Ref} | PidRefs]},
+    Lock = {ResourceId, LockRequesterId, [{Pid,Ref} | PidRefs]},
     true = ets:insert(global_locks, Lock),
     trace_message(S, {ins_lock, node(Pid)}, [Id, Pid]).
 
@@ -1288,10 +1288,9 @@ handle_del_lock({ResourceId, LockReqId}, Pid, S0) ->
 	_ -> S0
     end.
 
-remove_lock(ResourceId, LockRequesterId, Pid, [{Pid,RPid,Ref}], Down, S0) ->
+remove_lock(ResourceId, LockRequesterId, Pid, [{Pid,Ref}], Down, S0) ->
     ?trace({remove_lock_1, {id,ResourceId},{pid,Pid}}),
     true = erlang:demonitor(Ref, [flush]),
-    kill_monitor_proc(RPid, Pid),
     true = ets:delete(global_locks, ResourceId),
     true = ets:delete_object(global_pid_ids, {Pid, ResourceId}),
     true = ets:delete_object(global_pid_ids, {Ref, ResourceId}),
@@ -1304,9 +1303,8 @@ remove_lock(ResourceId, LockRequesterId, Pid, [{Pid,RPid,Ref}], Down, S0) ->
 remove_lock(ResourceId, LockRequesterId, Pid, PidRefs0, _Down, S) ->
     ?trace({remove_lock_2, {id,ResourceId},{pid,Pid}}),
     PidRefs = case lists:keyfind(Pid, 1, PidRefs0) of
-                  {Pid, RPid, Ref} ->
+                  {Pid, Ref} ->
                       true = erlang:demonitor(Ref, [flush]),
-                      kill_monitor_proc(RPid, Pid),
                       true = ets:delete_object(global_pid_ids, 
                                                {Ref, ResourceId}),
                       lists:keydelete(Pid, 1, PidRefs0);
@@ -1318,11 +1316,6 @@ remove_lock(ResourceId, LockRequesterId, Pid, PidRefs0, _Down, S) ->
     true = ets:delete_object(global_pid_ids, {Pid, ResourceId}),
     trace_message(S, {rem_lock, node(Pid)}, 
                   [{ResourceId, LockRequesterId}, Pid]).
-
-kill_monitor_proc(Pid, Pid) ->
-    ok;
-kill_monitor_proc(RPid, _Pid) ->
-    exit(RPid, kill).
 
 do_ops(Ops, ConnNode, Names_ext, ExtraInfo, S0) ->
     ?trace({do_ops, {ops,Ops}}),
@@ -1389,8 +1382,8 @@ sync_other(Node, N) ->
     % exit(normal).
 
 insert_global_name(Name, Pid, Method, FromPidOrNode, ExtraInfo, S) ->
-    {RPid, Ref} = do_monitor(Pid),
-    true = ets:insert(global_names, {Name, Pid, Method, RPid, Ref}),
+    Ref = erlang:monitor(process, Pid),
+    true = ets:insert(global_names, {Name, Pid, Method, Ref}),
     true = ets:insert(global_pid_names, {Pid, Name}),
     true = ets:insert(global_pid_names, {Ref, Name}),
     case lock_still_set(FromPidOrNode, ExtraInfo, S) of
@@ -1432,7 +1425,7 @@ extra_info(Tag, ExtraInfo) ->
 del_name(Ref, S) ->
     NameL = [Name || 
                 {_, Name} <- ets:lookup(global_pid_names, Ref),
-                {_, _Pid, _Method, _RPid, Ref1} <- 
+                {_, _Pid, _Method, Ref1} <-
                     ets:lookup(global_names, Name),
                 Ref1 =:= Ref],
     case NameL of
@@ -1445,24 +1438,23 @@ del_name(Ref, S) ->
 %% Keeps the entry in global_names for whereis_name/1.
 delete_global_name_keep_pid(Name, S) ->
     case ets:lookup(global_names, Name) of
-        [{Name, Pid, _Method, RPid, Ref}] ->
-            delete_global_name2(Name, Pid, RPid, Ref, S);
+        [{Name, Pid, _Method, Ref}] ->
+            delete_global_name2(Name, Pid, Ref, S);
         [] ->
             S
     end.
 
 delete_global_name2(Name, S) ->
     case ets:lookup(global_names, Name) of
-        [{Name, Pid, _Method, RPid, Ref}] ->
+        [{Name, Pid, _Method, Ref}] ->
             true = ets:delete(global_names, Name),
-            delete_global_name2(Name, Pid, RPid, Ref, S);
+            delete_global_name2(Name, Pid, Ref, S);
         [] ->
             S
     end.
 
-delete_global_name2(Name, Pid, RPid, Ref, S) ->
+delete_global_name2(Name, Pid, Ref, S) ->
     true = erlang:demonitor(Ref, [flush]),
-    kill_monitor_proc(RPid, Pid),
     delete_global_name(Name, Pid),
     ?trace({delete_global_name,{item,Name},{pid,Pid}}),
     true = ets:delete_object(global_pid_names, {Pid, Name}),
@@ -1924,9 +1916,9 @@ reset_node_state(Node) ->
 %% from the same partition.
 exchange_names([{Name, Pid, Method} | Tail], Node, Ops, Res) ->
     case ets:lookup(global_names, Name) of
-	[{Name, Pid, _Method, _RPid2, _Ref2}] ->
+	[{Name, Pid, _Method, _Ref2}] ->
 	    exchange_names(Tail, Node, Ops, Res);
-	[{Name, Pid2, Method2, _RPid2, _Ref2}] when node() < Node ->
+	[{Name, Pid2, Method2, _Ref2}] when node() < Node ->
 	    %% Name clash!  Add the result of resolving to Res(olved).
 	    %% We know that node(Pid) =/= node(), so we don't
 	    %% need to link/unlink to Pid.
@@ -1944,18 +1936,18 @@ exchange_names([{Name, Pid, Method} | Tail], Node, Ops, Res) ->
 		    exchange_names(Tail, Node, [Op | Ops], [Op | Res]);
 		{badrpc, Badrpc} ->
 		    error_logger:info_msg("global: badrpc ~w received when "
-					  "conflicting name ~w was found\n",
+					  "conflicting name ~tw was found\n",
 					  [Badrpc, Name]),
 		    Op = {insert, {Name, Pid, Method}},
 		    exchange_names(Tail, Node, [Op | Ops], Res);
 		Else ->
 		    error_logger:info_msg("global: Resolve method ~w for "
-					  "conflicting name ~w returned ~w\n",
+					  "conflicting name ~tw returned ~tw\n",
 					  [Method, Name, Else]),
 		    Op = {delete, Name},
 		    exchange_names(Tail, Node, [Op | Ops], [Op | Res])
 	    end;
-	[{Name, _Pid2, _Method, _RPid, _Ref}] ->
+	[{Name, _Pid2, _Method, _Ref}] ->
 	    %% The other node will solve the conflict.
 	    exchange_names(Tail, Node, Ops, Res);
 	_ ->
@@ -1979,7 +1971,7 @@ minmax(P1,P2) ->
       Pid2 :: pid().
 random_exit_name(Name, Pid, Pid2) ->
     {Min, Max} = minmax(Pid, Pid2),
-    error_logger:info_msg("global: Name conflict terminating ~w\n",
+    error_logger:info_msg("global: Name conflict terminating ~tw\n",
 			  [{Name, Max}]),
     exit(Max, kill),
     Min.
@@ -2031,7 +2023,7 @@ pid_is_locking(Pid, PidRefs) ->
 delete_lock(Ref, S0) ->
     Locks = pid_locks(Ref),
     F = fun({ResourceId, LockRequesterId, PidRefs}, S) -> 
-                {Pid, _RPid, Ref} = lists:keyfind(Ref, 3, PidRefs),
+                {Pid, Ref} = lists:keyfind(Ref, 2, PidRefs),
                 remove_lock(ResourceId, LockRequesterId, Pid, PidRefs, true, S)
         end,
     lists:foldl(F, S0, Locks).
@@ -2041,10 +2033,10 @@ pid_locks(Ref) ->
                               ets:lookup(global_locks, ResourceId)
                       end, ets:lookup(global_pid_ids, Ref)),
     [Lock || Lock = {_Id, _Req, PidRefs} <- L, 
-             rpid_is_locking(Ref, PidRefs)].
+             ref_is_locking(Ref, PidRefs)].
 
-rpid_is_locking(Ref, PidRefs) ->
-    lists:keyfind(Ref, 3, PidRefs) =/= false.
+ref_is_locking(Ref, PidRefs) ->
+    lists:keyfind(Ref, 2, PidRefs) =/= false.
 
 handle_nodedown(Node, S) ->
     %% DOWN signals from monitors have removed locks and registered names.
@@ -2057,7 +2049,7 @@ handle_nodedown(Node, S) ->
 
 get_names() ->
     ets:select(global_names, 
-               ets:fun2ms(fun({Name, Pid, Method, _RPid, _Ref}) -> 
+               ets:fun2ms(fun({Name, Pid, Method, _Ref}) ->
                                   {Name, Pid, Method} 
                           end)).
 
@@ -2068,23 +2060,17 @@ get_known() ->
     gen_server:call(global_name_server, get_known, infinity).
 
 random_sleep(Times) ->
-    case (Times rem 10) of
-	0 -> erase(random_seed);
-	_ -> ok
-    end,
-    case get(random_seed) of
-	undefined ->
-	    _ = random:seed(erlang:phash2([erlang:node()]),
-			    erlang:monotonic_time(),
-			    erlang:unique_integer()),
-	    ok;
-	_ -> ok
-    end,
+    _ = case Times rem 10 of
+	    0 ->
+		_ = rand:seed(exsplus);
+	    _ ->
+		ok
+	end,
     %% First time 1/4 seconds, then doubling each time up to 8 seconds max.
     Tmax = if Times > 5 -> 8000;
 	      true -> ((1 bsl Times) * 1000) div 8
 	   end,
-    T = random:uniform(Tmax),
+    T = rand:uniform(Tmax),
     ?trace({random_sleep, {me,self()}, {times,Times}, {t,T}, {tmax,Tmax}}),
     receive after T -> ok end.
 
@@ -2201,28 +2187,10 @@ unexpected_message({'EXIT', _Pid, _Reason}, _What) ->
     ok;
 unexpected_message(Message, What) -> 
     error_logger:warning_msg("The global_name_server ~w process "
-                             "received an unexpected message:\n~p\n", 
+                             "received an unexpected message:\n~tp\n",
                              [What, Message]).
 
 %%% Utilities
-
-%% When/if erlang:monitor() returns before trying to connect to the
-%% other node this function can be removed.
-do_monitor(Pid) ->
-    case (node(Pid) =:= node()) orelse lists:member(node(Pid), nodes()) of
-        true ->
-            %% Assume the node is still up
-            {Pid, erlang:monitor(process, Pid)};
-        false ->
-            F = fun() -> 
-                        Ref = erlang:monitor(process, Pid),
-                        receive 
-                            {'DOWN', Ref, process, Pid, _Info} ->
-                                exit(normal)
-                        end
-                end,
-            erlang:spawn_monitor(F)
-    end.
 
 intersection(_, []) -> 
     [];

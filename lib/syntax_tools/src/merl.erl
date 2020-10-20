@@ -9,6 +9,16 @@
 %% See the License for the specific language governing permissions and
 %% limitations under the License.
 %%
+%% Alternatively, you may use this file under the terms of the GNU Lesser
+%% General Public License (the "LGPL") as published by the Free Software
+%% Foundation; either version 2.1, or (at your option) any later version.
+%% If you wish to allow use of your version of this file only under the
+%% terms of the LGPL, you should delete the provisions above and replace
+%% them with the notice and other provisions required by the LGPL; see
+%% <http://www.gnu.org/licenses/>. If you do not delete the provisions
+%% above, a recipient may use your version of this file under the terms of
+%% either the Apache License or the LGPL.
+%%
 %% Note: EDoc uses @@ and @} as escape sequences, so in the doc text below,
 %% `@@' must be written `@@@@' and `@}' must be written `@@}'.
 %%
@@ -514,15 +524,17 @@ parse_forms([]) ->
 parse_2(Ts) ->
     %% one or more comma-separated expressions?
     %% (recall that Ts has no dot tokens if we get to this stage)
-    case erl_parse:parse_exprs(Ts ++ [{dot,0}]) of
+    A = a0(),
+    case erl_parse:parse_exprs(Ts ++ [{dot,A}]) of
         {ok, Exprs} -> Exprs;
         {error, E} ->
-            parse_3(Ts ++ [{'end',0}, {dot,0}], [E])
+            parse_3(Ts ++ [{'end',A}, {dot,A}], [E])
     end.
 
 parse_3(Ts, Es) ->
     %% try-clause or clauses?
-    case erl_parse:parse_exprs([{'try',0}, {atom,0,true}, {'catch',0} | Ts]) of
+    A = a0(),
+    case erl_parse:parse_exprs([{'try',A}, {atom,A,true}, {'catch',A} | Ts]) of
         {ok, [{'try',_,_,_,_,_}=X]} ->
             %% get the right kind of qualifiers in the clause patterns
             erl_syntax:try_expr_handlers(X);
@@ -533,7 +545,8 @@ parse_3(Ts, Es) ->
 parse_4(Ts, Es) ->
     %% fun-clause or clauses? (`(a)' is also a pattern, but `(a,b)' isn't,
     %% so fun-clauses must be tried before normal case-clauses
-    case erl_parse:parse_exprs([{'fun',0} | Ts]) of
+    A = a0(),
+    case erl_parse:parse_exprs([{'fun',A} | Ts]) of
         {ok, [{'fun',_,{clauses,Cs}}]} -> Cs;
         {error, E} ->
             parse_5(Ts, [E|Es])
@@ -541,7 +554,8 @@ parse_4(Ts, Es) ->
 
 parse_5(Ts, Es) ->
     %% case-clause or clauses?
-    case erl_parse:parse_exprs([{'case',0}, {atom,0,true}, {'of',0} | Ts]) of
+    A = a0(),
+    case erl_parse:parse_exprs([{'case',A}, {atom,A,true}, {'of',A} | Ts]) of
         {ok, [{'case',_,_,Cs}]} -> Cs;
         {error, E} ->
             %% select the best error to report
@@ -551,13 +565,13 @@ parse_5(Ts, Es) ->
 -dialyzer({nowarn_function, parse_error/1}). % no local return
 
 parse_error({L, M, R}) when is_atom(M), is_integer(L) ->
-    fail("~w: ~s", [L, M:format_error(R)]);
+    fail("~w: ~ts", [L, M:format_error(R)]);
 parse_error({{L,C}, M, R}) when is_atom(M), is_integer(L), is_integer(C) ->
-    fail("~w:~w: ~s", [L,C,M:format_error(R)]);
+    fail("~w:~w: ~ts", [L,C,M:format_error(R)]);
 parse_error({_, M, R}) when is_atom(M) ->
     fail(M:format_error(R));
 parse_error(R) ->
-    fail("unknown parse error: ~p", [R]).
+    fail("unknown parse error: ~tp", [R]).
 
 %% ------------------------------------------------------------------------
 %% Templates, substitution and matching
@@ -1210,7 +1224,7 @@ merge_comments(StartLine, Cs, [], Acc) ->
     merge_comments(StartLine, [], [],
                    [erl_syntax:set_pos(
                       erl_syntax:comment(Indent, Text),
-                      StartLine + Line - 1)
+                      anno(StartLine + Line - 1))
                     || {Line, _, Indent, Text} <- Cs] ++ Acc);
 merge_comments(StartLine, [C|Cs], [T|Ts], Acc) ->
     {Line, _Col, Indent, Text} = C,
@@ -1228,3 +1242,9 @@ merge_comments(StartLine, [C|Cs], [T|Ts], Acc) ->
                    [erl_syntax:comment(Indent, Text)], T),
             merge_comments(StartLine, Cs, [Tc|Ts], Acc)
     end.
+
+a0() ->
+    anno(0).
+
+anno(Location) ->
+    erl_anno:new(Location).

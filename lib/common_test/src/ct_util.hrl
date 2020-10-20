@@ -1,7 +1,7 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2003-2013. All Rights Reserved.
+%% Copyright Ericsson AB 2003-2020. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -23,6 +23,7 @@
 -define(board_table,ct_boards).
 -define(suite_table,ct_suite_data).
 -define(verbosity_table,ct_verbosity_table).
+-define(def_gl, ct_default_gl).
 
 -record(conn, {handle,
 	       targetref,
@@ -37,6 +38,7 @@
 		   logdir=["."],
 		   logopts=[],
 		   basic_html=[],
+		   esc_chars=[],
 		   verbosity=[],
 		   silent_connections=[],
 		   cover=[],
@@ -60,6 +62,7 @@
 		   merge_tests=true}).
 
 -record(cover, {app=none,
+                local_only=false,
 		level=details,
 		excl_mods=[],
 		incl_mods=[],

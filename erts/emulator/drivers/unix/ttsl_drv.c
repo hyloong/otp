@@ -1,7 +1,7 @@
 /*
  * %CopyrightBegin%
  *
- * Copyright Ericsson AB 1996-2013. All Rights Reserved.
+ * Copyright Ericsson AB 1996-2020. All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -31,7 +31,7 @@
 static int ttysl_init(void);
 static ErlDrvData ttysl_start(ErlDrvPort, char*);
 
-#ifdef HAVE_TERMCAP  /* else make an empty driver that can not be opened */
+#ifdef HAVE_TERMCAP  /* else make an empty driver that cannot be opened */
 
 #ifndef WANT_NONBLOCKING
 #define WANT_NONBLOCKING
@@ -108,16 +108,15 @@ static int lbuf_size = BUFSIZ;
 static Uint32 *lbuf;		/* The current line buffer */
 static int llen;		/* The current line length */
 static int lpos;                /* The current "cursor position" in the line buffer */
-
+                                /* NOTE: not the same as column position a char may not take a"
+                                 * column to display or it might take many columns
+                                 */
 /* 
  * Tags used in line buffer to show that these bytes represent special characters,
  * Max unicode is 0x0010ffff, so we have lots of place for meta tags... 
  */
 #define CONTROL_TAG 0x10000000U /* Control character, value in first position */
 #define ESCAPED_TAG 0x01000000U /* Escaped character, value in first position */
-#ifdef HAVE_WCWIDTH
-#define WIDE_TAG    0x02000000U /* Wide character, value in first position    */
-#endif
 #define TAG_MASK    0xFF000000U
 
 #define MAXSIZE (1 << 16)
@@ -156,6 +155,8 @@ static int insert_buf(byte*,int);
 static int write_buf(Uint32 *,int);
 static int outc(int c);
 static int move_cursor(int,int);
+static int cp_pos_to_col(int cp_pos);
+
 
 /* Termcap functions. */
 static int start_termcap(void);
@@ -199,7 +200,7 @@ static void my_debug_printf(char *fmt, ...)
     erts_vsnprintf(buffer,1024,fmt,args);
     va_end(args);
     erts_fprintf(debuglog,"%s\n",buffer);
-    //erts_printf("Debuglog = %s\n",buffer);
+    /*erts_printf("Debuglog = %s\n",buffer);*/
 }
 
 #else
@@ -261,7 +262,7 @@ static int ttysl_init(void)
 	    if (debuglog != NULL)
 		setbuf(debuglog,NULL);
 	}
-	DEBUGLOG(("Debuglog = %s(0x%ld)\n",dl,(long) debuglog));
+	DEBUGLOG(("ttysl_init: Debuglog = %s(0x%ld)\n",dl,(long) debuglog));
     }
 #endif
     return 0;
@@ -277,36 +278,46 @@ static ErlDrvData ttysl_start(ErlDrvPort port, char* buf)
     int flag;
     extern int using_oldshell; /* set this to let the rest of erts know */
 
+    DEBUGLOG(("ttysl_start: driver input \"%s\", ttysl_port = %d (-1 expected)", buf, ttysl_port));
     utf8buf_size = 0;
-    if (ttysl_port != (ErlDrvPort)-1)
-      return ERL_DRV_ERROR_GENERAL;
+    if (ttysl_port != (ErlDrvPort)-1) {
+        DEBUGLOG(("ttysl_start: failure with ttysl_port = %d, not initialized properly?\n", ttysl_port));
+        return ERL_DRV_ERROR_GENERAL;
+    }
 
-    if (!isatty(0) || !isatty(1))
+    DEBUGLOG(("ttysl_start: isatty(0) = %d (1 expected), isatty(1) = %d (1 expected)", isatty(0), isatty(1)));
+    if (!isatty(0) || !isatty(1)) {
+        DEBUGLOG(("ttysl_start: failure in isatty, isatty(0) = %d, isatty(1) = %d", isatty(0), isatty(1)));
 	return ERL_DRV_ERROR_GENERAL;
+    }
 
     /* Set the terminal modes to default leave as is. */
     canon = echo = sig = 0;
 
     /* Parse the input parameters. */
     for (s = strchr(buf, ' '); s; s = t) {
-	s++;
-	/* Find end of this argument (start of next) and insert NUL. */
-	if ((t = strchr(s, ' '))) {
-	    *t = '\0';
-	}
-	if ((flag = ((*s == '+') ? 1 : ((*s == '-') ? -1 : 0)))) {
-	    if (s[1] == 'c') canon = flag;
-	    if (s[1] == 'e') echo = flag;
-	    if (s[1] == 's') sig = flag;
-	}
-	else if ((ttysl_fd = open(s, O_RDWR, 0)) < 0)
-	      return ERL_DRV_ERROR_GENERAL;
+        s++;
+        /* Find end of this argument (start of next) and insert NUL. */
+        if ((t = strchr(s, ' '))) {
+            *t = '\0';
+        }
+        if ((flag = ((*s == '+') ? 1 : ((*s == '-') ? -1 : 0)))) {
+            if (s[1] == 'c') canon = flag;
+            if (s[1] == 'e') echo = flag;
+            if (s[1] == 's') sig = flag;
+        }
+        else if ((ttysl_fd = open(s, O_RDWR, 0)) < 0) {
+            DEBUGLOG(("ttysl_start: failed to open ttysl_fd, open(%s, O_RDWR, 0)) = %d\n", s, ttysl_fd));
+            return ERL_DRV_ERROR_GENERAL;
+        }
     }
+
     if (ttysl_fd < 0)
       ttysl_fd = 0;
 
     if (tty_init(ttysl_fd, canon, echo, sig) < 0 ||
-	tty_set(ttysl_fd) < 0) {
+        tty_set(ttysl_fd) < 0) {
+        DEBUGLOG(("ttysl_start: failed init tty or set tty\n"));
 	ttysl_port = (ErlDrvPort)-1;
 	tty_reset(ttysl_fd);
 	return ERL_DRV_ERROR_GENERAL;
@@ -314,6 +325,7 @@ static ErlDrvData ttysl_start(ErlDrvPort port, char* buf)
 
     /* Set up smart line and termcap stuff. */
     if (!start_lbuf() || !start_termcap()) {
+        DEBUGLOG(("ttysl_start: failed to start_lbuf or start_termcap\n"));
 	stop_lbuf();		/* Must free this */
 	tty_reset(ttysl_fd);
 	return ERL_DRV_ERROR_GENERAL;
@@ -335,10 +347,10 @@ static ErlDrvData ttysl_start(ErlDrvPort port, char* buf)
     l = setlocale(LC_CTYPE, "");  /* Set international environment */
     if (l != NULL) {
 	utf8_mode = (strcmp(nl_langinfo(CODESET), "UTF-8") == 0);
-	DEBUGLOG(("setlocale: %s\n",l));
+	DEBUGLOG(("ttysl_start: setlocale: %s",l));
     }
 #endif
-    DEBUGLOG(("utf8_mode is %s\n",(utf8_mode) ? "on" : "off"));
+    DEBUGLOG(("ttysl_start: utf8_mode is %s",(utf8_mode) ? "on" : "off"));
     sys_signal(SIGCONT, cont);
     sys_signal(SIGWINCH, winch);
 
@@ -348,6 +360,7 @@ static ErlDrvData ttysl_start(ErlDrvPort port, char* buf)
     /* we need to know this when we enter the break handler */
     using_oldshell = 0;
 
+    DEBUGLOG(("ttysl_start: successful start\n"));
     return (ErlDrvData)ttysl_port;	/* Nothing important to return */
 #endif /* HAVE_TERMCAP */
 }
@@ -381,6 +394,8 @@ static ErlDrvSSizeT ttysl_control(ErlDrvData drv_data,
 {
     char resbuff[2*sizeof(Uint32)];
     ErlDrvSizeT res_size;
+
+    command -= ERTS_TTYSL_DRV_CONTROL_MAGIC_NUMBER;
     switch (command) {
     case CTRL_OP_GET_WINSIZE:
 	{
@@ -406,7 +421,7 @@ static ErlDrvSSizeT ttysl_control(ErlDrvData drv_data,
 	}
 	break;
     default:
-	return 0;
+	return -1;
     }
     if (rlen < res_size) {
 	*rbuf = driver_alloc(res_size);
@@ -418,6 +433,7 @@ static ErlDrvSSizeT ttysl_control(ErlDrvData drv_data,
 
 static void ttysl_stop(ErlDrvData ttysl_data)
 {
+    DEBUGLOG(("ttysl_stop: ttysl_port = %d\n",ttysl_port));
     if (ttysl_port != (ErlDrvPort)-1) {
 	stop_lbuf();
 	stop_termcap();
@@ -617,12 +633,13 @@ static int check_buf_size(byte *s, int n)
     int ch;
     int size = 10;
 
+    DEBUGLOG(("check_buf_size: n = %d",n));
     while(pos < n) {
 	/* Indata is always UTF-8 */
 	if ((ch = pick_utf8(s,n,&pos)) < 0) {
 	    /* XXX temporary allow invalid chars */
 	    ch = (int) s[pos];
-	    DEBUGLOG(("Invalid UTF8:%d",ch));
+	    DEBUGLOG(("check_buf_size: Invalid UTF8:%d",ch));
 	    ++pos;
 	} 
 	if (utf8_mode) { /* That is, terminal is UTF8 compliant */
@@ -630,7 +647,7 @@ static int check_buf_size(byte *s, int n)
 #ifdef HAVE_WCWIDTH
 		int width;
 #endif
-		DEBUGLOG(("Printable(UTF-8:%d):%d",pos,ch));
+		DEBUGLOG(("check_buf_size: Printable(UTF-8:%d):%d",pos,ch));
 		size++;
 #ifdef HAVE_WCWIDTH
 		if ((width = wcwidth(ch)) > 1) {
@@ -640,21 +657,21 @@ static int check_buf_size(byte *s, int n)
 	    } else if (ch == '\t') {
 		size += 8;
 	    } else {
-		DEBUGLOG(("Magic(UTF-8:%d):%d",pos,ch));
+		DEBUGLOG(("check_buf_size: Magic(UTF-8:%d):%d",pos,ch));
 		size += 2;
 	    }
 	} else {
 	    if (ch <= 255 && isprint(ch)) {
-		DEBUGLOG(("Printable:%d",ch));
+		DEBUGLOG(("check_buf_size: Printable:%d",ch));
 		size++;
 	    } else if (ch == '\t') 
 		size += 8;
 	    else if (ch >= 128) {
-		DEBUGLOG(("Non printable:%d",ch));
+		DEBUGLOG(("check_buf_size: Non printable:%d",ch));
 		size += (octal_or_hex_positions(ch) + 1);
 	    }
 	    else {
-		DEBUGLOG(("Magic:%d",ch));
+		DEBUGLOG(("check_buf_size: Magic:%d",ch));
 		size += 2;
 	    }
 	}
@@ -664,10 +681,12 @@ static int check_buf_size(byte *s, int n)
 
 	lbuf_size = size + lpos + BUFSIZ;
 	if ((lbuf = driver_realloc(lbuf, lbuf_size * sizeof(Uint32))) == NULL) {
+            DEBUGLOG(("check_buf_size: alloc failure of %d bytes", lbuf_size * sizeof(Uint32)));
 	    driver_failure(ttysl_port, -1);
 	    return(0);
 	}
     }
+    DEBUGLOG(("check_buf_size: success\n"));
     return(1);
 }
 
@@ -685,6 +704,8 @@ static void ttysl_from_erlang(ErlDrvData ttysl_data, char* buf, ErlDrvSizeT coun
     if (lpos > MAXSIZE) 
 	put_chars((byte*)"\n", 1);
 
+    DEBUGLOG(("ttysl_from_erlang: OP = %d", buf[0]));
+
     switch (buf[0]) {
     case OP_PUTC_SYNC:
         /* Using sync means that we have to send an ok to the
@@ -695,7 +716,7 @@ static void ttysl_from_erlang(ErlDrvData ttysl_data, char* buf, ErlDrvSizeT coun
            the port_command. */
         /* fall through */
     case OP_PUTC:
-	DEBUGLOG(("OP: Putc(%lu)",(unsigned long) count-1));
+	DEBUGLOG(("ttysl_from_erlang: OP: Putc(%lu)",(unsigned long) count-1));
 	if (check_buf_size((byte*)buf+1, count-1) == 0)
 	    return; 
 	put_chars((byte*)buf+1, count-1);
@@ -733,13 +754,14 @@ static void ttysl_from_erlang(ErlDrvData ttysl_data, char* buf, ErlDrvSizeT coun
             else
                 written = 0;
             if (written < 0) {
-                if (errno == EAGAIN) {
+                if (errno == ERRNO_BLOCK || errno == EINTR) {
                     driver_select(ttysl_port,(ErlDrvEvent)(long)ttysl_fd,
                                   ERL_DRV_USE|ERL_DRV_WRITE,1);
                     break;
                 } else {
-                    /* we ignore all other errors */
-                    break;
+                    DEBUGLOG(("ttysl_from_erlang: driver failure in writev(%d,..) = %d (errno = %d)\n", ttysl_fd, written, errno));
+		    driver_failure_posix(ttysl_port, errno);
+		    return;
                 }
             } else {
                 if (driver_deq(ttysl_port, written) == 0)
@@ -774,16 +796,21 @@ static void ttysl_to_tty(ErlDrvData ttysl_data, ErlDrvEvent fd) {
         ErlDrvSizeT sz;
 
         iov = driver_peekq(ttysl_port,&qlen);
+        
+        DEBUGLOG(("ttysl_to_tty: qlen = %d", qlen));
+
         if (iov)
             written = writev(ttysl_fd, iov, qlen > MAXIOV ? MAXIOV : qlen);
         else
             written = 0;
         if (written < 0) {
-            if (errno == EAGAIN) {
-                break;
-            } else {
-                /* we ignore all other errors */
+            if (errno == EINTR) {
+	        continue;
+	    } else if (errno != ERRNO_BLOCK){
+                DEBUGLOG(("ttysl_to_tty: driver failure in writev(%d,..) = %d (errno = %d)\n", ttysl_fd, written, errno));
+	        driver_failure_posix(ttysl_port, errno);
             }
+            break;
         } else {
             sz = driver_deq(ttysl_port, written);
             if (sz < TTY_BUFFSIZE && ttysl_send_ok) {
@@ -799,11 +826,13 @@ static void ttysl_to_tty(ErlDrvData ttysl_data, ErlDrvEvent fd) {
             if (sz == 0) {
                 driver_select(ttysl_port,(ErlDrvEvent)(long)ttysl_fd,
                               ERL_DRV_WRITE,0);
-                if (ttysl_terminate)
+                if (ttysl_terminate) {
                     /* flush has been called, which means we should terminate
                        when queue is empty. This will not send any exit
                        message */
+                    DEBUGLOG(("ttysl_to_tty: ttysl_terminate normal\n"));
                     driver_failure_atom(ttysl_port, "normal");
+		}
                 break;
             }
         }
@@ -813,6 +842,7 @@ static void ttysl_to_tty(ErlDrvData ttysl_data, ErlDrvEvent fd) {
 }
 
 static void ttysl_flush_tty(ErlDrvData ttysl_data) {
+    DEBUGLOG(("ttysl_flush_tty: .."));
     ttysl_terminate = 1;
     return;
 }
@@ -833,6 +863,8 @@ static void ttysl_from_tty(ErlDrvData ttysl_data, ErlDrvEvent fd)
 	p += utf8buf_size;
 	utf8buf_size = 0;
     }
+
+    DEBUGLOG(("ttysl_from_tty: remainder = %d", left));
     
     if ((i = read((int)(SWord)fd, (char *) p, left)) >= 0) {
 	if (p != b) {
@@ -846,7 +878,7 @@ static void ttysl_from_tty(ErlDrvData ttysl_data, ErlDrvEvent fd)
 		utf8buf_size = i -pos;
 		memcpy(utf8buf,b+pos,utf8buf_size);
 	    } else if (ch == -1) {
-		DEBUGLOG(("Giving up on UTF8 mode, invalid character"));
+		DEBUGLOG(("ttysl_from_tty: Giving up on UTF8 mode, invalid character"));
 		utf8_mode = 0;
 		goto latin_terminal;
 	    }
@@ -862,7 +894,8 @@ static void ttysl_from_tty(ErlDrvData ttysl_data, ErlDrvEvent fd)
 		tpos = 0;
 	    }
 	}
-    } else {
+    } else if (errno != EAGAIN && errno != EWOULDBLOCK) {
+        DEBUGLOG(("ttysl_from_tty: driver failure in read(%d,..) = %d (errno = %d)\n", (int)(SWord)fd, i, errno));
 	driver_failure(ttysl_port, -1);
     }
 }
@@ -905,10 +938,10 @@ static int put_chars(byte *s, int l)
     int n;
 
     n = insert_buf(s, l);
+    if (lpos > llen)
+        llen = lpos;
     if (n > 0)
       write_buf(lbuf + lpos - n, n);
-    if (lpos > llen)
-      llen = lpos;
     return TRUE;
 }
 
@@ -961,34 +994,36 @@ static int del_chars(int n)
 {
     int i, l, r;
     int pos;
+    int gcs; /* deleted grapheme characters */
 
     update_cols();
 
     /* Step forward or backwards over n logical characters. */
     pos = step_over_chars(n);
-
+    DEBUGLOG(("del_chars: %d from %d %d %d\n", n, lpos, pos, llen));
     if (pos > lpos) {
 	l = pos - lpos;		/* Buffer characters to delete */
 	r = llen - lpos - l;	/* Characters after deleted */
+        gcs = cp_pos_to_col(pos) - cp_pos_to_col(lpos);
 	/* Fix up buffer and buffer pointers. */
 	if (r > 0)
 	    memmove(lbuf + lpos, lbuf + pos, r * sizeof(Uint32));
 	llen -= l;
 	/* Write out characters after, blank the tail and jump back to lpos. */
 	write_buf(lbuf + lpos, r);
-	for (i = l ; i > 0; --i)
+	for (i = gcs ; i > 0; --i)
 	  outc(' ');
-	if (COL(llen+l) == 0 && xn)
+	if (xn && COL(cp_pos_to_col(llen)+gcs) == 0)
 	{
 	   outc(' ');
 	   move_left(1);
 	}
-	move_cursor(llen + l, lpos);
+	move_cursor(llen + gcs, lpos);
     }
     else if (pos < lpos) {
 	l = lpos - pos;		/* Buffer characters */
 	r = llen - lpos;	/* Characters after deleted */
-	move_cursor(lpos, lpos-l);	/* Move back */
+	gcs = -move_cursor(lpos, lpos-l);	/* Move back */
 	/* Fix up buffer and buffer pointers. */
 	if (r > 0)
 	    memmove(lbuf + pos, lbuf + lpos, r * sizeof(Uint32));
@@ -996,14 +1031,14 @@ static int del_chars(int n)
 	llen -= l;
 	/* Write out characters after, blank the tail and jump back to lpos. */
 	write_buf(lbuf + lpos, r);
-	for (i = l ; i > 0; --i)
-	  outc(' ');
-	if (COL(llen+l) == 0 && xn)
+	for (i = gcs ; i > 0; --i)
+          outc(' ');
+        if (xn && COL(cp_pos_to_col(llen)+gcs) == 0)
 	{
-	   outc(' ');
-	   move_left(1);
+          outc(' ');
+          move_left(1);
 	}
-	move_cursor(llen + l, lpos);
+        move_cursor(llen + gcs, lpos);
     }
     return TRUE;
 }
@@ -1017,22 +1052,12 @@ static int step_over_chars(int n)
     end = lbuf + llen;
     c = lbuf + lpos;
     for ( ; n > 0 && c < end; --n) {
-#ifdef HAVE_WCWIDTH
-	while (*c & WIDE_TAG) {
-	    c++;
-	}
-#endif
 	c++;
 	while (c < end && (*c & TAG_MASK) && ((*c & ~TAG_MASK) == 0))
 	    c++;
     }
     for ( ; n < 0 && c > beg; n++) {
 	--c;
-#ifdef HAVE_WCWIDTH
-	while (c > beg + 1 && (c[-1] & WIDE_TAG)) {
-	    --c;
-	}
-#endif
 	while (c > beg && (*c & TAG_MASK) && ((*c & ~TAG_MASK) == 0))
 	    --c;
     }
@@ -1058,15 +1083,6 @@ static int insert_buf(byte *s, int n)
 	    ++pos;
 	}
 	if ((utf8_mode && (ch >= 128 || isprint(ch))) || (ch <= 255 && isprint(ch))) {
-#ifdef HAVE_WCWIDTH
-	    int width;
-	    if ((width = wcwidth(ch)) > 1) {
-		while (--width) {
-		    DEBUGLOG(("insert_buf: Wide(UTF-8):%d,%d",width,ch));
-		    lbuf[lpos++] = (WIDE_TAG | ((Uint32) ch));
-		}
-	    }
-#endif
 	    DEBUGLOG(("insert_buf: Printable(UTF-8):%d",ch));
 	    lbuf[lpos++] = (Uint32) ch;
 	} else if (ch >= 128) { /* not utf8 mode */
@@ -1080,15 +1096,14 @@ static int insert_buf(byte *s, int n)
 		lbuf[lpos++] = (CONTROL_TAG | ((Uint32) ch));
 		ch = 0;
 	    } while (lpos % 8);
-	} else if (ch == '\e' || ch == '\n' || ch == '\r') {
+	} else if (ch == '\e') {
+	    DEBUGLOG(("insert_buf: ANSI Escape: \\e"));
+	    lbuf[lpos++] = (CONTROL_TAG | ((Uint32) ch));
+	} else if (ch == '\n' || ch == '\r') {
 	    write_buf(lbuf + buffpos, lpos - buffpos);
-            if (ch == '\e') {
-                outc('\e');
-            } else {
                 outc('\r');
                 if (ch == '\n')
                     outc('\n');
-            }
 	    if (llen > lpos) {
 		memcpy(lbuf, lbuf + lpos, llen - lpos);
 	    }
@@ -1136,14 +1151,17 @@ static int write_buf(Uint32 *s, int n)
 	    }
 	    --n;
 	    ++s;
-	}
-	else if (*s == (CONTROL_TAG | ((Uint32) '\t'))) {
+	} else if (*s == (CONTROL_TAG | ((Uint32) '\t'))) {
 	    outc(lastput = ' ');
 	    --n; s++;
 	    while (n > 0 && *s == CONTROL_TAG) {
 		outc(lastput = ' ');
 		--n; s++;
 	    }
+	} else if (*s == (CONTROL_TAG | ((Uint32) '\e'))) {
+	    outc(lastput = '\e');
+	    --n;
+	    ++s;
 	} else if (*s & CONTROL_TAG) {
 	    outc('^');
 	    outc(lastput = ((byte) ((*s == 0177) ? '?' : *s | 0x40)));
@@ -1154,7 +1172,7 @@ static int write_buf(Uint32 *s, int n)
 	    byte *octbuff;
 	    byte octtmp[256];
 	    int octbytes;
-	    DEBUGLOG(("Escaped: %d", ch));
+	    DEBUGLOG(("write_buf: Escaped: %d", ch));
 	    octbytes = octal_or_hex_positions(ch);
 	    if (octbytes > 256) {
 		octbuff = driver_alloc(octbytes);
@@ -1163,30 +1181,26 @@ static int write_buf(Uint32 *s, int n)
 	    }
 	    octbytes = 0;
 	    octal_or_hex_format(ch, octbuff, &octbytes);
-	     DEBUGLOG(("octbytes: %d", octbytes));
+            DEBUGLOG(("write_buf: octbytes: %d", octbytes));
 	    outc('\\');
 	    for (i = 0; i < octbytes; ++i) {
 		outc(lastput = octbuff[i]);
-		DEBUGLOG(("outc: %d", (int) lastput));
+		DEBUGLOG(("write_buf: outc: %d", (int) lastput));
 	    }
 	    n -= octbytes+1;
 	    s += octbytes+1;
 	    if (octbuff != octtmp) {
 		driver_free(octbuff);
 	    }
-#ifdef HAVE_WCWIDTH
-	} else if (*s & WIDE_TAG) {
-	    --n; s++;
-#endif
 	} else {
-	    DEBUGLOG(("Very unexpected character %d",(int) *s));
+	    DEBUGLOG(("write_buf: Very unexpected character %d",(int) *s));
 	    ++n;
 	    --s;
 	}
     }
     /* Check landed in first column of new line and have 'xn' bug. */
     n = s - lbuf;
-    if (COL(n) == 0 && xn && n != 0) {
+    if (xn && n != 0 && COL(cp_pos_to_col(n)) == 0) {
 	if (n >= llen) {
 	    outc(' ');
 	} else if (lastput == 0) { /* A multibyte UTF8 character */
@@ -1216,14 +1230,19 @@ static int outc(int c)
     return 1;
 }
 
-static int move_cursor(int from, int to)
+static int move_cursor(int from_pos, int to_pos)
 {
+    int from_col, to_col;
     int dc, dl;
-
     update_cols();
 
-    dc = COL(to) - COL(from);
-    dl = LINE(to) - LINE(from);
+    from_col = cp_pos_to_col(from_pos);
+    to_col = cp_pos_to_col(to_pos);
+
+    dc = COL(to_col) - COL(from_col);
+    dl = LINE(to_col) - LINE(from_col);
+    DEBUGLOG(("move_cursor: from %d %d to %d %d => %d %d\n",
+              from_pos, from_col, to_pos, to_col, dl, dc));
     if (dl > 0)
       move_down(dl);
     else if (dl < 0)
@@ -1232,7 +1251,66 @@ static int move_cursor(int from, int to)
       move_right(dc);
     else if (dc < 0)
       move_left(-dc);
-    return TRUE;
+    return to_col-from_col;
+}
+
+/*
+ * Returns the length of an ANSI escape code in a buffer, this function only consider
+ * color escape sequences like `\e[33m` or `\e[21;33m`. If a sequence has no valid
+ * terminator, the length is equal the number of characters between `\e` and the first
+ * invalid character, inclusive.
+ */
+
+static int ansi_escape_width(Uint32 *s, int max_length)
+{
+    int i;
+    
+    if (*s != (CONTROL_TAG | ((Uint32) '\e'))) {
+       return 0;
+    } else if (max_length <= 1) {
+       return 1;
+    } else if (s[1] != '[') {
+       return 2;
+    }
+    
+    for (i = 2; i < max_length && (s[i] == ';' || (s[i] >= '0' && s[i] <= '9')); i++);
+
+    return i + 1;
+}
+
+static int cp_pos_to_col(int cp_pos)
+{
+    /*
+     * If we don't have any character width information. Assume that
+     * code points are one column wide
+     */
+    int w = 1;
+    int col = 0;
+    int i = 0;
+    int j;
+
+    if (cp_pos > llen) {
+        col += cp_pos - llen;
+        cp_pos = llen;
+    }
+
+    while (i < cp_pos) {
+       j = ansi_escape_width(lbuf + i, llen - i);
+
+       if (j > 0) {
+           i += j;
+       } else {
+#ifdef HAVE_WCWIDTH
+           w = wcwidth(lbuf[i]);
+#endif
+           if (w > 0) {
+              col += w;
+           }
+           i++;
+       }
+    }
+
+    return col;    
 }
 
 static int start_termcap(void)
@@ -1241,35 +1319,42 @@ static int start_termcap(void)
     size_t envsz = 1024;
     char *env = NULL;
     char *c;
+    int tres;
+
+    DEBUGLOG(("start_termcap: .."));
 
     capbuf = driver_alloc(1024);
     if (!capbuf)
-	goto false;
+	goto termcap_false;
     eres = erl_drv_getenv("TERM", capbuf, &envsz);
     if (eres == 0)
 	env = capbuf;
-    else if (eres < 0)
-	goto false;
-    else /* if (eres > 1) */ {
+    else if (eres < 0) {
+        DEBUGLOG(("start_termcap: failure in erl_drv_getenv(\"TERM\", ..) = %d\n", eres));
+	goto termcap_false;
+    } else /* if (eres > 1) */ {
       char *envbuf = driver_alloc(envsz);
       if (!envbuf)
-	  goto false;
+	  goto termcap_false;
       while (1) {
 	  char *newenvbuf;
 	  eres = erl_drv_getenv("TERM", envbuf, &envsz);
 	  if (eres == 0)
 	      break;
 	  newenvbuf = driver_realloc(envbuf, envsz);
-	  if (eres < 0 || !newenvbuf) {
+          if (eres < 0 || !newenvbuf) {
+              DEBUGLOG(("start_termcap: failure in erl_drv_getenv(\"TERM\", ..) = %d or realloc buf == %p\n", eres, newenvbuf));
 	      env = newenvbuf ? newenvbuf : envbuf;
-	      goto false;
+	      goto termcap_false;
 	  }
 	  envbuf = newenvbuf;
       }
       env = envbuf;
     }
-    if (tgetent((char*)lbuf, env) <= 0)
-      goto false;
+    if ((tres = tgetent((char*)lbuf, env)) <= 0) {
+        DEBUGLOG(("start_termcap: failure in tgetent(..) = %d\n", tres));
+        goto termcap_false;
+    }
     if (env != capbuf) {
 	env = NULL;
 	driver_free(env);
@@ -1285,9 +1370,12 @@ static int start_termcap(void)
     if (!(left = tgetflag("bs") ? "\b" : tgetstr("bc", &c)))
       left = "\b";		/* Can't happen - but does on Solaris 2 */
     right = tgetstr("nd", &c);
-    if (up && down && left && right)
-      return TRUE;
- false:
+    if (up && down && left && right) {
+        DEBUGLOG(("start_termcap: successful start\n"));
+        return TRUE;
+    }
+    DEBUGLOG(("start_termcap: failed start\n"));
+ termcap_false:
     if (env && env != capbuf)
 	driver_free(env);
     if (capbuf)
@@ -1363,10 +1451,13 @@ static void update_cols(void)
 
 static struct termios tty_smode, tty_rmode;
 
-static int tty_init(int fd, int canon, int echo, int sig)
-{
-    if (tcgetattr(fd, &tty_rmode) < 0)
-      return -1;
+static int tty_init(int fd, int canon, int echo, int sig) {
+    int tres;
+    DEBUGLOG(("tty_init: fd = %d, canon = %d, echo = %d, sig = %d", fd, canon, echo, sig));
+    if ((tres = tcgetattr(fd, &tty_rmode)) < 0) {
+        DEBUGLOG(("tty_init: failure in tcgetattr(%d,..) = %d\n", fd, tres));
+        return -1;
+    }
     tty_smode = tty_rmode;
 
     /* Default characteristics for all usage including termcap output. */
@@ -1419,6 +1510,7 @@ static int tty_init(int fd, int canon, int echo, int sig)
 #endif	
 	tty_smode.c_lflag &= ~(ISIG|IEXTEN);
     }
+    DEBUGLOG(("tty_init: successful init\n"));
     return 0;
 }
 
@@ -1429,20 +1521,25 @@ static int tty_init(int fd, int canon, int echo, int sig)
 
 static int tty_set(int fd)
 {
-    DEBUGF(("Setting tty...\n"));
+    int tres;
+    DEBUGF(("tty_set: Setting tty...\n"));
 
-    if (tcsetattr(fd, TCSANOW, &tty_smode) < 0)
+    if ((tres = tcsetattr(fd, TCSANOW, &tty_smode)) < 0) {
+        DEBUGLOG(("tty_set: failure in tcgetattr(%d,..) = %d\n", fd, tres));
 	return(-1);
+    }
     return(0);
 }
 
 static int tty_reset(int fd)         /* of terminal device */
 {
-    DEBUGF(("Resetting tty...\n"));
+    int tres;
+    DEBUGF(("tty_reset: Resetting tty...\n"));
 
-    if (tcsetattr(fd, TCSANOW, &tty_rmode) < 0)
+    if ((tres = tcsetattr(fd, TCSANOW, &tty_rmode)) < 0) {
+        DEBUGLOG(("tty_reset: failure in tcsetattr(%d,..) = %d\n", fd, tres));
 	return(-1);
-    
+    }
     return(0);
 }
 
@@ -1457,6 +1554,7 @@ static int tty_reset(int fd)         /* of terminal device */
 static RETSIGTYPE suspend(int sig)
 {
     if (tty_reset(ttysl_fd) < 0) {
+        DEBUGLOG(("signal: failure in suspend(%d), can't reset tty %d\n", sig, ttysl_fd));
 	fprintf(stderr,"Can't reset tty \n");
 	exit(1);
     }
@@ -1468,6 +1566,7 @@ static RETSIGTYPE suspend(int sig)
     sys_signal(sig, suspend);	/* Reset signal handler */ 
 
     if (tty_set(ttysl_fd) < 0) {
+        DEBUGLOG(("signal: failure in suspend(%d), can't set tty %d\n", sig, ttysl_fd));
 	fprintf(stderr,"Can't set tty raw \n");
 	exit(1);
     }
@@ -1478,6 +1577,7 @@ static RETSIGTYPE suspend(int sig)
 static RETSIGTYPE cont(int sig)
 {
     if (tty_set(ttysl_fd) < 0) {
+        DEBUGLOG(("signal: failure in cont(%d), can't set tty raw %d\n", sig, ttysl_fd));
 	fprintf(stderr,"Can't set tty raw\n");
 	exit(1);
     }

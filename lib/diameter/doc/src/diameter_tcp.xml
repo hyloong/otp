@@ -1,23 +1,23 @@
 <?xml version="1.0" encoding="utf-8" ?>
 <!DOCTYPE erlref SYSTEM "erlref.dtd" [
-  <!ENTITY start '<seealso marker="#start-3">start/3</seealso>'>
+  <!ENTITY start '<seemfa marker="#start/3">start/3</seemfa>'>
   <!ENTITY gen_tcp_connect3
-  '<seealso marker="kernel:gen_tcp#connect-3">gen_tcp:connect/3</seealso>'>
+  '<seemfa marker="kernel:gen_tcp#connect/3">gen_tcp:connect/3</seemfa>'>
   <!ENTITY gen_tcp_listen2
-  '<seealso marker="kernel:gen_tcp#listen-2">gen_tcp:listen/2</seealso>'>
+  '<seemfa marker="kernel:gen_tcp#listen/2">gen_tcp:listen/2</seemfa>'>
   <!ENTITY ip_address
-  '<seealso marker="kernel:inet#type-ip_address">inet:ip_address()</seealso>'>
+  '<seetype marker="kernel:inet#ip_address">inet:ip_address()</seetype>'>
   <!ENTITY ssl_connect2
-  '<seealso marker="ssl:ssl#connect-2">ssl:connect/2</seealso>'>
+  '<seemfa marker="ssl:ssl#connect/2">ssl:connect/2</seemfa>'>
   <!ENTITY ssl_connect3
-  '<seealso marker="ssl:ssl#connect-3">ssl:connect/3</seealso>'>
+  '<seemfa marker="ssl:ssl#connect/3">ssl:connect/3</seemfa>'>
   <!ENTITY ssl_accept2
-  '<seealso marker="ssl:ssl#ssl_accept-2">ssl:ssl_accept/2</seealso>'>
+  '<seemfa marker="ssl:ssl#ssl_accept/2">ssl:ssl_accept/2</seemfa>'>
   <!ENTITY ssl_listen2
-  '<seealso marker="ssl:ssl#listen-2">ssl:listen/2</seealso>'>
-  <!ENTITY gen_tcp '<seealso marker="kernel:gen_tcp">gen_tcp(3)</seealso>'>
-  <!ENTITY inet '<seealso marker="kernel:inet">inet(3)</seealso>'>
-  <!ENTITY ssl '<seealso marker="ssl:ssl">ssl(3)</seealso>'>
+  '<seemfa marker="ssl:ssl#listen/2">ssl:listen/2</seemfa>'>
+  <!ENTITY gen_tcp '<seeerl marker="kernel:gen_tcp">gen_tcp(3)</seeerl>'>
+  <!ENTITY inet '<seeerl marker="kernel:inet">inet(3)</seeerl>'>
+  <!ENTITY ssl '<seeerl marker="ssl:ssl">ssl(3)</seeerl>'>
   <!ENTITY % also SYSTEM "seealso.ent" >
   <!ENTITY % here SYSTEM "seehere.ent" >
   %also;
@@ -27,7 +27,8 @@
 <erlref>
 <header>
 <copyright>
-<year>2011</year><year>2013</year>
+<year>2011</year>
+<year>2020</year>
 <holder>Ericsson AB. All Rights Reserved.</holder>
 </copyright>
 <legalnotice>
@@ -56,7 +57,7 @@ limitations under the License.
 <file>diameter_tcp.xml</file>
 </header>
 
-<module>diameter_tcp</module>
+<module since="OTP R14B03">diameter_tcp</module>
 <modulesummary>Diameter transport over TCP.</modulesummary>
 
 <description>
@@ -82,7 +83,7 @@ before configuring TLS capability on diameter transports.</p>
 <funcs>
 
 <func>
-<name>start({Type, Ref}, Svc, [Opt])
+<name since="OTP R14B03">start({Type, Ref}, Svc, [Opt])
          -> {ok, Pid}
           | {ok, Pid, [LAddr]}
           | {error, Reason}</name>
@@ -99,7 +100,9 @@ before configuring TLS capability on diameter transports.</p>
           | {rport, integer()}
           | {accept, Match}
           | {port, integer()}
-          | {fragment_timer, infinity | 0..16#FFFFFFFF}</v>
+          | {fragment_timer, infinity | 0..16#FFFFFFFF}
+          | {message_cb, &mod_eval;}
+          | {sender, boolean()}</v>
 <v>SslOpt = {ssl_options, true | list()}</v>
 <v>TcpOpt = term()</v>
 <v>Match = &ip_address; | string() | [Match]</v>
@@ -140,6 +143,44 @@ such a message is received over the transport interface after
 two successive timeouts without the reception of additional bytes.
 Defaults to 1000.</p>
 
+<marker id="sender"/>
+<p>
+Option <c>sender</c> specifies whether or not to use a dedicated
+process for sending outgoing messages, which avoids the possibility of
+send blocking reception.
+Defaults to <c>false</c>.
+If set to <c>true</c> then a <c>message_cb</c> that avoids the
+possibility of messages being queued in the sender process without
+bound should be configured.</p>
+
+<p>
+Option <c>message_cb</c> specifies a callback that is invoked on
+incoming and outgoing messages, that can be used to implement
+flow control.
+It is applied to two arguments: an atom indicating the
+reason for the callback (<c>send</c>, <c>recv</c>, or <c>ack</c> after
+a completed send), and the message in question (binary() on
+<c>recv</c>, binary() or diameter_packet record on <c>send</c> or
+<c>ack</c>, or <c>false</c> on <c>ack</c> when an incoming request has
+been discarded).
+It should return a list of actions and a new callback as
+tail; eg. <c>[fun cb/3, State]</c>.
+Valid actions are the atoms <c>send</c> or <c>recv</c>, to
+cause a following message-valued action to be sent/received,
+a message to send/receive (binary() or
+diameter_packet record), or a boolean() to enable/disable reading on
+the socket.
+More than one <c>send</c>/<c>recv</c>/message sequence can be
+returned from the same callback, and an initial
+<c>send</c>/<c>recv</c> can be omitted if the same as the value passed
+as the callback's first argument.
+Reading is initially enabled, and returning <c>false</c> does not
+imply there cannot be subsequent <c>recv</c> callbacks since
+messages may already have been read.
+An empty tail is equivalent to the prevailing callback.
+Defaults to a callback equivalent to <c>fun(ack, _) -> []; (_, Msg) ->
+[Msg] end</c>.</p>
+
 <p>
 Remaining options are any accepted by &ssl_connect3; or
 &gen_tcp_connect3; for
@@ -150,7 +191,7 @@ Options <c>binary</c>,
 <c>packet</c> and <c>active</c> cannot be specified.
 Also, option <c>port</c> can be specified for a listening transport
 to specify the local listening port, the default being the standardized
-3868 if unspecified.
+3868.
 Note that the option <c>ip</c> specifies the local address.</p>
 
 <p>
@@ -170,14 +211,11 @@ that will not be forthcoming, which will eventually cause the RFC 3539
 watchdog to take down the connection.</p>
 
 <p>
-If an <c>ip</c> option is not specified then the first element of a
-non-empty <c>Host-IP-Address</c> list in <c>Svc</c> provides the local
-IP address.
-If neither is specified then the default address selected by &gen_tcp;
-is used.
-In all cases, the selected address is either returned from
-&start; or passed in a <c>connected</c> message over the transport
-interface.</p>
+The first element of a non-empty <c>Host-IP-Address</c> list in
+<c>Svc</c> provides the local IP address if an <c>ip</c> option is not
+specified.
+The local address is either returned from&start; or passed in a
+<c>connected</c> message over the transport interface.</p>
 </desc>
 </func>
 

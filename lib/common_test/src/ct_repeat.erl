@@ -1,7 +1,7 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2007-2013. All Rights Reserved.
+%% Copyright Ericsson AB 2007-2018. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -18,14 +18,14 @@
 %% %CopyrightEnd%
 %%
 
-%%% @doc Common Test Framework module that handles repeated test runs
+%%% doc Common Test Framework module that handles repeated test runs
 %%%
-%%% <p>This module exports functions for repeating tests. The following
+%%% This module exports functions for repeating tests. The following
 %%% start flags (or equivalent ct:run_test/1 options) are supported:
 %%% -until <StopTime>, StopTime = YYMoMoDDHHMMSS | HHMMSS
 %%% -duration <DurTime>, DurTime = HHMMSS
 %%% -force_stop [skip_rest]
-%%% -repeat <N>, N = integer()</p>
+%%% -repeat <N>, N = integer()
 
 -module(ct_repeat).
 
@@ -43,14 +43,14 @@ loop_test(If,Args) when is_list(Args) ->
 	no_loop ->
 	    false;
 	E = {error,_} ->
-	    io:format("Common Test error: ~p\n\n",[E]),
-	    file:set_cwd(Cwd),
+	    io:format("Common Test error: ~tp\n\n",[E]),
+	    ok = file:set_cwd(Cwd),
 	    E;
 	{repeat,N} ->
 	    io:format("\nCommon Test: Will repeat tests ~w times.\n\n",[N]),
 	    Args1 = [{loop_info,[{repeat,1,N}]} | Args],
 	    Result = loop(If,repeat,0,N,undefined,Args1,undefined,[]),
-	    file:set_cwd(Cwd),
+	    ok = file:set_cwd(Cwd),
 	    Result;
 	{stop_time,StopTime} ->
 	    Result =
@@ -70,13 +70,14 @@ loop_test(If,Args) when is_list(Args) ->
 				    CtrlPid = self(),
 				    spawn(
 				      fun() ->
+                                              ct_util:mark_process(),
 					      stop_after(CtrlPid,Secs,ForceStop)
 				      end)
 			    end,
 			Args1 = [{loop_info,[{stop_time,Secs,StopTime,1}]} | Args],
 			loop(If,stop_time,0,Secs,StopTime,Args1,TPid,[])
 		end,
-	    file:set_cwd(Cwd),
+	    ok = file:set_cwd(Cwd),
 	    Result
     end.
     
@@ -89,18 +90,18 @@ loop(If,Type,N,Data0,Data1,Args,TPid,AccResult) ->
 	{'EXIT',Pid,Reason} ->
 	    case Reason of
 		{user_error,What} ->
-		    io:format("\nTest run failed!\nReason: ~p\n\n\n", [What]),
+		    io:format("\nTest run failed!\nReason: ~tp\n\n\n", [What]),
 		    cancel(TPid),
 		    {error,What};			
 		_ ->
 		    io:format("Test run crashed! This could be an internal error "
 			      "- please report!\n\n"
-			      "~p\n\n\n",[Reason]),
+			      "~tp\n\n\n",[Reason]),
 		    cancel(TPid),
 		    {error,Reason}
 	    end;
 	{Pid,{error,Reason}} ->
-	    io:format("\nTest run failed!\nReason: ~p\n\n\n",[Reason]),
+	    io:format("\nTest run failed!\nReason: ~tp\n\n\n",[Reason]),
 	    cancel(TPid),
 	    {error,Reason};
 	{Pid,Result} ->
@@ -134,6 +135,7 @@ spawn_tester(script,Ctrl,Args) ->
 
 spawn_tester(func,Ctrl,Opts) ->
     Tester = fun() ->
+                     ct_util:mark_process(),
 		     case catch ct_run:run_test2(Opts) of
 			 {'EXIT',Reason} ->
 			     exit(Reason);
@@ -276,7 +278,7 @@ log_loop_info(Args) ->
 		    ForceStop ->
 			io_lib:format("force_stop is set to: ~w",[ForceStop])
 		end,			
-	    ct_logs:log("Test loop info",LogStr1++LogStr2++LogStr3++LogStr4,[])
+	    ct_logs:log("Test loop info","~ts", [LogStr1++LogStr2++LogStr3++LogStr4])
     end.
 
 ts(Secs) ->

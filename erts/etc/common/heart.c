@@ -1,7 +1,7 @@
 /*
  * %CopyrightBegin%
  * 
- * Copyright Ericsson AB 1996-2013. All Rights Reserved.
+ * Copyright Ericsson AB 1996-2020. All Rights Reserved.
  * 
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -48,13 +48,10 @@
  *
  *  HEART_BEATING
  *
- *  This program expects a heart beat messages. If it does not receive a 
- *  heart beat message from Erlang within heart_beat_timeout seconds, it 
- *  reboots the system. The variable heart_beat_timeout is exported (so
- *  that it can be set from the shell in VxWorks, as is the variable
- *  heart_beat_report_delay). When using Solaris, the system is rebooted
- *  by executing the command stored in the environment variable
- *  HEART_COMMAND.
+ *  This program expects a heart beat message. If it does not receive a
+ *  heart beat message from Erlang within heart_beat_timeout seconds, it
+ *  reboots the system. The system is rebooted by executing the command
+ *  stored in the environment variable HEART_COMMAND.
  *
  *  BLOCKING DESCRIPTORS
  *
@@ -119,6 +116,8 @@
 #define HEART_COMMAND_ENV          "HEART_COMMAND"
 #define ERL_CRASH_DUMP_SECONDS_ENV "ERL_CRASH_DUMP_SECONDS"
 #define HEART_KILL_SIGNAL          "HEART_KILL_SIGNAL"
+#define HEART_NO_KILL              "HEART_NO_KILL"
+
 
 #define MSG_HDR_SIZE         (2)
 #define MSG_HDR_PLUS_OP_SIZE (3)
@@ -147,26 +146,16 @@ struct msg {
 /*  Maybe interesting to change */
 
 /* Times in seconds */
-#define  HEART_BEAT_BOOT_DELAY       60  /* 1 minute */
 #define  SELECT_TIMEOUT               5  /* Every 5 seconds we reset the
 					    watchdog timer */
 
 /* heart_beat_timeout is the maximum gap in seconds between two
-   consecutive heart beat messages from Erlang, and HEART_BEAT_BOOT_DELAY
-   is the the extra delay that wd_keeper allows for, to give heart a
-   chance to reboot in the "normal" way before the hardware watchdog
-   enters the scene. heart_beat_report_delay is the time allowed for reporting
-   before rebooting under VxWorks. */
+   consecutive heart beat messages from Erlang. */
 
 int heart_beat_timeout = 60;
-int heart_beat_report_delay = 30;
-int heart_beat_boot_delay = HEART_BEAT_BOOT_DELAY;
 /* All current platforms have a process identifier that
    fits in an unsigned long and where 0 is an impossible or invalid value */
 unsigned long heart_beat_kill_pid = 0;
-
-#define VW_WD_TIMEOUT (heart_beat_timeout+heart_beat_report_delay+heart_beat_boot_delay)
-#define SOL_WD_TIMEOUT (heart_beat_timeout+heart_beat_boot_delay)
 
 /* reasons for reboot */
 #define  R_TIMEOUT          (1)
@@ -295,7 +284,6 @@ free_env_val(char *value)
 static void get_arguments(int argc, char** argv) {
     int i = 1;
     int h;
-    int w;
     unsigned long p;
 
     while (i < argc) {
@@ -308,15 +296,6 @@ static void get_arguments(int argc, char** argv) {
 			if ((h > 10) && (h <= 65535)) {
 			    heart_beat_timeout = h;
 			    fprintf(stderr,"heart_beat_timeout = %d\n",h);
-			    i++;
-			}
-		break;
-	    case 'w':
-		if (strcmp(argv[i], "-wt") == 0)
-		    if (sscanf(argv[i+1],"%i",&w) ==1)
-			if ((w > 10) && (w <= 65535)) {
-			    heart_beat_boot_delay = w;
-			    fprintf(stderr,"heart_beat_boot_delay = %d\n",w);
 			    i++;
 			}
 		break;
@@ -345,7 +324,7 @@ static void get_arguments(int argc, char** argv) {
 	}
 	i++;
     }
-    debugf("arguments -ht %d -wt %d -pid %lu\n",h,w,p);
+    debugf("arguments -ht %d -pid %lu\n",h,p);
 }
 
 int main(int argc, char **argv) {
@@ -472,10 +451,6 @@ message_loop(erlin_fd, erlout_fd)
 			switch (mp->op) {
 			case HEART_BEAT:
 				timestamp(&last_received);
-#ifdef USE_WATCHDOG
-				/* reset the hardware watchdog timer */
-				wd_reset();
-#endif
 				break;
 			case SHUT_DOWN:
 				return R_SHUT_DOWN;
@@ -525,9 +500,15 @@ message_loop(erlin_fd, erlout_fd)
 
 #if defined(__WIN32__)
 static void 
-kill_old_erlang(void){
+kill_old_erlang(int reason){
     HANDLE erlh;
     DWORD exit_code;
+    char* envvar = NULL;
+
+    envvar = get_env(HEART_NO_KILL);
+    if (envvar && strcmp(envvar, "TRUE") == 0)
+      return;
+
     if(heart_beat_kill_pid != 0){
 	if((erlh = OpenProcess(PROCESS_TERMINATE | 
 			       SYNCHRONIZE | 
@@ -555,20 +536,36 @@ kill_old_erlang(void){
 }
 #else
 static void 
-kill_old_erlang(void){
+kill_old_erlang(int reason)
+{
     pid_t pid;
     int i, res;
     int sig = SIGKILL;
-    char *sigenv = NULL;
+    char *envvar = NULL;
 
-    sigenv = get_env(HEART_KILL_SIGNAL);
-    if (sigenv && strcmp(sigenv, "SIGABRT") == 0) {
-        print_error("kill signal SIGABRT requested");
-        sig = SIGABRT;
-    }
+    envvar = get_env(HEART_NO_KILL);
+    if (envvar && strcmp(envvar, "TRUE") == 0)
+      return;
 
     if(heart_beat_kill_pid != 0){
-	pid = (pid_t) heart_beat_kill_pid;
+        pid = (pid_t) heart_beat_kill_pid;
+        if (reason == R_CLOSED) {
+            print_error("Wait 5 seconds for Erlang to terminate nicely");
+            for (i=0; i < 5; ++i) {
+                res = kill(pid, 0); /* check if alive */
+                if (res < 0 && errno == ESRCH)
+                    return;
+                sleep(1);
+            }
+            print_error("Erlang still alive, kill it");
+        }
+
+        envvar = get_env(HEART_KILL_SIGNAL);
+        if (envvar && strcmp(envvar, "SIGABRT") == 0) {
+            print_error("kill signal SIGABRT requested");
+            sig = SIGABRT;
+        }
+
 	res = kill(pid,sig);
 	for(i=0; i < 5 && res == 0; ++i){
 	    sleep(1);
@@ -666,11 +663,6 @@ void win_system(char *command)
  */
 static void 
 do_terminate(int erlin_fd, int reason) {
-  /*
-    When we get here, we have HEART_BEAT_BOOT_DELAY secs to finish
-    (plus heart_beat_report_delay if under VxWorks), so we don't need
-    to call wd_reset().
-    */
   int ret = 0, tmo=0;
   char *tmo_env;
 
@@ -697,7 +689,7 @@ do_terminate(int erlin_fd, int reason) {
 	    if(!command)
 		print_error("Would reboot. Terminating.");
 	    else {
-		kill_old_erlang();
+		kill_old_erlang(reason);
 		/* High prio combined with system() works badly indeed... */
 		SetPriorityClass(GetCurrentProcess(), NORMAL_PRIORITY_CLASS);
 		win_system(command);
@@ -705,7 +697,7 @@ do_terminate(int erlin_fd, int reason) {
 	    }
 	    free_env_val(command);
 	} else {
-	    kill_old_erlang();
+	    kill_old_erlang(reason);
 	    /* High prio combined with system() works badly indeed... */
 	    SetPriorityClass(GetCurrentProcess(), NORMAL_PRIORITY_CLASS);
 	    win_system(&cmd[0]);
@@ -717,15 +709,13 @@ do_terminate(int erlin_fd, int reason) {
 	    if(!command)
 		print_error("Would reboot. Terminating.");
 	    else {
-		kill_old_erlang();
-		/* suppress gcc warning with 'if' */
+		kill_old_erlang(reason);
 		ret = system(command);
 		print_error("Executed \"%s\" -> %d. Terminating.",command, ret);
 	    }
 	    free_env_val(command);
 	} else {
-	    kill_old_erlang();
-	    /* suppress gcc warning with 'if' */
+	    kill_old_erlang(reason);
 	    ret = system((char*)&cmd[0]);
 	    print_error("Executed \"%s\" -> %d. Terminating.",cmd, ret);
 	}
@@ -847,11 +837,8 @@ write_message(fd, mp)
   int   fd;
   struct msg *mp;
 {
-  int   len;
-  char* tmp;
+  int len = ntohs(mp->len);
 
-  tmp = (char*) &(mp->len);
-  len = (*tmp * 256) + *(tmp+1); 
   if ((len == 0) || (len > MSG_BODY_SIZE)) {
     return MSG_HDR_SIZE;
   }				/* cc68k wants (char *) */
@@ -990,7 +977,7 @@ debugf(const char *format,...)
 
 #ifdef __WIN32__
 void print_last_error() {
-	LPVOID lpMsgBuf;
+	LPTSTR lpMsgBuf;
 	FormatMessage( 
 		FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM,
 		NULL,

@@ -2,7 +2,7 @@ changecom(`/*', `*/')dnl
 /*
  * %CopyrightBegin%
  *
- * Copyright Ericsson AB 2007-2011. All Rights Reserved.
+ * Copyright Ericsson AB 2007-2016. All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -166,7 +166,7 @@ dnl It will be a memory load via NSP when ARGNO >= NR_ARG_REGS.
 dnl It will be a register move when 0 <= ARGNO < NR_ARG_REGS; if
 dnl the source and destination are the same, the move is suppressed.
 dnl
-define(NBIF_MOVE_REG,`ifelse($1,$2,`! mov	$2, $1',`mov	$2, $1')')dnl
+define(NBIF_MOVE_REG,`ifelse($1,$2,`// mov	$2, $1',`mov	$2, $1')')dnl
 define(NBIF_REG_ARG,`NBIF_MOVE_REG($1,ARG$2)')dnl
 define(NBIF_STK_LOAD,`ld	[NSP+$2], $1')dnl
 define(NBIF_STK_ARG,`NBIF_STK_LOAD($1,eval(4*(($2-$3)-1)))')dnl

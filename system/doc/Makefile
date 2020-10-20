@@ -9,11 +9,11 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-# 
+#
 # The Initial Developer of the Original Code is Ericsson Utvecklings AB.
 # Portions created by Ericsson are Copyright 1999, Ericsson Utvecklings
 # AB. All Rights Reserved.''
-# 
+#
 #     $Id$
 #
 include $(ERL_TOP)/make/target.mk
@@ -24,6 +24,7 @@ include $(ERL_TOP)/make/$(TARGET)/otp.mk
 #
 
 SUB_DIRECTORIES = design_principles \
+		  general_info \
 		  getting_started  \
 		  system_architecture_intro \
 		  embedded \
@@ -38,10 +39,9 @@ SUB_DIRECTORIES = design_principles \
 
 #		  pics \
 
-SPECIAL_TARGETS = 
+SPECIAL_TARGETS =
 
 #
 # Default Subdir Targets
 #
 include $(ERL_TOP)/make/otp_subdir.mk
-

@@ -1,7 +1,7 @@
 /*
  * %CopyrightBegin%
  * 
- * Copyright Ericsson AB 1996-2009. All Rights Reserved.
+ * Copyright Ericsson AB 1996-2018. All Rights Reserved.
  * 
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -27,63 +27,48 @@
 #endif
 
 #include "sys.h"
-#include "erl_vm.h"
-#include "global.h"
 #include "hash.h"
-
-/*
-** List of sizes (all are primes)
-*/
-static const int h_size_table[] = {
-    2, 5, 11, 23, 47, 97, 197, 397, 797,  /* double upto here */
-    1201,   1597,
-    2411,   3203, 
-    4813,   6421,
-    9643,   12853, 
-    19289,  25717,
-    51437,
-    102877,
-    205759,
-    411527,
-    823117,
-    1646237,
-    3292489,
-    6584983,
-    13169977,
-    26339969,
-    52679969, 
-    -1 
-};
 
 /*
 ** Get info about hash
 **
 */
 
+#define MAX_SHIFT (ERTS_SIZEOF_TERM * 8)
+
+static int hash_get_slots(Hash *h) {
+    return UWORD_CONSTANT(1) << (MAX_SHIFT - h->shift);
+}
+
 void hash_get_info(HashInfo *hi, Hash *h)
 {
-    int size = h->size;
+    int size = hash_get_slots(h);
     int i;
     int max_depth = 0;
     int objects = 0;
+    int used = 0;
 
     for (i = 0; i < size; i++) {
 	int depth = 0;
 	HashBucket* b = h->bucket[i];
-	
+
 	while (b != (HashBucket*) 0) {
 	    objects++;
 	    depth++;
 	    b = b->next;
 	}
-	if (depth > max_depth)
-	    max_depth = depth;
+        if (depth) {
+            used++;
+            if (depth > max_depth)
+                max_depth = depth;
+        }
     }
+    ASSERT(objects == h->nobjs);
 
     hi->name  = h->name;
-    hi->size  = h->size;
-    hi->used  = h->used;
-    hi->objs  = objects;
+    hi->size  = hash_get_slots(h);
+    hi->used  = used;
+    hi->objs  = h->nobjs;
     hi->depth = max_depth;
 }
 
@@ -92,74 +77,81 @@ void hash_get_info(HashInfo *hi, Hash *h)
 **
 */
 
-void hash_info(int to, void *arg, Hash* h)
+void hash_info(fmtfn_t to, void *arg, Hash* h)
 {
     HashInfo hi;
 
     hash_get_info(&hi, h);
 
-    erts_print(to, arg, "=hash_table:%s\n", hi.name);
-    erts_print(to, arg, "size: %d\n",       hi.size);
-    erts_print(to, arg, "used: %d\n",       hi.used);
-    erts_print(to, arg, "objs: %d\n",       hi.objs);
-    erts_print(to, arg, "depth: %d\n",      hi.depth);
+    h->fun.meta_print(to, arg, "=hash_table:%s\n", hi.name);
+    h->fun.meta_print(to, arg, "size: %d\n",       hi.size);
+    h->fun.meta_print(to, arg, "used: %d\n",       hi.used);
+    h->fun.meta_print(to, arg, "objs: %d\n",       hi.objs);
+    h->fun.meta_print(to, arg, "depth: %d\n",      hi.depth);
 }
 
 
 /*
  * Returns size of table in bytes. Stored objects not included.
  */
-int 
+int
 hash_table_sz(Hash *h)
 {
   int i;
   for(i=0;h->name[i];i++);
   i++;
-  return sizeof(Hash) + h->size*sizeof(HashBucket*) + i;
+  return sizeof(Hash) + hash_get_slots(h)*sizeof(HashBucket*) + i;
 }
 
+
+static ERTS_INLINE void set_thresholds(Hash* h)
+{
+    h->grow_threshold = (8*hash_get_slots(h))/5;   /* grow at 160% load */
+    if (h->shift < h->max_shift)
+        h->shrink_threshold = hash_get_slots(h) / 5;  /* shrink at 20% load */
+    else
+        h->shrink_threshold = -1;  /* never shrink below inital size */
+}
 
 /*
 ** init a pre allocated or static hash structure
 ** and allocate buckets.
 */
-Hash* hash_init(ErtsAlcType_t type, Hash* h, char* name, int size, HashFunctions fun)
+Hash* hash_init(int type, Hash* h, char* name, int size, HashFunctions fun)
 {
     int sz;
-    int ix = 0;
+    int shift = 1;
 
-    h->type = type;
+    h->meta_alloc_type = type;
 
-    while (h_size_table[ix] != -1 && h_size_table[ix] < size)
-	ix++;
-    if (h_size_table[ix] == -1)
-	erl_exit(1, "panic: too large hash table size (%d)\n", size);
+    while ((UWORD_CONSTANT(1) << shift) < size)
+        shift++;
 
-    size = h_size_table[ix];
-    sz = size*sizeof(HashBucket*);
-
-    h->bucket = (HashBucket**) erts_alloc(h->type, sz);
-
-    sys_memzero(h->bucket, sz);
     h->is_allocated = 0;
     h->name = name;
     h->fun = fun;
-    h->size = size;
-    h->size20percent = h->size/5;
-    h->size80percent = (4*h->size)/5;
-    h->ix = ix;
-    h->used = 0;
+    h->shift = MAX_SHIFT - shift;
+    h->max_shift = h->shift;
+    h->nobjs = 0;
+    set_thresholds(h);
+
+    sz = hash_get_slots(h) * sizeof(HashBucket*);
+    h->bucket = (HashBucket**) fun.meta_alloc(h->meta_alloc_type, sz);
+    memzero(h->bucket, sz);
+
+    ASSERT(h->shift > 0 && h->shift < 64);
+
     return h;
 }
 
 /*
 ** Create a new hash table
 */
-Hash* hash_new(ErtsAlcType_t type, char* name, int size, HashFunctions fun)
+Hash* hash_new(int type, char* name, int size, HashFunctions fun)
 {
     Hash* h;
 
-    h = erts_alloc(type, sizeof(Hash));
+    h = fun.meta_alloc(type, sizeof(Hash));
 
     h = hash_init(type, h, name, size, fun);
     h->is_allocated =  1;
@@ -171,21 +163,21 @@ Hash* hash_new(ErtsAlcType_t type, char* name, int size, HashFunctions fun)
 */
 void hash_delete(Hash* h)
 {
-    int old_size = h->size;
+    int old_size = hash_get_slots(h);
     int i;
 
     for (i = 0; i < old_size; i++) {
 	HashBucket* b = h->bucket[i];
 	while (b != (HashBucket*) 0) {
 	    HashBucket* b_next = b->next;
-	    
+
 	    h->fun.free((void*) b);
 	    b = b_next;
 	}
     }
-    erts_free(h->type, h->bucket);
+    h->fun.meta_free(h->meta_alloc_type, h->bucket);
     if (h->is_allocated)
-	erts_free(h->type, (void*) h);
+	h->fun.meta_free(h->meta_alloc_type, (void*) h);
 }
 
 /*
@@ -194,44 +186,37 @@ void hash_delete(Hash* h)
 static void rehash(Hash* h, int grow)
 {
     int sz;
-    int old_size = h->size;
+    int old_size = hash_get_slots(h);
     HashBucket** new_bucket;
     int i;
 
     if (grow) {
-	if ((h_size_table[h->ix+1]) == -1)
-	    return;
-	h->ix++;
+	h->shift--;
     }
     else {
-	if (h->ix == 0)
+	if (h->shift == h->max_shift)
 	    return;
-	h->ix--;
+	h->shift++;
     }
-    h->size = h_size_table[h->ix];
-    h->size20percent = h->size/5;
-    h->size80percent = (4*h->size)/5;
-    sz = h->size*sizeof(HashBucket*);
 
-    new_bucket = (HashBucket **) erts_alloc(h->type, sz);
-    sys_memzero(new_bucket, sz);
+    sz = hash_get_slots(h)*sizeof(HashBucket*);
 
-    h->used = 0;
+    new_bucket = (HashBucket **) h->fun.meta_alloc(h->meta_alloc_type, sz);
+    memzero(new_bucket, sz);
 
     for (i = 0; i < old_size; i++) {
 	HashBucket* b = h->bucket[i];
 	while (b != (HashBucket*) 0) {
 	    HashBucket* b_next = b->next;
-	    int ix = b->hvalue % h->size;
-	    if (new_bucket[ix] == NULL)
-		h->used++;
+	    Uint ix = hash_get_slot(h, b->hvalue);
 	    b->next = new_bucket[ix];
 	    new_bucket[ix] = b;
 	    b = b_next;
 	}
     }
-    erts_free(h->type, (void *) h->bucket);
+    h->fun.meta_free(h->meta_alloc_type, (void *) h->bucket);
     h->bucket = new_bucket;
+    set_thresholds(h);
 }
 
 /*
@@ -240,16 +225,7 @@ static void rehash(Hash* h, int grow)
 */
 void* hash_get(Hash* h, void* tmpl)
 {
-    HashValue hval = h->fun.hash(tmpl);
-    int ix = hval % h->size;
-    HashBucket* b = h->bucket[ix];
-	
-    while(b != (HashBucket*) 0) {
-	if ((b->hvalue == hval) && (h->fun.cmp(tmpl, (void*)b) == 0))
-	    return (void*) b;
-	b = b->next;
-    }
-    return (void*) 0;
+    return hash_fetch(h, tmpl, h->fun.hash, h->fun.cmp);
 }
 
 /*
@@ -258,7 +234,7 @@ void* hash_get(Hash* h, void* tmpl)
 void* hash_put(Hash* h, void* tmpl)
 {
     HashValue hval = h->fun.hash(tmpl);
-    int ix = hval % h->size;
+    Uint ix = hash_get_slot(h, hval);
     HashBucket* b = h->bucket[ix];
 
     while(b != (HashBucket*) 0) {
@@ -268,66 +244,13 @@ void* hash_put(Hash* h, void* tmpl)
     }
     b = (HashBucket*) h->fun.alloc(tmpl);
 
-    if (h->bucket[ix] == NULL)
-	h->used++;
-
     b->hvalue = hval;
     b->next = h->bucket[ix];
     h->bucket[ix] = b;
 
-    if (h->used > h->size80percent)  /* rehash at 80% */
+    if (++h->nobjs > h->grow_threshold)
 	rehash(h, 1);
     return (void*) b;
-}
-
-static void
-hash_insert_entry(Hash* h, HashBucket* entry)
-{
-    HashValue hval = entry->hvalue;
-    int ix = hval % h->size;
-    HashBucket* b = h->bucket[ix];
-
-    while (b != (HashBucket*) 0) {
-	if ((b->hvalue == hval) && (h->fun.cmp((void*)entry, (void*)b) == 0)) {
-	    abort();		/* Should not happen */
-	}
-	b = b->next;
-    }
-
-    if (h->bucket[ix] == NULL)
-	h->used++;
-
-    entry->next = h->bucket[ix];
-    h->bucket[ix] = entry;
-
-    if (h->used > h->size80percent)  /* rehash at 80% */
-	rehash(h, 1);
-}
-
-
-/*
- * Move all entries in src into dst; empty src.
- * Entries in src must not exist in dst.
- */
-void
-erts_hash_merge(Hash* src, Hash* dst)
-{
-    int limit = src->size;
-    HashBucket** bucket = src->bucket;
-    int i;
-
-    src->used = 0;
-    for (i = 0; i < limit; i++) {
-	HashBucket* b = bucket[i];
-	HashBucket* next;
-
-	bucket[i] = NULL;
-	while (b) {
-	    next = b->next;
-	    hash_insert_entry(dst, b);
-	    b = next;
-	}
-    }
 }
 
 /*
@@ -337,10 +260,10 @@ erts_hash_merge(Hash* src, Hash* dst)
 void* hash_erase(Hash* h, void* tmpl)
 {
     HashValue hval = h->fun.hash(tmpl);
-    int ix = hval % h->size;
+    Uint ix = hash_get_slot(h, hval);
     HashBucket* b = h->bucket[ix];
     HashBucket* prev = 0;
-	
+
     while(b != 0) {
 	if ((b->hvalue == hval) && (h->fun.cmp(tmpl, (void*)b) == 0)) {
 	    if (prev != 0)
@@ -348,9 +271,7 @@ void* hash_erase(Hash* h, void* tmpl)
 	    else
 		h->bucket[ix] = b->next;
 	    h->fun.free((void*)b);
-	    if (h->bucket[ix] == NULL)
-		h->used--;
-	    if (h->used < h->size20percent)  /* rehash at 20% */
+	    if (--h->nobjs < h->shrink_threshold)
 		rehash(h, 0);
 	    return tmpl;
 	}
@@ -371,19 +292,17 @@ void *
 hash_remove(Hash *h, void *tmpl)
 {
     HashValue hval = h->fun.hash(tmpl);
-    int ix = hval % h->size;
+    Uint ix = hash_get_slot(h, hval);
     HashBucket *b = h->bucket[ix];
     HashBucket *prev = NULL;
-	
+
     while (b) {
 	if ((b->hvalue == hval) && (h->fun.cmp(tmpl, (void*)b) == 0)) {
 	    if (prev)
 		prev->next = b->next;
 	    else
 		h->bucket[ix] = b->next;
-	    if (h->bucket[ix] == NULL)
-		h->used--;
-	    if (h->used < h->size20percent)  /* rehash at 20% */
+	    if (--h->nobjs < h->shrink_threshold)
 		rehash(h, 0);
 	    return (void *) b;
 	}
@@ -393,11 +312,11 @@ hash_remove(Hash *h, void *tmpl)
     return NULL;
 }
 
-void hash_foreach(Hash* h, void (*func)(void *, void *), void *func_arg2)
+void hash_foreach(Hash* h, HFOREACH_FUN func, void *func_arg2)
 {
     int i;
 
-    for (i = 0; i < h->size; i++) {
+    for (i = 0; i < hash_get_slots(h); i++) {
 	HashBucket* b = h->bucket[i];
 	while(b != (HashBucket*) 0) {
 	    (*func)((void *) b, func_arg2);
@@ -405,4 +324,3 @@ void hash_foreach(Hash* h, void (*func)(void *, void *), void *func_arg2)
 	}
     }
 }
-

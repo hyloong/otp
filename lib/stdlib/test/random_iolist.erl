@@ -1,7 +1,7 @@
 %%
 %% %CopyrightBegin%
 %% 
-%% Copyright Ericsson AB 2008-2010. All Rights Reserved.
+%% Copyright Ericsson AB 2008-2017. All Rights Reserved.
 %% 
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -24,19 +24,15 @@
 
 -module(random_iolist).
 
--export([run/3, run2/3, standard_seed/0, compare/3, compare2/3, 
+-export([run/3, standard_seed/0, compare/3,
 	 random_iolist/1]).
 
 run(Iter,Fun1,Fun2) ->
     standard_seed(),
     compare(Iter,Fun1,Fun2).
 
-run2(Iter,Fun1,Fun2) ->
-    standard_seed(),
-    compare2(Iter,Fun1,Fun2).
-
 random_byte() ->
-     random:uniform(256) - 1.
+     rand:uniform(256) - 1.
 
 random_list(0,Acc) ->
     Acc;
@@ -45,7 +41,7 @@ random_list(N,Acc) ->
 
 random_binary(N) ->
     B = list_to_binary(random_list(N,[])),
-    case {random:uniform(2),size(B)} of
+    case {rand:uniform(2),size(B)} of
 	{2,M} when M > 1 ->
 	    S = M-1,
 	    <<_:3,C:S/binary,_:5>> = B,
@@ -57,7 +53,7 @@ random_list(N) ->
     random_list(N,[]).
 
 front() ->
-    case random:uniform(10) of
+    case rand:uniform(10) of
 	10 ->
 	    false;
 	_ ->
@@ -65,7 +61,7 @@ front() ->
     end.
 
 any_type() ->
-    case random:uniform(10) of
+    case rand:uniform(10) of
 	1 ->
 	    list;
 	2 ->
@@ -77,7 +73,7 @@ any_type() ->
     end.
 
 tail_type() ->
-    case random:uniform(5) of
+    case rand:uniform(5) of
 	1 ->
 	    list;
 	2 ->
@@ -90,9 +86,9 @@ random_length(N) ->
     UpperLimit = 255,
     case N of
 	M when M > UpperLimit ->
-	    random:uniform(UpperLimit+1) - 1;
+	    rand:uniform(UpperLimit+1) - 1;
 	_ ->
-	    random:uniform(N+1) - 1
+	    rand:uniform(N+1) - 1
     end.
 
 random_iolist(0,Acc) ->
@@ -139,7 +135,7 @@ random_iolist(N) ->
     
 
 standard_seed() ->
-    random:seed(1201,855653,380975).
+    rand:seed(exsplus, {1201,855653,380975}).
 
 do_comp(List,F1,F2) ->
     X = F1(List),
@@ -147,16 +143,6 @@ do_comp(List,F1,F2) ->
     case X =:= Y of
 	false ->
 	    exit({not_matching,List,X,Y});
-	_ ->
-	    true
-    end.
-	
-do_comp(List,List2,F1,F2) ->
-    X = F1(List,List2),
-    Y = F2(List,List2),
-    case X =:= Y of
-	false ->
-	    exit({not_matching,List,List2,X,Y});
 	_ ->
 	    true
     end.
@@ -172,25 +158,3 @@ compare(N,Fun1,Fun2) ->
     L = random_iolist(N),
     do_comp(L,Fun1,Fun2),
     compare(N-1,Fun1,Fun2).
-
-compare2(0,Fun1,Fun2) ->
-    L = random_iolist(100),
-    do_comp(<<>>,L,Fun1,Fun2),
-    do_comp(L,<<>>,Fun1,Fun2),
-    do_comp(<<>>,<<>>,Fun1,Fun2),
-    do_comp([],L,Fun1,Fun2),
-    do_comp(L,[],Fun1,Fun2),
-    do_comp([],[],Fun1,Fun2),
-    do_comp([[]|<<>>],L,Fun1,Fun2),
-    do_comp(L,[[]|<<>>],Fun1,Fun2),
-    do_comp([[]|<<>>],[[]|<<>>],Fun1,Fun2),
-    do_comp([<<>>,[]|<<>>],L,Fun1,Fun2),
-    do_comp(L,[<<>>,[]|<<>>],Fun1,Fun2),
-    do_comp([<<>>,[]|<<>>],[<<>>,[]|<<>>],Fun1,Fun2),
-    true;
-
-compare2(N,Fun1,Fun2) ->
-    L = random_iolist(N),
-    L2 = random_iolist(N),
-    do_comp(L,L2,Fun1,Fun2),
-    compare2(N-1,Fun1,Fun2).

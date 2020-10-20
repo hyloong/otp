@@ -1,7 +1,7 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2010-2015. All Rights Reserved.
+%% Copyright Ericsson AB 2010-2020. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -38,17 +38,17 @@
 -module(diameter_config).
 -behaviour(gen_server).
 
--compile({no_auto_import, [monitor/2]}).
-
 -export([start_service/2,
          stop_service/1,
          add_transport/2,
          remove_transport/2,
          have_transport/2,
-         lookup/1]).
+         lookup/1,
+         subscribe/2]).
 
-%% child server start
--export([start_link/0]).
+%% server start
+-export([start_link/0,
+         start_link/1]).
 
 %% gen_server callbacks
 -export([init/1,
@@ -58,8 +58,8 @@
          handle_info/2,
          code_change/3]).
 
-%% diameter_sync requests.
--export([sync/1]).
+%% callbacks
+-export([sync/1]).    %% diameter_sync requests
 
 %% debug
 -export([state/0,
@@ -69,13 +69,17 @@
 -include("diameter_internal.hrl").
 
 %% Server state.
--record(state, {id = diameter_lib:now()}).
+-record(state, {id = diameter_lib:now(),
+                role :: server | transport}).
 
 %% Registered name of the server.
 -define(SERVER, ?MODULE).
 
 %% Table config is written to.
 -define(TABLE, ?MODULE).
+
+%% Key on which a transport-specific child registers itself.
+-define(TRANSPORT_KEY(Ref), {?MODULE, transport, Ref}).
 
 %% Workaround for dialyzer's lack of understanding of match specs.
 -type match(T)
@@ -97,9 +101,6 @@
 %% Monitor entry in ?TABLE.
 -record(monitor, {mref = make_ref() :: reference(),
                   service}). %% name
-
-%% The default sequence mask.
--define(NOMASK, {0,32}).
 
 %% Time to lay low before restarting a dead service.
 -define(RESTART_SLEEP, 2000).
@@ -225,6 +226,13 @@ pred(_) ->
     ?THROW(pred).
 
 %% --------------------------------------------------------------------------
+%% # subscribe/2
+%% --------------------------------------------------------------------------
+
+subscribe(Ref, T) ->
+    diameter_reg:subscribe(?TRANSPORT_KEY(Ref), T).
+
+%% --------------------------------------------------------------------------
 %% # have_transport/2
 %%
 %% Output: true | false
@@ -264,6 +272,9 @@ start_link() ->
     Options    = [{spawn_opt, diameter_lib:spawn_opts(server, [])}],
     gen_server:start_link(ServerName, Module, Args, Options).
 
+start_link(T) ->
+    proc_lib:start_link(?MODULE, init, [T], infinity, []).
+
 state() ->
     call(state).
 
@@ -274,8 +285,27 @@ uptime() ->
 %%% # init/1
 %%% ----------------------------------------------------------
 
+%% ?SERVER start.
 init([]) ->
-    {ok, #state{}}.
+    {ok, #state{role = server}};
+
+%% Child start as a consequence of add_transport.
+init({SvcName, Type, Opts}) ->
+    Res = try
+              add(SvcName, Type, Opts)
+          catch
+              ?FAILURE(Reason) -> {error, Reason}
+          end,
+    proc_lib:init_ack({ok, self(), Res}),
+    loop(Res).
+
+%% loop/1
+
+loop({ok, _}) ->
+    gen_server:enter_loop(?MODULE, [], #state{role = transport});
+
+loop({error, _}) ->
+    ok.  %% die
 
 %%% ----------------------------------------------------------
 %%% # handle_call/2
@@ -284,8 +314,8 @@ init([]) ->
 handle_call(state, _, State) ->
     {reply, State, State};
 
-handle_call(uptime, _, #state{id = Time} = State) ->
-    {reply, diameter_lib:now_diff(Time), State};
+handle_call(uptime, _, #state{id = Time} = S) ->
+    {reply, diameter_lib:now_diff(Time), S};
 
 handle_call(Req, From, State) ->
     ?UNEXPECTED([Req, From]),
@@ -304,30 +334,34 @@ handle_cast(Msg, State) ->
 %%% # handle_info/2
 %%% ----------------------------------------------------------
 
+%% remove_transport is telling published child to die.
+handle_info(stop, #state{role = transport} = S) ->
+    {stop, normal, S};
+
 %% A service process has died. This is most likely a consequence of
 %% stop_service, in which case the restart will find no config for the
 %% service and do nothing. The entry keyed on the monitor ref is only
 %% removed as a result of the 'DOWN' notification however.
-handle_info({'DOWN', MRef, process, _, Reason}, State) ->
+handle_info({'DOWN', MRef, process, _, Reason}, #state{role = server} = S) ->
     [#monitor{service = SvcName} = T] = select([{#monitor{mref = MRef,
                                                           _ = '_'},
                                                  [],
                                                  ['$_']}]),
     queue_restart(Reason, SvcName),
     delete_object(T),
-    {noreply, State};
+    {noreply, S};
 
-handle_info({monitor, SvcName, Pid}, State) ->
-    monitor(Pid, SvcName),
-    {noreply, State};
+handle_info({monitor, SvcName, Pid}, #state{role = server} = S) ->
+    insert_monitor(Pid, SvcName),
+    {noreply, S};
 
-handle_info({restart, SvcName}, State) ->
+handle_info({restart, SvcName}, #state{role = server} = S) ->
     restart(SvcName),
-    {noreply, State};
+    {noreply, S};
 
-handle_info(restart, State) ->
+handle_info(restart, #state{role = server} = S) ->
     restart(),
-    {noreply, State};
+    {noreply, S};
 
 handle_info(Info, State) ->
     ?UNEXPECTED([Info]),
@@ -404,19 +438,22 @@ sync({start_service, SvcName, Opts}) ->
 sync({stop_service, SvcName}) ->
     stop(SvcName);
 
+%% Start a child whose only purpose is to be alive for the lifetime of
+%% the transport configuration and publish itself in diameter_reg.
+%% This is to provide a way for processes to to be notified when the
+%% configuration is removed (diameter_reg:subscribe/2).
 sync({add, SvcName, Type, Opts}) ->
-    try
-        add(SvcName, Type, Opts)
-    catch
-        ?FAILURE(Reason) -> {error, Reason}
-    end;
+    {ok, _Pid, Res} = diameter_config_sup:start_child({SvcName, Type, Opts}),
+    Res;
 
 sync({remove, SvcName, Pred}) ->
-    remove(select([{#transport{service = '$1', _ = '_'},
+    Recs = select([{#transport{service = '$1', _ = '_'},
                     [{'=:=', '$1', {const, SvcName}}],
                     ['$_']}]),
-           SvcName,
-           Pred).
+    F = fun(#transport{ref = R, type = T, options = O}) ->
+                Pred(R,T,O)
+        end,
+    remove(SvcName, lists:filter(F, Recs)).
 
 %% start/3
 
@@ -438,8 +475,8 @@ startmon(SvcName, {ok, Pid}) ->
 startmon(_, {error, _}) ->
     ok.
 
-monitor(Pid, SvcName) ->
-    MRef = erlang:monitor(process, Pid),
+insert_monitor(Pid, SvcName) ->
+    MRef = monitor(process, Pid),
     insert(#monitor{mref = MRef, service = SvcName}).
 
 %% queue_restart/2
@@ -495,14 +532,15 @@ stop(SvcName) ->
 %% restrict applications so that that there's one while the service
 %% has many.
 
-add(SvcName, Type, Opts) ->
+add(SvcName, Type, Opts0) ->
     %% Ensure acceptable transport options. This won't catch all
     %% possible errors (faulty callbacks for example) but it catches
     %% many. diameter_service:merge_service/2 depends on usable
     %% capabilities for example.
-    ok = transport_opts(Opts),
+    Opts = transport_opts(Opts0),
 
     Ref = make_ref(),
+    true = diameter_reg:add_new(?TRANSPORT_KEY(Ref)),
     T = {Ref, Type, Opts},
     %% The call to the service returns error if the service isn't
     %% started yet, which is harmless. The transport will be started
@@ -519,67 +557,190 @@ add(SvcName, Type, Opts) ->
     end.
 
 transport_opts(Opts) ->
-    lists:foreach(fun(T) -> opt(T) orelse ?THROW({invalid, T}) end, Opts).
+    [setopt(transport, T) || T <- Opts].
 
-opt({transport_module, M}) ->
+%% setopt/2
+
+setopt(K, T) ->
+    case opt(K, T) of
+        {value, X} ->
+            X;
+        true ->
+            T;
+        false ->
+            ?THROW({invalid, T});
+        {error, Reason} ->
+            ?THROW({invalid, T, Reason})
+    end.
+
+%% opt/2
+
+opt(_, {incoming_maxlen, N}) ->
+    is_integer(N) andalso 0 =< N andalso N < 1 bsl 24;
+
+opt(service, {K, B})
+  when K == string_decode;
+       K == traffic_counters ->
+    is_boolean(B);
+
+opt(service, {K, false})
+  when K == share_peers;
+       K == use_shared_peers;
+       K == monitor;
+       K == restrict_connections;
+       K == strict_arities ->
+    true;
+
+opt(service, {K, true})
+  when K == share_peers;
+       K == use_shared_peers;
+       K == strict_arities ->
+    true;
+
+opt(service, {decode_format, T})
+  when T == record;
+       T == list;
+       T == map;
+       T == none;
+       T == record_from_map ->
+    true;
+
+opt(service, {strict_arities, T})
+  when T == encode;
+       T == decode ->
+    true;
+
+opt(service, {restrict_connections, T})
+  when T == node;
+       T == nodes ->
+    true;
+
+opt(service, {K, T})
+  when (K == share_peers
+        orelse K == use_shared_peers
+        orelse K == restrict_connections), ([] == T
+                                            orelse is_atom(hd(T))) ->
+    true;
+
+opt(service, {monitor, P}) ->
+    is_pid(P);
+
+opt(service, {K, F})
+  when K == restrict_connections;
+       K == share_peers;
+       K == use_shared_peers ->
+    try diameter_lib:eval(F) of  %% but no guarantee that it won't fail later
+        Nodes ->
+            is_list(Nodes) orelse {error, Nodes}
+    catch
+        E:R:Stack ->
+            {error, {E, R, Stack}}
+    end;
+
+opt(service, {sequence, {H,N}}) ->
+    0 =< N andalso N =< 32
+        andalso is_integer(H)
+        andalso 0 =< H
+        andalso 0 == H bsr (32-N);
+
+opt(service = S, {sequence = K, F}) ->
+    try diameter_lib:eval(F) of
+        {_,_} = T ->
+            KT = {K,T},
+            opt(S, KT) andalso {value, KT};
+        V ->
+            {error, V}
+    catch
+        E:R:Stack ->
+            {error, {E, R, Stack}}
+    end;
+
+opt(transport, {transport_module, M}) ->
     is_atom(M);
 
-opt({transport_config, _, Tmo}) ->
+opt(transport, {transport_config, _, Tmo}) ->
     ?IS_UINT32(Tmo) orelse Tmo == infinity;
 
-opt({applications, As}) ->
+opt(transport, {transport_config, _}) ->
+    true;
+
+opt(transport, {applications, As}) ->
     is_list(As);
 
-opt({capabilities, Os}) ->
-    is_list(Os) andalso ok == encode_CER(Os);
+opt(transport, {capabilities, Os}) ->
+    is_list(Os) andalso try ok = encode_CER(Os), true
+                        catch ?FAILURE(No) -> {error, No}
+                        end;
 
-opt({K, Tmo})
+opt(_, {K, Tmo})
   when K == capx_timeout;
        K == dpr_timeout;
        K == dpa_timeout ->
     ?IS_UINT32(Tmo);
 
-opt({length_errors, T}) ->
+opt(_, {capx_strictness, B}) ->
+    is_boolean(B) andalso {value, {strict_capx, B}};
+opt(_, {K, B})
+  when K == strict_capx;
+       K == strict_mbit ->
+    is_boolean(B);
+
+opt(_, {avp_dictionaries, Mods}) ->
+    is_list(Mods) andalso lists:all(fun erlang:is_atom/1, Mods);
+
+opt(_, {length_errors, T}) ->
     lists:member(T, [exit, handle, discard]);
 
-opt({K, Tmo})
-  when K == reconnect_timer;  %% deprecated
-       K == connect_timer ->
+opt(transport, {reconnect_timer, Tmo}) ->  %% deprecated
+    ?IS_UINT32(Tmo) andalso {value, {connect_timer, Tmo}};
+opt(_, {connect_timer, Tmo}) ->
     ?IS_UINT32(Tmo);
 
-opt({watchdog_timer, {M,F,A}})
+opt(_, {watchdog_timer, {M,F,A}})
   when is_atom(M), is_atom(F), is_list(A) ->
     true;
-opt({watchdog_timer, Tmo}) ->
+opt(_, {watchdog_timer, Tmo}) ->
     ?IS_UINT32(Tmo);
 
-opt({watchdog_config, L}) ->
-    is_list(L) andalso lists:all(fun wdopt/1, L);
+opt(_, {watchdog_config, L}) ->
+    is_list(L) andalso lists:all(fun wd/1, L);
 
-opt({spawn_opt, Opts}) ->
-    is_list(Opts);
+opt(_, {spawn_opt, {M,F,A}})
+  when is_atom(M), is_atom(F), is_list(A) ->
+    true;
+opt(_, {spawn_opt = K, Opts}) ->
+    if is_list(Opts) ->
+            {value, {K, spawn_opts(Opts)}};
+       true ->
+            false
+    end;
 
-opt({pool_size, N}) ->
+opt(_, {pool_size, N}) ->
     is_integer(N) andalso 0 < N;
 
-%% Options that we can't validate.
-opt({K, _})
-  when K == transport_config;
-       K == capabilities_cb;
-       K == disconnect_cb;
-       K == private ->
+%% Options we can't validate.
+opt(_, {K, _})
+  when K == disconnect_cb;
+       K == capabilities_cb ->
+    true;
+opt(transport, {private, _}) ->
     true;
 
-%% Anything else, which is ignored by us. This makes options sensitive
-%% to spelling mistakes but arbitrary options are passed by some users
-%% as a way to identify transports. (That is, can't just do away with
-%% it.)
-opt(_) ->
-    true.
+%% Anything else is ignored in transport config. This makes options
+%% sensitive to spelling mistakes and unintentionally passing service
+%% options, but arbitrary options are passed by some users as a way to
+%% identify transports (they can be returned by diameter:service_info/2
+%% for example) so can't just do away with it, although silently
+%% swallowing service options is at least debatable. The documentation
+%% says anything, so accept anything.
+opt(K, _) ->
+    K == transport.
 
-wdopt({K,N}) ->
+%% wd/1
+
+wd({K,N}) ->
     (K == okay orelse K == suspect) andalso is_integer(N) andalso 0 =< N;
-wdopt(_) ->
+wd(_) ->
     false.
 
 %% start_transport/2
@@ -594,24 +755,28 @@ start_transport(SvcName, T) ->
             No
     end.
 
-%% remove/3
+%% remove/2
 
-remove(L, SvcName, Pred) ->
-    rm(SvcName, lists:filter(fun(#transport{ref = R, type = T, options = O}) ->
-                                     Pred(R,T,O)
-                             end,
-                             L)).
-
-rm(_, []) ->
+remove(_, []) ->
     ok;
-rm(SvcName, L) ->
+
+remove(SvcName, L) ->
     Refs = lists:map(fun(#transport{ref = R}) -> R end, L),
     case stop_transport(SvcName, Refs) of
         ok ->
+            lists:foreach(fun stop_child/1, Refs),
             diameter_stats:flush(Refs),
             lists:foreach(fun delete_object/1, L);
         {error, _} = No ->
             No
+    end.
+
+stop_child(Ref) ->
+    case diameter_reg:match(?TRANSPORT_KEY(Ref)) of
+        [{_, Pid}] ->  %% tell the transport-specific child to die
+            Pid ! stop;
+        [] ->          %% already removed/dead
+            ok
     end.
 
 stop_transport(SvcName, Refs) ->
@@ -628,7 +793,7 @@ stop_transport(SvcName, Refs) ->
 
 make_config(SvcName, Opts) ->
     AppOpts = [T || {application, _} = T <- Opts],
-    Apps = init_apps(AppOpts),
+    Apps = [init_app(T) || T <- AppOpts],
 
     [] == Apps andalso ?THROW(no_apps),
 
@@ -640,15 +805,7 @@ make_config(SvcName, Opts) ->
 
     ok = encode_CER(CapOpts),
 
-    SvcOpts = make_opts((Opts -- AppOpts) -- CapOpts,
-                        [{false, share_peers},
-                         {false, use_shared_peers},
-                         {false, monitor},
-                         {?NOMASK, sequence},
-                         {nodes, restrict_connections},
-                         {16#FFFFFF, incoming_maxlen},
-                         {true, string_decode},
-                         {[], spawn_opt}]),
+    SvcOpts = service_opts((Opts -- AppOpts) -- CapOpts),
 
     D = proplists:get_value(string_decode, SvcOpts, true),
 
@@ -662,88 +819,21 @@ binary_caps(Caps, true) ->
 binary_caps(Caps, false) ->
     diameter_capx:binary_caps(Caps).
 
-%% make_opts/2
+%% service_opts/1
 
-make_opts(Opts, Defs) ->
-    Known = [{K, get_opt(K, Opts, D)} || {D,K} <- Defs],
-    Unknown = Opts -- Known,
+service_opts(Opts) ->
+    Res = [setopt(service, T) || T <- Opts],
+    Keys = sets:to_list(sets:from_list([K || {K,_} <- Res])), %% unique
+    Dups = lists:foldl(fun(K,A) -> lists:keydelete(K, 1, A) end, Res, Keys),
+    [] == Dups orelse ?THROW({duplicate, Dups}),
+    Res.
+%% Reject duplicates on a service, but not on a transport. There's no
+%% particular reason for the inconsistency, but the historic behaviour
+%% ignores all but the first of a transport_opt(), and there's no real
+%% reason to change it.
 
-    [] == Unknown orelse ?THROW({invalid, hd(Unknown)}),
-
-    [{K, opt(K,V)} || {K,V} <- Known].
-
-opt(incoming_maxlen, N)
-  when 0 =< N, N < 1 bsl 24 ->
-    N;
-
-opt(spawn_opt, L)
-  when is_list(L) ->
-    L;
-
-opt(K, false = B)
-  when K == share_peers;
-       K == use_shared_peers;
-       K == monitor;
-       K == restrict_connections;
-       K == string_decode ->
-    B;
-
-opt(K, true = B)
-  when K == share_peers;
-       K == use_shared_peers;
-       K == string_decode ->
-    B;
-
-opt(restrict_connections, T)
-  when T == node;
-       T == nodes ->
-    T;
-
-opt(K, T)
-  when (K == share_peers
-        orelse K == use_shared_peers
-        orelse K == restrict_connections), ([] == T
-                                            orelse is_atom(hd(T))) ->
-    T;
-
-opt(monitor, P)
-  when is_pid(P) ->
-    P;
-
-opt(K, F)
-  when K == restrict_connections;
-       K == share_peers;
-       K == use_shared_peers ->
-    try diameter_lib:eval(F) of  %% but no guarantee that it won't fail later
-        Nodes when is_list(Nodes) ->
-            F;
-        V ->
-            ?THROW({value, {K,V}})
-    catch
-        E:R ->
-            ?THROW({value, {K, E, R, ?STACK}})
-    end;
-
-opt(sequence, {_,_} = T) ->
-    sequence(T);
-
-opt(sequence = K, F) ->
-    try diameter_lib:eval(F) of
-        T -> sequence(T)
-    catch
-        E:R ->
-            ?THROW({value, {K, E, R, ?STACK}})
-    end;
-
-opt(K, _) ->
-    ?THROW({value, K}).
-
-sequence({H,N} = T)
-  when 0 =< N, N =< 32, 0 =< H, 0 == H bsr (32-N) ->
-    T;
-
-sequence(_) ->
-    ?THROW({value, sequence}).
+spawn_opts(L) ->
+    [T || T <- L, T /= link, T /= monitor].
 
 make_caps(Caps, Opts) ->
     case diameter_capx:make_caps(Caps, Opts) of
@@ -771,10 +861,7 @@ encode_CER(Opts) ->
             ?THROW(Reason)
     end.
 
-init_apps(Opts) ->
-    lists:foldl(fun app_acc/2, [], lists:reverse(Opts)).
-
-app_acc({application, Opts} = T, Acc) ->
+init_app({application, Opts} = T) ->
     is_list(Opts) orelse ?THROW(T),
 
     [Dict, Mod] = get_opt([dictionary, module], Opts),
@@ -783,15 +870,14 @@ app_acc({application, Opts} = T, Acc) ->
     M = get_opt(call_mutates_state, Opts, false, [true]),
     A = get_opt(answer_errors, Opts, discard, [callback, report]),
     P = get_opt(request_errors, Opts, answer_3xxx, [answer, callback]),
-    [#diameter_app{alias = Alias,
-                   dictionary = Dict,
-                   id = cb(Dict, id),
-                   module = init_mod(Mod),
-                   init_state = ModS,
-                   mutable = M,
-                   options = [{answer_errors, A},
-                              {request_errors, P}]}
-     | Acc].
+    #diameter_app{alias = Alias,
+                  dictionary = Dict,
+                  id = cb(Dict, id),
+                  module = init_mod(Mod),
+                  init_state = ModS,
+                  mutable = M,
+                  options = [{answer_errors, A},
+                             {request_errors, P}]}.
 
 init_mod(#diameter_callback{} = R) ->
     init_mod([diameter_callback, R]);
@@ -817,7 +903,7 @@ init_cb(List) ->
                    V <- [proplists:get_value(F, List, D)]],
     #diameter_callback{} = list_to_tuple([diameter_callback | Values]).
 
-%% Retreive and validate.
+%% Retrieve and validate.
 get_opt(Key, List, Def, Other) ->
     init_opt(Key, get_opt(Key, List, Def), [Def|Other]).
 
@@ -850,8 +936,8 @@ cb(M,F) ->
     try M:F() of
         V -> V
     catch
-        E: Reason ->
-            ?THROW({callback, E, Reason, ?STACK})
+        E: Reason: Stack ->
+            ?THROW({callback, E, Reason, Stack})
     end.
 
 %% call/1

@@ -4,7 +4,7 @@
 <chapter>
   <header>
     <copyright>
-      <year>2002</year><year>2013</year>
+      <year>2002</year><year>2016</year>
       <holder>Ericsson AB. All Rights Reserved.</holder>
     </copyright>
     <legalnotice>
@@ -88,7 +88,7 @@
     </p>
   <p>The following sections show some examples of profiling with
     <c>cprof</c>. See also 
-    <seealso marker="cprof">cprof(3)</seealso>.
+    <seeerl marker="cprof">cprof(3)</seeerl>.
     </p>
 
   <section>

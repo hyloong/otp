@@ -1,7 +1,7 @@
 %%
 %% %CopyrightBegin%
 %% 
-%% Copyright Ericsson AB 2003-2012. All Rights Reserved.
+%% Copyright Ericsson AB 2003-2020. All Rights Reserved.
 %% 
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -26,14 +26,16 @@
 	 nested_of/1,nested_catch/1,nested_after/1,
 	 nested_horrid/1,last_call_optimization/1,bool/1,
 	 plain_catch_coverage/1,andalso_orelse/1,get_in_try/1,
-	 hockey/1]).
+	 hockey/1,handle_info/1,catch_in_catch/1,grab_bag/1,
+         stacktrace/1,nested_stacktrace/1,raise/1,
+         no_return_in_try_block/1,
+         coverage/1]).
 
--include_lib("test_server/include/test_server.hrl").
+-include_lib("common_test/include/ct.hrl").
 
 suite() -> [{ct_hooks,[ts_install_cth]}].
 
 all() -> 
-    test_lib:recompile(?MODULE),
     [{group,p}].
 
 groups() -> 
@@ -42,10 +44,13 @@ groups() ->
        after_oops,eclectic,rethrow,nested_of,nested_catch,
        nested_after,nested_horrid,last_call_optimization,
        bool,plain_catch_coverage,andalso_orelse,get_in_try,
-       hockey]}].
+       hockey,handle_info,catch_in_catch,grab_bag,
+       stacktrace,nested_stacktrace,raise,
+       no_return_in_try_block,coverage]}].
 
 
 init_per_suite(Config) ->
+    test_lib:recompile(?MODULE),
     Config.
 
 end_per_suite(_Config) ->
@@ -60,32 +65,32 @@ end_per_group(_GroupName, Config) ->
 
 
 basic(Conf) when is_list(Conf) ->
-    ?line 2 = 
+    2 =
 	try my_div(4, 2)
 	catch 
             Class:Reason -> {Class,Reason}
 	end,
-    ?line error = 
+    error =
         try my_div(1, 0)
         catch 
             error:badarith -> error
         end,
-    ?line error = 
+    error =
         try 1.0 / zero()
         catch 
             error:badarith -> error
         end,
-    ?line ok = 
+    ok =
         try my_add(53, atom)
         catch
             error:badarith -> ok
         end,
-    ?line exit_nisse = 
+    exit_nisse =
         try exit(nisse)
 	catch 
             exit:nisse -> exit_nisse
         end,
-    ?line ok = 
+    ok =
         try throw(kalle)
         catch
             kalle -> ok
@@ -94,27 +99,37 @@ basic(Conf) when is_list(Conf) ->
     %% Try some stuff where the compiler will optimize away the try.
 
     V = id({a,variable}),
-    ?line V = try V catch nisse -> error end,
-    ?line 42 = try 42 catch nisse -> error end,
-    ?line [V] = try [V] catch nisse -> error end,
-    ?line {ok,V} = try {ok,V} catch nisse -> error end,
+    V = try V catch nisse -> error end,
+    42 = try 42 catch nisse -> error end,
+    [V] = try [V] catch nisse -> error end,
+    {ok,V} = try {ok,V} catch nisse -> error end,
 
     %% Same idea, but use an after too.
 
-    ?line V = try V catch nisse -> error after after_call() end,
-    ?line after_clean(),
-    ?line 42 = try 42 after after_call() end,
-    ?line after_clean(),
-    ?line [V] = try [V] catch nisse -> error after after_call() end,
-    ?line after_clean(),
-    ?line {ok,V} = try {ok,V} after after_call() end,
+    V = try V catch nisse -> error after after_call() end,
+    after_clean(),
+    42 = try 42 after after_call() end,
+    after_clean(),
+    [V] = try [V] catch nisse -> error after after_call() end,
+    after_clean(),
+    {ok,V} = try {ok,V} after after_call() end,
 
     %% Try/of
-    ?line ok = try V of
-              {a,variable} -> ok
-              catch nisse -> erro
-          end,
-              
+    ok = try V of
+	     {a,variable} -> ok
+	 catch nisse -> erro
+	 end,
+
+    %% Unmatchable clauses.
+    try
+        throw(thrown)
+    catch
+        {a,b}={a,b,c} ->                        %Intentionally no match.
+            ok;
+        thrown ->
+            ok
+    end,
+
     ok.
 
 after_call() ->
@@ -125,24 +140,24 @@ after_clean() ->
     
 
 lean_throw(Conf) when is_list(Conf) ->
-    ?line {throw,kalle} =
+    {throw,kalle} =
         try throw(kalle)
         catch
             Kalle -> {throw,Kalle}
         end,
-    ?line {exit,kalle} =
+    {exit,kalle} =
         try exit(kalle)
         catch
             Throw1 -> {throw,Throw1};
 	    exit:Reason1 -> {exit,Reason1}
         end,
-    ?line {exit,kalle} =
+    {exit,kalle} =
         try exit(kalle)
         catch
 	    exit:Reason2 -> {exit,Reason2};
             Throw2 -> {throw,Throw2}
         end,
-    ?line {exit,kalle} =
+    {exit,kalle} =
         try try exit(kalle)
             catch
                 Throw3 -> {throw,Throw3}
@@ -155,25 +170,25 @@ lean_throw(Conf) when is_list(Conf) ->
 
 
 try_of(Conf) when is_list(Conf) ->
-    ?line {ok,{some,content}} = 
+    {ok,{some,content}} =
 	try_of_1({value,{good,{some,content}}}),
-    ?line {error,[other,content]} = 
+    {error,[other,content]} =
 	try_of_1({value,{bad,[other,content]}}),
-    ?line {caught,{exit,{ex,it,[reason]}}} = 
+    {caught,{exit,{ex,it,[reason]}}} =
 	try_of_1({exit,{ex,it,[reason]}}),
-    ?line {caught,{throw,[term,{in,a,{tuple}}]}} = 
+    {caught,{throw,[term,{in,a,{tuple}}]}} =
 	try_of_1({throw,[term,{in,a,{tuple}}]}),
-    ?line {caught,{error,[bad,arg]}} = 
+    {caught,{error,[bad,arg]}} =
 	try_of_1({error,[bad,arg]}),
-    ?line {caught,{error,badarith}} = 
+    {caught,{error,badarith}} =
 	try_of_1({'div',{1,0}}),
-    ?line {caught,{error,badarith}} = 
+    {caught,{error,badarith}} =
 	try_of_1({'add',{a,0}}),
-    ?line {caught,{error,badarg}} = 
+    {caught,{error,badarg}} =
 	try_of_1({'abs',x}),
-    ?line {caught,{error,function_clause}} = 
+    {caught,{error,function_clause}} =
 	try_of_1(illegal),
-    ?line {error,{try_clause,{some,other_garbage}}} =
+    {error,{try_clause,{some,other_garbage}}} =
 	try try_of_1({value,{some,other_garbage}})
         catch error:Reason -> {error,Reason}
         end,
@@ -191,29 +206,29 @@ try_of_1(X) ->
 
 
 try_after(Conf) when is_list(Conf) ->
-    ?line {{ok,[some,value],undefined},finalized} = 
+    {{ok,[some,value],undefined},finalized} =
 	try_after_1({value,{ok,[some,value]}},finalized),
-    ?line {{error,badarith,undefined},finalized} = 
+    {{error,badarith,undefined},finalized} =
 	try_after_1({'div',{1,0}},finalized),
-    ?line {{error,badarith,undefined},finalized} = 
+    {{error,badarith,undefined},finalized} =
 	try_after_1({'add',{1,a}},finalized),
-    ?line {{error,badarg,undefined},finalized} = 
+    {{error,badarg,undefined},finalized} =
 	try_after_1({'abs',a},finalized),
-    ?line {{error,[the,{reason}],undefined},finalized} = 
+    {{error,[the,{reason}],undefined},finalized} =
 	try_after_1({error,[the,{reason}]},finalized),
-    ?line {{throw,{thrown,[reason]},undefined},finalized} = 
+    {{throw,{thrown,[reason]},undefined},finalized} =
 	try_after_1({throw,{thrown,[reason]}},finalized),
-    ?line {{exit,{exited,{reason}},undefined},finalized} = 
+    {{exit,{exited,{reason}},undefined},finalized} =
 	try_after_1({exit,{exited,{reason}}},finalized),
-    ?line {{error,function_clause,undefined},finalized} = 
+    {{error,function_clause,undefined},finalized} =
 	try_after_1(function_clause,finalized),
-    ?line ok =
+    ok =
 	try try_after_1({'add',{1,1}}, finalized)
         catch
             error:{try_clause,2} -> ok
 	end,
-    ?line finalized = erase(try_after),
-    ?line ok =
+    finalized = erase(try_after),
+    ok =
         try try foo({exit,[reaso,{n}]})
             after put(try_after, finalized)
             end
@@ -242,7 +257,7 @@ try_after_1(X, Y) ->
 
 after_bind(Conf) when is_list(Conf) ->
     V = [make_ref(),self()|value],
-    ?line {value,{value,V}} =
+    {value,{value,V}} =
 	after_bind_1({value,V}, V, {value,V}),
     ok.
 
@@ -269,12 +284,12 @@ after_bind_1(X, V, Y) ->
 
 catch_oops(Conf) when is_list(Conf) ->
     V = {v,[a,l|u],{e},self()},
-    ?line {value,V} = catch_oops_1({value,V}),
-    ?line {value,1} = catch_oops_1({'div',{1,1}}),
-    ?line {error,badarith} = catch_oops_1({'div',{1,0}}),
-    ?line {error,function_clause} = catch_oops_1(function_clause),
-    ?line {throw,V} = catch_oops_1({throw,V}),
-    ?line {exit,V} = catch_oops_1({exit,V}),
+    {value,V} = catch_oops_1({value,V}),
+    {value,1} = catch_oops_1({'div',{1,1}}),
+    {error,badarith} = catch_oops_1({'div',{1,0}}),
+    {error,function_clause} = catch_oops_1(function_clause),
+    {throw,V} = catch_oops_1({throw,V}),
+    {exit,V} = catch_oops_1({exit,V}),
     ok.
 
 catch_oops_1(X) ->
@@ -293,10 +308,10 @@ catch_oops_1(X) ->
 
 after_oops(Conf) when is_list(Conf) ->
     V = {self(),make_ref()},
-    ?line {{value,V},V} = after_oops_1({value,V}, {value,V}),
-    ?line {{exit,V},V} = after_oops_1({exit,V}, {value,V}),
-    ?line {{error,V},undefined} = after_oops_1({value,V}, {error,V}),
-    ?line {{error,function_clause},undefined} = 
+    {{value,V},V} = after_oops_1({value,V}, {value,V}),
+    {{exit,V},V} = after_oops_1({exit,V}, {value,V}),
+    {{error,V},undefined} = after_oops_1({value,V}, {error,V}),
+    {{error,function_clause},undefined} =
 	after_oops_1({exit,V}, function_clause),
     ok.
 
@@ -317,39 +332,39 @@ after_oops_1(X, Y) ->
 
 eclectic(Conf) when is_list(Conf) ->
     V = {make_ref(),3.1415926535,[[]|{}]},
-    ?line {{value,{value,V},V},V} = 
+    {{value,{value,V},V},V} =
 	eclectic_1({foo,{value,{value,V}}}, undefined, {value,V}),
-    ?line {{'EXIT',{V,[{?MODULE,foo,1,_}|_]}},V} =
+    {{'EXIT',{V,[{?MODULE,foo,1,_}|_]}},V} =
 	eclectic_1({catch_foo,{error,V}}, undefined, {value,V}),
-    ?line {{error,{exit,V},{'EXIT',V}},V} =
+    {{error,{exit,V},{'EXIT',V}},V} =
 	eclectic_1({foo,{error,{exit,V}}}, error, {value,V}),
-    ?line {{value,{value,V},V},
-	   {'EXIT',{badarith,[{?MODULE,my_add,2,_}|_]}}} =
+    {{value,{value,V},V},
+	   {'EXIT',{badarith,[{erlang,'+',[0,a],_},{?MODULE,my_add,2,_}|_]}}} =
 	eclectic_1({foo,{value,{value,V}}}, undefined, {'add',{0,a}}),
-    ?line {{'EXIT',V},V} =
+    {{'EXIT',V},V} =
 	eclectic_1({catch_foo,{exit,V}}, undefined, {throw,V}),
-    ?line {{error,{'div',{1,0}},{'EXIT',{badarith,[{?MODULE,my_div,2,_}|_]}}},
+    {{error,{'div',{1,0}},{'EXIT',{badarith,[{erlang,'div',[1,0],_},{?MODULE,my_div,2,_}|_]}}},
 	   {'EXIT',V}} =
 	eclectic_1({foo,{error,{'div',{1,0}}}}, error, {exit,V}),
-    ?line {{{error,V},{'EXIT',{V,[{?MODULE,foo,1,_}|_]}}},
+    {{{error,V},{'EXIT',{V,[{?MODULE,foo,1,_}|_]}}},
 	   {'EXIT',V}} =
 	eclectic_1({catch_foo,{throw,{error,V}}}, undefined, {exit,V}),
     %%
-    ?line {{value,{value,{value,V},V}},V} =
+    {{value,{value,{value,V},V}},V} =
 	eclectic_2({value,{value,V}}, undefined, {value,V}),
-    ?line {{value,{throw,{value,V},V}},V} =
+    {{value,{throw,{value,V},V}},V} =
 	eclectic_2({throw,{value,V}}, throw, {value,V}),
-    ?line {{caught,{'EXIT',V}},undefined} =
+    {{caught,{'EXIT',V}},undefined} =
 	eclectic_2({value,{value,V}}, undefined, {exit,V}),
-    ?line {{caught,{'EXIT',{V,[{?MODULE,foo,1,_}|_]}}},undefined} =
+    {{caught,{'EXIT',{V,[{?MODULE,foo,1,_}|_]}}},undefined} =
 	eclectic_2({error,{value,V}}, throw, {error,V}),
-    ?line {{caught,{'EXIT',{badarg,[{erlang,abs,[V],_}|_]}}},V} =
+    {{caught,{'EXIT',{badarg,[{erlang,abs,[V],_}|_]}}},V} =
 	eclectic_2({value,{'abs',V}}, undefined, {value,V}),
-    ?line {{caught,{'EXIT',{badarith,[{?MODULE,my_add,2,_}|_]}}},V} =
+    {{caught,{'EXIT',{badarith,[{erlang,'+',[0,a],_},{?MODULE,my_add,2,_}|_]}}},V} =
 	eclectic_2({exit,{'add',{0,a}}}, exit, {value,V}),
-    ?line {{caught,{'EXIT',V}},undefined} =
+    {{caught,{'EXIT',V}},undefined} =
 	eclectic_2({value,{error,V}}, undefined, {exit,V}),
-    ?line {{caught,{'EXIT',{V,[{?MODULE,foo,1,_}|_]}}},undefined} =
+    {{caught,{'EXIT',{V,[{?MODULE,foo,1,_}|_]}}},undefined} =
 	eclectic_2({throw,{'div',{1,0}}}, throw, {error,V}),
     ok.
 
@@ -377,44 +392,44 @@ eclectic_2(X, C, Y) ->
     Catch =
 	case 
             catch
-            {Done,
-             try foo(X) of
-                 V -> {value,V,foo(V)}
-             catch
-                 C:D -> {C,D,foo(D)}
-             after
-                 put(eclectic, foo(Y))
-             end} of
-            {Done,Z} -> {value,Z};
-            Z -> {caught,Z}
-        end,
+		{Done,
+		 try foo(X) of
+		     V -> {value,V,foo(V)}
+		 catch
+		     C:D -> {C,D,foo(D)}
+		 after
+		     put(eclectic, foo(Y))
+		 end} of
+		{Done,Z} -> {value,Z};
+		Z -> {caught,Z}
+	    end,
     {Catch,erase(eclectic)}.
 
 
 
 rethrow(Conf) when is_list(Conf) ->
     V = {a,[b,{c,self()},make_ref]},
-    ?line {value2,value1} = 
+    {value2,value1} =
 	rethrow_1({value,V}, V),
-    ?line {caught2,{error,V}} = 
+    {caught2,{error,V}} =
 	rethrow_2({error,V}, undefined),
-    ?line {caught2,{exit,V}} = 
+    {caught2,{exit,V}} =
 	rethrow_1({exit,V}, error),
-    ?line {caught2,{throw,V}} = 
+    {caught2,{throw,V}} =
 	rethrow_1({throw,V}, undefined),
-    ?line {caught2,{throw,V}} = 
+    {caught2,{throw,V}} =
 	rethrow_2({throw,V}, undefined),
-    ?line {caught2,{error,badarith}} = 
+    {caught2,{error,badarith}} =
 	rethrow_1({'add',{0,a}}, throw),
-    ?line {caught2,{error,function_clause}} = 
+    {caught2,{error,function_clause}} =
 	rethrow_2(function_clause, undefined),
-    ?line {caught2,{error,{try_clause,V}}} = 
+    {caught2,{error,{try_clause,V}}} =
 	rethrow_1({value,V}, exit),
-    ?line {value2,{caught1,V}} = 
+    {value2,{caught1,V}} =
 	rethrow_1({error,V}, error),
-    ?line {value2,{caught1,V}} = 
+    {value2,{caught1,V}} =
 	rethrow_1({exit,V}, exit),
-    ?line {value2,caught1} = 
+    {value2,caught1} =
 	rethrow_2({throw,V}, V),
     ok.
 
@@ -444,91 +459,91 @@ rethrow_2(X, C1) ->
 
 nested_of(Conf) when is_list(Conf) ->
     V = {[self()|make_ref()],1.4142136},
-    ?line {{value,{value1,{V,x2}}},
-	   {V,x3},
-	   {V,x4},
-	   finalized} =
+    {{value,{value1,{V,x2}}},
+     {V,x3},
+     {V,x4},
+     finalized} =
 	nested_of_1({{value,{V,x1}},void,{V,x1}},
 		    {value,{V,x2}}, {value,{V,x3}}, {value,{V,x4}}),
-    ?line {{caught,{throw,{V,x2}}},
-	   {V,x3},
-	   {V,x4},
-	   finalized} =
+    {{caught,{throw,{V,x2}}},
+     {V,x3},
+     {V,x4},
+     finalized} =
 	nested_of_1({{value,{V,x1}},void,{V,x1}},
 		    {throw,{V,x2}}, {value,{V,x3}}, {value,{V,x4}}),
-    ?line {{caught,{error,badarith}},
-	   undefined,
-	   {V,x4},
-	   finalized} =
+    {{caught,{error,badarith}},
+     undefined,
+     {V,x4},
+     finalized} =
 	nested_of_1({{value,{V,x1}},void,{V,x1}},
 		    {throw,{V,x2}}, {'div',{1,0}}, {value,{V,x4}}),
-    ?line {{caught,{error,badarith}},
-	   undefined,
-	   undefined,
-	   finalized} =
+    {{caught,{error,badarith}},
+     undefined,
+     undefined,
+     finalized} =
 	nested_of_1({{value,{V,x1}},void,{V,x1}},
 		    {throw,{V,x2}}, {'div',{1,0}}, {'add',{0,b}}),
     %%
-    ?line {{caught,{error,{try_clause,{V,x1}}}},
-	   {V,x3},
-	   {V,x4},
-	   finalized} =
+    {{caught,{error,{try_clause,{V,x1}}}},
+     {V,x3},
+     {V,x4},
+     finalized} =
 	nested_of_1({{value,{V,x1}},void,try_clause},
 		    void, {value,{V,x3}}, {value,{V,x4}}),
-    ?line {{caught,{exit,{V,x3}}},
-	   undefined,
-	   {V,x4},
-	   finalized} =
+    {{caught,{exit,{V,x3}}},
+     undefined,
+     {V,x4},
+     finalized} =
 	nested_of_1({{value,{V,x1}},void,try_clause},
 		    void, {exit,{V,x3}}, {value,{V,x4}}),
-    ?line {{caught,{throw,{V,x4}}},
-	   undefined,
-	   undefined,
-	   finalized} =
+    {{caught,{throw,{V,x4}}},
+     undefined,
+     undefined,
+     finalized} =
 	nested_of_1({{value,{V,x1}},void,try_clause},
 		    void, {exit,{V,x3}}, {throw,{V,x4}}),
     %%
-    ?line {{value,{caught1,{V,x2}}},
-	   {V,x3},
-	   {V,x4},
-	   finalized} =
+    {{value,{caught1,{V,x2}}},
+     {V,x3},
+     {V,x4},
+     finalized} =
 	nested_of_1({{error,{V,x1}},error,{V,x1}},
 		    {value,{V,x2}}, {value,{V,x3}}, {value,{V,x4}}),
-    ?line {{caught,{error,badarith}},
-	   {V,x3},
-	   {V,x4},
-	   finalized} =
+    {{caught,{error,badarith}},
+     {V,x3},
+     {V,x4},
+     finalized} =
 	nested_of_1({{error,{V,x1}},error,{V,x1}},
 		    {'add',{1,c}}, {value,{V,x3}}, {value,{V,x4}}),
-    ?line {{caught,{error,badarith}},
-	   undefined,
-	   {V,x4},
-	   finalized} =
+    {{caught,{error,badarith}},
+     undefined,
+     {V,x4},
+     finalized} =
 	nested_of_1({{error,{V,x1}},error,{V,x1}},
 		    {'add',{1,c}}, {'div',{17,0}}, {value,{V,x4}}),
-    ?line {{caught,{error,badarg}},
-	   undefined,
-	   undefined,
-	   finalized} =
+    {{caught,{error,badarg}},
+     undefined,
+     undefined,
+     finalized} =
 	nested_of_1({{error,{V,x1}},error,{V,x1}},
 		    {'add',{1,c}}, {'div',{17,0}}, {'abs',V}),
     %%
-    ?line {{caught,{error,badarith}},
-	   {V,x3},
-	   {V,x4},
-	   finalized} =
+    {{caught,{error,badarith}},
+     {V,x3},
+     {V,x4},
+     finalized} =
 	nested_of_1({{'add',{2,c}},rethrow,void},
 		    void, {value,{V,x3}}, {value,{V,x4}}),
-    ?line {{caught,{error,badarg}},
-	   undefined,
-	   {V,x4},
-	   finalized} =
+    {{caught,{error,badarg}},
+     undefined,
+     {V,x4},
+     finalized} =
 	nested_of_1({{'add',{2,c}},rethrow,void},
 		    void, {'abs',V}, {value,{V,x4}}),
-    ?line {{caught,{error,function_clause}},
-	   undefined,
-	   undefined,
-	   finalized} =
+    {{caught,{error,function_clause}},
+     undefined,
+     undefined,
+     finalized} =
 	nested_of_1({{'add',{2,c}},rethrow,void},
 		    void, {'abs',V}, function_clause),
     ok.
@@ -569,93 +584,93 @@ nested_of_1({X1,C1,V1},
 
 nested_catch(Conf) when is_list(Conf) ->
     V = {[make_ref(),1.4142136,self()]},
-    ?line {{value,{value1,{V,x2}}},
-	   {V,x3},
-	   {V,x4},
-	   finalized} =
+    {{value,{value1,{V,x2}}},
+     {V,x3},
+     {V,x4},
+     finalized} =
 	nested_catch_1({{value,{V,x1}},void,{V,x1}},
-		    {value,{V,x2}}, {value,{V,x3}}, {value,{V,x4}}),
-    ?line {{caught,{throw,{V,x2}}},
-	   {V,x3},
-	   {V,x4},
-	   finalized} =
+		       {value,{V,x2}}, {value,{V,x3}}, {value,{V,x4}}),
+    {{caught,{throw,{V,x2}}},
+     {V,x3},
+     {V,x4},
+     finalized} =
 	nested_catch_1({{value,{V,x1}},void,{V,x1}},
-		    {throw,{V,x2}}, {value,{V,x3}}, {value,{V,x4}}),
-    ?line {{caught,{error,badarith}},
-	   undefined,
-	   {V,x4},
-	   finalized} =
+		       {throw,{V,x2}}, {value,{V,x3}}, {value,{V,x4}}),
+    {{caught,{error,badarith}},
+     undefined,
+     {V,x4},
+     finalized} =
 	nested_catch_1({{value,{V,x1}},void,{V,x1}},
-		    {throw,{V,x2}}, {'div',{1,0}}, {value,{V,x4}}),
-    ?line {{caught,{error,badarith}},
-	   undefined,
-	   undefined,
-	   finalized} =
+		       {throw,{V,x2}}, {'div',{1,0}}, {value,{V,x4}}),
+    {{caught,{error,badarith}},
+     undefined,
+     undefined,
+     finalized} =
 	nested_catch_1({{value,{V,x1}},void,{V,x1}},
-		    {throw,{V,x2}}, {'div',{1,0}}, {'add',{0,b}}),
+		       {throw,{V,x2}}, {'div',{1,0}}, {'add',{0,b}}),
     %%
-    ?line {{caught,{error,{try_clause,{V,x1}}}},
-	   {V,x3},
-	   {V,x4},
-	   finalized} =
+    {{caught,{error,{try_clause,{V,x1}}}},
+     {V,x3},
+     {V,x4},
+     finalized} =
 	nested_catch_1({{value,{V,x1}},void,try_clause},
-		    void, {value,{V,x3}}, {value,{V,x4}}),
-    ?line {{caught,{exit,{V,x3}}},
-	   undefined,
-	   {V,x4},
-	   finalized} =
+		       void, {value,{V,x3}}, {value,{V,x4}}),
+    {{caught,{exit,{V,x3}}},
+     undefined,
+     {V,x4},
+     finalized} =
 	nested_catch_1({{value,{V,x1}},void,try_clause},
-		    void, {exit,{V,x3}}, {value,{V,x4}}),
-    ?line {{caught,{throw,{V,x4}}},
-	   undefined,
-	   undefined,
-	   finalized} =
+		       void, {exit,{V,x3}}, {value,{V,x4}}),
+    {{caught,{throw,{V,x4}}},
+     undefined,
+     undefined,
+     finalized} =
 	nested_catch_1({{value,{V,x1}},void,try_clause},
-		    void, {exit,{V,x3}}, {throw,{V,x4}}),
+		       void, {exit,{V,x3}}, {throw,{V,x4}}),
     %%
-    ?line {{value,{caught1,{V,x2}}},
-	   {V,x3},
-	   {V,x4},
-	   finalized} =
+    {{value,{caught1,{V,x2}}},
+     {V,x3},
+     {V,x4},
+     finalized} =
 	nested_catch_1({{error,{V,x1}},error,{V,x1}},
-		    {value,{V,x2}}, {value,{V,x3}}, {value,{V,x4}}),
-    ?line {{caught,{error,badarith}},
-	   {V,x3},
-	   {V,x4},
-	   finalized} =
+		       {value,{V,x2}}, {value,{V,x3}}, {value,{V,x4}}),
+    {{caught,{error,badarith}},
+     {V,x3},
+     {V,x4},
+     finalized} =
 	nested_catch_1({{error,{V,x1}},error,{V,x1}},
-		    {'add',{1,c}}, {value,{V,x3}}, {value,{V,x4}}),
-    ?line {{caught,{error,badarith}},
-	   undefined,
-	   {V,x4},
-	   finalized} =
+		       {'add',{1,c}}, {value,{V,x3}}, {value,{V,x4}}),
+    {{caught,{error,badarith}},
+     undefined,
+     {V,x4},
+     finalized} =
 	nested_catch_1({{error,{V,x1}},error,{V,x1}},
-		    {'add',{1,c}}, {'div',{17,0}}, {value,{V,x4}}),
-    ?line {{caught,{error,badarg}},
-	   undefined,
-	   undefined,
-	   finalized} =
+		       {'add',{1,c}}, {'div',{17,0}}, {value,{V,x4}}),
+    {{caught,{error,badarg}},
+     undefined,
+     undefined,
+     finalized} =
 	nested_catch_1({{error,{V,x1}},error,{V,x1}},
-		    {'add',{1,c}}, {'div',{17,0}}, {'abs',V}),
+		       {'add',{1,c}}, {'div',{17,0}}, {'abs',V}),
     %%
-    ?line {{caught,{error,badarith}},
-	   {V,x3},
-	   {V,x4},
-	   finalized} =
+    {{caught,{error,badarith}},
+     {V,x3},
+     {V,x4},
+     finalized} =
 	nested_catch_1({{'add',{2,c}},rethrow,void},
-		    void, {value,{V,x3}}, {value,{V,x4}}),
-    ?line {{caught,{error,badarg}},
-	   undefined,
-	   {V,x4},
-	   finalized} =
+		       void, {value,{V,x3}}, {value,{V,x4}}),
+    {{caught,{error,badarg}},
+     undefined,
+     {V,x4},
+     finalized} =
 	nested_catch_1({{'add',{2,c}},rethrow,void},
-		    void, {'abs',V}, {value,{V,x4}}),
-    ?line {{caught,{error,function_clause}},
-	   undefined,
-	   undefined,
-	   finalized} =
+		       void, {'abs',V}, {value,{V,x4}}),
+    {{caught,{error,function_clause}},
+     undefined,
+     undefined,
+     finalized} =
 	nested_catch_1({{'add',{2,c}},rethrow,void},
-		    void, {'abs',V}, function_clause),
+		       void, {'abs',V}, function_clause),
     ok.
 
 nested_catch_1({X1,C1,V1},
@@ -694,64 +709,64 @@ nested_catch_1({X1,C1,V1},
 
 nested_after(Conf) when is_list(Conf) ->
     V = [{make_ref(),1.4142136,self()}],
-    ?line {value,
+    {value,
 	   {V,x3},
 	   {value1,{V,x2}},
 	   finalized} =
 	nested_after_1({{value,{V,x1}},void,{V,x1}},
 		       {value,{V,x2}}, {value,{V,x3}}),
-    ?line {{caught,{error,{V,x2}}},
+    {{caught,{error,{V,x2}}},
 	   {V,x3},
 	   undefined,
 	   finalized} =
 	nested_after_1({{value,{V,x1}},void,{V,x1}},
 		       {error,{V,x2}}, {value,{V,x3}}),
-    ?line {{caught,{exit,{V,x3}}},
+    {{caught,{exit,{V,x3}}},
 	   undefined,
 	   undefined,
 	   finalized} =
 	nested_after_1({{value,{V,x1}},void,{V,x1}},
 		       {error,{V,x2}}, {exit,{V,x3}}),
     %%
-    ?line {{caught,{error,{try_clause,{V,x1}}}},
+    {{caught,{error,{try_clause,{V,x1}}}},
 	   {V,x3},
 	   undefined,
 	   finalized} =
 	nested_after_1({{value,{V,x1}},void,try_clause},
 		       void, {value,{V,x3}}),
-    ?line {{caught,{error,badarith}},
+    {{caught,{error,badarith}},
 	   undefined,
 	   undefined,
 	   finalized} =
 	nested_after_1({{value,{V,x1}},void,try_clause},
 		       void, {'div',{17,0}}),
     %%
-    ?line {value,
+    {value,
 	   {V,x3},
 	   {caught1,{V,x2}},
 	   finalized} =
 	nested_after_1({{throw,{V,x1}},throw,{V,x1}},
 		       {value,{V,x2}}, {value,{V,x3}}),
-    ?line {{caught,{error,badarith}},
+    {{caught,{error,badarith}},
 	   {V,x3},
 	   undefined,
 	   finalized} =
 	nested_after_1({{throw,{V,x1}},throw,{V,x1}},
 		       {'add',{a,b}}, {value,{V,x3}}),
-    ?line {{caught,{error,badarg}},
+    {{caught,{error,badarg}},
 	   undefined,
 	   undefined,
 	   finalized} =
 	nested_after_1({{throw,{V,x1}},throw,{V,x1}},
 		       {'add',{a,b}}, {'abs',V}),
     %%
-    ?line {{caught,{throw,{V,x1}}},
+    {{caught,{throw,{V,x1}}},
 	   {V,x3},
 	   undefined,
 	   finalized} =
 	nested_after_1({{throw,{V,x1}},rethrow,void},
 		       void, {value,{V,x3}}),
-    ?line {{caught,{error,badarith}},
+    {{caught,{error,badarith}},
 	   undefined,
 	   undefined,
 	   finalized} =
@@ -843,12 +858,12 @@ my_abs(X) -> abs(X).
 
 
 last_call_optimization(Config) when is_list(Config) ->
-    ?line error = in_tail(dum),
-    ?line StkSize0 = in_tail(0),
-    ?line StkSize = in_tail(50000),
+    error = in_tail(dum),
+    StkSize0 = in_tail(0),
+    StkSize = in_tail(50000),
     io:format("StkSize0 = ~p", [StkSize0]),
     io:format("StkSize  = ~p", [StkSize]),
-    ?line StkSize = StkSize0,
+    StkSize = StkSize0,
     ok.
 
 in_tail(E) ->
@@ -891,20 +906,20 @@ do_bool(A0, B) ->
 
 plain_catch_coverage(Config) when is_list(Config) ->
     %% Cover some code in beam_block:alloc_may_pass/1.
-    ?line {a,[42]} = do_plain_catch_list(42).
+    {a,[42]} = do_plain_catch_list(42).
 
 do_plain_catch_list(X) ->
     B = [X],
     catch id({a,B}).
 
 andalso_orelse(Config) when is_list(Config) ->
-    ?line {2,{a,42}} = andalso_orelse_1(true, {a,42}),
-    ?line {b,{b}} = andalso_orelse_1(false, {b}),
-    ?line {catched,no_tuple} = andalso_orelse_1(false, no_tuple),
+    {2,{a,42}} = andalso_orelse_1(true, {a,42}),
+    {b,{b}} = andalso_orelse_1(false, {b}),
+    {catched,no_tuple} = andalso_orelse_1(false, no_tuple),
 
-    ?line ok = andalso_orelse_2({type,[a]}),
-    ?line also_ok = andalso_orelse_2({type,[]}),
-    ?line also_ok = andalso_orelse_2({type,{a}}),
+    ok = andalso_orelse_2({type,[a]}),
+    also_ok = andalso_orelse_2({type,[]}),
+    also_ok = andalso_orelse_2({type,{a}}),
     ok.
 
 andalso_orelse_1(A, B) ->
@@ -918,8 +933,6 @@ andalso_orelse_1(A, B) ->
      catch error:_ ->
 	     catched
      end,B}.
-
-id(I) -> I.
 
 andalso_orelse_2({Type,Keyval}) ->
    try
@@ -957,3 +970,441 @@ hockey() ->
     receive _ -> (b = fun() -> ok end)
     + hockey, +x after 0 -> ok end, try (a = fun() -> ok end) + hockey, +
     y catch _ -> ok end.
+
+
+-record(state, {foo}).
+
+handle_info(_Config) ->
+    do_handle_info({foo}, #state{}),
+    ok.
+
+do_handle_info({_}, State) ->
+   handle_info_ok(),
+   State#state{foo = bar},
+   case ok of
+   _ ->
+     case catch handle_info_ok() of
+     ok ->
+       {stop, State}
+     end
+   end;
+do_handle_info(_, State) ->
+   (catch begin
+     handle_info_ok(),
+     State#state{foo = bar}
+   end),
+   case ok of
+   _ ->
+     case catch handle_info_ok() of
+     ok ->
+       {stop, State}
+     end
+   end.
+
+handle_info_ok() -> ok.
+
+'catch_in_catch'(_Config) ->
+    process_flag(trap_exit, true),
+    Pid = spawn_link(fun() ->
+			     catch_in_catch_init(x),
+			     exit(good_exit)
+		     end),
+    receive
+	{'EXIT',Pid,good_exit} ->
+	    ok;
+	Other ->
+	    io:format("Unexpected: ~p\n", [Other]),
+	    error
+    after 32000 ->
+	    io:format("No message received\n"),
+	    error
+    end.
+
+'catch_in_catch_init'(Param) ->
+    process_flag(trap_exit, true),
+    %% The catches were improperly nested, causing a "No catch found" crash.
+    (catch begin
+           id(Param),
+           (catch exit(bar))
+       end
+    ),
+    ignore.
+
+grab_bag(_Config) ->
+    %% Thanks to Martin Bjorklund.
+    _ = fun() -> ok end,
+    try
+	fun() -> ok end
+    after
+	fun({A, B}) -> A + B end
+    end,
+
+    %% Thanks to Tim Rath.
+    A = {6},
+    try
+	io:fwrite("")
+    after
+	fun () ->
+		fun () -> {_} = A end
+	end
+    end,
+
+    %% Unnecessary catch.
+    22 = (catch 22),
+
+    fun() ->
+            F = grab_bag_1(any),
+            true = is_function(F, 1)
+    end(),
+
+    <<>> = grab_bag_2(whatever),
+
+    {'EXIT',_} = (catch grab_bag_3()),
+
+    ok.
+
+grab_bag_1(V) ->
+    %% V will be stored in y0.
+    try
+        receive
+        after 0 ->
+                %% y0 will be re-used for the catch tag.
+                %% This is safe, because there are no instructions
+                %% that can raise an exception.
+                catch 22
+        end,
+        %% beam_validator incorrectly assumed that the make_fun2
+        %% instruction could raise an exception and end up at
+        %% the catch part of the try.
+        fun id/1
+    catch
+        %% Never reached, because nothing in the try body raises any
+        %% exception.
+        _:V ->
+            ok
+    end.
+
+grab_bag_2(V) ->
+    try
+        %% y0 will be re-used for the catch tag.
+        %% This is safe, because there are no instructions
+        %% that can raise an exception.
+        catch 22,
+
+        %% beam_validator incorrectly assumed that the bs_init_writable
+        %% instruction could raise an exception and end up at
+        %% the catch part of the try.
+        <<0 || [], #{} <- []>>
+    catch
+        %% Never reached, because nothing in the try body raises any
+        %% exception.
+        error:_ ->
+            V
+    end.
+
+grab_bag_3() ->
+    try 2 of
+        true ->
+            <<
+              "" || [V0] = door
+            >>
+    catch
+        error:true:V0 ->
+            []
+            %% The default clause here (which re-throws the exception)
+            %% would not return two values as expected.
+    end =:= (V0 = 42).
+
+stacktrace(_Config) ->
+    V = [make_ref()|self()],
+    case ?MODULE:module_info(native) of
+        false ->
+            {value2,{caught1,badarg,[{erlang,abs,[V],_}|_]}} =
+                stacktrace_1({'abs',V}, error, {value,V}),
+            {caught2,{error,badarith},[{erlang,'+',[0,a],_},
+                                       {?MODULE,my_add,2,_}|_]} =
+                stacktrace_1({'div',{1,0}}, error, {'add',{0,a}});
+        true ->
+            {value2,{caught1,badarg,[{?MODULE,my_abs,1,_}|_]}} =
+                stacktrace_1({'abs',V}, error, {value,V}),
+            {caught2,{error,badarith},[{?MODULE,my_add,2,_}|_]} =
+                stacktrace_1({'div',{1,0}}, error, {'add',{0,a}})
+    end,
+    {caught2,{error,{try_clause,V}},[{?MODULE,stacktrace_1,3,_}|_]} =
+        stacktrace_1({value,V}, error, {value,V}),
+    {caught2,{throw,V},[{?MODULE,foo,1,_}|_]} =
+        stacktrace_1({value,V}, error, {throw,V}),
+
+    try
+        stacktrace_2()
+    catch
+        error:{badmatch,_}:Stk2 ->
+            [{?MODULE,stacktrace_2,0,_},
+             {?MODULE,stacktrace,1,_}|_] = Stk2,
+            [] = erlang:get_stacktrace(),
+            ok
+    end,
+
+    try
+        stacktrace_3(a, b)
+    catch
+        error:function_clause:Stk3 ->
+            [] = erlang:get_stacktrace(),
+            case lists:module_info(native) of
+                false ->
+                    [{lists,prefix,[a,b],_}|_] = Stk3;
+                true ->
+                    [{lists,prefix,2,_}|_] = Stk3
+            end
+    end,
+
+    try
+        throw(x)
+    catch
+        throw:x:IntentionallyUnused ->
+            ok
+    end.
+
+stacktrace_1(X, C1, Y) ->
+    try try foo(X) of
+            C1 -> value1
+        catch
+            C1:D1:Stk1 ->
+                [] = erlang:get_stacktrace(),
+                {caught1,D1,Stk1}
+        after
+            foo(Y)
+        end of
+        V2 -> {value2,V2}
+    catch
+        C2:D2:Stk2 ->
+            [] = erlang:get_stacktrace(),
+            {caught2,{C2,D2},Stk2}
+    end.
+
+stacktrace_2() ->
+    ok = erlang:process_info(self(), current_function),
+    ok.
+
+stacktrace_3(A, B) ->
+    {ok,lists:prefix(A, B)}.
+
+nested_stacktrace(_Config) ->
+    V = [{make_ref()}|[self()]],
+    value1 = nested_stacktrace_1({{value,{V,x1}},void,{V,x1}},
+                                 {void,void,void}),
+    case ?MODULE:module_info(native) of
+        false ->
+            {caught1,
+             [{erlang,'+',[V,x1],_},{?MODULE,my_add,2,_}|_],
+             value2} =
+                nested_stacktrace_1({{'add',{V,x1}},error,badarith},
+                                    {{value,{V,x2}},void,{V,x2}}),
+            {caught1,
+             [{erlang,'+',[V,x1],_},{?MODULE,my_add,2,_}|_],
+             {caught2,[{erlang,abs,[V],_}|_]}} =
+                nested_stacktrace_1({{'add',{V,x1}},error,badarith},
+                                    {{'abs',V},error,badarg});
+        true ->
+            {caught1,
+             [{?MODULE,my_add,2,_}|_],
+             value2} =
+                nested_stacktrace_1({{'add',{V,x1}},error,badarith},
+                                    {{value,{V,x2}},void,{V,x2}}),
+            {caught1,
+             [{?MODULE,my_add,2,_}|_],
+             {caught2,[{?MODULE,my_abs,1,_}|_]}} =
+                nested_stacktrace_1({{'add',{V,x1}},error,badarith},
+                                    {{'abs',V},error,badarg})
+    end,
+    ok.
+
+nested_stacktrace_1({X1,C1,V1}, {X2,C2,V2}) ->
+    try foo(X1) of
+        V1 -> value1
+    catch
+        C1:V1:S1 ->
+            T2 = try foo(X2) of
+                     V2 -> value2
+                 catch
+                     C2:V2:S2 ->
+                         {caught2,S2}
+                 end,
+            {caught1,S1,T2}
+    end.
+
+raise(_Config) ->
+    test_raise(fun() -> exit({exit,tuple}) end),
+    test_raise(fun() -> abs(id(x)) end),
+    test_raise(fun() -> throw({was,thrown}) end),
+
+    badarg = bad_raise(fun() -> abs(id(x)) end),
+
+    error = stk_used_in_bin_size(<<0:42>>),
+    ok.
+
+stk_used_in_bin_size(Bin) ->
+    try
+        throw(fail)
+    catch
+        throw:fail:Stk ->
+            %% The compiler would crash because the building of the
+            %% stacktrack was sunk into each case arm.
+            case Bin of
+                <<0:Stk>> -> ok;
+                _ -> error
+            end
+    end.
+
+bad_raise(Expr) ->
+    try
+        Expr()
+    catch
+        _:E:Stk ->
+            erlang:raise(bad_class, E, Stk)
+    end.
+
+test_raise(Expr) ->
+    test_raise_1(Expr),
+    test_raise_2(Expr),
+    test_raise_3(Expr),
+    test_raise_4(Expr).
+
+test_raise_1(Expr) ->
+    erase(exception),
+    try
+        do_test_raise_1(Expr)
+    catch
+        C:E:Stk ->
+            {C,E,Stk} = erase(exception)
+    end.
+
+do_test_raise_1(Expr) ->
+    try
+        Expr()
+    catch
+        C:E:Stk ->
+            %% Here the stacktrace must be built.
+            put(exception, {C,E,Stk}),
+            erlang:raise(C, E, Stk)
+    end.
+
+test_raise_2(Expr) ->
+    erase(exception),
+    try
+        do_test_raise_2(Expr)
+    catch
+        C:E:Stk ->
+            {C,E} = erase(exception),
+            try
+                Expr()
+            catch
+                _:_:S ->
+                    [StkTop|_] = S,
+                    [StkTop|_] = Stk
+            end
+    end.
+
+do_test_raise_2(Expr) ->
+    try
+        Expr()
+    catch
+        C:E:Stk ->
+            %% Here it is possible to replace erlang:raise/3 with
+            %% the raw_raise/3 instruction since the stacktrace is
+            %% not actually used.
+            put(exception, {C,E}),
+            erlang:raise(C, E, Stk)
+    end.
+
+test_raise_3(Expr) ->
+    try
+        do_test_raise_3(Expr)
+    catch
+        exit:{exception,C,E}:Stk ->
+            try
+                Expr()
+            catch
+                C:E:S ->
+                    [StkTop|_] = S,
+                    [StkTop|_] = Stk
+            end
+    end.
+
+do_test_raise_3(Expr) ->
+    try
+        Expr()
+    catch
+        C:E:Stk ->
+            %% Here it is possible to replace erlang:raise/3 with
+            %% the raw_raise/3 instruction since the stacktrace is
+            %% not actually used.
+            erlang:raise(exit, {exception,C,E}, Stk)
+    end.
+
+test_raise_4(Expr) ->
+    try
+        do_test_raise_4(Expr)
+    catch
+        exit:{exception,C,E,Stk}:Stk ->
+            try
+                Expr()
+            catch
+                C:E:S ->
+                    [StkTop|_] = S,
+                    [StkTop|_] = Stk
+            end
+    end.
+
+do_test_raise_4(Expr) ->
+    try
+        Expr()
+    catch
+        C:E:Stk ->
+            %% Here the stacktrace must be built.
+            erlang:raise(exit, {exception,C,E,Stk}, Stk)
+    end.
+
+no_return_in_try_block(Config) when is_list(Config) ->
+    1.0 = no_return_in_try_block_1(0),
+    1.0 = no_return_in_try_block_1(0.0),
+
+    gurka = no_return_in_try_block_1(gurka),
+    [] = no_return_in_try_block_1([]),
+
+    ok.
+
+no_return_in_try_block_1(H) ->
+    try
+        Float = if
+                    is_number(H) -> float(H);
+                    true -> no_return()
+                end,
+        Float + 1
+    catch
+        throw:no_return -> H
+    end.
+
+no_return() -> throw(no_return).
+
+coverage(_Config) ->
+    {'EXIT',{{badfun,true},[_|_]}} = (catch coverage_1()),
+    ok.
+
+%% Cover some code in beam_trim.
+coverage_1() ->
+    try
+        true
+    catch
+        law:business ->
+            program
+    after
+        head
+    end(0),
+    if
+        [2 or 1] ->
+            true
+    end.
+
+
+id(I) -> I.

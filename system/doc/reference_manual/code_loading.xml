@@ -4,7 +4,7 @@
 <chapter>
   <header>
     <copyright>
-      <year>2003</year><year>2015</year>
+      <year>2003</year><year>2016</year>
       <holder>Ericsson AB. All Rights Reserved.</holder>
     </copyright>
     <legalnotice>
@@ -43,7 +43,7 @@
       <c>.beam</c>. The compiler can also generate a binary which can
       be loaded directly.</p>
     <p>The compiler is located in the module <c>compile</c> (see the
-      <seealso marker="compiler:compile">compile(3)</seealso> manual page in
+      <seeerl marker="compiler:compile">compile(3)</seeerl> manual page in
       Compiler).</p>
     <pre>
 compile:file(Module)
@@ -52,16 +52,16 @@ compile:file(Module, Options)</pre>
       both compiles and loads <c>Module</c>.</p>
     <p>There is also a module <c>make</c>, which provides a set of
       functions similar to the UNIX type Make functions, see the
-      <seealso marker="tools:make">make(3)</seealso>
+      <seeerl marker="tools:make">make(3)</seeerl>
       manual page in Tools.</p>
     <p>The compiler can also be accessed from the OS prompt, see the
-      <seealso marker="erts:erl">erl(1)</seealso> manual page in ERTS.</p>
+      <seecom marker="erts:erl">erl(1)</seecom> manual page in ERTS.</p>
     <pre>
 % erl -compile <input>Module1</input>...<input>ModuleN</input>
 % erl -make</pre>
     <p>The <c>erlc</c> program provides an even better way to compile
       modules from the shell, see the
-      <seealso marker="erts:erlc">erlc(1)</seealso> manual page in ERTS.
+      <seecom marker="erts:erlc">erlc(1)</seecom> manual page in ERTS.
       It understands a
       number of flags that can be used to define macros, add search
       paths for include files, and more.</p>
@@ -74,7 +74,7 @@ compile:file(Module, Options)</pre>
     <title>Code Loading</title>
     <p>The object code must be <em>loaded</em> into the Erlang runtime
       system. This is handled by the <em>code server</em>, see the
-      <seealso marker="kernel:code">code(3)</seealso>
+      <seeerl marker="kernel:code">code(3)</seeerl>
       manual page in Kernel.</p>
     <p>The code server loads code according to a code loading strategy,
       which is either <em>interactive</em> (default) or
@@ -82,8 +82,8 @@ compile:file(Module, Options)</pre>
       a <em>code path</em> and loaded when first referenced. In
       embedded mode, code is loaded at start-up according to a
       <em>boot script</em>. This is described in
-      <seealso marker="doc/system_principles:system_principles#code_loading">
-      System Principles </seealso>.</p>
+      <seeguide marker="system/system_principles:system_principles#code_loading">
+      System Principles </seeguide>.</p>
   </section>
 
   <section>
@@ -130,26 +130,6 @@ loop() ->
     <marker id="on_load"></marker>
     <title>Running a Function When a Module is Loaded</title>
 
-    <warning>
-    <p>The <c>on_load</c> feature is to be considered experimental
-    as there are a number of known weak points in current semantics,
-    which therefore might change in future Erlang/OTP releases:</p>
-    <list>
-      <item><p>Doing external call in <c>on_load</c> to the module itself
-      leads to deadlock.</p></item>
-      <item><p>At module upgrade, other processes calling the module
-      get suspended waiting for <c>on_load</c> to finish. This can be very bad
-      for applications with demands on realtime characteristics.</p></item>
-      <item><p>At module upgrade, no rollback is done if the
-      <c>on_load</c> function fails.
-      The system is left in a bad limbo state without any working
-      and reachable instance of the module.</p></item>
-    </list>
-    <p>The problems with module upgrade described above can be fixed in future
-    Erlang/OTP releases by changing the behaviour to not make the module reachable until
-    after the <c>on_load</c> function has successfully returned.</p>
-    </warning>
-
     <p>The <c>-on_load()</c> directive names a function that is to
     be run automatically when a module is loaded.</p>
     <p>Its syntax is as follows:</p>
@@ -159,20 +139,35 @@ loop() ->
 
     <p>It is not necessary to export the function. It is called in a
     freshly spawned process (which terminates as soon as the function
-    returns). The function must return <c>ok</c> if the module is to
-    remain loaded and become callable, or any other value if the module
-    is to be unloaded. Generating an exception also causes the
-    module to be unloaded. If the return value is not an atom,
-    a warning error report is sent to the error logger.</p>
+    returns).</p>
 
-    <p>A process that calls any function in a module whose <c>on_load</c>
-    function has not yet returned, is suspended until the <c>on_load</c>
-    function has returned.</p>
+    <p>The function must return <c>ok</c> if the module is to
+    become the new current code for the module and become
+    callable.</p>
+
+    <p>Returning any other value or generating an exception
+    causes the new code to be unloaded. If the return value is not an
+    atom, a warning error report is sent to the error logger.</p>
+
+    <p>If there already is current code for the module, that code will
+    remain current and can be called until the <c>on_load</c> function
+    has returned. If the <c>on_load</c> function fails, the current
+    code (if any) will remain current. If there is no current code for
+    a module, any process that makes an external call to the module
+    before the <c>on_load</c> function has finished will be suspended
+    until the <c>on_load</c> function have finished.</p>
+
+    <note>
+      <p>Before OTP 19, if the <c>on_load</c> function failed, any
+      previously current code would become old, essentially leaving
+      the system without any working and reachable instance of the
+      module.  That problem has been eliminated in OTP 19.</p>
+    </note>
 
     <p>In embedded mode, first all modules are loaded.
       Then all <c>on_load</c> functions are called. The system is
       terminated unless all of the <c>on_load</c> functions return
-      <c>ok</c></p>.
+      <c>ok</c>.</p>
 
     <p><em>Example:</em></p>
 

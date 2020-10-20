@@ -1,7 +1,7 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 1996-2013. All Rights Reserved.
+%% Copyright Ericsson AB 1996-2020. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -19,6 +19,9 @@
 %%
 -module(code).
 
+-include_lib("kernel/include/logger.hrl").
+-include("eep48.hrl").
+
 %% This is the interface module to the code server. It also contains
 %% some implementation details.  See also related modules: code_*.erl
 %% in this directory.
@@ -28,16 +31,21 @@
 	 get_path/0, 
 	 load_file/1,
 	 ensure_loaded/1,
+	 ensure_modules_loaded/1,
 	 load_abs/1,
 	 load_abs/2,
 	 load_binary/3,
 	 load_native_partial/2,
 	 load_native_sticky/3,
+	 atomic_load/1,
+	 prepare_loading/1,
+	 finish_loading/1,
 	 delete/1,
 	 purge/1,
 	 soft_purge/1,
 	 is_loaded/1,
 	 all_loaded/0,
+         all_available/0,
 	 stop/0,
 	 root_dir/0,
 	 lib_dir/0,
@@ -60,15 +68,23 @@
 	 del_path/1,
 	 replace_path/2,
 	 rehash/0,
-	 start_link/0, start_link/1,
+	 start_link/0,
 	 which/1,
+         get_doc/1,
 	 where_is_file/1,
 	 where_is_file/2,
 	 set_primary_archive/4,
 	 clash/0,
-     get_mode/0]).
+         module_status/0,
+         module_status/1,
+         modified_modules/0,
+         get_mode/0]).
+
+-deprecated({rehash,0,"the code path cache feature has been removed"}).
 
 -export_type([load_error_rsn/0, load_ret/0]).
+-export_type([prepared_code/0]).
+-export_type([module_status/0]).
 
 -include_lib("kernel/include/file.hrl").
 
@@ -77,15 +93,19 @@
 %%----------------------------------------------------------------------------
 
 -type load_error_rsn() :: 'badfile'
-                        | 'native_code'
                         | 'nofile'
                         | 'not_purged'
-                        | 'on_load'
+                        | 'on_load_failure'
                         | 'sticky_directory'.
 -type load_ret() :: {'error', What :: load_error_rsn()}
                   | {'module', Module :: module()}.
 -type loaded_ret_atoms() :: 'cover_compiled' | 'preloaded'.
 -type loaded_filename() :: (Filename :: file:filename()) | loaded_ret_atoms().
+
+-define(PREPARED, '$prepared$').
+-opaque prepared_code() ::
+	  {?PREPARED,[{module(),{binary(),string(),_}}]}.
+
 
 %%% BIFs
 
@@ -105,8 +125,8 @@ get_chunk(_, _) ->
 is_module_native(_) ->
     erlang:nif_error(undef).
 
--spec make_stub_module(Module, Beam, Info) -> Module when
-      Module :: module(),
+-spec make_stub_module(LoaderState, Beam, Info) -> module() when
+      LoaderState :: binary(),
       Beam :: binary(),
       Info :: {list(), list(), binary()}.
 
@@ -135,14 +155,19 @@ load_file(Mod) when is_atom(Mod) ->
 
 -spec ensure_loaded(Module) -> {module, Module} | {error, What} when
       Module :: module(),
-      What :: embedded | badfile | native_code | nofile | on_load.
-ensure_loaded(Mod) when is_atom(Mod) -> 
-    call({ensure_loaded,Mod}).
+      What :: embedded | badfile | nofile | on_load_failure.
+ensure_loaded(Mod) when is_atom(Mod) ->
+    case erlang:module_loaded(Mod) of
+        true -> {module, Mod};
+        false -> call({ensure_loaded,Mod})
+    end.
 
 %% XXX File as an atom is allowed only for backwards compatibility.
 -spec load_abs(Filename) -> load_ret() when
       Filename :: file:filename().
-load_abs(File) when is_list(File); is_atom(File) -> call({load_abs,File,[]}).
+load_abs(File) when is_list(File); is_atom(File) ->
+    Mod = list_to_atom(filename:basename(File)),
+    call({load_abs,File,Mod}).
 
 %% XXX Filename is also an atom(), e.g. 'cover_compiled'
 -spec load_abs(Filename :: loaded_filename(), Module :: module()) -> load_ret().
@@ -198,6 +223,53 @@ get_object_code(Mod) when is_atom(Mod) -> call({get_object_code, Mod}).
       Loaded :: loaded_filename().
 all_loaded() -> call(all_loaded).
 
+-spec all_available() -> [{Module, Filename, Loaded}] when
+      Module :: string(),
+      Filename :: loaded_filename(),
+      Loaded :: boolean().
+all_available() ->
+    case code:get_mode() of
+        interactive ->
+            all_available(get_path(), #{});
+        embedded ->
+            all_available([], #{})
+    end.
+all_available([Path|Tail], Acc) ->
+    case erl_prim_loader:list_dir(Path) of
+        {ok, Files} ->
+            all_available(Tail, all_available(Path, Files, Acc));
+        _Error ->
+            all_available(Tail, Acc)
+    end;
+all_available([], AllModules) ->
+    AllLoaded = [{atom_to_list(M),Path,true} || {M,Path} <- all_loaded()],
+    AllAvailable =
+        maps:fold(
+          fun(File, Path, Acc) ->
+                  [{filename:rootname(File), filename:append(Path, File), false} | Acc]
+          end, [], AllModules),
+    OrderFun = fun F({A,_,_},{B,_,_}) ->
+                       F(A,B);
+                   F(A,B) ->
+                       A =< B
+               end,
+    lists:umerge(OrderFun, lists:sort(OrderFun, AllLoaded), lists:sort(OrderFun, AllAvailable)).
+
+all_available(Path, [File | T], Acc) ->
+    case filename:extension(File) of
+        ".beam" ->
+            case maps:is_key(File, Acc) of
+                false ->
+                    all_available(Path, T, Acc#{ File => Path });
+                true ->
+                    all_available(Path, T, Acc)
+            end;
+        _Else ->
+                    all_available(Path, T, Acc)
+    end;
+all_available(_Path, [], Acc) ->
+    Acc.
+
 -spec stop() -> no_return().
 stop() -> call(stop).
 
@@ -245,7 +317,7 @@ is_sticky(Mod) when is_atom(Mod) -> call({is_sticky,Mod}).
 
 -spec set_path(Path) -> 'true' | {'error', What} when
       Path :: [Dir :: file:filename()],
-      What :: 'bad_directory' | 'bad_path'.
+      What :: 'bad_directory'.
 set_path(PathList) when is_list(PathList) -> call({set_path,PathList}).
 
 -spec get_path() -> Path when
@@ -293,23 +365,328 @@ replace_path(Name, Dir) when (is_atom(Name) orelse is_list(Name)),
     call({replace_path,Name,Dir}).
 
 -spec rehash() -> 'ok'.
-rehash() -> call(rehash).
+rehash() ->
+    cache_warning(),
+    ok.
 
 -spec get_mode() -> 'embedded' | 'interactive'.
 get_mode() -> call(get_mode).
 
+%%%
+%%% Loading of several modules in parallel.
+%%%
+
+-spec ensure_modules_loaded([Module]) ->
+   'ok' | {'error',[{Module,What}]} when
+      Module :: module(),
+      What :: badfile | nofile | on_load_failure.
+
+ensure_modules_loaded(Modules) when is_list(Modules) ->
+    case prepare_ensure(Modules, []) of
+	Ms when is_list(Ms) ->
+	    ensure_modules_loaded_1(Ms);
+	error ->
+	    error(function_clause, [Modules])
+    end.
+
+ensure_modules_loaded_1(Ms0) ->
+    Ms = lists:usort(Ms0),
+    {Prep,Error0} = load_mods(Ms),
+    {OnLoad,Normal} = partition_on_load(Prep),
+    Error1 = case finish_loading(Normal, true) of
+		 ok -> Error0;
+		 {error,Err} -> Err ++ Error0
+	     end,
+    ensure_modules_loaded_2(OnLoad, Error1).
+
+ensure_modules_loaded_2([{M,_}|Ms], Errors) ->
+    case ensure_loaded(M) of
+	{module,M} ->
+	    ensure_modules_loaded_2(Ms, Errors);
+	{error,Err} ->
+	    ensure_modules_loaded_2(Ms, [{M,Err}|Errors])
+    end;
+ensure_modules_loaded_2([], []) ->
+    ok;
+ensure_modules_loaded_2([], [_|_]=Errors) ->
+    {error,Errors}.
+
+prepare_ensure([M|Ms], Acc) when is_atom(M) ->
+    case erlang:module_loaded(M) of
+	true ->
+	    prepare_ensure(Ms, Acc);
+	false ->
+	    prepare_ensure(Ms, [M|Acc])
+    end;
+prepare_ensure([], Acc) ->
+    Acc;
+prepare_ensure(_, _) ->
+    error.
+
+-spec atomic_load(Modules) -> 'ok' | {'error',[{Module,What}]} when
+      Modules :: [Module | {Module, Filename, Binary}],
+      Module :: module(),
+      Filename :: file:filename(),
+      Binary :: binary(),
+      What :: 'badfile' | 'nofile' | 'on_load_not_allowed' | 'duplicated' |
+	      'not_purged' | 'sticky_directory' | 'pending_on_load'.
+
+atomic_load(Modules) ->
+    case do_prepare_loading(Modules) of
+	{ok,Prep} ->
+	    finish_loading(Prep, false);
+	{error,_}=Error ->
+	    Error;
+	badarg ->
+	    error(function_clause, [Modules])
+    end.
+
+-spec prepare_loading(Modules) ->
+           {'ok',Prepared} | {'error',[{Module,What}]} when
+      Modules :: [Module | {Module, Filename, Binary}],
+      Module :: module(),
+      Filename :: file:filename(),
+      Binary :: binary(),
+      Prepared :: prepared_code(),
+      What :: 'badfile' | 'nofile' | 'on_load_not_allowed' | 'duplicated'.
+
+prepare_loading(Modules) ->
+    case do_prepare_loading(Modules) of
+	{ok,Prep} ->
+	    {ok,{?PREPARED,Prep}};
+	{error,_}=Error ->
+	    Error;
+	badarg ->
+	    error(function_clause, [Modules])
+    end.
+
+-spec finish_loading(Prepared) -> 'ok' | {'error',[{Module,What}]} when
+      Prepared :: prepared_code(),
+      Module :: module(),
+      What :: 'not_purged' | 'sticky_directory' | 'pending_on_load'.
+
+finish_loading({?PREPARED,Prepared}=Arg) when is_list(Prepared) ->
+    case verify_prepared(Prepared) of
+	ok ->
+	    finish_loading(Prepared, false);
+	error ->
+	    error(function_clause, [Arg])
+    end.
+
+partition_load([Item|T], Bs, Ms) ->
+    case Item of
+	{M,File,Bin} when is_atom(M) andalso
+			  is_list(File) andalso
+			  is_binary(Bin) ->
+	    partition_load(T, [Item|Bs], Ms);
+	M when is_atom(M) ->
+	    partition_load(T, Bs, [Item|Ms]);
+	_ ->
+	    error
+    end;
+partition_load([], Bs, Ms) ->
+    {Bs,Ms}.
+
+do_prepare_loading(Modules) ->
+    case partition_load(Modules, [], []) of
+	{ModBins,Ms} ->
+	    case prepare_loading_1(ModBins, Ms) of
+		{error,_}=Error ->
+		    Error;
+		Prep when is_list(Prep) ->
+		    {ok,Prep}
+	    end;
+	error ->
+	    badarg
+    end.
+
+prepare_loading_1(ModBins, Ms) ->
+    %% erlang:finish_loading/1 *will* detect duplicates.
+    %% However, we want to detect all errors that can be detected
+    %% by only examining the input data before call the LastAction
+    %% fun.
+    case prepare_check_uniq(ModBins, Ms) of
+	ok ->
+	    prepare_loading_2(ModBins, Ms);
+	Error ->
+	    Error
+    end.
+
+prepare_loading_2(ModBins, Ms) ->
+    {Prep0,Error0} = load_bins(ModBins),
+    {Prep1,Error1} = load_mods(Ms),
+    case Error0 ++ Error1 of
+	[] ->
+	    prepare_loading_3(Prep0 ++ Prep1);
+	[_|_]=Error ->
+	    {error,Error}
+    end.
+
+prepare_loading_3(Prep) ->
+    case partition_on_load(Prep) of
+	{[_|_]=OnLoad,_} ->
+	    Error = [{M,on_load_not_allowed} || {M,_} <- OnLoad],
+	    {error,Error};
+	{[],_} ->
+	    Prep
+    end.
+
+prepare_check_uniq([{M,_,_}|T], Ms) ->
+    prepare_check_uniq(T, [M|Ms]);
+prepare_check_uniq([], Ms) ->
+    prepare_check_uniq_1(lists:sort(Ms), []).
+
+prepare_check_uniq_1([M|[M|_]=Ms], Acc) ->
+    prepare_check_uniq_1(Ms, [{M,duplicated}|Acc]);
+prepare_check_uniq_1([_|Ms], Acc) ->
+    prepare_check_uniq_1(Ms, Acc);
+prepare_check_uniq_1([], []) ->
+    ok;
+prepare_check_uniq_1([], [_|_]=Errors) ->
+    {error,Errors}.
+
+partition_on_load(Prep) ->
+    P = fun({_,{PC,_,_}}) ->
+		erlang:has_prepared_code_on_load(PC)
+	end,
+    lists:partition(P, Prep).
+
+verify_prepared([{M,{Prep,Name,_Native}}|T])
+  when is_atom(M), is_list(Name) ->
+    try erlang:has_prepared_code_on_load(Prep) of
+	false ->
+	    verify_prepared(T);
+	_ ->
+	    error
+    catch
+	error:_ ->
+	    error
+    end;
+verify_prepared([]) ->
+    ok;
+verify_prepared(_) ->
+    error.
+
+finish_loading(Prepared0, EnsureLoaded) ->
+    Prepared = [{M,{Bin,File}} || {M,{Bin,File,_}} <- Prepared0],
+    Native0 = [{M,Code} || {M,{_,_,Code}} <- Prepared0,
+			   Code =/= undefined],
+    case call({finish_loading,Prepared,EnsureLoaded}) of
+	ok ->
+	    finish_loading_native(Native0);
+	{error,Errors}=E when EnsureLoaded ->
+	    S0 = sofs:relation(Errors),
+	    S1 = sofs:domain(S0),
+	    R0 = sofs:relation(Native0),
+	    R1 = sofs:drestriction(R0, S1),
+	    Native = sofs:to_external(R1),
+	    finish_loading_native(Native),
+	    E;
+	{error,_}=E ->
+	    E
+    end.
+
+finish_loading_native([{Mod,Code}|Ms]) ->
+    _ = load_native_partial(Mod, Code),
+    finish_loading_native(Ms);
+finish_loading_native([]) ->
+    ok.
+
+load_mods([]) ->
+    {[],[]};
+load_mods(Mods) ->
+    Path = get_path(),
+    F = prepare_loading_fun(),
+    {ok,{Succ,Error0}} = erl_prim_loader:get_modules(Mods, F, Path),
+    Error = [case E of
+		 badfile -> {M,E};
+		 _ -> {M,nofile}
+	     end || {M,E} <- Error0],
+    {Succ,Error}.
+
+load_bins([]) ->
+    {[],[]};
+load_bins(BinItems) ->
+    F = prepare_loading_fun(),
+    do_par(F, BinItems).
+
+-type prep_fun_type() :: fun((module(), file:filename(), binary()) ->
+				    {ok,_} | {error,_}).
+
+-spec prepare_loading_fun() -> prep_fun_type().
+
+prepare_loading_fun() ->
+    GetNative = get_native_fun(),
+    fun(Mod, FullName, Beam) ->
+	    case erlang:prepare_loading(Mod, Beam) of
+		{error,_}=Error ->
+		    Error;
+		Prepared ->
+		    {ok,{Prepared,FullName,GetNative(Beam)}}
+	    end
+    end.
+
+get_native_fun() ->
+    Architecture = erlang:system_info(hipe_architecture),
+    try hipe_unified_loader:chunk_name(Architecture) of
+	ChunkTag ->
+	    fun(Beam) -> code:get_chunk(Beam, ChunkTag) end
+    catch _:_ ->
+	    fun(_) -> undefined end
+    end.
+
+do_par(Fun, L) ->
+    {_,Ref} = spawn_monitor(do_par_fun(Fun, L)),
+    receive
+	{'DOWN',Ref,process,_,Res} ->
+	    Res
+    end.
+
+-spec do_par_fun(prep_fun_type(), list()) -> fun(() -> no_return()).
+
+do_par_fun(Fun, L) ->
+    fun() ->
+	    _ = [spawn_monitor(do_par_fun_2(Fun, Item)) ||
+		    Item <- L],
+	    exit(do_par_recv(length(L), [], []))
+    end.
+
+-spec do_par_fun_2(prep_fun_type(),
+		   {module(),file:filename(),binary()}) ->
+			  fun(() -> no_return()).
+
+do_par_fun_2(Fun, Item) ->
+    fun() ->
+	    {Mod,Filename,Bin} = Item,
+	    try Fun(Mod, Filename, Bin) of
+		{ok,Res} ->
+		    exit({good,{Mod,Res}});
+		{error,Error} ->
+		    exit({bad,{Mod,Error}})
+	    catch
+		_:Error ->
+		    exit({bad,{Mod,Error}})
+	    end
+    end.
+
+do_par_recv(0, Good, Bad) ->
+    {Good,Bad};
+do_par_recv(N, Good, Bad) ->
+    receive
+	{'DOWN',_,process,_,{good,Res}} ->
+	    do_par_recv(N-1, [Res|Good], Bad);
+	{'DOWN',_,process,_,{bad,Res}} ->
+	    do_par_recv(N-1, Good, [Res|Bad])
+    end.
+
 %%-----------------------------------------------------------------
 
 call(Req) ->
-    code_server:call(code_server, Req).
+    code_server:call(Req).
 
--spec start_link() -> {'ok', pid()} | {'error', 'crash'}.
+-spec start_link() -> {'ok', pid()}.
 start_link() ->
-    start_link([stick]).
-
--spec start_link(Flags :: [atom()]) -> {'ok', pid()} | {'error', 'crash'}.
-start_link(Flags) ->
-    do_start(Flags).
+    do_start().
     
 %%-----------------------------------------------------------------
 %% In the init phase, code must not use any modules not yet loaded,
@@ -321,35 +698,21 @@ start_link(Flags) ->
 %% us, so the module is loaded.
 %%-----------------------------------------------------------------
 
-do_start(Flags) ->
+do_start() ->
+    maybe_warn_for_cache(),
     load_code_server_prerequisites(),
 
-    Mode = get_mode(Flags),
-    case init:get_argument(root) of 
-	{ok,[[Root0]]} ->
-	    Root = filename:join([Root0]), % Normalize.  Use filename
-	    case code_server:start_link([Root,Mode]) of
-		{ok,_Pid} = Ok2 ->
-		    if
-			Mode =:= interactive ->
-			    case lists:member(stick, Flags) of
-				true -> do_stick_dirs();
-				_    -> ok
-			    end;
-			true ->
-			    ok
-		    end,
-		    %% Quietly load native code for all modules loaded so far
-                    Architecture = erlang:system_info(hipe_architecture),
-		    load_native_code_for_all_loaded(Architecture),
-		    Ok2;
-		Other ->
-		    Other
-	    end;
-	Other ->
-	    error_logger:error_msg("Can not start code server ~w ~n", [Other]),
-	    {error, crash}
-    end.
+    {ok,[[Root0]]} = init:get_argument(root),
+    Mode = start_get_mode(),
+    Root = filename:join([Root0]),	    % Normalize.
+    Res = code_server:start_link([Root,Mode]),
+
+    maybe_stick_dirs(Mode),
+
+    %% Quietly load native code for all modules loaded so far.
+    Architecture = erlang:system_info(hipe_architecture),
+    load_native_code_for_all_loaded(Architecture),
+    Res.
 
 %% Make sure that all modules that the code_server process calls
 %% (directly or indirectly) are loaded. Otherwise the code_server
@@ -369,6 +732,16 @@ load_code_server_prerequisites() ->
     _ = [M = M:module_info(module) || M <- Needed],
     ok.
 
+maybe_stick_dirs(interactive) ->
+    case init:get_argument(nostick) of
+	{ok,[[]]} ->
+	    ok;
+	_ ->
+	    do_stick_dirs()
+    end;
+maybe_stick_dirs(_) ->
+    ok.
+
 do_stick_dirs() ->
     do_s(compiler),
     do_s(stdlib),
@@ -386,19 +759,24 @@ do_s(Lib) ->
 	    ok
     end.
 
-get_mode(Flags) ->
-    case lists:member(embedded, Flags) of
-	true ->
-	    embedded;
-	_Otherwise -> 
-	    case init:get_argument(mode) of
-		{ok,[["embedded"]]} ->
+start_get_mode() ->
+    case init:get_argument(mode) of
+	{ok, [FirstMode | Rest]} ->
+	    case Rest of
+		[] ->
+		    ok;
+		_ ->
+		    ?LOG_WARNING("Multiple -mode given to erl, using the first, ~p",
+				 [FirstMode])
+	    end,
+	    case FirstMode of
+		["embedded"] ->
 		    embedded;
-		{ok,[["minimal"]]} ->
-		    minimal;
-		_Else ->
+		_ ->
 		    interactive
-	    end
+	    end;
+	_ ->
+	    interactive
     end.
 
 %% Find out which version of a particular module we would
@@ -408,42 +786,18 @@ get_mode(Flags) ->
 
 -spec which(Module) -> Which when
       Module :: module(),
-      Which :: file:filename() | loaded_ret_atoms() | non_existing.
+      Which :: loaded_filename() | non_existing.
 which(Module) when is_atom(Module) ->
     case is_loaded(Module) of
 	false ->
-	    which2(Module);
+            which(Module, get_path());
 	{file, File} ->
 	    File
     end.
 
-which2(Module) ->
-    Base = atom_to_list(Module),
-    File = filename:basename(Base) ++ objfile_extension(),
-    Path = get_path(),
-    which(File, filename:dirname(Base), Path).
-
--spec which(file:filename(), file:filename(), [file:filename()]) ->
-        'non_existing' | file:filename().
-
-which(_, _, []) ->
-    non_existing;
-which(File, Base, [Directory|Tail]) ->
-    Path = if
-	       Base =:= "." -> Directory;
-	       true -> filename:join(Directory, Base)
-	   end,
-    case erl_prim_loader:list_dir(Path) of
-	{ok,Files} ->
-	    case lists:member(File,Files) of
-		true ->
-		    filename:append(Path, File);
-		false ->
-		    which(File, Base, Tail)
-	    end;
-	_Error ->
-	    which(File, Base, Tail)
-    end.
+which(Module, Path) when is_atom(Module) ->
+    File = atom_to_list(Module) ++ objfile_extension(),
+    where_is_file(Path, File).
 
 %% Search the code path for a specific file. Try to locate
 %% it in the code path cache if possible.
@@ -452,30 +806,119 @@ which(File, Base, [Directory|Tail]) ->
       Filename :: file:filename(),
       Absname :: file:filename().
 where_is_file(File) when is_list(File) ->
-    case call({is_cached,File}) of
-	no ->
-	    Path = get_path(),
-	    which(File, ".", Path);
-	Dir ->
-	    filename:join(Dir, File)
+    Path = get_path(),
+    where_is_file(Path, File).
+
+%% To avoid unnecessary work when looking at many modules, this also
+%% accepts pairs of directories and pre-fetched contents in the path
+-spec where_is_file(Path :: [Dir|{Dir,Files}], Filename :: file:filename()) ->
+          'non_existing' | file:filename() when
+      Dir :: file:filename(), Files :: [file:filename()].
+
+where_is_file([], _) ->
+    non_existing;
+where_is_file([{Path, Files}|Tail], File) ->
+    where_is_file(Tail, File, Path, Files);
+where_is_file([Path|Tail], File) ->
+    case erl_prim_loader:list_dir(Path) of
+	{ok,Files} ->
+            where_is_file(Tail, File, Path, Files);
+	_Error ->
+	    where_is_file(Tail, File)
     end.
 
--spec where_is_file(Path :: file:filename(), Filename :: file:filename()) ->
-        file:filename() | 'non_existing'.
-
-where_is_file(Path, File) when is_list(Path), is_list(File) ->
-    CodePath = get_path(),
-    if
-	Path =:= CodePath ->
-	    case call({is_cached, File}) of
-		no ->
-		    which(File, ".", Path);
-		Dir ->
-		    filename:join(Dir, File)
-	    end;
-	true ->
-	    which(File, ".", Path)
+where_is_file(Tail, File, Path, Files) ->
+    case lists:member(File, Files) of
+        true ->
+            filename:append(Path, File);
+        false ->
+            where_is_file(Tail, File)
     end.
+
+-spec get_doc(Mod) -> {ok, Res} | {error, Reason} when
+      Mod :: module(),
+      Res :: #docs_v1{},
+      Reason :: non_existing | missing | file:posix().
+get_doc(Mod) when is_atom(Mod) ->
+    case which(Mod) of
+        preloaded ->
+            Fn = filename:join([code:lib_dir(erts),"ebin",atom_to_list(Mod) ++ ".beam"]),
+            get_doc_chunk(Fn, Mod);
+        Error when is_atom(Error) ->
+            {error, Error};
+        Fn ->
+            get_doc_chunk(Fn, Mod)
+    end.
+
+get_doc_chunk(Filename, Mod) when is_atom(Mod) ->
+    case beam_lib:chunks(Filename, ["Docs"]) of
+        {error,beam_lib,{missing_chunk,_,_}} ->
+            case get_doc_chunk(Filename, atom_to_list(Mod)) of
+                {error,missing} ->
+                    get_doc_chunk_from_ast(Filename);
+                Error ->
+                    Error
+            end;
+        {error,beam_lib,{file_error,_Filename,enoent}} ->
+            get_doc_chunk(Filename, atom_to_list(Mod));
+        {ok, {Mod, [{"Docs",Bin}]}} ->
+            {ok,binary_to_term(Bin)}
+    end;
+get_doc_chunk(Filename, Mod) ->
+    case filename:dirname(Filename) of
+        Filename ->
+            {error,missing};
+        Dir ->
+            ChunkFile = filename:join([Dir,"doc","chunks",Mod ++ ".chunk"]),
+            case file:read_file(ChunkFile) of
+                {ok, Bin} ->
+                    {ok, binary_to_term(Bin)};
+                {error,enoent} ->
+                    get_doc_chunk(Dir, Mod);
+                {error,Reason} ->
+                    {error,Reason}
+            end
+    end.
+
+get_doc_chunk_from_ast(Filename) ->
+    case beam_lib:chunks(Filename, [abstract_code]) of
+        {error,beam_lib,{missing_chunk,_,_}} ->
+            {error,missing};
+        {ok, {_Mod, [{abstract_code,
+                      {raw_abstract_v1, AST}}]}} ->
+            Docs = get_function_docs_from_ast(AST),
+            {ok, #docs_v1{ anno = 0, beam_language = erlang,
+                           module_doc = none,
+                           metadata = #{ generated => true, otp_doc_vsn => ?CURR_DOC_VERSION },
+                           docs = Docs }};
+        {ok, {_Mod, [{abstract_code,no_abstract_code}]}} ->
+            {error,missing};
+        Error ->
+            Error
+    end.
+
+get_function_docs_from_ast(AST) ->
+    lists:flatmap(fun(E) -> get_function_docs_from_ast(E, AST) end, AST).
+get_function_docs_from_ast({function,Anno,Name,Arity,_Code}, AST) ->
+    Signature = io_lib:format("~p/~p",[Name,Arity]),
+    Specs =  lists:filter(
+               fun({attribute,_Ln,spec,{FA,_}}) ->
+                       case FA of
+                           {F,A} ->
+                               F =:= Name andalso A =:= Arity;
+                           {_, F, A} ->
+                               F =:= Name andalso A =:= Arity
+                       end;
+                  (_) -> false
+               end, AST),
+    SpecMd = case Specs of
+                 [S] -> #{ signature => [S] };
+                 [] -> #{}
+             end,
+    [{{function, Name, Arity}, Anno,
+      [unicode:characters_to_binary(Signature)], none, SpecMd}];
+get_function_docs_from_ast(_, _) ->
+    [].
 
 -spec set_primary_archive(ArchiveFile :: file:filename(),
 			  ArchiveBin :: binary(),
@@ -498,7 +941,7 @@ set_primary_archive(ArchiveFile0, ArchiveBin, #file_info{} = FileInfo,
 	{error, _Reason} = Error ->
 	    Error
     end.
-    
+
 %% Search the entire path system looking for name clashes
 
 -spec clash() -> 'ok'.
@@ -553,6 +996,22 @@ has_ext(Ext, Extlen, File) ->
     end.
 
 %%%
+%%% Warning for deprecated code path cache.
+%%%
+
+maybe_warn_for_cache() ->
+    case init:get_argument(code_path_cache) of
+	{ok, _} ->
+	    cache_warning();
+	error ->
+	    ok
+    end.
+
+cache_warning() ->
+    W = "The code path cache functionality has been removed",
+    error_logger:warning_report(W).
+
+%%%
 %%% Silently load native code for all modules loaded so far.
 %%%
 
@@ -592,3 +1051,106 @@ load_all_native_1([{Mod,BeamFilename}|T], ChunkTag) ->
     load_all_native_1(T, ChunkTag);
 load_all_native_1([], _) ->
     ok.
+
+-type module_status() :: not_loaded | loaded | modified | removed.
+
+%% Returns the list of all loaded modules and their current status
+-spec module_status() -> [{module(), module_status()}].
+module_status() ->
+    module_status([M || {M, _} <- all_loaded()]).
+
+%% Returns the status of the module in relation to object file on disk.
+-spec module_status (Module :: module() | [module()]) ->
+          module_status() | [{module(), module_status()}].
+module_status(Modules) when is_list(Modules) ->
+    PathFiles = path_files(),
+    [{M, module_status(M, PathFiles)} || M <- Modules];
+module_status(Module) ->
+    module_status(Module, code:get_path()).
+
+%% Note that we don't want to go via which/1, since it doesn't look at the
+%% disk contents at all if the module is already loaded.
+module_status(Module, PathFiles) ->
+    case code:is_loaded(Module) of
+        false -> not_loaded;
+        {file, preloaded} -> loaded;
+        {file, cover_compiled} ->
+            %% cover compilation loads directly to memory and does not
+            %% create a beam file, so report 'modified' if a file exists
+            case which(Module, PathFiles) of
+                non_existing -> removed;
+                _File -> modified
+            end;
+        {file, []} -> loaded;  % no beam file - generated code
+        {file, OldFile} when is_list(OldFile) ->
+            %% we don't care whether or not the file is in the same location
+            %% as when last loaded, as long as it can be found in the path
+            case which(Module, PathFiles) of
+                non_existing -> removed;
+                Path ->
+                    case module_changed_on_disk(Module, Path) of
+                        true -> modified;
+                        false -> loaded
+                    end
+            end
+    end.
+
+%% Detects actual code changes only, e.g. to decide whether a module should
+%% be reloaded; does not care about file timestamps or compilation time
+module_changed_on_disk(Module, Path) ->
+    MD5 = erlang:get_module_info(Module, md5),
+    case erlang:system_info(hipe_architecture) of
+        undefined ->
+            %% straightforward, since native is not supported
+            MD5 =/= beam_file_md5(Path);
+        Architecture ->
+            case code:is_module_native(Module) of
+                true ->
+                    %% MD5 is for native code, so we check only the native
+                    %% code on disk, ignoring the beam code
+                    MD5 =/= beam_file_native_md5(Path, Architecture);
+                _ ->
+                    %% MD5 is for beam code, so check only the beam code on
+                    %% disk, even if the file contains native code as well
+                    MD5 =/= beam_file_md5(Path)
+            end
+    end.
+
+beam_file_md5(Path) ->
+    case beam_lib:md5(Path) of
+        {ok,{_Mod,MD5}} -> MD5;
+        _ -> undefined
+    end.
+
+beam_file_native_md5(Path, Architecture) ->
+    try
+        get_beam_chunk(Path, hipe_unified_loader:chunk_name(Architecture))
+    of
+        NativeCode when is_binary(NativeCode) ->
+            erlang:md5(NativeCode)
+    catch
+        _:_ -> undefined
+    end.
+
+get_beam_chunk(Path, Chunk) ->
+    {ok, {_, [{_, Bin}]}} = beam_lib:chunks(Path, [Chunk]),
+    Bin.
+
+%% Returns a list of all modules modified on disk.
+-spec modified_modules() -> [module()].
+modified_modules() ->
+    [M || {M, modified} <- module_status()].
+
+%% prefetch the directory contents of code path directories
+path_files() ->
+    path_files(code:get_path()).
+
+path_files([]) ->
+    [];
+path_files([Path|Tail]) ->
+    case erl_prim_loader:list_dir(Path) of
+        {ok, Files} ->
+            [{Path,Files} | path_files(Tail)];
+        _Error ->
+            path_files(Tail)
+    end.

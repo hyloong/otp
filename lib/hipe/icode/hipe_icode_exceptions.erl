@@ -1,9 +1,5 @@
 %% -*- erlang-indent-level: 2 -*-
 %%
-%% %CopyrightBegin%
-%% 
-%% Copyright Ericsson AB 2004-2014. All Rights Reserved.
-%% 
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
 %% You may obtain a copy of the License at
@@ -15,8 +11,6 @@
 %% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 %% See the License for the specific language governing permissions and
 %% limitations under the License.
-%% 
-%% %CopyrightEnd%
 %%
 %% ====================================================================
 %%  Filename : 	hipe_icode_exceptions.erl
@@ -71,9 +65,6 @@
 %%              exit value and jump directly to the catch handler. An
 %%              alternative solution would be to have a new type of
 %%              fail instruction that takes a fail-to label...
-%%
-%%  CVS:
-%%    $Id$
 %% ====================================================================
 
 -module(hipe_icode_exceptions).
@@ -85,7 +76,7 @@
 
 %%----------------------------------------------------------------------------
 
--spec fix_catches(#cfg{}) -> #cfg{}.
+-spec fix_catches(cfg()) -> cfg().
 
 fix_catches(CFG) ->
   {Map, State} = build_mapping(find_catches(init_state(CFG))),
@@ -393,10 +384,10 @@ get_renaming(C, Map) ->
 %%---------------------------------------------------------------------
 %% State abstraction
 
--record(state, {cfg					:: #cfg{},
+-record(state, {cfg					:: cfg(),
 		changed = false				:: boolean(),
-		succ					:: #cfg{},
-		pred					:: #cfg{},
+		succ					:: cfg(),
+		pred					:: cfg(),
 		start_labels				:: [icode_lbl(),...],
 		visited = hipe_icode_cfg:none_visited()	:: gb_sets:set(),
 		out     = gb_trees:empty()		:: gb_trees:tree(),
@@ -404,13 +395,8 @@ get_renaming(C, Map) ->
 	       }).
 
 init_state(CFG) ->
-  State = #state{cfg = CFG},
-  refresh_state_cache(State).
-
-refresh_state_cache(State) ->
-  CFG = State#state.cfg,
   SLs = [hipe_icode_cfg:start_label(CFG)],
-  State#state{succ = CFG, pred = CFG, start_labels = SLs}.
+  #state{cfg = CFG, succ = CFG, pred = CFG, start_labels = SLs}.
 
 get_cfg(State) ->
   State#state.cfg.
@@ -466,7 +452,8 @@ get_bb_code(L, State) ->
 set_bb_code(L, Code, State) ->
   CFG = State#state.cfg,
   CFG1 = hipe_icode_cfg:bb_add(CFG, L, hipe_bb:mk_bb(Code)),
-  refresh_state_cache(State#state{cfg = CFG1}).
+  SLs = [hipe_icode_cfg:start_label(CFG1)],
+  State#state{cfg = CFG1, succ = CFG1, pred = CFG1, start_labels = SLs}.
 
 get_new_catches_in(L, State) ->
   Ps = get_pred(L, State),

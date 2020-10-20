@@ -1,7 +1,7 @@
 %%
 %% %CopyrightBegin%
 %% 
-%% Copyright Ericsson AB 2000-2014. All Rights Reserved.
+%% Copyright Ericsson AB 2000-2016. All Rights Reserved.
 %% 
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -38,7 +38,7 @@
 
 %% Standard interface.
 -export([new/0,is_key/2,to_list/1,from_list/1,size/1,is_empty/1]).
--export([fetch/2,find/2,fetch_keys/1,erase/2]).
+-export([fetch/2,find/2,fetch_keys/1,erase/2,take/2]).
 -export([store/3,append/3,append_list/3,update/3,update/4,update_counter/3]).
 -export([fold/3,map/2,filter/2,merge/3]).
 
@@ -171,6 +171,27 @@ erase_key(Key, [E|Bkt0]) ->
     {Bkt1,Dc} = erase_key(Key, Bkt0),
     {[E|Bkt1],Dc};
 erase_key(_, []) -> {[],0}.
+
+-spec take(Key, Dict) -> {Value, Dict1} | error when
+      Dict :: dict(Key, Value),
+      Dict1 :: dict(Key, Value),
+      Key :: term(),
+      Value :: term().
+
+take(Key, D0) ->
+    Slot = get_slot(D0, Key),
+    case on_bucket(fun (B0) -> take_key(Key, B0) end, D0, Slot) of
+	{D1,{Value,Dc}} ->
+            {Value, maybe_contract(D1, Dc)};
+	{_,error} -> error
+    end.
+
+take_key(Key, [?kv(Key,Val)|Bkt]) ->
+    {Bkt,{Val,1}};
+take_key(Key, [E|Bkt0]) ->
+    {Bkt1,Res} = take_key(Key, Bkt0),
+    {[E|Bkt1],Res};
+take_key(_, []) -> {[],error}.
 
 -spec store(Key, Value, Dict1) -> Dict2 when
       Dict1 :: dict(Key, Value),
@@ -332,6 +353,8 @@ update_counter(Key, Incr, D0) when is_number(Incr) ->
     {D1,Ic} = on_bucket(fun (B0) -> counter_bkt(Key, Incr, B0) end,
 			D0, Slot),
     maybe_expand(D1, Ic).
+
+-dialyzer({no_improper_lists, counter_bkt/3}).
 
 counter_bkt(Key, I, [?kv(Key,Val)|Bkt]) ->
     {[?kv(Key,Val+I)|Bkt],0};

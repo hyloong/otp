@@ -1,9 +1,5 @@
 %% -*- erlang-indent-level: 2 -*-
 %%
-%% %CopyrightBegin%
-%%
-%% Copyright Ericsson AB 2001-2011. All Rights Reserved.
-%%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
 %% You may obtain a copy of the License at
@@ -15,8 +11,6 @@
 %% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 %% See the License for the specific language governing permissions and
 %% limitations under the License.
-%%
-%% %CopyrightEnd%
 %%
 %% @doc	This is the HiPE compiler's main "loop".
 %%
@@ -55,7 +49,7 @@
 %%=====================================================================
 
 %% @spec compile_icode(MFA::mfa(),
-%%                     LinearIcode::#icode{},
+%%                     LinearIcode::icode(),
 %%                     CompilerOptions::comp_options(),
 %%		       CompServers::#comp_servers()) ->
 %%          {native,Platform,{unprofiled,NativeCode}} | {rtl,RTLCode}
@@ -69,7 +63,7 @@
 %% generated). The compiler options must have already been expanded
 %% (cf. `<a href="hipe.html">hipe:expand_options</a>'). </p>
 
--spec compile_icode(mfa(), #icode{}, comp_options(), #comp_servers{}) ->
+-spec compile_icode(mfa(), icode(), comp_options(), #comp_servers{}) ->
 	 comp_icode_ret().
 
 compile_icode(MFA, LinearIcode, Options, Servers) ->
@@ -230,10 +224,12 @@ get_pp_module(icode_liveness) -> hipe_icode_liveness;
 get_pp_module(rtl_liveness) -> hipe_rtl_liveness.
   
 perform_io(no_fun, _) -> ok;
-perform_io(Fun,PPServer) when is_pid(PPServer) ->
-  PPServer ! {print,Fun};
-perform_io(Fun, undefined) ->
-  Fun().
+perform_io(Fun, PPServer) when is_pid(PPServer) ->
+  PPServer ! {print, Fun},
+  ok;
+perform_io(Fun, none) ->
+  Fun(),
+  ok.
 
 
 %%--------------------------------------------------------------------
@@ -282,8 +278,9 @@ icode_ssa_type(IcodeSSA, MFA, Options, Servers) ->
 	  false -> AnnIcode1
 	end,
       AnnIcode3 = icode_range_analysis(AnnIcode2, MFA, Options, Servers),
-      pp(AnnIcode3, MFA, icode, pp_range_icode, Options, Servers),
-      hipe_icode_type:unannotate_cfg(AnnIcode3)
+      AnnIcode4 = icode_eliminate_safe_calls(AnnIcode3, Options),
+      pp(AnnIcode4, MFA, icode, pp_range_icode, Options, Servers),
+      hipe_icode_type:unannotate_cfg(AnnIcode4)
   end.
 
 icode_ssa_convert(IcodeCfg, Options) ->
@@ -293,7 +290,7 @@ icode_ssa_convert(IcodeCfg, Options) ->
 icode_ssa_const_prop(IcodeSSA, Options) ->
   case proplists:get_bool(icode_ssa_const_prop, Options) of
     true ->
-      ?option_time(Tmp=hipe_icode_ssa_const_prop:propagate(IcodeSSA),
+      Tmp = ?option_time(hipe_icode_ssa_const_prop:propagate(IcodeSSA),
 		   "Icode SSA sparse conditional constant propagation", Options),
       ?option_time(hipe_icode_ssa:remove_dead_code(Tmp),
 		   "Icode SSA dead code elimination pass 1", Options);
@@ -328,6 +325,15 @@ icode_range_analysis(IcodeSSA, MFA, Options, Servers) ->
     true ->
       ?option_time(hipe_icode_range:cfg(IcodeSSA, MFA, Options, Servers), 
 		   "Icode SSA integer range analysis", Options);
+    false ->
+     IcodeSSA
+  end.
+
+icode_eliminate_safe_calls(IcodeSSA, Options) ->
+  case proplists:get_bool(icode_call_elim, Options) of
+    true ->
+      ?option_time(hipe_icode_call_elim:cfg(IcodeSSA),
+		   "Icode SSA safe call elimination", Options);
     false ->
      IcodeSSA
   end.
@@ -404,6 +410,11 @@ icode_to_rtl(MFA, Icode, Options, Servers) ->
         hipe_llvm_liveness:analyze(RtlCfg4)
     end,
   pp(RtlCfg5, MFA, rtl, pp_rtl, Options, Servers),
+  case proplists:get_bool(no_verify_gcsafe, Options) of
+    true -> ok;
+    false ->
+      ok = hipe_rtl_verify_gcsafe:check(RtlCfg5)
+  end,
   LinearRTL1 = hipe_rtl_cfg:linearize(RtlCfg5),
   LinearRTL2 = hipe_rtl_cleanup_const:cleanup(LinearRTL1),
   %% hipe_rtl:pp(standard_io, LinearRTL2),

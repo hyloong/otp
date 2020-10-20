@@ -1,18 +1,23 @@
 %% =====================================================================
-%% This library is free software; you can redistribute it and/or modify
-%% it under the terms of the GNU Lesser General Public License as
-%% published by the Free Software Foundation; either version 2 of the
-%% License, or (at your option) any later version.
+%% Licensed under the Apache License, Version 2.0 (the "License"); you may
+%% not use this file except in compliance with the License. You may obtain
+%% a copy of the License at <http://www.apache.org/licenses/LICENSE-2.0>
 %%
-%% This library is distributed in the hope that it will be useful, but
-%% WITHOUT ANY WARRANTY; without even the implied warranty of
-%% MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
-%% Lesser General Public License for more details.
+%% Unless required by applicable law or agreed to in writing, software
+%% distributed under the License is distributed on an "AS IS" BASIS,
+%% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+%% See the License for the specific language governing permissions and
+%% limitations under the License.
 %%
-%% You should have received a copy of the GNU Lesser General Public
-%% License along with this library; if not, write to the Free Software
-%% Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307
-%% USA
+%% Alternatively, you may use this file under the terms of the GNU Lesser
+%% General Public License (the "LGPL") as published by the Free Software
+%% Foundation; either version 2.1, or (at your option) any later version.
+%% If you wish to allow use of your version of this file only under the
+%% terms of the LGPL, you should delete the provisions above and replace
+%% them with the notice and other provisions required by the LGPL; see
+%% <http://www.gnu.org/licenses/>. If you do not delete the provisions
+%% above, a recipient may use your version of this file under the terms of
+%% either the Apache License or the LGPL.
 %%
 %% @private
 %% @copyright 2003 Richard Carlsson
@@ -225,9 +230,11 @@ callback({N, A}, _Env, _Opts) ->
 %% <!ELEMENT throws (type, localdef*)>
 %% <!ELEMENT equiv (expr, see?)>
 %% <!ELEMENT expr (#PCDATA)>
-
-function({N, A}, As, Export, Ts, Env, Opts) ->
-    {Args, Ret, Spec} = signature(Ts, As, Env),
+function({N, A}, []=As, Export, Ts, Env, Opts)->
+    function({N, A}, [As], Export, Ts, Env, Opts);
+function({N, A}, [HAs | _]=As, Export, Ts, Env, Opts) when not is_list(HAs) ->
+    function({N, A}, [As], Export, Ts, Env, Opts);
+function({N, A}, As0, Export, Ts, Env, Opts) ->
     {function, [{name, atom_to_list(N)},
 		{arity, integer_to_list(A)},
       		{exported, case Export of
@@ -235,13 +242,8 @@ function({N, A}, As, Export, Ts, Env, Opts) ->
 			       false -> "no"
 			   end},
 		{label, edoc_refs:to_label(edoc_refs:function(N, A))}],
-     [{args, [{arg, [{argName, [atom_to_list(A)]}] ++ description(D)}
-	      || {A, D} <- Args]}]
-     ++ Spec
-     ++ case Ret of
-	    [] -> [];
-	    _ -> [{returns, description(Ret)}]
-	end
+     lists:append([get_args(lists:nth(Clause, As0), Ts, Clause, Env)
+                   || Clause <- lists:seq(1, length(As0))])
      ++ get_throws(Ts, Env)
      ++ get_equiv(Ts, Env)
      ++ get_doc(Ts)
@@ -250,6 +252,16 @@ function({N, A}, As, Export, Ts, Env, Opts) ->
      ++ sees(Ts, Env)
      ++ todos(Ts, Opts)
     }.
+
+get_args(As, Ts, Clause, Env) ->
+    {Args, Ret, Spec} = signature(Ts, As, Clause, Env),
+    [{args, [{arg, [{argName, [atom_to_list(A)]}] ++ description(D)}
+     || {A, D} <- Args]}]
+    ++ Spec
+    ++ case Ret of
+           [] -> [];
+           _ -> [{returns, description(Ret)}]
+       end.
 
 get_throws(Ts, Env) ->
     case get_tags(throws, Ts) of
@@ -323,8 +335,6 @@ get_deprecated(Ts, F, A, Env) ->
 	    case otp_internal:obsolete(M, F, A) of
 		{Tag, Text} when Tag =:= deprecated; Tag =:= removed ->
 		    deprecated([Text]);
-		{Tag, Repl, _Rel} when Tag =:= deprecated; Tag =:= removed ->
-		    deprecated(Repl, Env);
 		_ ->
 		    []
 	    end;
@@ -332,21 +342,8 @@ get_deprecated(Ts, F, A, Env) ->
 	    Es
     end.
 
-deprecated(Repl, Env) ->
-    {Text, Ref} = replacement_function(Env#env.module, Repl),
-    Desc = ["Use ", {a, href(Ref, Env), [{code, [Text]}]}, " instead."],
-    deprecated(Desc).
-
 deprecated(Desc) ->
     [{deprecated, description(Desc)}].
-
-replacement_function(M0, {M,F,A}) when is_list(A) ->
-    %% refer to the largest listed arity - the most general version
-    replacement_function(M0, {M,F,lists:last(lists:sort(A))});
-replacement_function(M, {M,F,A}) ->
-    {io_lib:fwrite("~w/~w", [F, A]), edoc_refs:function(F, A)};
-replacement_function(_, {M,F,A}) ->
-    {io_lib:fwrite("~w:~w/~w", [M, F, A]), edoc_refs:function(M, F, A)}.
 
 get_expr_ref(Expr) ->
     case catch {ok, erl_syntax_lib:analyze_application(Expr)} of
@@ -416,10 +413,10 @@ todos(Tags, Opts) ->
 	    []
     end.
 
-signature(Ts, As, Env) ->
+signature(Ts, As, Clause, Env) ->
     case get_tags(spec, Ts) of
 	[T] ->
-	    Spec = T#tag.data,
+            Spec = maybe_nth(Clause, T#tag.data),
 	    R = merge_returns(Spec, Ts),
 	    As0 = edoc_types:arg_names(Spec),
 	    Ds0 = edoc_types:arg_descs(Spec),
@@ -433,6 +430,11 @@ signature(Ts, As, Env) ->
 	    S = sets:new(),
 	    {[{A, ""} || A <- fix_argnames(As, S, 1)], [], []}
     end.
+
+maybe_nth(N, List) when is_list(List) ->
+    lists:nth(N, List);
+maybe_nth(1, Other) ->
+    Other.
 
 params(Ts) ->
     [T#tag.data || T <- get_tags(param, Ts)].

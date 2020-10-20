@@ -29,7 +29,7 @@ ERL_COMPILE_FLAGS += -pa $(EBIN) -pa ./ -I$(INCLUDE)
 ifeq ($(NATIVE_LIBS_ENABLED),yes)
 ERL_COMPILE_FLAGS += +native
 endif
-ERL_COMPILE_FLAGS += +nowarn_shadow_vars +warn_unused_import -Werror # +warn_missing_spec +warn_untyped_record
+ERL_COMPILE_FLAGS += +nowarn_shadow_vars +warn_unused_import #-Werror # +warn_missing_spec +warn_untyped_record
 
 SOURCES=erl_syntax.erl erl_prettypr.erl erl_syntax_lib.erl	\
 	erl_comment_scan.erl erl_recomment.erl erl_tidy.erl	\
@@ -75,7 +75,7 @@ $(EBIN)/%.$(EMULATOR):%.erl
 
 # special rules and dependencies to apply the transform to itself
 $(EBIN)/merl_transform.beam: $(EBIN)/merl.beam ./merl_transform.beam \
-			../include/merl.hrl \
+			../include/merl.hrl $(EBIN)/erl_comment_scan.beam \
 			$(EBIN)/erl_syntax.beam $(EBIN)/erl_syntax_lib.beam
 ./merl_transform.beam: ./merl_transform.erl $(EBIN)/merl.beam \
 			../include/merl.hrl

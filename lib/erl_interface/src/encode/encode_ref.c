@@ -1,7 +1,7 @@
 /*
  * %CopyrightBegin%
  * 
- * Copyright Ericsson AB 1998-2013. All Rights Reserved.
+ * Copyright Ericsson AB 1998-2020. All Rights Reserved.
  * 
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -36,7 +36,7 @@ int ei_encode_ref(char *buf, int *index, const erlang_ref *p)
   /* Always encode as an extended reference; all participating parties
      are now expected to be able to decode extended references. */
   if (buf) {
-	  put8(s,ERL_NEW_REFERENCE_EXT);
+	  put8(s, ERL_NEWER_REFERENCE_EXT);
 
 	  /* first, number of integers */
 	  put16be(s, p->len);
@@ -45,12 +45,12 @@ int ei_encode_ref(char *buf, int *index, const erlang_ref *p)
 	  s = buf + *index;
 
 	  /* now the integers */
-	  put8(s,(p->creation & 0x03));
+          put32be(s, p->creation);
 	  for (i = 0; i < p->len; i++)
 	      put32be(s,p->n[i]);
   }
   
-  *index += p->len*4 + 1;  
+  *index += p->len*4 + 4;
   return 0;
 }
 

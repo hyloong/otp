@@ -4,7 +4,7 @@
 <part xmlns:xi="http://www.w3.org/2001/XInclude">
   <header>
     <copyright>
-      <year>2002</year><year>2013</year>
+      <year>2002</year><year>2016</year>
       <holder>Ericsson AB. All Rights Reserved.</holder>
     </copyright>
     <legalnotice>
@@ -22,7 +22,7 @@
     
     </legalnotice>
 
-    <title>EI User's Guide</title>
+    <title>Erl_Interface User's Guide</title>
     <prepared>Gordon Beaton</prepared>
     <docno></docno>
     <date>1998-11-30</date>

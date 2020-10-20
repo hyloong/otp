@@ -1,7 +1,7 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2008-2013. All Rights Reserved.
+%% Copyright Ericsson AB 2008-2018. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -27,44 +27,59 @@
 
 -behaviour(supervisor).
 
--export([start_link/1, start_child/1, stop_child/1]).
+-export([start_link/0,
+         start_child/4,
+         stop_child/1
+        ]).
 
 %% Supervisor callback
 -export([init/1]).
 
+-define(SSHC_SUP, ?MODULE).
+
 %%%=========================================================================
 %%%  API
 %%%=========================================================================
-start_link(Args) ->
-    supervisor:start_link({local, ?MODULE}, ?MODULE, [Args]).
+start_link() ->
+    supervisor:start_link({local,?MODULE}, ?MODULE, []).
 
-start_child(Args) ->
-    supervisor:start_child(?MODULE, Args).
+start_child(Address, Port, Profile, Options) ->
+    %% Here we a new connction on a new Host/EFERMERAL Port/Profile
+    Spec = child_spec(Address, Port, Profile, Options),
+    supervisor:start_child(?MODULE, Spec).
 
-stop_child(Client) ->
-    spawn(fun() -> 
-		  ClientSup = whereis(?MODULE),
-		  supervisor:terminate_child(ClientSup, Client)
-	  end),
-    ok.
+stop_child(ChildId) when is_tuple(ChildId) ->
+    supervisor:terminate_child(?SSHC_SUP, ChildId);
+stop_child(ChildPid) when is_pid(ChildPid)->
+    stop_child(system_name(ChildPid)).
 
 %%%=========================================================================
 %%%  Supervisor callback
 %%%=========================================================================
-init(Args) ->
-    RestartStrategy = simple_one_for_one,
-    MaxR = 0,
-    MaxT = 3600,
-    {ok, {{RestartStrategy, MaxR, MaxT}, [child_spec(Args)]}}.
+init(_) ->
+    SupFlags = #{strategy  => one_for_one, 
+                 intensity =>    0,
+                 period    => 3600
+                },
+    ChildSpecs = [],
+    {ok, {SupFlags,ChildSpecs}}.
 
 %%%=========================================================================
 %%%  Internal functions
 %%%=========================================================================
-child_spec(_) ->
-    Name = undefined, % As simple_one_for_one is used.
-    StartFunc = {ssh_connection_handler, start_link, []},
-    Restart = temporary,
-    Shutdown = infinity,
-    Modules = [ssh_connection_handler],
-    Type = supervisor,
-    {Name, StartFunc, Restart, Shutdown, Type, Modules}.
+child_spec(Address, Port, Profile, Options) ->
+    #{id       => id(Address, Port, Profile),
+      start    => {ssh_system_sup, start_link, [client, Address, Port, Profile, Options]},
+      restart  => temporary,
+      type     => supervisor
+     }.
+
+id(Address, Port, Profile) ->
+    {client, ssh_system_sup, Address, Port, Profile}.
+
+system_name(SysSup) ->
+    case lists:keyfind(SysSup, 2, supervisor:which_children(?SSHC_SUP)) of
+        {Name, SysSup, _, _} -> Name;
+        false -> undefind
+    end.
+

@@ -1,7 +1,7 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2010-2015. All Rights Reserved.
+%% Copyright Ericsson AB 2010-2020. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -36,6 +36,8 @@
 
 %% Information.
 -export([services/0,
+         peer_info/1,
+         peer_find/1,
          service_info/2]).
 
 %% Start/stop the application. In a "real" application this should
@@ -44,7 +46,10 @@
 -export([start/0,
          stop/0]).
 
--export_type([evaluable/0,
+-export_type([eval/0,
+              evaluable/0,  %% deprecated
+              decode_format/0,
+              strict_arities/0,
               restriction/0,
               message_length/0,
               remotes/0,
@@ -53,6 +58,7 @@
               service_name/0,
               capability/0,
               peer_filter/0,
+              peer_ref/0,
               service_opt/0,
               application_opt/0,
               app_module/0,
@@ -140,11 +146,33 @@ services() ->
 %% service_info/2
 %% ---------------------------------------------------------------------------
 
--spec service_info(service_name(), atom() | [atom()])
-   -> any().
+-spec service_info(service_name(), Item | [Item])
+   -> any()
+ when Item :: atom() | peer_ref().
 
 service_info(SvcName, Option) ->
     diameter_service:info(SvcName, Option).
+
+%% ---------------------------------------------------------------------------
+%% peer_info/2
+%% ---------------------------------------------------------------------------
+
+-spec peer_info(peer_ref())
+   -> [tuple()].
+
+peer_info(PeerRef) ->
+    diameter_service:peer_info(PeerRef).
+
+%% ---------------------------------------------------------------------------
+%% peer_find/1
+%% ---------------------------------------------------------------------------
+
+-spec peer_find(peer_ref() | pid())
+   -> {peer_ref(), pid()}
+    | false.
+
+peer_find(Pid) ->
+    diameter_peer_fsm:find(Pid).
 
 %% ---------------------------------------------------------------------------
 %% add_transport/3
@@ -275,15 +303,22 @@ call(SvcName, App, Message) ->
     | realm
     | {host,  any|'DiameterIdentity'()}
     | {realm, any|'DiameterIdentity'()}
-    | {eval, evaluable()}
+    | {eval, eval()}
     | {neg, peer_filter()}
+    | {first, [peer_filter()]}
     | {all, [peer_filter()]}
     | {any, [peer_filter()]}.
 
--type evaluable()
+-opaque peer_ref()
+   :: pid().
+
+-type eval()
    :: {module(), atom(), list()}
     | fun()
-    | maybe_improper_list(evaluable(), list()).
+    | maybe_improper_list(eval(), list()).
+
+-type evaluable()
+   :: eval().
 
 -type sequence()
    :: {'Unsigned32'(), 0..32}.
@@ -293,37 +328,70 @@ call(SvcName, App, Message) ->
     | node
     | nodes
     | [node()]
-    | evaluable().
+    | eval().
 
 -type remotes()
    :: boolean()
     | [node()]
-    | evaluable().
+    | eval().
 
 -type message_length()
    :: 0..16#FFFFFF.
+
+-type decode_format()
+   :: record
+    | list
+    | map
+    | none
+    | record_from_map.
+
+-type strict_arities()
+   :: false
+    | encode
+    | decode.
+
+%% Options common to both start_service/2 and add_transport/2.
+
+-type common_opt()
+   :: {avp_dictionaries, [module()]}
+    | {capabilities_cb, eval()}
+    | {capx_timeout, 'Unsigned32'()}
+    | {connect_timer, 'Unsigned32'()}
+    | {disconnect_cb, eval()}
+    | {dpa_timeout, 'Unsigned32'()}
+    | {dpr_timeout, 'Unsigned32'()}
+    | {incoming_maxlen, message_length()}
+    | {length_errors, exit | handle | discard}
+    | {pool_size, pos_integer()}
+    | {spawn_opt, list() | mfa()}
+    | {strict_capx, boolean()}
+    | {strict_mbit, boolean()}
+    | {watchdog_config, [{okay|suspect, non_neg_integer()}]}
+    | {watchdog_timer, 'Unsigned32'() | {module(), atom(), list()}}.
 
 %% Options passed to start_service/2
 
 -type service_opt()
    :: capability()
     | {application, [application_opt()]}
+    | {decode_format, decode_format()}
     | {restrict_connections, restriction()}
-    | {sequence, sequence() | evaluable()}
+    | {sequence, sequence() | eval()}
     | {share_peers, remotes()}
+    | {strict_arities, true | strict_arities()}
     | {string_decode, boolean()}
-    | {incoming_maxlen, message_length()}
+    | {traffic_counters, boolean()}
     | {use_shared_peers, remotes()}
-    | {spawn_opt, list()}.
+    | common_opt().
 
 -type application_opt()
    :: {alias, app_alias()}
+    | {answer_errors, callback|report|discard}
+    | {call_mutates_state, boolean()}
     | {dictionary, module()}
     | {module, app_module()}
-    | {state, any()}
-    | {call_mutates_state, boolean()}
-    | {answer_errors, callback|report|discard}
-    | {request_errors, answer_3xxx|answer|callback}.
+    | {request_errors, answer_3xxx|answer|callback}
+    | {state, any()}.
 
 -type app_alias()
    :: any().
@@ -341,22 +409,12 @@ call(SvcName, App, Message) ->
 %% Options passed to add_transport/2
 
 -type transport_opt()
-   :: {transport_module, atom()}
+   :: {applications, [app_alias()]}
+    | {capabilities, [capability()]}
     | {transport_config, any()}
     | {transport_config, any(), 'Unsigned32'() | infinity}
-    | {pool_size, pos_integer()}
-    | {applications, [app_alias()]}
-    | {capabilities, [capability()]}
-    | {capabilities_cb, evaluable()}
-    | {capx_timeout, 'Unsigned32'()}
-    | {disconnect_cb, evaluable()}
-    | {dpr_timeout, 'Unsigned32'()}
-    | {dpa_timeout, 'Unsigned32'()}
-    | {length_errors, exit | handle | discard}
-    | {connect_timer, 'Unsigned32'()}
-    | {watchdog_timer, 'Unsigned32'() | {module(), atom(), list()}}
-    | {watchdog_config, [{okay|suspect, non_neg_integer()}]}
-    | {spawn_opt, list()}
+    | {transport_module, atom()}
+    | common_opt()
     | {private, any()}.
 
 %% Predicate passed to remove_transport/2
@@ -374,7 +432,8 @@ call(SvcName, App, Message) ->
 %% Options passed to call/4
 
 -type call_opt()
-   :: {extra, list()}
+   :: detach
+    | {extra, list()}
     | {filter, peer_filter()}
-    | {timeout, 'Unsigned32'()}
-    | detach.
+    | {peer, peer_ref()}
+    | {timeout, 'Unsigned32'()}.

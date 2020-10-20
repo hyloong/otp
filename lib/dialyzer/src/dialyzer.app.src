@@ -2,7 +2,7 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2006-2015. All Rights Reserved.
+%% Copyright Ericsson AB 2006-2017. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -28,6 +28,7 @@
 	     dialyzer_callgraph,
 	     dialyzer_cl,
 	     dialyzer_cl_parse,
+             dialyzer_clean_core,
 	     dialyzer_codeserver,
 	     dialyzer_contracts,
 	     dialyzer_coordinator,
@@ -37,15 +38,17 @@
 	     dialyzer_gui_wx,
 	     dialyzer_options,
 	     dialyzer_plt,
+	     dialyzer_race_data_server,
 	     dialyzer_races,
 	     dialyzer_succ_typings,
 	     dialyzer_typesig,
 	     dialyzer_utils,
              dialyzer_timing,
-             dialyzer_worker]},
+             dialyzer_worker,
+             typer]},
   {registered, []},
-  {applications, [compiler, gs, hipe, kernel, stdlib, wx]},
+  {applications, [compiler, hipe, kernel, stdlib, wx]},
   {env, []},
-  {runtime_dependencies, ["wx-1.2","syntax_tools-1.6.14","stdlib-2.5",
-			  "kernel-3.0","hipe-3.10.3","erts-7.0",
-			  "compiler-5.0"]}]}.
+  {runtime_dependencies, ["wx-1.2","syntax_tools-2.0","stdlib-3.4",
+			  "kernel-5.3","hipe-3.16.1","erts-9.0",
+			  "compiler-7.0"]}]}.

@@ -1,7 +1,7 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2013. All Rights Reserved.
+%% Copyright Ericsson AB 2013-2017. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -66,25 +66,47 @@
 %% there will be clashes with logging processes etc).
 %%--------------------------------------------------------------------
 init_per_suite(Config0) ->
-    Config = ct_test_support:init_per_suite(Config0),
-    DataDir = ?config(data_dir, Config),
-    Suite1 = filename:join([DataDir,"a_test","r1_SUITE"]),
-    Suite2 = filename:join([DataDir,"b_test","r2_SUITE"]),
-    Opts0 = ct_test_support:get_opts(Config),
-    Opts1 = Opts0 ++ [{suite,Suite1},{testcase,tc2},{label,timing1}],
-    Opts2 = Opts0 ++ [{suite,Suite2},{testcase,tc2},{label,timing2}],
+    TTInfo = {_T,{_Scaled,ScaleVal}} = ct:get_timetrap_info(),
+    ct:pal("Timetrap info = ~w", [TTInfo]),
+    if ScaleVal > 1 ->
+	    {skip,"Skip on systems running e.g. cover or debug!"};
+       ScaleVal =< 1 ->
+	    Config = ct_test_support:init_per_suite(Config0),
+	    DataDir = ?config(data_dir, Config),
+	    Suite1 = filename:join([DataDir,"a_test","r1_SUITE"]),
+	    Suite2 = filename:join([DataDir,"b_test","r2_SUITE"]),
+	    Opts0 = ct_test_support:get_opts(Config),
+	    Opts1 = Opts0 ++ [{suite,Suite1},{testcase,tc2},{label,timing1}],
+	    Opts2 = Opts0 ++ [{suite,Suite2},{testcase,tc2},{label,timing2}],
 
-    %% Make sure both suites are compiled
-    {1,0,{0,0}} = ct_test_support:run(ct,run_test,[Opts1],Config),
-    {1,0,{0,0}} = ct_test_support:run(ct,run_test,[Opts2],Config),
-
-    %% Time the shortest testcase to use for offset
-    {_T0,{1,0,{0,0}}} = timer:tc(ct_test_support,run,[ct,run_test,[Opts1],Config]),
-
-    %% -2 is to ensure we hit inside the target test case and not after
-%    T = round(T0/1000000)-2,
-    T=0,
-    [{offset,T}|Config].
+	    %% Make sure both suites are compiled
+	    {1,0,{0,0}} = ct_test_support:run(ct,run_test,[Opts1],Config),
+	    {1,0,{0,0}} = ct_test_support:run(ct,run_test,[Opts2],Config),
+	    
+	    %% Check if file i/o is too slow for correct measurements
+	    Opts3 = Opts0 ++ [{suite,Suite1},{testcase,tc1},{label,timing3}],
+	    {T,_} = 
+		timer:tc(
+		  fun() ->
+			  {1,0,{0,0}} = ct_test_support:run(ct,run_test,
+							    [Opts3],Config),
+			  {1,0,{0,0}} = ct_test_support:run(ct,run_test,
+							    [Opts3],Config)
+		  end),
+	    %% The time to compare with here must match the timeout value
+	    %% in the test suite. Accept some overhead
+	    if T > 5000 ->
+		    ct:pal("Timing test took ~w sec (< 5 sec expected). "
+			   "Skipping the suite!",
+			   [trunc(T/1000000)]),
+		    ct_test_support:end_per_suite(Config),
+		    {skip,"File I/O too slow for this suite"};
+	       true ->
+		    ct:pal("Timing test took ~w sec. Proceeding...",
+			   [trunc(T/1000000)]),
+		    [{offset,0}|Config]
+	    end
+    end.
 
 end_per_suite(Config) ->
     ct_test_support:end_per_suite(Config).
@@ -341,14 +363,17 @@ skip_first_tc1(Suite) ->
      {?eh,tc_start,{Suite,tc1}},
      {?eh,tc_done,{Suite,tc1,ok}},
      {?eh,test_stats,{'_',0,{0,0}}},
+     {?eh,tc_start,{Suite,tc2}},
      {?eh,tc_done,{Suite,tc2,?skipped}},
      {?eh,test_stats,{'_',0,{0,1}}},
+     {?eh,tc_start,{Suite,{init_per_group,g,[]}}},
      {?eh,tc_done,{Suite,{init_per_group,g,[]},?skipped}},
      {?eh,tc_auto_skip,{Suite,{tc1,g},?skip_reason}},
      {?eh,test_stats,{'_',0,{0,2}}},
      {?eh,tc_auto_skip,{Suite,{tc2,g},?skip_reason}},
      {?eh,test_stats,{'_',0,{0,3}}},
      {?eh,tc_auto_skip,{Suite,{end_per_group,g},?skip_reason}},
+     {?eh,tc_start,{Suite,tc2}},
      {?eh,tc_done,{Suite,tc2,?skipped}},
      {?eh,test_stats,{'_',0,{0,4}}},
      {?eh,tc_start,{Suite,end_per_suite}},
@@ -368,10 +393,12 @@ skip_tc1_in_group(Suite) ->
       {?eh,tc_start,{Suite,tc1}},
       {?eh,tc_done,{Suite,tc1,ok}},
       {?eh,test_stats,{'_',0,{0,0}}},
+      {?eh,tc_start,{Suite,tc2}},
       {?eh,tc_done,{Suite,tc2,?skipped}},
       {?eh,test_stats,{'_',0,{0,1}}},
       {?eh,tc_start,{Suite,{end_per_group,g,[]}}},
       {?eh,tc_done,{Suite,{end_per_group,g,[]},ok}}],
+     {?eh,tc_start,{Suite,tc2}},
      {?eh,tc_done,{Suite,tc2,?skipped}},
      {?eh,test_stats,{'_',0,{0,2}}},
      {?eh,tc_start,{Suite,end_per_suite}},

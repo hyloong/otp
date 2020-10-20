@@ -1,7 +1,7 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 1996-2015. All Rights Reserved.
+%% Copyright Ericsson AB 1996-2019. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -52,29 +52,30 @@
 %%% External exports
 
 -export([string/1,string/2,string/3,tokens/3,tokens/4,
-         format_error/1,reserved_word/1,
-         token_info/1,token_info/2,
-         attributes_info/1,attributes_info/2,set_attribute/3]).
+         format_error/1,reserved_word/1]).
 
 -export([column/1,end_location/1,line/1,location/1,text/1,
          category/1,symbol/1]).
-
--deprecated([{attributes_info, 1, next_major_release},
-             {attributes_info, 2, next_major_release},
-             {set_attribute, 3, next_major_release},
-             {token_info, 1, next_major_release},
-             {token_info, 2, next_major_release}]).
 
 %%% Private
 -export([continuation_location/1]).
 
 -export_type([error_info/0,
-              line/0,
-              location/0,
               options/0,
               return_cont/0,
               token/0,
               tokens_result/0]).
+
+%% Removed functions and types
+-removed([{set_attribute,3,"use erl_anno:set_line/2 instead"},
+          {attributes_info,'_',
+           "erl_anno:{column,line,location,text}/1 instead"},
+          {token_info,'_',
+           "erl_scan:{category,column,line,location,symbol,text}/1 instead"}]).
+
+-removed_type([{column,0,"use erl_anno:column() instead"},
+               {line,0,"use erl_anno:line() instead"},
+               {location,0,"use erl_anno:location() instead"}]).
 
 %%%
 %%% Defines and type definitions
@@ -85,29 +86,18 @@
 -define(ALINE(L), is_integer(L)).
 -define(STRING(S), is_list(S)).
 -define(RESWORDFUN(F), is_function(F, 1)).
--define(SETATTRFUN(F), is_function(F, 1)).
 
 -type category() :: atom().
--type column() :: pos_integer().                % Deprecated
--type line() :: integer().                      % Deprecated
--type location() :: line() | {line(),column()}. % Deprecated
 -type resword_fun() :: fun((atom()) -> boolean()).
 -type option() :: 'return' | 'return_white_spaces' | 'return_comments'
                 | 'text' | {'reserved_word_fun', resword_fun()}.
 -type options() :: option() | [option()].
 -type symbol() :: atom() | float() | integer() | string().
--type info_line() :: integer() | term().
--type attributes_data()
-       :: [{'column', column()} | {'line', info_line()} | {'text', string()}]
-        |  {line(), column()}.
-%% The fact that {line(),column()} is a possible attributes() type
-%% is hidden.
--type attributes() :: line() | attributes_data().
--type token() :: {category(), attributes(), symbol()}
-               | {category(), attributes()}.
+-type token() :: {category(), Anno :: erl_anno:anno(), symbol()}
+               | {category(), Anno :: erl_anno:anno()}.
 -type tokens() :: [token()].
 -type error_description() :: term().
--type error_info() :: {location(), module(), error_description()}.
+-type error_info() :: {erl_anno:location(), module(), error_description()}.
 
 %%% Local record.
 -record(erl_scan,
@@ -136,8 +126,8 @@ format_error(Other) ->
       String :: string(),
       Return :: {'ok', Tokens :: tokens(), EndLocation}
               | {'error', ErrorInfo :: error_info(), ErrorLocation},
-      EndLocation :: location(),
-      ErrorLocation :: location().
+      EndLocation :: erl_anno:location(),
+      ErrorLocation :: erl_anno:location().
 string(String) ->
     string(String, 1, []).
 
@@ -145,9 +135,9 @@ string(String) ->
       String :: string(),
       Return :: {'ok', Tokens :: tokens(), EndLocation}
               | {'error', ErrorInfo :: error_info(), ErrorLocation},
-      StartLocation :: location(),
-      EndLocation :: location(),
-      ErrorLocation :: location().
+      StartLocation :: erl_anno:location(),
+      EndLocation :: erl_anno:location(),
+      ErrorLocation :: erl_anno:location().
 string(String, StartLocation) ->
     string(String, StartLocation, []).
 
@@ -156,9 +146,9 @@ string(String, StartLocation) ->
       Options :: options(),
       Return :: {'ok', Tokens :: tokens(), EndLocation}
               | {'error', ErrorInfo :: error_info(), ErrorLocation},
-      StartLocation :: location(),
-      EndLocation :: location(),
-      ErrorLocation :: location().
+      StartLocation :: erl_anno:location(),
+      EndLocation :: erl_anno:location(),
+      ErrorLocation :: erl_anno:location().
 string(String, Line, Options) when ?STRING(String), ?ALINE(Line) ->
     string1(String, options(Options), Line, no_col, []);
 string(String, {Line,Column}, Options) when ?STRING(String),
@@ -167,20 +157,23 @@ string(String, {Line,Column}, Options) when ?STRING(String),
     string1(String, options(Options), Line, Column, []).
 
 -type char_spec() :: string() | 'eof'.
--type cont_fun() :: fun((char_spec(), #erl_scan{}, line(), column(),
+-type cont_fun() :: fun((char_spec(), #erl_scan{},
+                         erl_anno:line(), erl_anno:column(),
                          tokens(), any()) -> any()).
 -opaque return_cont() :: {erl_scan_continuation,
-                          string(), column(), tokens(), line(),
+                          string(), erl_anno:column(), tokens(),
+                          erl_anno:line(),
                           #erl_scan{}, any(), cont_fun()}.
--type tokens_result() :: {'ok', Tokens :: tokens(), EndLocation :: location()}
-                       | {'eof', EndLocation :: location()}
+-type tokens_result() :: {'ok', Tokens :: tokens(),
+                          EndLocation :: erl_anno:location()}
+                       | {'eof', EndLocation :: erl_anno:location()}
                        | {'error', ErrorInfo :: error_info(),
-                          EndLocation :: location()}.
+                          EndLocation :: erl_anno:location()}.
 
 -spec tokens(Continuation, CharSpec, StartLocation) -> Return when
       Continuation :: return_cont() | [],
       CharSpec :: char_spec(),
-      StartLocation :: location(),
+      StartLocation :: erl_anno:location(),
       Return :: {'done',Result :: tokens_result(),LeftOverChars :: char_spec()}
               | {'more', Continuation1 :: return_cont()}.
 tokens(Cont, CharSpec, StartLocation) ->
@@ -189,7 +182,7 @@ tokens(Cont, CharSpec, StartLocation) ->
 -spec tokens(Continuation, CharSpec, StartLocation, Options) -> Return when
       Continuation :: return_cont() | [],
       CharSpec :: char_spec(),
-      StartLocation :: location(),
+      StartLocation :: erl_anno:location(),
       Options :: options(),
       Return :: {'done',Result :: tokens_result(),LeftOverChars :: char_spec()}
               | {'more', Continuation1 :: return_cont()}.
@@ -257,155 +250,6 @@ symbol({_Category,_Anno,Symbol}) ->
 symbol(T) ->
     erlang:error(badarg, [T]).
 
--type attribute_item() :: 'column' | 'length' | 'line'
-                        | 'location' | 'text'.
--type info_location() :: location() | term().
--type attribute_info() :: {'column', column()}| {'length', pos_integer()}
-                        | {'line', info_line()}
-                        | {'location', info_location()}
-                        | {'text', string()}.
--type token_item() :: 'category' | 'symbol' | attribute_item().
--type token_info() :: {'category', category()} | {'symbol', symbol()}
-                    | attribute_info().
-
--spec token_info(Token) -> TokenInfo when
-      Token :: token(),
-      TokenInfo :: [TokenInfoTuple :: token_info()].
-token_info(Token) ->
-    Items = [category,column,length,line,symbol,text], % undefined order
-    token_info(Token, Items).
-
--spec token_info(Token, TokenItem) -> TokenInfoTuple | 'undefined' when
-                     Token :: token(),
-                     TokenItem :: token_item(),
-                     TokenInfoTuple :: token_info();
-                (Token, TokenItems) -> TokenInfo when
-                     Token :: token(),
-                     TokenItems :: [TokenItem :: token_item()],
-                     TokenInfo :: [TokenInfoTuple :: token_info()].
-token_info(_Token, []) ->
-    [];
-token_info(Token, [Item|Items]) when is_atom(Item) ->
-    case token_info(Token, Item) of
-        undefined ->
-            token_info(Token, Items);
-        TokenInfo when is_tuple(TokenInfo) ->
-            [TokenInfo|token_info(Token, Items)]
-    end;
-token_info({Category,_Attrs}, category=Item) ->
-    {Item,Category};
-token_info({Category,_Attrs,_Symbol}, category=Item) ->
-    {Item,Category};
-token_info({Category,_Attrs}, symbol=Item) ->
-    {Item,Category};
-token_info({_Category,_Attrs,Symbol}, symbol=Item) ->
-    {Item,Symbol};
-token_info({_Category,Attrs}, Item) ->
-    attributes_info(Attrs, Item);
-token_info({_Category,Attrs,_Symbol}, Item) ->
-    attributes_info(Attrs, Item).
-
--spec attributes_info(Attributes) -> AttributesInfo when
-      Attributes :: attributes(),
-      AttributesInfo :: [AttributeInfoTuple :: attribute_info()].
-attributes_info(Attributes) ->
-    Items = [column,length,line,text], % undefined order
-    attributes_info(Attributes, Items).
-
--spec attributes_info
-        (Attributes, AttributeItem) -> AttributeInfoTuple | 'undefined' when
-             Attributes :: attributes(),
-             AttributeItem :: attribute_item(),
-             AttributeInfoTuple :: attribute_info();
-        (Attributes, AttributeItems) -> AttributeInfo when
-             Attributes :: attributes(),
-             AttributeItems :: [AttributeItem :: attribute_item()],
-             AttributeInfo :: [AttributeInfoTuple :: attribute_info()].
-attributes_info(_Attrs, []) ->
-    [];
-attributes_info(Attrs, [A|As]) when is_atom(A) ->
-    case attributes_info(Attrs, A) of
-        undefined ->
-            attributes_info(Attrs, As);
-        AttributeInfo when is_tuple(AttributeInfo) ->
-            [AttributeInfo|attributes_info(Attrs, As)]
-    end;
-attributes_info({Line,Column}, column=Item) when ?ALINE(Line),
-                                                 ?COLUMN(Column) ->
-    {Item,Column};
-attributes_info(Line, column) when ?ALINE(Line) ->
-    undefined;
-attributes_info(Attrs, column=Item) ->
-    case attr_info(Attrs, Item) of
-        undefined ->
-            case erl_anno:column(Attrs) of
-                undefined ->
-                    undefined;
-                Column ->
-                    {Item,Column}
-            end;
-        T ->
-            T
-    end;
-attributes_info(Attrs, length=Item) ->
-    case attributes_info(Attrs, text) of
-        undefined ->
-            undefined;
-        {text,Text} ->
-            {Item,length(Text)}
-    end;
-attributes_info(Line, line=Item) when ?ALINE(Line) ->
-    {Item,Line};
-attributes_info({Line,Column}, line=Item) when ?ALINE(Line),
-                                               ?COLUMN(Column) ->
-    {Item,Line};
-attributes_info(Attrs, line=Item) ->
-    case attr_info(Attrs, Item) of
-        undefined ->
-            case attr_info(Attrs, location) of
-                {location,{Line,_Column}} ->
-                    {Item,Line};
-                {location,Line} ->
-                    {Item,Line};
-                undefined ->
-                    undefined
-            end;
-        T ->
-            T
-    end;
-attributes_info({Line,Column}=Location, location=Item) when ?ALINE(Line),
-                                                            ?COLUMN(Column) ->
-    {Item,Location};
-attributes_info(Line, location=Item) when ?ALINE(Line) ->
-    {Item,Line};
-attributes_info(Attrs, location=Item) ->
-    {line,Line} = attributes_info(Attrs, line),
-    case attributes_info(Attrs, column) of
-        undefined ->
-            %% If set_attribute() has assigned a term such as {17,42}
-            %% to 'line', then Line will look like {Line,Column}. One
-            %% should not use 'location' but 'line' and 'column' in
-            %% such special cases.
-            {Item,Line};
-        {column,Column} ->
-            {Item,{Line,Column}}
-    end;
-attributes_info({Line,Column}, text) when ?ALINE(Line), ?COLUMN(Column) ->
-    undefined;
-attributes_info(Line, text) when ?ALINE(Line) ->
-    undefined;
-attributes_info(Attrs, text=Item) ->
-    attr_info(Attrs, Item);
-attributes_info(T1, T2) ->
-    erlang:error(badarg, [T1,T2]).
-
--spec set_attribute(AttributeItem, Attributes, SetAttributeFun) -> Attributes when
-      AttributeItem :: 'line',
-      Attributes :: attributes(),
-      SetAttributeFun :: fun((info_line()) -> info_line()).
-set_attribute(Tag, Attributes, Fun) when ?SETATTRFUN(Fun) ->
-    set_attr(Tag, Attributes, Fun).
-
 %%%
 %%% Local functions
 %%%
@@ -416,7 +260,7 @@ string_thing(_) -> "string".
 -define(WHITE_SPACE(C),
         is_integer(C) andalso
          (C >= $\000 andalso C =< $\s orelse C >= $\200 andalso C =< $\240)).
--define(DIGIT(C), C >= $0, C =< $9).
+-define(DIGIT(C), C >= $0 andalso C =< $9).
 -define(CHAR(C), is_integer(C), C >= 0).
 -define(UNICODE(C),
         is_integer(C) andalso
@@ -470,62 +314,6 @@ expand_opt(return, Os) ->
     [return_comments,return_white_spaces|Os];
 expand_opt(O, Os) ->
     [O|Os].
-
-attr_info(Attrs, Item) ->
-    try lists:keyfind(Item, 1, Attrs) of
-        {_Item, _Value} = T ->
-            T;
-        false ->
-            undefined
-    catch
-	_:_ ->
-            erlang:error(badarg, [Attrs, Item])
-    end.
-
--spec set_attr('line', attributes(), fun((line()) -> line())) -> attributes().
-
-set_attr(line, Line, Fun) when ?ALINE(Line) ->
-    Ln = Fun(Line),
-    if
-        ?ALINE(Ln) ->
-            Ln;
-        true ->
-            [{line,Ln}]
-    end;
-set_attr(line, {Line,Column}, Fun) when ?ALINE(Line), ?COLUMN(Column) ->
-    Ln = Fun(Line),
-    if
-        ?ALINE(Ln) ->
-            {Ln,Column};
-        true ->
-            [{line,Ln},{column,Column}]
-    end;
-set_attr(line=Tag, Attrs, Fun) when is_list(Attrs) ->
-    case lists:keyfind(Tag, 1, Attrs) of
-        {line,Line} ->
-            case lists:keyreplace(Tag, 1, Attrs, {line,Fun(Line)}) of
-                [{line,Ln}] when ?ALINE(Ln) ->
-                    Ln;
-                As ->
-                    As
-            end;
-        false ->
-            {location, Location} = lists:keyfind(location, 1, Attrs),
-            Ln = case Location of
-                     {Line,Column} when ?ALINE(Line), ?COLUMN(Column) ->
-                         {Fun(Line),Column};
-                     _ ->
-                         Fun(Location)
-                 end,
-            case lists:keyreplace(location, 1, Attrs, {location,Ln}) of
-                [{location,Ln}] when ?ALINE(Ln) ->
-                    Ln;
-                As ->
-                    As
-            end
-    end;
-set_attr(T1, T2, T3) ->
-    erlang:error(badarg, [T1,T2,T3]).
 
 tokens1(Cs, St, Line, Col, Toks, Fun, Any) when ?STRING(Cs); Cs =:= eof ->
     case Fun(Cs, St, Line, Col, Toks, Any) of
@@ -602,7 +390,7 @@ scan1([$\%|Cs], St, Line, Col, Toks) when not St#erl_scan.comment ->
 scan1([$\%=C|Cs], St, Line, Col, Toks) ->
     scan_comment(Cs, St, Line, Col, Toks, [C]);
 scan1([C|Cs], St, Line, Col, Toks) when ?DIGIT(C) ->
-    scan_number(Cs, St, Line, Col, Toks, [C]);
+    scan_number(Cs, St, Line, Col, Toks, [C], no_underscore);
 scan1("..."++Cs, St, Line, Col, Toks) ->
     tok2(Cs, St, Line, Col, Toks, "...", '...', 3);
 scan1(".."=Cs, _St, Line, Col, Toks) ->
@@ -975,7 +763,7 @@ scan_string(Cs, St, Line, Col, Toks, {Wcs,Str,Line0,Col0}) ->
         {char_error,Ncs,Error,Nline,Ncol,EndCol} ->
             scan_error(Error, Nline, Ncol, Nline, EndCol, Ncs);
         {error,Nline,Ncol,Nwcs,Ncs} ->
-            Estr = string:substr(Nwcs, 1, 16), % Expanded escape chars.
+            Estr = string:slice(Nwcs, 0, 16), % Expanded escape chars.
             scan_error({string,$\",Estr}, Line0, Col0, Nline, Ncol, Ncs); %"
         {Ncs,Nline,Ncol,Nstr,Nwcs} ->
             Anno = anno(Line0, Col0, St, Nstr),
@@ -990,7 +778,7 @@ scan_qatom(Cs, St, Line, Col, Toks, {Wcs,Str,Line0,Col0}) ->
         {char_error,Ncs,Error,Nline,Ncol,EndCol} ->
             scan_error(Error, Nline, Ncol, Nline, EndCol, Ncs);
         {error,Nline,Ncol,Nwcs,Ncs} ->
-            Estr = string:substr(Nwcs, 1, 16), % Expanded escape chars.
+            Estr = string:slice(Nwcs, 0, 16), % Expanded escape chars.
             scan_error({string,$\',Estr}, Line0, Col0, Nline, Ncol, Ncs); %'
         {Ncs,Nline,Ncol,Nstr,Nwcs} ->
             case catch list_to_atom(Nwcs) of
@@ -1161,27 +949,35 @@ escape_char($s) -> $\s;                         % \s = SPC
 escape_char($d) -> $\d;                         % \d = DEL
 escape_char(C) -> C.
 
-scan_number([C|Cs], St, Line, Col, Toks, Ncs) when ?DIGIT(C) ->
-    scan_number(Cs, St, Line, Col, Toks, [C|Ncs]);
-scan_number([$.,C|Cs], St, Line, Col, Toks, Ncs) when ?DIGIT(C) ->
-    scan_fraction(Cs, St, Line, Col, Toks, [C,$.|Ncs]);
-scan_number([$.]=Cs, _St, Line, Col, Toks, Ncs) ->
-    {more,{Cs,Col,Toks,Line,Ncs,fun scan_number/6}};
-scan_number([$#|Cs]=Cs0, St, Line, Col, Toks, Ncs0) ->
+scan_number(Cs, St, Line, Col, Toks, {Ncs, Us}) ->
+    scan_number(Cs, St, Line, Col, Toks, Ncs, Us).
+
+scan_number([C|Cs], St, Line, Col, Toks, Ncs, Us) when ?DIGIT(C) ->
+    scan_number(Cs, St, Line, Col, Toks, [C|Ncs], Us);
+scan_number([$_,Next|Cs], St, Line, Col, Toks, [Prev|_]=Ncs, _Us) when
+      ?DIGIT(Next) andalso ?DIGIT(Prev) ->
+    scan_number(Cs, St, Line, Col, Toks, [Next,$_|Ncs], with_underscore);
+scan_number([$_]=Cs, _St, Line, Col, Toks, Ncs, Us) ->
+    {more,{Cs,Col,Toks,Line,{Ncs,Us},fun scan_number/6}};
+scan_number([$.,C|Cs], St, Line, Col, Toks, Ncs, Us) when ?DIGIT(C) ->
+    scan_fraction(Cs, St, Line, Col, Toks, [C,$.|Ncs], Us);
+scan_number([$.]=Cs, _St, Line, Col, Toks, Ncs, Us) ->
+    {more,{Cs,Col,Toks,Line,{Ncs,Us},fun scan_number/6}};
+scan_number([$#|Cs]=Cs0, St, Line, Col, Toks, Ncs0, Us) ->
     Ncs = lists:reverse(Ncs0),
-    case catch list_to_integer(Ncs) of
+    case catch list_to_integer(remove_digit_separators(Ncs, Us)) of
         B when B >= 2, B =< 1+$Z-$A+10 ->
             Bcs = Ncs++[$#],
-            scan_based_int(Cs, St, Line, Col, Toks, {B,[],Bcs});
+            scan_based_int(Cs, St, Line, Col, Toks, B, [], Bcs, no_underscore);
         B ->
             Len = length(Ncs),
             scan_error({base,B}, Line, Col, Line, incr_column(Col, Len), Cs0)
     end;
-scan_number([]=Cs, _St, Line, Col, Toks, Ncs) ->
-    {more,{Cs,Col,Toks,Line,Ncs,fun scan_number/6}};
-scan_number(Cs, St, Line, Col, Toks, Ncs0) ->
+scan_number([]=Cs, _St, Line, Col, Toks, Ncs, Us) ->
+    {more,{Cs,Col,Toks,Line,{Ncs,Us},fun scan_number/6}};
+scan_number(Cs, St, Line, Col, Toks, Ncs0, Us) ->
     Ncs = lists:reverse(Ncs0),
-    case catch list_to_integer(Ncs) of
+    case catch list_to_integer(remove_digit_separators(Ncs, Us)) of
         N when is_integer(N) ->
             tok3(Cs, St, Line, Col, Toks, integer, Ncs, N);
         _ ->
@@ -1189,20 +985,33 @@ scan_number(Cs, St, Line, Col, Toks, Ncs0) ->
             scan_error({illegal,integer}, Line, Col, Line, Ncol, Cs)
     end.
 
-scan_based_int([C|Cs], St, Line, Col, Toks, {B,Ncs,Bcs})
-    when ?DIGIT(C), C < $0+B ->
-    scan_based_int(Cs, St, Line, Col, Toks, {B,[C|Ncs],Bcs});
-scan_based_int([C|Cs], St, Line, Col, Toks, {B,Ncs,Bcs})
-    when C >= $A, B > 10, C < $A+B-10 ->
-    scan_based_int(Cs, St, Line, Col, Toks, {B,[C|Ncs],Bcs});
-scan_based_int([C|Cs], St, Line, Col, Toks, {B,Ncs,Bcs})
-    when C >= $a, B > 10, C < $a+B-10 ->
-    scan_based_int(Cs, St, Line, Col, Toks, {B,[C|Ncs],Bcs});
-scan_based_int([]=Cs, _St, Line, Col, Toks, State) ->
-    {more,{Cs,Col,Toks,Line,State,fun scan_based_int/6}};
-scan_based_int(Cs, St, Line, Col, Toks, {B,Ncs0,Bcs}) ->
+remove_digit_separators(Number, no_underscore) ->
+    Number;
+remove_digit_separators(Number, with_underscore) ->
+    [C || C <- Number, C =/= $_].
+
+-define(BASED_DIGIT(C, B),
+        ((?DIGIT(C) andalso C < $0 + B)
+         orelse (C >= $A andalso B > 10 andalso C < $A + B - 10)
+         orelse (C >= $a andalso B > 10 andalso C < $a + B - 10))).
+
+scan_based_int(Cs, St, Line, Col, Toks, {B,NCs,BCs,Us}) ->
+    scan_based_int(Cs, St, Line, Col, Toks, B, NCs, BCs, Us).
+
+scan_based_int([C|Cs], St, Line, Col, Toks, B, Ncs, Bcs, Us) when
+      ?BASED_DIGIT(C, B) ->
+    scan_based_int(Cs, St, Line, Col, Toks, B, [C|Ncs], Bcs, Us);
+scan_based_int([$_,Next|Cs], St, Line, Col, Toks, B, [Prev|_]=Ncs, Bcs, _Us)
+      when ?BASED_DIGIT(Next, B) andalso ?BASED_DIGIT(Prev, B) ->
+    scan_based_int(Cs, St, Line, Col, Toks, B, [Next,$_|Ncs], Bcs,
+                   with_underscore);
+scan_based_int([$_]=Cs, _St, Line, Col, Toks, B, NCs, BCs, Us) ->
+    {more,{Cs,Col,Toks,Line,{B,NCs,BCs,Us},fun scan_based_int/6}};
+scan_based_int([]=Cs, _St, Line, Col, Toks, B, NCs, BCs, Us) ->
+    {more,{Cs,Col,Toks,Line,{B,NCs,BCs,Us},fun scan_based_int/6}};
+scan_based_int(Cs, St, Line, Col, Toks, B, Ncs0, Bcs, Us) ->
     Ncs = lists:reverse(Ncs0),
-    case catch erlang:list_to_integer(Ncs, B) of
+    case catch erlang:list_to_integer(remove_digit_separators(Ncs, Us), B) of
         N when is_integer(N) ->
             tok3(Cs, St, Line, Col, Toks, integer, Bcs++Ncs, N);
         _ ->
@@ -1211,32 +1020,52 @@ scan_based_int(Cs, St, Line, Col, Toks, {B,Ncs0,Bcs}) ->
             scan_error({illegal,integer}, Line, Col, Line, Ncol, Cs)
     end.
 
-scan_fraction([C|Cs], St, Line, Col, Toks, Ncs) when ?DIGIT(C) ->
-    scan_fraction(Cs, St, Line, Col, Toks, [C|Ncs]);
-scan_fraction([E|Cs], St, Line, Col, Toks, Ncs) when E =:= $e; E =:= $E ->
-    scan_exponent_sign(Cs, St, Line, Col, Toks, [E|Ncs]);
-scan_fraction([]=Cs, _St, Line, Col, Toks, Ncs) ->
-    {more,{Cs,Col,Toks,Line,Ncs,fun scan_fraction/6}};
-scan_fraction(Cs, St, Line, Col, Toks, Ncs) ->
-    float_end(Cs, St, Line, Col, Toks, Ncs).
+scan_fraction(Cs, St, Line, Col, Toks, {Ncs,Us}) ->
+    scan_fraction(Cs, St, Line, Col, Toks, Ncs, Us).
 
-scan_exponent_sign([C|Cs], St, Line, Col, Toks, Ncs) when C =:= $+; C =:= $- ->
-    scan_exponent(Cs, St, Line, Col, Toks, [C|Ncs]);
-scan_exponent_sign([]=Cs, _St, Line, Col, Toks, Ncs) ->
-    {more,{Cs,Col,Toks,Line,Ncs,fun scan_exponent_sign/6}};
-scan_exponent_sign(Cs, St, Line, Col, Toks, Ncs) ->
-    scan_exponent(Cs, St, Line, Col, Toks, Ncs).
+scan_fraction([C|Cs], St, Line, Col, Toks, Ncs, Us) when ?DIGIT(C) ->
+    scan_fraction(Cs, St, Line, Col, Toks, [C|Ncs], Us);
+scan_fraction([$_,Next|Cs], St, Line, Col, Toks, [Prev|_]=Ncs, _Us) when
+      ?DIGIT(Next) andalso ?DIGIT(Prev) ->
+    scan_fraction(Cs, St, Line, Col, Toks, [Next,$_|Ncs], with_underscore);
+scan_fraction([$_]=Cs, _St, Line, Col, Toks, Ncs, Us) ->
+    {more,{Cs,Col,Toks,Line,{Ncs,Us},fun scan_fraction/6}};
+scan_fraction([E|Cs], St, Line, Col, Toks, Ncs, Us) when E =:= $e; E =:= $E ->
+    scan_exponent_sign(Cs, St, Line, Col, Toks, [E|Ncs], Us);
+scan_fraction([]=Cs, _St, Line, Col, Toks, Ncs, Us) ->
+    {more,{Cs,Col,Toks,Line,{Ncs,Us},fun scan_fraction/6}};
+scan_fraction(Cs, St, Line, Col, Toks, Ncs, Us) ->
+    float_end(Cs, St, Line, Col, Toks, Ncs, Us).
 
-scan_exponent([C|Cs], St, Line, Col, Toks, Ncs) when ?DIGIT(C) ->
-    scan_exponent(Cs, St, Line, Col, Toks, [C|Ncs]);
-scan_exponent([]=Cs, _St, Line, Col, Toks, Ncs) ->
-    {more,{Cs,Col,Toks,Line,Ncs,fun scan_exponent/6}};
-scan_exponent(Cs, St, Line, Col, Toks, Ncs) ->
-    float_end(Cs, St, Line, Col, Toks, Ncs).
+scan_exponent_sign(Cs, St, Line, Col, Toks, {Ncs, Us}) ->
+    scan_exponent_sign(Cs, St, Line, Col, Toks, Ncs, Us).
 
-float_end(Cs, St, Line, Col, Toks, Ncs0) ->
+scan_exponent_sign([C|Cs], St, Line, Col, Toks, Ncs, Us) when
+      C =:= $+; C =:= $- ->
+    scan_exponent(Cs, St, Line, Col, Toks, [C|Ncs], Us);
+scan_exponent_sign([]=Cs, _St, Line, Col, Toks, Ncs, Us) ->
+    {more,{Cs,Col,Toks,Line,{Ncs,Us},fun scan_exponent_sign/6}};
+scan_exponent_sign(Cs, St, Line, Col, Toks, Ncs, Us) ->
+    scan_exponent(Cs, St, Line, Col, Toks, Ncs, Us).
+
+scan_exponent(Cs, St, Line, Col, Toks, {Ncs, Us}) ->
+    scan_exponent(Cs, St, Line, Col, Toks, Ncs, Us).
+
+scan_exponent([C|Cs], St, Line, Col, Toks, Ncs, Us) when ?DIGIT(C) ->
+    scan_exponent(Cs, St, Line, Col, Toks, [C|Ncs], Us);
+scan_exponent([$_,Next|Cs], St, Line, Col, Toks, [Prev|_]=Ncs, _) when
+      ?DIGIT(Next) andalso ?DIGIT(Prev) ->
+    scan_exponent(Cs, St, Line, Col, Toks, [Next,$_|Ncs], with_underscore);
+scan_exponent([$_]=Cs, _St, Line, Col, Toks, Ncs, Us) ->
+    {more,{Cs,Col,Toks,Line,{Ncs,Us},fun scan_exponent/6}};
+scan_exponent([]=Cs, _St, Line, Col, Toks, Ncs, Us) ->
+    {more,{Cs,Col,Toks,Line,{Ncs,Us},fun scan_exponent/6}};
+scan_exponent(Cs, St, Line, Col, Toks, Ncs, Us) ->
+    float_end(Cs, St, Line, Col, Toks, Ncs, Us).
+
+float_end(Cs, St, Line, Col, Toks, Ncs0, Us) ->
     Ncs = lists:reverse(Ncs0),
-    case catch list_to_float(Ncs) of
+    case catch list_to_float(remove_digit_separators(Ncs, Us)) of
         F when is_float(F) ->
             tok3(Cs, St, Line, Col, Toks, float, Ncs, F);
         _ ->

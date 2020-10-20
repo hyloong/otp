@@ -1,7 +1,7 @@
 /*
  * %CopyrightBegin%
  *
- * Copyright Ericsson AB 2010-2014. All Rights Reserved.
+ * Copyright Ericsson AB 2010-2017. All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -68,6 +68,8 @@ size_t ethr_max_stack_size__; /* kilo words */
 ethr_rwmutex xhndl_rwmtx;
 ethr_xhndl_list *xhndl_list;
 
+static ethr_tsd_key ethr_stacklimit_key__;
+
 static int main_threads;
 
 static int init_ts_event_alloc(void);
@@ -107,7 +109,8 @@ x86_init(void)
 
     if (eax > 0
 	&& (ETHR_IS_X86_VENDOR("GenuineIntel", ebx, ecx, edx)
-	    || ETHR_IS_X86_VENDOR("AuthenticAMD", ebx, ecx, edx))) {
+	    || ETHR_IS_X86_VENDOR("AuthenticAMD", ebx, ecx, edx)
+	    || ETHR_IS_X86_VENDOR("HygonGenuine", ebx, ecx, edx))) {
 	eax = 1;
 	ethr_x86_cpuid__(&eax, &ebx, &ecx, &edx);
     }
@@ -139,6 +142,38 @@ x86_init(void)
 #endif
     /* bit 26 of edx is set if we have sse2 */
     ethr_runtime__.conf.have_sse2 = (edx & (1 << 26));
+
+    /* check if we have extended feature set */
+    eax = 0x80000000;
+    ethr_x86_cpuid__(&eax, &ebx, &ecx, &edx);
+
+    if (eax < 0x80000001)
+        return;
+
+    if (eax >= 0x80000007) {
+        /* Advanced Power Management Information */
+        eax = 0x80000007;
+	ethr_x86_cpuid__(&eax, &ebx, &ecx, &edx);
+
+        /* I got the values below from:
+           http://lxr.free-electrons.com/source/arch/x86/include/asm/cpufeature.h
+           They can be gotten from the intel/amd manual as well.
+        */
+
+        ethr_runtime__.conf.have_constant_tsc  = (edx & (1 <<  8));
+        ethr_runtime__.conf.have_tsc_reliable   = (edx & (1 << 23));
+        ethr_runtime__.conf.have_nonstop_tsc    = (edx & (1 << 24));
+        ethr_runtime__.conf.have_nonstop_tsc_s3 = (edx & (1 << 30));
+
+    }
+
+    /* Extended Processor Info and Feature Bits */
+    eax = 0x80000001;
+    ethr_x86_cpuid__(&eax, &ebx, &ecx, &edx);
+
+    /* bit 27 of edx is set if we have rdtscp */
+    ethr_runtime__.conf.have_rdtscp = (edx & (1 << 27));
+
 }
 
 #endif /* ETHR_X86_RUNTIME_CONF__ */
@@ -188,7 +223,7 @@ ethr_init_common__(ethr_init_data *id)
     ethr_min_stack_size__ += ethr_pagesize__;
 #endif
     /* The system may think that we need more stack */
-#if defined(PTHREAD_STACK_MIN)
+#if defined(ETHR_HAVE_USABLE_PTHREAD_STACK_MIN)
     if (ethr_min_stack_size__ < PTHREAD_STACK_MIN)
 	ethr_min_stack_size__ = PTHREAD_STACK_MIN;
 #elif defined(_SC_THREAD_STACK_MIN)
@@ -205,24 +240,11 @@ ethr_init_common__(ethr_init_data *id)
 #endif
     ethr_min_stack_size__ = ETHR_PAGE_ALIGN(ethr_min_stack_size__);
 
-    ethr_min_stack_size__ = ETHR_B2KW(ethr_min_stack_size__);
-
-#ifdef __OSE__
-    /* For supervisor processes, OSE adds a number of bytes to the requested stack. With this
-     * addition, the resulting size must not exceed the largest available stack size. The number
-     * of bytes that will be added  is configured in the monolith and can therefore not be
-     * specified here. We simply assume that it is less than 0x1000. The available stack sizes
-     * are configured in the .lmconf file and the largest one is usually 65536 bytes.
-     * Consequently, the requested stack size is limited to 0xF000.
-     */
-    ethr_max_stack_size__ = 0xF000;
-#else
     ethr_max_stack_size__ = 32*1024*1024;
-#endif
 #if SIZEOF_VOID_P == 8
     ethr_max_stack_size__ *= 2;
 #endif
-    ethr_max_stack_size__ = ETHR_B2KW(ethr_max_stack_size__);
+    ethr_max_stack_size__ = ETHR_PAGE_ALIGN(ethr_max_stack_size__);
 
     res = ethr_init_atomics();
     if (res != 0)
@@ -231,6 +253,10 @@ ethr_init_common__(ethr_init_data *id)
     res = ethr_mutex_lib_init(erts_get_cpu_configured(ethr_cpu_info__));
     if (res != 0)
 	return res;
+
+    res = ethr_tsd_key_create(&ethr_stacklimit_key__, "stacklimit");
+    if (res != 0)
+        return res;
 
     xhndl_list = NULL;
 
@@ -267,7 +293,8 @@ ethr_late_init_common__(ethr_late_init_data *lid)
     res = init_ts_event_alloc();
     if (res != 0)
 	return res;
-    res = ethr_make_ts_event__(&tsep);
+    
+    res = ethr_make_ts_event__(&tsep, 0);
     if (res == 0)
 	tsep->iflgs |= ETHR_TS_EV_ETHREAD;
     if (!lid) {
@@ -290,6 +317,60 @@ ethr_late_init_common__(ethr_late_init_data *lid)
     if (res != 0)
 	return res;
     return 0;
+}
+
+/*
+ * Stack limit
+ */
+
+void *ethr_get_stacklimit(void)
+{
+    return ethr_tsd_get(ethr_stacklimit_key__);
+}
+
+int ethr_set_stacklimit(void *limit)
+{
+    void *prev = ethr_tsd_get(ethr_stacklimit_key__);
+    if (prev)
+        return EACCES;
+    if (!limit)
+        return EINVAL;
+    return ethr_tsd_set(ethr_stacklimit_key__, limit);
+}
+
+/* internal stacklimit (thread creation) */
+
+void
+ethr_set_stacklimit__(char *prev_c, size_t stacksize)
+{
+    /*
+     * We *don't* want this function inlined, i.e., it is
+     * risky to call this function from another function
+     * in ethr_aux.c
+     */
+    void *limit = NULL;
+    char c;
+    int res;
+
+    if (stacksize) {
+        char *start;
+        if (&c > prev_c) {
+            start = (char *) ((((ethr_uint_t) prev_c)
+                               / ethr_pagesize__)
+                              * ethr_pagesize__);
+            limit = start + stacksize;
+        }
+        else {
+            start = (char *) (((((ethr_uint_t) prev_c) - 1)
+                               / ethr_pagesize__ + 1)
+                              * ethr_pagesize__);
+            limit = start - stacksize;
+        }
+    }
+
+    res = ethr_tsd_set(ethr_stacklimit_key__, limit);
+    if (res != 0)
+        ethr_abort__();
 }
 
 int
@@ -355,8 +436,9 @@ typedef union {
     char align[ETHR_CACHE_LINE_ALIGN_SIZE(sizeof(ethr_ts_event))];
 } ethr_aligned_ts_event;
 
-static ethr_spinlock_t ts_ev_alloc_lock;
+static ethr_mutex ts_ev_alloc_lock;
 static ethr_ts_event *free_ts_ev;
+static ethr_sint64_t used_events;
 
 static ethr_ts_event *ts_event_pool(int size, ethr_ts_event **endpp)
 {
@@ -385,34 +467,38 @@ static ethr_ts_event *ts_event_pool(int size, ethr_ts_event **endpp)
 
 static int init_ts_event_alloc(void)
 {
+    used_events = 0;
     free_ts_ev = ts_event_pool(ERTS_TS_EV_ALLOC_DEFAULT_POOL_SIZE,
 			       NULL);
     if (!free_ts_ev)
 	return ENOMEM;
-    return ethr_spinlock_init(&ts_ev_alloc_lock);
+    return ethr_mutex_init(&ts_ev_alloc_lock);
 }
 
 static ethr_ts_event *ts_event_alloc(void)
 {
     ethr_ts_event *ts_ev;
-    ethr_spin_lock(&ts_ev_alloc_lock);
+    ethr_mutex_lock(&ts_ev_alloc_lock);
+    ETHR_ASSERT(used_events >= 0);
     if (free_ts_ev) {
 	ts_ev = free_ts_ev;
 	free_ts_ev = ts_ev->next;
-	ethr_spin_unlock(&ts_ev_alloc_lock);
+        used_events++;
+	ethr_mutex_unlock(&ts_ev_alloc_lock);
     }
     else {
 	ethr_ts_event *ts_ev_pool_end;
-	ethr_spin_unlock(&ts_ev_alloc_lock);
+	ethr_mutex_unlock(&ts_ev_alloc_lock);
 
 	ts_ev = ts_event_pool(ERTS_TS_EV_ALLOC_POOL_SIZE, &ts_ev_pool_end);
 	if (!ts_ev)
 	    return NULL;
 
-	ethr_spin_lock(&ts_ev_alloc_lock);
+	ethr_mutex_lock(&ts_ev_alloc_lock);
 	ts_ev_pool_end->next = free_ts_ev;
 	free_ts_ev = ts_ev->next;
-	ethr_spin_unlock(&ts_ev_alloc_lock);
+        used_events++;
+	ethr_mutex_unlock(&ts_ev_alloc_lock);
     }
     return ts_ev;
 }
@@ -420,69 +506,71 @@ static ethr_ts_event *ts_event_alloc(void)
 static void ts_event_free(ethr_ts_event *ts_ev)
 {
     ETHR_ASSERT(!ts_ev->udata);
-    ethr_spin_lock(&ts_ev_alloc_lock);
+    ethr_mutex_lock(&ts_ev_alloc_lock);
+    ETHR_ASSERT(used_events > 0);
+    used_events--;
     ts_ev->next = free_ts_ev;
     free_ts_ev = ts_ev;
-    ethr_spin_unlock(&ts_ev_alloc_lock);
+    ethr_mutex_unlock(&ts_ev_alloc_lock);
 }
 
-int ethr_make_ts_event__(ethr_ts_event **tsepp)
+static void
+init_ts_event_flags(ethr_ts_event **tsepp)
 {
-    int res;
     ethr_ts_event *tsep = *tsepp;
-
-    if (!tsep) {
-	tsep = ts_event_alloc();
-	if (!tsep)
-	    return ENOMEM;
-    }
-
-    if ((tsep->iflgs & ETHR_TS_EV_INITED) == 0) {
-	res = ethr_event_init(&tsep->event);
-	if (res != 0) {
-	    ts_event_free(tsep);
-	    return res;
-	}
-    }
-
     tsep->iflgs = ETHR_TS_EV_INITED;
     tsep->udata = NULL;
     tsep->rgix = 0;
     tsep->mtix = 0;
-
-    res = ethr_set_tse__(tsep);
-    if (res != 0 && tsepp && *tsepp) {
-	ts_event_free(tsep);
-	return res;
-    }
-
-    if (tsepp)
-	*tsepp = tsep;
-
-    return 0;
 }
 
-int ethr_get_tmp_ts_event__(ethr_ts_event **tsepp)
+ethr_sint64_t
+ethr_no_used_tse(void)
+{
+    ethr_sint64_t res;
+    ethr_mutex_lock(&ts_ev_alloc_lock);
+    ETHR_ASSERT(used_events >= 0);
+    res = used_events;
+    ethr_mutex_unlock(&ts_ev_alloc_lock);
+    return res;
+}
+
+
+int ethr_make_ts_event__(ethr_ts_event **tsepp, int tmp)
 {
     int res;
-    ethr_ts_event *tsep = *tsepp;
+    ethr_ts_event *tsep;
 
-    if (!tsep) {
-	tsep = ts_event_alloc();
-	if (!tsep)
-	    return ENOMEM;
+    tsep = ts_event_alloc();
+    if (!tsep)
+        return ENOMEM;
+
+    if (*tsepp) {
+        *tsep = **tsepp;
+	ETHR_ASSERT(tsep->iflgs & ETHR_TS_EV_BUSY);
+        tsep->iflgs &= ~ETHR_TS_EV_BUSY;
+        tsep->iflgs |= ETHR_TS_EV_TMP;
     }
+    else {
+        init_ts_event_flags(&tsep);
 
-    if ((tsep->iflgs & ETHR_TS_EV_INITED) == 0) {
-	res = ethr_event_init(&tsep->event);
-	if (res != 0) {
-	    ts_event_free(tsep);
-	    return res;
-	}
+        if (tmp) {
+            tsep->iflgs |= ETHR_TS_EV_TMP;
+        }
+        else {
+            res = ethr_set_tse__(tsep);
+            if (res != 0 && tsepp && *tsepp) {
+                ts_event_free(tsep);
+                return res;
+            }
+        }
     }
-
-    tsep->iflgs = ETHR_TS_EV_INITED|ETHR_TS_EV_TMP;
-    tsep->udata = NULL;
+    
+    res = ethr_event_init(&tsep->event);
+    if (res != 0) {
+        ts_event_free(tsep);
+        return res;
+    }
 
     if (tsepp)
 	*tsepp = tsep;
@@ -492,8 +580,10 @@ int ethr_get_tmp_ts_event__(ethr_ts_event **tsepp)
 
 int ethr_free_ts_event__(ethr_ts_event *tsep)
 {
-    ts_event_free(tsep);
-    return 0;
+    int res = ethr_event_destroy(&tsep->event);
+    if (res == 0)
+        ts_event_free(tsep);
+    return res;
 }
 
 void ethr_ts_event_destructor__(void *vtsep)
@@ -664,10 +754,6 @@ ETHR_IMPL_NORETURN__ ethr_fatal_error__(const char *file,
 int ethr_assert_failed(const char *file, int line, const char *func, char *a)
 {
     fprintf(stderr, "%s:%d: %s(): Assertion failed: %s\n", file, line, func, a);
-#ifdef __OSE__
-    ramlog_printf("%d: %s:%d: %s(): Assertion failed: %s\n",
-		  current_process(),file, line, func, a);
-#endif
     ethr_abort__();
     return 0;
 }

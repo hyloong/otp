@@ -4,7 +4,7 @@
 <chapter>
   <header>
     <copyright>
-      <year>1997</year><year>2013</year>
+      <year>1997</year><year>2016</year>
       <holder>Ericsson AB. All Rights Reserved.</holder>
     </copyright>
     <legalnotice>
@@ -178,7 +178,7 @@
     </section>
 
     <section>
-      <title>Upcomming changes</title>
+      <title>Upcoming changes</title>
       <p>
 	The output from the <c>erl_docgen</c> documentation build process is now just the OTP style. 
 	But in a near future we will for example add the possibility to change logo, color in the PDF and 

@@ -1,7 +1,7 @@
 /* 
  * %CopyrightBegin%
  *
- * Copyright Ericsson AB 2014. All Rights Reserved.
+ * Copyright Ericsson AB 2014-2020. All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -21,9 +21,16 @@
 #include <stdio.h>
 #include <string.h>
 #include <openssl/opensslconf.h>
+#include <stdint.h>
+#include <erl_nif.h>
 
-#include "erl_nif.h"
 #include "crypto_callback.h"
+
+#define PACKED_OPENSSL_VERSION(MAJ, MIN, FIX, P)                        \
+    ((((((((MAJ << 8) | MIN) << 8 ) | FIX) << 8) | (P-'a'+1)) << 4) | 0xf)
+
+#define PACKED_OPENSSL_VERSION_PLAIN(MAJ, MIN, FIX)     \
+    PACKED_OPENSSL_VERSION(MAJ,MIN,FIX,('a'-1))
 
 #ifdef DEBUG
     #  define ASSERT(e) \
@@ -43,6 +50,10 @@
 
 #ifdef __WIN32__
 #  define DLLEXPORT __declspec(dllexport)
+#elif defined(__GNUC__) && __GNUC__ >= 4
+#  define DLLEXPORT __attribute__ ((visibility("default")))
+#elif defined (__SUNPRO_C) && (__SUNPRO_C >= 0x550)
+#  define DLLEXPORT __global
 #else
 #  define DLLEXPORT
 #endif
@@ -51,8 +62,6 @@
 DLLEXPORT struct crypto_callbacks* get_crypto_callbacks(int nlocks);
 
 
-static ErlNifRWLock** lock_vec = NULL; /* Static locks used by openssl */
-
 static void nomem(size_t size, const char* op)
 {
     fprintf(stderr, "Out of memory abort. Crypto failed to %s %zu bytes.\r\n",
@@ -60,29 +69,46 @@ static void nomem(size_t size, const char* op)
     abort();
 }
 
-static void* crypto_alloc(size_t size)
+static void* crypto_alloc(size_t size CCB_FILE_LINE_ARGS)
 {
-    void *ret = enif_alloc(size);
+    void *ret;
 
-    if (!ret && size)
+    if ((ret = enif_alloc(size)) == NULL)
+        goto err;
+    return ret;
+
+ err:
+    if (size)
 	nomem(size, "allocate");
-    return ret;
+    return NULL;
 }
-static void* crypto_realloc(void* ptr, size_t size)
+static void* crypto_realloc(void* ptr, size_t size CCB_FILE_LINE_ARGS)
 {
-    void* ret = enif_realloc(ptr, size);
+    void* ret;
 
-    if (!ret && size)
-	nomem(size, "reallocate");
+    if ((ret = enif_realloc(ptr, size)) == NULL)
+        goto err;
     return ret;
+
+ err:
+    if (size)
+	nomem(size, "reallocate");
+    return NULL;
 }
-static void crypto_free(void* ptr)
+
+static void crypto_free(void* ptr CCB_FILE_LINE_ARGS)
 {
+    if (ptr == NULL)
+        return;
+
     enif_free(ptr);
 }
 
 
 #ifdef OPENSSL_THREADS /* vvvvvvvvvvvvvvv OPENSSL_THREADS vvvvvvvvvvvvvvvv */
+#if OPENSSL_VERSION_NUMBER < 0x10100000
+static ErlNifRWLock** lock_vec = NULL; /* Static locks used by openssl */
+#endif
 
 #include <openssl/crypto.h>
 
@@ -106,6 +132,7 @@ static INLINE void locking(int mode, ErlNifRWLock* lock)
     }
 }
 
+#if OPENSSL_VERSION_NUMBER < PACKED_OPENSSL_VERSION_PLAIN(1,1,0)
 static void locking_function(int mode, int n, const char *file, int line)
 {
     locking(mode, lock_vec[n]);
@@ -130,7 +157,7 @@ static void dyn_destroy_function(struct CRYPTO_dynlock_value *ptr, const char *f
 {
     enif_rwlock_destroy((ErlNifRWLock*)ptr);
 }
-
+#endif /* ^^^^^^^^^^^^ OPENSSL_VERSION_NUMBER < PACKED_OPENSSL_VERSION_PLAIN(1,1,0) ^^^^^^^^^^^ */
 #endif /* ^^^^^^^^^^^^^^^^^^^^^^ OPENSSL_THREADS ^^^^^^^^^^^^^^^^^^^^^^ */
 
 DLLEXPORT struct crypto_callbacks* get_crypto_callbacks(int nlocks)
@@ -142,7 +169,8 @@ DLLEXPORT struct crypto_callbacks* get_crypto_callbacks(int nlocks)
 	&crypto_alloc,
 	&crypto_realloc,
 	&crypto_free,
-        
+
+#if OPENSSL_VERSION_NUMBER < 0x10100000
 #ifdef OPENSSL_THREADS
 	&locking_function,
 	&id_function,
@@ -150,31 +178,49 @@ DLLEXPORT struct crypto_callbacks* get_crypto_callbacks(int nlocks)
 	&dyn_lock_function,
 	&dyn_destroy_function
 #endif /* OPENSSL_THREADS */
+#endif
     };
 
     if (!is_initialized) {
+#if OPENSSL_VERSION_NUMBER < 0x10100000
 #ifdef OPENSSL_THREADS
 	if (nlocks > 0) {
 	    int i;
-	    lock_vec = enif_alloc(nlocks*sizeof(*lock_vec));
-	    if (lock_vec==NULL) return NULL;
-	    memset(lock_vec, 0, nlocks*sizeof(*lock_vec));
-	    
+
+            if ((size_t)nlocks > SIZE_MAX / sizeof(*lock_vec))
+                goto err;
+            if ((lock_vec = enif_alloc((size_t)nlocks * sizeof(*lock_vec))) == NULL)
+                goto err;
+
+            memset(lock_vec, 0, (size_t)nlocks * sizeof(*lock_vec));
+
 	    for (i=nlocks-1; i>=0; --i) {
-		lock_vec[i] = enif_rwlock_create("crypto_stat");
-		if (lock_vec[i]==NULL) return NULL;
+		if ((lock_vec[i] = enif_rwlock_create("crypto_stat")) == NULL)
+                    goto err;
 	    }
 	}
+#endif
 #endif
 	is_initialized = 1;
     }
     return &the_struct;
+
+#if OPENSSL_VERSION_NUMBER < 0x10100000
+#ifdef OPENSSL_THREADS
+ err:
+    return NULL;
+#endif
+#endif
 }
 
 #ifdef HAVE_DYNAMIC_CRYPTO_LIB
 /* This is not really a NIF library, but we use ERL_NIF_INIT in order to
  * get access to the erl_nif API (on Windows).
  */
-ERL_NIF_INIT(dummy, (ErlNifFunc*)NULL , NULL, NULL, NULL, NULL)
+static struct {
+    int dummy__;
+    ErlNifFunc funcv[0];
+} empty;
+ERL_NIF_INIT(dummy, empty.funcv, NULL, NULL, NULL, NULL)
 #endif
 

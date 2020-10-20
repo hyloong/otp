@@ -1,7 +1,7 @@
 /*
  * %CopyrightBegin%
  *
- * Copyright Ericsson AB 2000-2013. All Rights Reserved.
+ * Copyright Ericsson AB 2000-2016. All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -143,7 +143,7 @@ BeamInstr *beam_catches_car(unsigned i)
     struct bc_pool* p = &bccix[erts_active_code_ix()];
 
     if (i >= p->tabsize ) {
-	erl_exit(1, "beam_catches_delmod: index %#x is out of range\r\n", i);
+	erts_exit(ERTS_ERROR_EXIT, "beam_catches_delmod: index %#x is out of range\r\n", i);
     }
     return p->beam_catches[i].cp;
 }
@@ -157,10 +157,10 @@ void beam_catches_delmod(unsigned head, BeamInstr *code, unsigned code_bytes,
     ASSERT((code_ix == erts_active_code_ix()) != bccix[erts_staging_code_ix()].is_staging);
     for(i = head; i != (unsigned)-1;) {
 	if (i >= p->tabsize) {
-	    erl_exit(1, "beam_catches_delmod: index %#x is out of range\r\n", i);
+	    erts_exit(ERTS_ERROR_EXIT, "beam_catches_delmod: index %#x is out of range\r\n", i);
 	}
 	if( (char*)p->beam_catches[i].cp - (char*)code >= code_bytes ) {
-	    erl_exit(1,
+	    erts_exit(ERTS_ERROR_EXIT,
 		    "beam_catches_delmod: item %#x has cp %p which is not "
 		    "in module's range [%p,%p[\r\n",
 		    i, p->beam_catches[i].cp, code, ((char*)code + code_bytes));

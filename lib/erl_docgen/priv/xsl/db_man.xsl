@@ -3,7 +3,7 @@
      #
      # %CopyrightBegin%
      #
-     # Copyright Ericsson AB 2009-2012. All Rights Reserved.
+     # Copyright Ericsson AB 2009-2018. All Rights Reserved.
      #
      # Licensed under the Apache License, Version 2.0 (the "License");
      # you may not use this file except in compliance with the License.
@@ -271,6 +271,12 @@
     <xsl:apply-templates/>
   </xsl:template>
 
+  <!-- Datatype Title-->
+  <xsl:template match="datatype_title">
+    <xsl:text>&#10;.SS </xsl:text>
+    <xsl:apply-templates/>
+  </xsl:template>
+
   <!-- Datatype -->
   <xsl:template match="datatype">
     <xsl:apply-templates/>
@@ -450,11 +456,11 @@
   </xsl:template>
 
   <!-- Section/Title -->
-  <xsl:template match="section/title">
+  <xsl:template match="section/title|fsdescription/title">
   </xsl:template>
 
   <!-- *ref/Section -->
-  <xsl:template match="erlref/section|comref/section|cref/section|fileref/section|appref/section">
+  <xsl:template match="erlref/section|comref/section|cref/section|fileref/section|appref/section|funcs/fsdescription">
       <xsl:text>&#10;.SH "</xsl:text><xsl:call-template name="replace-string">
         <xsl:with-param name="text" select="translate(title, 'abcdefghijklmnopqrstuvwxyz','ABCDEFGHIJKLMNOPQRSTUVWXYZ')" />
         <xsl:with-param name="replace" select="&quot;\&quot;" />
@@ -589,8 +595,8 @@
   </xsl:template>
 
   <!-- Inline elements -->
-  <xsl:template match="b">
-    <xsl:text>\fB</xsl:text>
+  <xsl:template match="i">
+    <xsl:text>\fI</xsl:text>
     <xsl:apply-templates/>
     <xsl:text>\fR\&amp; </xsl:text>
   </xsl:template>
@@ -614,6 +620,12 @@
 
   <xsl:template match="em">
     <xsl:text>\fI</xsl:text> <xsl:apply-templates/><xsl:text>\fR\&amp;</xsl:text>
+  </xsl:template>
+
+  <xsl:template match="strong">
+    <xsl:text>\fB</xsl:text>
+    <xsl:apply-templates/>
+    <xsl:text>\fR\&amp; </xsl:text>
   </xsl:template>
 
   <xsl:template match="seealso">
@@ -753,8 +765,9 @@
 
   <!-- Funcs -->
   <xsl:template match="funcs">
+    <xsl:apply-templates select="fsdescription"/>
     <xsl:text>&#10;.SH EXPORTS</xsl:text>
-    <xsl:apply-templates/>
+    <xsl:apply-templates select="func"/>
   </xsl:template>
 
   <!-- Func -->

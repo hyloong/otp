@@ -4,7 +4,7 @@
 <book xmlns:xi="http://www.w3.org/2001/XInclude">
   <header titlestyle="normal">
     <copyright>
-      <year>1997</year><year>2013</year>
+      <year>1997</year><year>2016</year>
       <holder>Ericsson AB. All Rights Reserved.</holder>
     </copyright>
     <legalnotice>
@@ -22,7 +22,7 @@
     
     </legalnotice>
 
-    <title>System Application Support Libraries (SASL)</title>
+    <title>System Architecture Support Libraries (SASL)</title>
     <prepared>OTP Team</prepared>
     <docno></docno>
     <date>1999-04-22</date>
@@ -31,7 +31,7 @@
   </header>
   <insidecover>
   </insidecover>
-  <pagetext>System Application Support Libraries (SASL)</pagetext>
+  <pagetext>System Architecture Support Libraries (SASL)</pagetext>
   <preamble>
     <contents level="2"></contents>
   </preamble>

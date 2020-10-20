@@ -5,7 +5,7 @@
   <header>
     <copyright>
       <year>2008</year>
-      <year>2015</year>
+      <year>2018</year>
       <holder>Ericsson AB, All Rights Reserved</holder>
     </copyright>
     <legalnotice>
@@ -51,15 +51,15 @@
 
     <p>Common non-standard Erlang
     data types used to describe the record fields in the
-    following sections and which are not defined in the Public Key <seealso
-    marker="public_key">Reference Manual</seealso>
+    following sections and which are not defined in the Public Key <seeerl
+    marker="public_key">Reference Manual</seeerl>
     follows here:</p>
     
     <taglist>
       <tag><c>time() =</c></tag>
-      <item><p><c>uct_time() | general_time()</c></p></item>
+      <item><p><c>utc_time() | general_time()</c></p></item>
 
-      <tag><c>uct_time() =</c></tag>
+      <tag><c>utc_time() =</c></tag>
       <item><p><c>{utcTime, "YYMMDDHHMMSSZ"}</c></p></item>
 
       <tag><c>general_time() =</c></tag>
@@ -70,10 +70,10 @@
       <p><c>| {dNSName, string()}</c></p>
       <p><c>| {x400Address, string()}</c></p>
       <p><c>| {directoryName, {rdnSequence, [#AttributeTypeAndValue'{}]}}</c></p>
-      <p><c>| {eidPartyName, special_string()}</c></p>
-      <p><c>| {eidPartyName, special_string(), special_string()}</c></p>
+      <p><c>| {ediPartyName, special_string()}</c></p>
+      <p><c>| {ediPartyName, special_string(), special_string()}</c></p>
       <p><c>| {uniformResourceIdentifier, string()}</c></p>
-      <p><c>| {ipAddress, string()}</c></p>
+      <p><c>| {iPAddress, string()}</c></p>
       <p><c>| {registeredId, oid()}</c></p>
       <p><c>| {otherName, term()}</c></p>
       </item>
@@ -138,13 +138,28 @@
 	prime,           % integer()
 	exponent,        % integer()
 	coefficient      % integer()
- 	 }.	 </code>
+ 	}.
+
+#'RSASSA-PSS-params'{hashAlgorithm,     % #'HashAlgorithm'{}},  
+	             maskGenAlgorithm,  % #'MaskGenAlgorithm'{}},
+		     saltLength,        % integer(),
+		     trailerField,      % integer()
+		     }.
+		     
+#'HashAlgorithm'{algorithm,  % oid()
+                 parameters  % defaults to asn1_NOVALUE
+                 }.
+		 
+#'MaskGenAlgorithm'{algorithm,  % oid()
+                    parameters, % defaults to asn1_NOVALUE
+                   }.
+    </code>
 
   </section>
 
   <section>
     <title>DSA</title>
-     <p>Erlang representation of <url href="http://www.ietf.org/rfc/rfc6979.txt">Digigital Signature Algorithm (DSA)</url> keys</p>
+     <p>Erlang representation of <url href="http://www.ietf.org/rfc/rfc6979.txt">Digital Signature Algorithm (DSA)</url> keys</p>
     <code>	 
 #'DSAPrivateKey',{
 	  version,      % integer()
@@ -171,9 +186,9 @@
 #'ECPrivateKey'{
           version,       % integer()
 	  privateKey,    % binary()  
-	  parameters,    % der_encoded() - {'EcpkParameters', #'ECParameters'{}} |
-	                                   {'EcpkParameters', {namedCurve, oid()}} |
-	                                   {'EcpkParameters', 'NULL'} % Inherited by CA
+          parameters,    % {ecParameters, #'ECParameters'{}} |
+                         % {namedCurve, Oid::tuple()} |
+                         % {implicitlyCA, 'NULL'}
 	  publicKey      % bitstring()
 	  }.
 	  
@@ -424,10 +439,10 @@ are as follows:</p>
 	 }.</code>
 
 <p><c>id_extensions()</c>  
-  <seealso marker="#StdCertExt">Standard Certificate Extensions</seealso>, 
-  <seealso marker="#PrivIntExt">Private Internet Extensions</seealso>,  
-  <seealso marker="#CRLCertExt">CRL Extensions</seealso> and 
-  <seealso marker="#CRLEntryExt">CRL Entry Extensions</seealso>.
+  <seeguide marker="#StdCertExt">Standard Certificate Extensions</seeguide>, 
+  <seeguide marker="#PrivIntExt">Private Internet Extensions</seeguide>,  
+  <seeguide marker="#CRLCertExt">CRL Extensions</seeguide> and 
+  <seeguide marker="#CRLEntryExt">CRL Entry Extensions</seeguide>.
 </p>
     
 </section>

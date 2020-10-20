@@ -1,7 +1,7 @@
 %%
 %% %CopyrightBegin%
 %% 
-%% Copyright Ericsson AB 2008-2013. All Rights Reserved.
+%% Copyright Ericsson AB 2008-2017. All Rights Reserved.
 %% 
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -127,20 +127,22 @@ load_code(Ed, Code) ->
     %%io:format("~p ~p ~p~n", [Lines, Sz, LW]),
     ?stc:setMarginWidth(Ed, 0, LW+5),
     ?stc:setReadOnly(Ed, true),
-    Ed.
+    ok.
 
 unload_code(Ed) ->
     ?stc:setReadOnly(Ed, false),
     ?stc:setTextRaw(Ed, <<0:8>>),
     ?stc:setReadOnly(Ed, true),
-    Ed.
+    ok.
 
 add_break_to_code(Ed, Line, active) ->
     ?stc:markerDelete(Ed, Line-1, 1),
-    ?stc:markerAdd(Ed, Line-1, 0);
+    ?stc:markerAdd(Ed, Line-1, 0),
+    ok;
 add_break_to_code(Ed, Line, inactive) ->
     ?stc:markerDelete(Ed, Line-1, 0),
-    ?stc:markerAdd(Ed, Line-1, 1).
+    ?stc:markerAdd(Ed, Line-1, 1),
+    ok.
 
 del_break_from_code(Ed,Line) ->
     ?stc:markerDelete(Ed, Line-1, 0),
@@ -188,6 +190,6 @@ find(Ed, Str, Case, Next) ->
    
 keyWords() ->
     L = ["after","begin","case","try","cond","catch","andalso","orelse",
-	 "end","fun","if","let","of","query","receive","when","bnot","not",
+	 "end","fun","if","let","of","receive","when","bnot","not",
 	 "div","rem","band","and","bor","bxor","bsl","bsr","or","xor"],
     lists:flatten([K ++ " " || K <- L] ++ [0]).

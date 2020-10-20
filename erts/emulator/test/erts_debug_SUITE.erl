@@ -1,7 +1,7 @@
 %%
 %% %CopyrightBegin%
 %% 
-%% Copyright Ericsson AB 2005-2012. All Rights Reserved.
+%% Copyright Ericsson AB 2005-2020. All Rights Reserved.
 %% 
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -19,42 +19,32 @@
 %%
 
 -module(erts_debug_SUITE).
--include_lib("test_server/include/test_server.hrl").
+-include_lib("common_test/include/ct.hrl").
+-include_lib("common_test/include/ct_event.hrl").
 
--export([all/0, suite/0,groups/0,init_per_suite/1, end_per_suite/1, 
-	 init_per_group/2,end_per_group/2,
-	 init_per_testcase/2,end_per_testcase/2,
-	 test_size/1,flat_size_big/1,df/1,
-	 instructions/1]).
+-export([all/0, suite/0, groups/0,
+         test_size/1,flat_size_big/1,df/1,term_type/1,
+         instructions/1, stack_check/1, alloc_blocks_size/1,
+         interpreter_size_bench/1]).
 
-suite() -> [{ct_hooks,[ts_install_cth]}].
+-export([do_alloc_blocks_size/0]).
+
+suite() ->
+    [{ct_hooks,[ts_install_cth]},
+     {timetrap, {minutes, 2}}].
 
 all() -> 
-    [test_size, flat_size_big, df, instructions].
+    [test_size, flat_size_big, df, instructions, term_type,
+     stack_check, alloc_blocks_size].
 
 groups() -> 
-    [].
+    [{interpreter_size_bench, [], [interpreter_size_bench]}].
 
-init_per_suite(Config) ->
-    Config.
-
-end_per_suite(_Config) ->
-    ok.
-
-init_per_group(_GroupName, Config) ->
-    Config.
-
-end_per_group(_GroupName, Config) ->
-    Config.
-
-
-init_per_testcase(Func, Config) when is_atom(Func), is_list(Config) ->
-    Dog=?t:timetrap(?t:minutes(2)),
-    [{watchdog, Dog}|Config].
-
-end_per_testcase(_Func, Config) ->
-    Dog=?config(watchdog, Config),
-    ?t:timetrap_cancel(Dog).
+interpreter_size_bench(_Config) ->
+    Size = erts_debug:interpreter_size(),
+    ct_event:notify(#event{name=benchmark_data,
+                           data=[{value,Size}]}),
+    {comment,integer_to_list(Size)++" bytes"}.
 
 test_size(Config) when is_list(Config) ->
     ConsCell1 = id([a|b]),
@@ -138,9 +128,50 @@ flat_size_big_1(Term, Size0, Limit) when Size0 < Limit ->
     end;
 flat_size_big_1(_, _, _) -> ok.
 
+
+term_type(Config) when is_list(Config) ->
+    Ts = [{fixnum, 1},
+          {fixnum, -1},
+          {bignum, 1 bsl 300},
+          {bignum, -(1 bsl 300)},
+          {hfloat, 0.0},
+          {hfloat, 0.0/-1},
+          {hfloat, 1.0/(1 bsl 302)},
+          {hfloat, 1.0*(1 bsl 302)},
+          {hfloat, -1.0/(1 bsl 302)},
+          {hfloat, -1.0*(1 bsl 302)},
+          {hfloat, 3.1416},
+          {hfloat, 1.0e18},
+          {hfloat, -3.1416},
+          {hfloat, -1.0e18},
+
+          {heap_binary, <<1,2,3>>},
+          {refc_binary, <<0:(8*80)>>},
+          {sub_binary,  <<5:7>>},
+
+          {flatmap, #{ a => 1}},
+          {hashmap, maps:from_list([{I,I}||I <- lists:seq(1,76)])},
+
+          {list, [1,2,3]},
+          {nil, []},
+          {tuple, {1,2,3}},
+          {tuple, {}},
+
+          {export, fun lists:sort/1},
+          {'fun', fun() -> ok end},
+          {pid, self()},
+          {atom, atom}],
+    lists:foreach(fun({E,Val}) ->
+                          R = erts_internal:term_type(Val),
+                          io:format("expecting term type ~w, got ~w (~p)~n", [E,R,Val]),
+                          E = R
+                  end, Ts),
+    ok.
+
+
 df(Config) when is_list(Config) ->
     P0 = pps(),
-    PrivDir = ?config(priv_dir, Config),
+    PrivDir = proplists:get_value(priv_dir, Config),
     ok = file:set_cwd(PrivDir),
 
     AllLoaded = [M || {M,_} <- code:all_loaded()],
@@ -164,6 +195,15 @@ df(Config) when is_list(Config) ->
     true = (P0 == pps()),
     ok.
 
+stack_check(Config) when is_list(Config) ->
+    erts_debug:set_internal_state(available_internal_state,true),
+    %% Recurses on the C stack until stacklimit is reached. That
+    %% is, tests that the stack limit functionality works (used
+    %% by PCRE). VM will crash if it doesn't work...
+    Size = erts_debug:get_internal_state(stack_check),
+    erts_debug:set_internal_state(available_internal_state,false),
+    {comment, "Stack size: "++integer_to_list(Size)++" bytes"}.
+
 df_smoke([M|Ms]) ->
     io:format("~p", [M]),
     erts_debug:df(M),
@@ -182,6 +222,29 @@ instructions(Config) when is_list(Config) ->
     Is = erts_debug:instructions(),
     _ = [list_to_atom(I) || I <- Is],
     ok.
+
+alloc_blocks_size(Config) when is_list(Config) ->
+    F = fun(Args) ->
+                Node = start_slave(Args),
+                ok = rpc:call(Node, ?MODULE, do_alloc_blocks_size, []),
+                true = test_server:stop_node(Node)
+        end,
+    F("+Meamax"),
+    F("+Meamin"),
+    F(""),
+    ok.
+
+do_alloc_blocks_size() ->
+    _ = erts_debug:alloc_blocks_size(binary_alloc),
+    ok.
+
+start_slave(Args) ->
+    Name = ?MODULE_STRING ++ "_slave",
+    Pa = filename:dirname(code:which(?MODULE)),
+    {ok, Node} = test_server:start_node(list_to_atom(Name),
+                                        slave,
+                                        [{args, "-pa " ++ Pa ++ " " ++ Args}]),
+    Node.
 
 id(I) ->
     I.

@@ -1,7 +1,7 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 1997-2015. All Rights Reserved.
+%% Copyright Ericsson AB 1997-2020. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -19,13 +19,18 @@
 %%
 -module(erl_distribution_SUITE).
 
-%-define(line_trace, 1).
--include_lib("test_server/include/test_server.hrl").
+-include_lib("common_test/include/ct.hrl").
+-include_lib("kernel/include/dist.hrl").
 
 -export([all/0, suite/0,groups/0,init_per_suite/1, end_per_suite/1, 
 	 init_per_group/2,end_per_group/2]).
 
--export([tick/1, tick_change/1, illegal_nodenames/1, hidden_node/1,
+-export([tick/1, tick_change/1,
+         connect_node/1,
+         nodenames/1, hostnames/1,
+         illegal_nodenames/1, hidden_node/1,
+         dyn_node_name/1,
+	 setopts/1,
 	 table_waste/1, net_setuptime/1,
 	 inet_dist_options_options/1,
 
@@ -37,20 +42,25 @@
 	 monitor_nodes_errors/1,
 	 monitor_nodes_combinations/1,
 	 monitor_nodes_cleanup/1,
-	 monitor_nodes_many/1]).
+	 monitor_nodes_many/1,
+         monitor_nodes_down_up/1,
+         dist_ctrl_proc_smoke/1,
+         dist_ctrl_proc_reject/1]).
 
 %% Performs the test at another node.
 -export([get_socket_priorities/0,
 	 tick_cli_test/1, tick_cli_test1/1,
 	 tick_serv_test/2, tick_serv_test1/1,
+	 run_remote_test/1,
+         dyn_node_name_do/2,
+	 setopts_do/2,
 	 keep_conn/1, time_ping/1]).
 
 -export([init_per_testcase/2, end_per_testcase/2]).
 
--export([start_node/2]).
+-export([dist_cntrlr_output_test_size/2]).
 
 -export([pinger/1]).
-
 
 -define(DUMMY_NODE,dummy@test01).
 
@@ -61,10 +71,17 @@
 %% erl -sname master -rsh ctrsh
 %%-----------------------------------------------------------------
 
-suite() -> [{ct_hooks,[ts_install_cth]}].
+suite() ->
+    [{ct_hooks,[ts_install_cth]},
+     {timetrap,{minutes,12}}].
 
 all() -> 
-    [tick, tick_change, illegal_nodenames, hidden_node,
+    [dist_ctrl_proc_smoke,
+     dist_ctrl_proc_reject,
+     tick, tick_change, nodenames, hostnames, illegal_nodenames,
+     connect_node,
+     dyn_node_name,
+     hidden_node, setopts,
      table_waste, net_setuptime, inet_dist_options_options,
      {group, monitor_nodes}].
 
@@ -75,12 +92,16 @@ groups() ->
        monitor_nodes_node_type, monitor_nodes_misc,
        monitor_nodes_otp_6481, monitor_nodes_errors,
        monitor_nodes_combinations, monitor_nodes_cleanup,
-       monitor_nodes_many]}].
+       monitor_nodes_many,
+       monitor_nodes_down_up]}].
 
 init_per_suite(Config) ->
+    start_gen_tcp_dist_test_type_server(),
     Config.
 
 end_per_suite(_Config) ->
+    [slave:stop(N) || N <- nodes()],
+    kill_gen_tcp_dist_test_type_server(),
     ok.
 
 init_per_group(_GroupName, Config) ->
@@ -89,29 +110,36 @@ init_per_group(_GroupName, Config) ->
 end_per_group(_GroupName, Config) ->
     Config.
 
-
+init_per_testcase(TC, Config) when TC == hostnames;
+                                   TC == nodenames ->
+    file:make_dir("hostnames_nodedir"),
+    file:write_file("hostnames_nodedir/ignore_core_files",""),
+    Config;
 init_per_testcase(Func, Config) when is_atom(Func), is_list(Config) ->
-    Dog=?t:timetrap(?t:minutes(4)),
-    [{watchdog, Dog}|Config].
+    Config.
 
-end_per_testcase(_Func, Config) ->
-    Dog=?config(watchdog, Config),
-    ?t:timetrap_cancel(Dog).
+end_per_testcase(_Func, _Config) ->
+    ok.
 
-tick(suite) -> [];
-tick(doc) -> [];
+connect_node(Config) when is_list(Config) ->
+    Connected = nodes(connected),
+    true = net_kernel:connect_node(node()),
+    Connected = nodes(connected),
+    ok.
+
 tick(Config) when is_list(Config) ->
-    ?line Dog = test_server:timetrap(test_server:seconds(120)),
-    PaDir = filename:dirname(code:which(erl_distribution_SUITE)),
-    
+    run_dist_configs(fun tick/2, Config).
+
+tick(DCfg, _Config) ->
     %% First check that the normal case is OK!
-    ?line {ok, Node} = start_node(dist_test, "-pa " ++ PaDir),
+    [Name1, Name2] = get_nodenames(2, dist_test),
+    {ok, Node} = start_node(DCfg, Name1),
     rpc:call(Node, erl_distribution_SUITE, tick_cli_test, [node()]),
-    
+
     erlang:monitor_node(Node, true),
     receive
 	{nodedown, Node} ->
-	    test_server:fail("nodedown from other node")
+	    ct:fail("nodedown from other node")
     after 30000 ->
 	    erlang:monitor_node(Node, false),
 	    stop_node(Node)
@@ -129,20 +157,18 @@ tick(Config) when is_list(Config) ->
     %% Set the ticktime on the server node to 100 secs so the server
     %% node doesn't tick the client node within the interval ...
 
-    ?line {ok, ServNode} = start_node(dist_test_server,
-				      "-kernel net_ticktime 100 "
-				      "-pa " ++ PaDir),
+    {ok, ServNode} = start_node(DCfg, Name2,
+				"-kernel net_ticktime 100"),
     rpc:call(ServNode, erl_distribution_SUITE, tick_serv_test, [Node, node()]),
 
-    ?line {ok, _} = start_node(dist_test,
-			       "-kernel net_ticktime 12 "
-			       "-pa " ++ PaDir),
+    {ok, Node} = start_node(DCfg, Name1,
+			 "-kernel net_ticktime 12"),
     rpc:call(Node, erl_distribution_SUITE, tick_cli_test, [ServNode]),
-    
+
     spawn_link(erl_distribution_SUITE, keep_conn, [Node]),
 
     {tick_serv, ServNode} ! {i_want_the_result, self()},
-    
+
     monitor_node(ServNode, true),
     monitor_node(Node, true),
 
@@ -154,56 +180,157 @@ tick(Config) when is_list(Config) ->
 	{tick_test, Error} ->
 	    stop_node(ServNode),
 	    stop_node(Node),
-	    test_server:fail(Error);
+	    ct:fail(Error);
 	{nodedown, Node} ->
 	    stop_node(ServNode),
-	    test_server:fail("client node died");
+	    ct:fail("client node died");
 	{nodedown, ServNode} ->
 	    stop_node(Node),
-	    test_server:fail("server node died")
+	    ct:fail("server node died")
     end,
-    ?line test_server:timetrap_cancel(Dog),
     ok.
 
-table_waste(doc) ->
-    ["Checks that pinging nonexistyent nodes does not waste space in distribution table"];
-table_waste(suite) ->
-    [];
+%% Checks that pinging nonexistyent nodes does not waste space in distribution table.
 table_waste(Config) when is_list(Config) ->
-    ?line {ok, HName} = inet:gethostname(), 
+    run_dist_configs(fun table_waste/2, Config).
+
+table_waste(DCfg, _Config) ->
+    {ok, HName} = inet:gethostname(),
     F = fun(0,_F) -> [];
 	   (N,F) -> 
-		?line Name = list_to_atom("erl_distribution_"++integer_to_list(N)++
-				    "@"++HName), 
-		?line pang = net_adm:ping(Name), 
-		?line F(N-1,F) 
+		Name = list_to_atom("erl_distribution_"++integer_to_list(N)++
+					"@"++HName),
+		pang = net_adm:ping(Name),
+		F(N-1,F)
 	end,
-    ?line F(256,F),
-    ?line {ok, N} = start_node(erl_distribution_300,""),
-    ?line stop_node(N),
+    F(256,F),
+    {ok, N} = start_node(DCfg, erl_distribution_300),
+    stop_node(N),
     ok.
-    
-    
 
-illegal_nodenames(doc) ->
-    ["Test that pinging an illegal nodename does not kill the node"];
-illegal_nodenames(suite) ->
-    [];
+%% Test that starting nodes with different legal name part works, and that illegal
+%% ones are filtered
+nodenames(Config) when is_list(Config) ->
+    legal("a1@b"),
+    legal("a-1@b"),
+    legal("a_1@b"),
+
+    %% Test that giving two -sname works as it should
+    started = test_node("a_1@b", false, long_or_short() ++ "a_0@b"),
+
+    illegal("cdé@a"),
+    illegal("te欢st@a").
+
+%% Test that starting nodes with different legal host part works, and that illegal
+%% ones are filtered
+hostnames(Config) when is_list(Config) ->
+    Host = gethostname(),
+    legal([$a,$@|atom_to_list(Host)]),
+    legal("1@b1"),
+    legal("b@b1-c"),
+    legal("c@b1_c"),
+    legal("d@b1#c"),
+    legal("f@::1"),
+    legal("g@1:bc3:4e3f:f20:0:1"),
+
+    case file:native_name_encoding() of
+        latin1 -> ignore;
+        _ -> legal("e@b1é")
+    end,
+    long_hostnames(net_kernel:longnames()),
+
+    illegal("h@testالع"),
+    illegal("i@языtest"),
+    illegal("j@te欢st").
+
+long_hostnames(true) ->
+    legal("k@b.b.c"),
+    legal("l@b.b-c.d"),
+    legal("m@b.b_c.d"),
+    legal("n@127.0.0.1"),
+    legal("o@207.123.456.789");
+long_hostnames(false) ->
+    illegal("k@b.b.c").
+
+legal(Name) ->
+    case test_node(Name) of
+        started ->
+            ok;
+        not_started ->
+            ct:fail("no ~p node started", [Name])
+    end.
+
+illegal(Name) ->
+    case test_node(Name, true) of
+        not_started ->
+            ok;
+        started ->
+            ct:fail("~p node started with illegal name", [Name])
+    end.
+
+test_node(Name) ->
+    test_node(Name, false).
+test_node(Name, Illigal) ->
+    test_node(Name, Illigal, "").
+test_node(Name, Illigal, ExtraArgs) ->
+    ProgName = ct:get_progname(),
+    Command = ProgName ++ " -noinput " ++
+        long_or_short() ++ Name ++ ExtraArgs ++
+        " -eval \"net_adm:ping('" ++ atom_to_list(node()) ++ "')\"" ++
+        case Illigal of
+            true ->
+                " -eval \"timer:sleep(10000),init:stop().\"";
+            false ->
+                ""
+        end,
+    net_kernel:monitor_nodes(true),
+    BinCommand = unicode:characters_to_binary(Command, utf8),
+    _Prt = open_port({spawn, BinCommand}, [stream,{cd,"hostnames_nodedir"}]),
+    Node = list_to_atom(Name),
+    receive
+        {nodeup, Node} ->
+            net_kernel:monitor_nodes(false),
+            slave:stop(Node),
+            started
+    after 5000 ->
+        net_kernel:monitor_nodes(false),
+        not_started
+    end.
+
+long_or_short() ->
+    case net_kernel:longnames() of
+        true -> " -name ";
+        false -> " -sname "
+    end.
+
+% get the localhost's name, depending on the using name policy
+gethostname() ->
+    Hostname = case net_kernel:longnames() of
+       true->
+           net_adm:localhost();
+       _->
+           {ok, Name}=inet:gethostname(),
+           Name
+    end,
+    list_to_atom(Hostname).
+
+%% Test that pinging an illegal nodename does not kill the node.
 illegal_nodenames(Config) when is_list(Config) ->
-    ?line Dog=?t:timetrap(?t:minutes(2)),
-    PaDir = filename:dirname(code:which(erl_distribution_SUITE)),
-    ?line {ok, Node}=start_node(illegal_nodenames, "-pa " ++ PaDir),
+    run_dist_configs(fun illegal_nodenames/2, Config).
+
+illegal_nodenames(DCfg, _Config) ->
+    {ok, Node}=start_node(DCfg, illegal_nodenames),
     monitor_node(Node, true),
-    ?line RPid=rpc:call(Node, erlang, spawn,
-	     [?MODULE, pinger, [self()]]),
+    RPid=rpc:call(Node, erlang, spawn,
+		  [?MODULE, pinger, [self()]]),
     receive
 	{RPid, pinged} ->
+            monitor_node(Node, false),
 	    ok;
 	{nodedown, Node} ->
-	    ?t:fail("Remote node died.")
+	    ct:fail("Remote node died.")
     end,
     stop_node(Node),
-    ?t:timetrap_cancel(Dog),
     ok.
 
 pinger(Starter) ->
@@ -213,36 +340,39 @@ pinger(Starter) ->
     ok.
 
 
-net_setuptime(doc) -> ["Test that you can set the net_setuptime properly"];
+%% Test that you can set the net_setuptime properly.
 net_setuptime(Config) when is_list(Config) ->
+    run_dist_configs(fun net_setuptime/2, Config).
+
+net_setuptime(DCfg, _Config) ->
+
     %% In this test case, we reluctantly accept shorter times than the given
     %% setup time, because the connection attempt can end in a
     %% "Host unreachable" error before the timeout fires.
 
-    Res0 = do_test_setuptime("2"),
+    Res0 = do_test_setuptime(DCfg, "2"),
     io:format("Res0 = ~p", [Res0]),
-    ?line true = (Res0 =< 4000),
-    Res1 = do_test_setuptime("0.3"),
+    true = (Res0 =< 4000),
+    Res1 = do_test_setuptime(DCfg, "0.3"),
     io:format("Res1 = ~p", [Res1]),
-    ?line true = (Res1 =< 500),
+    true = (Res1 =< 500),
     ok.
 
-do_test_setuptime(Setuptime) when is_list(Setuptime) ->
-    ?line PaDir = filename:dirname(code:which(?MODULE)),
-    ?line {ok, Node} = start_node(dist_setuptime_test, "-pa " ++ PaDir ++ 
-				  " -kernel net_setuptime " ++ Setuptime),
-    ?line Res = rpc:call(Node,?MODULE,time_ping,[?DUMMY_NODE]),
-    ?line stop_node(Node),
+do_test_setuptime(DCfg, Setuptime) when is_list(Setuptime) ->
+    {ok, Node} = start_node(DCfg, dist_setuptime_test,
+                            "-kernel net_setuptime " ++ Setuptime),
+    Res = rpc:call(Node,?MODULE,time_ping,[?DUMMY_NODE]),
+    stop_node(Node),
     Res.
 
 time_ping(Node) ->
     T0 = erlang:monotonic_time(),
     pang = net_adm:ping(Node),
     T1 = erlang:monotonic_time(),
-    erlang:convert_time_unit(T1 - T0, native, milli_seconds).
+    erlang:convert_time_unit(T1 - T0, native, millisecond).
 
 %% Keep the connection with the client node up.
-%% This is neccessary as the client node runs with much shorter
+%% This is necessary as the client node runs with much shorter
 %% tick time !!
 keep_conn(Node) ->
     sleep(1),
@@ -283,7 +413,7 @@ tick_cli_test1(Node) ->
 	    receive
 		{whats_the_result, From} ->
 		    Diff = erlang:convert_time_unit(T2-T1, native,
-						    milli_seconds),
+						    millisecond),
 		    case Diff of
 			T when T > 8000, T < 16000 ->
 			    From ! {tick_test, T};
@@ -295,161 +425,378 @@ tick_cli_test1(Node) ->
 	    end
     end.
 
+dyn_node_name(Config) when is_list(Config) ->
+    %%run_dist_configs(fun dyn_node_name/2, Config).
+    dyn_node_name("", Config).
 
-tick_change(doc) -> ["OTP-4255"];
-tick_change(suite) -> [];
+dyn_node_name(DCfg, _Config) ->
+    {_N1F,Port1} = start_node_unconnected(DCfg ++ " -dist_listen false",
+                                          undefined, ?MODULE, run_remote_test,
+                                          ["dyn_node_name_do", atom_to_list(node())]),
+    0 = wait_for_port_exit(Port1),
+    ok.
+
+dyn_node_name_do(TestNode, _Args) ->
+    nonode@nohost = node(),
+    [] = nodes(),
+    [] = nodes(hidden),
+    net_kernel:monitor_nodes(true, [{node_type,all}]),
+    net_kernel:connect_node(TestNode),
+    [] = nodes(),
+    [TestNode] = nodes(hidden),
+    MyName = node(),
+    check([MyName], rpc:call(TestNode, erlang, nodes, [hidden])),
+
+    {nodeup, MyName, [{node_type, visible}]} = receive_any(0),
+    {nodeup, TestNode, [{node_type, hidden}]} = receive_any(0),
+
+    true = net_kernel:disconnect(TestNode),
+
+    {nodedown, TestNode, [{node_type, hidden}]} = receive_any(0),
+    [] = nodes(hidden),
+    {nodedown, MyName, [{node_type, visible}]} = receive_any(1000),
+
+    nonode@nohost = node(),
+
+    net_kernel:connect_node(TestNode),
+    [] = nodes(),
+    [TestNode] = nodes(hidden),
+    MyName = node(),
+    check([MyName], rpc:call(TestNode, erlang, nodes, [hidden])),
+
+    {nodeup, MyName, [{node_type, visible}]} = receive_any(0),
+    {nodeup, TestNode, [{node_type, hidden}]} = receive_any(0),
+
+    true = rpc:cast(TestNode, net_kernel, disconnect, [MyName]),
+
+    {nodedown, TestNode, [{node_type, hidden}]} = receive_any(1000),
+    [] = nodes(hidden),
+    {nodedown, MyName, [{node_type, visible}]} = receive_any(1000),
+    nonode@nohost = node(),
+
+    ok.
+
+check(X, X) -> ok.
+
+setopts(Config) when is_list(Config) ->
+    run_dist_configs(fun setopts/2, Config).
+
+setopts(DCfg, _Config) ->
+    register(setopts_regname, self()),
+    [N1,N2,N3,N4] = get_nodenames(4, setopts),
+
+    {_N1F,Port1} = start_node_unconnected(DCfg, N1, ?MODULE, run_remote_test,
+					["setopts_do", atom_to_list(node()), "1", "ping"]),
+    0 = wait_for_port_exit(Port1),
+
+    {_N2F,Port2} = start_node_unconnected(DCfg, N2, ?MODULE, run_remote_test,
+				 ["setopts_do", atom_to_list(node()), "2", "ping"]),
+    0 = wait_for_port_exit(Port2),
+
+    {ok, LSock} = gen_tcp:listen(0, [{packet,2}, {active,false}]),
+    {ok, LTcpPort} = inet:port(LSock),
+
+    {N3F,Port3} = start_node_unconnected(DCfg, N3, ?MODULE, run_remote_test,
+					["setopts_do", atom_to_list(node()),
+					 "1", integer_to_list(LTcpPort)]),
+    wait_and_connect(LSock, N3F, Port3),
+    0 = wait_for_port_exit(Port3),
+
+    {N4F,Port4} = start_node_unconnected(DCfg, N4, ?MODULE, run_remote_test,
+					["setopts_do", atom_to_list(node()),
+					 "2", integer_to_list(LTcpPort)]),
+    wait_and_connect(LSock, N4F, Port4),
+    0 = wait_for_port_exit(Port4),
+
+    unregister(setopts_regname),
+    ok.
+
+wait_and_connect(LSock, NodeName, NodePort) ->
+    {ok, Sock} = gen_tcp:accept(LSock),
+    {ok, "Connect please"} = gen_tcp:recv(Sock, 0),
+    flush_from_port(NodePort),
+    pong = net_adm:ping(NodeName),
+    gen_tcp:send(Sock, "Connect done"),
+    gen_tcp:close(Sock).
+
+
+flush_from_port(Port) ->
+    flush_from_port(Port, 10).
+
+flush_from_port(Port, Timeout) ->
+    receive
+	{Port,{data,String}} ->
+	    io:format("~p: ~s\n", [Port, String]),
+	    flush_from_port(Port, Timeout)
+    after Timeout ->
+	    timeout
+    end.
+
+wait_for_port_exit(Port) ->
+    case (receive M -> M end) of
+	{Port,{exit_status,Status}} ->
+	    Status;
+	{Port,{data,String}} ->
+	    io:format("~p: ~s\n", [Port, String]),
+	    wait_for_port_exit(Port)
+    end.
+
+run_remote_test([FuncStr, TestNodeStr | Args]) ->
+    Status = try
+	io:format("Node ~p started~n", [node()]),
+	TestNode = list_to_atom(TestNodeStr),
+	io:format("Node ~p spawning function ~p~n", [node(), FuncStr]),
+	{Pid,Ref} = spawn_monitor(?MODULE, list_to_atom(FuncStr), [TestNode, Args]),
+	io:format("Node ~p waiting for function ~p~n", [node(), FuncStr]),
+	receive
+	    {'DOWN', Ref, process, Pid, normal} ->
+		0;
+	    Other ->
+		io:format("Node ~p got unexpected msg: ~p\n",[node(), Other]),
+		1
+	end
+    catch
+	C:E:S ->
+	    io:format("Node ~p got EXCEPTION ~p:~p\nat ~p\n",
+		      [node(), C, E, S]),
+	    2
+    end,
+    io:format("Node ~p doing halt(~p).\n",[node(), Status]),
+    erlang:halt(Status).
+
+% Do the actual test on the remote node
+setopts_do(TestNode, [OptNr, ConnectData]) ->
+    [] = nodes(),
+    {Opt, Val} = opt_from_nr(OptNr),
+    ok = net_kernel:setopts(new, [{Opt, Val}]),
+
+    [] = nodes(),
+    {error, noconnection} = net_kernel:getopts(TestNode, [Opt]),
+
+    case ConnectData of
+	"ping" ->  % We connect
+	    net_adm:ping(TestNode);
+	TcpPort -> % Other connect
+	    {ok, Sock} = gen_tcp:connect("localhost", list_to_integer(TcpPort),
+					 [{active,false},{packet,2}]),
+	    ok = gen_tcp:send(Sock, "Connect please"),
+	    {ok, "Connect done"} = gen_tcp:recv(Sock, 0),
+	    gen_tcp:close(Sock)
+    end,
+    [TestNode] = nodes(),
+    {ok, [{Opt,Val}]} = net_kernel:getopts(TestNode, [Opt]),
+    {error, noconnection} = net_kernel:getopts('pixie@fairyland', [Opt]),
+
+    NewVal = change_val(Val),
+    ok = net_kernel:setopts(TestNode, [{Opt, NewVal}]),
+    {ok, [{Opt,NewVal}]} = net_kernel:getopts(TestNode, [Opt]),
+
+    ok = net_kernel:setopts(TestNode, [{Opt, Val}]),
+    {ok, [{Opt,Val}]} = net_kernel:getopts(TestNode, [Opt]),
+
+    ok.
+
+opt_from_nr("1") -> {nodelay, true};
+opt_from_nr("2") -> {nodelay, false}.
+
+change_val(true)  -> false;
+change_val(false) -> true.
+
+start_node_unconnected(DCfg, Name, Mod, Func, Args) ->
+    FullName = full_node_name(Name),
+    CmdLine = mk_node_cmdline(DCfg, Name,Mod,Func,Args),
+    io:format("Starting node ~p: ~s~n", [FullName, CmdLine]),
+    case open_port({spawn, CmdLine}, [exit_status]) of
+	Port when is_port(Port) ->
+	    {FullName, Port};
+	Error ->
+	    exit({failed_to_start_node, FullName, Error})
+    end.
+
+full_node_name(PreName) ->
+    HostSuffix = lists:dropwhile(fun ($@) -> false; (_) -> true end,
+				 atom_to_list(node())),
+    list_to_atom(atom_to_list(PreName) ++ HostSuffix).
+
+mk_node_cmdline(DCfg, Name,Mod,Func,Args) ->
+    Static = "-noinput",
+    Pa = filename:dirname(code:which(?MODULE)),
+    Prog = case catch init:get_argument(progname) of
+	       {ok,[[P]]} -> P;
+	       _ -> exit(no_progname_argument_found)
+	   end,
+    NameSw = case net_kernel:longnames() of
+		 false -> "-sname ";
+		 true -> "-name ";
+		 _ -> exit(not_distributed_node)
+	     end,
+    {ok, Pwd} = file:get_cwd(),
+    NameStr = atom_to_list(Name),
+    Prog ++ " "
+	++ Static ++ " "
+	++ NameSw ++ " " ++ NameStr
+        ++ " " ++ DCfg
+	++ " -pa " ++ Pa
+	++ " -env ERL_CRASH_DUMP " ++ Pwd ++ "/erl_crash_dump." ++ NameStr
+	++ " -setcookie " ++ atom_to_list(erlang:get_cookie())
+	++ " -run " ++ atom_to_list(Mod) ++ " " ++ atom_to_list(Func)
+	++ " " ++ string:join(Args, " ").
+
+
+%% OTP-4255.
 tick_change(Config) when is_list(Config) ->
-    ?line PaDir = filename:dirname(code:which(?MODULE)),
-    ?line [BN, CN] = get_nodenames(2, tick_change),
-    ?line DefaultTT = net_kernel:get_net_ticktime(),
-    ?line unchanged = net_kernel:set_net_ticktime(DefaultTT, 60),
-    ?line case DefaultTT of
-	      I when is_integer(I) -> ?line ok;
-	      _                 -> ?line ?t:fail(DefaultTT)
-	  end,
+    run_dist_configs(fun tick_change/2, Config).
 
-    % In case other nodes are connected
-    case nodes(connected) of
-	[] -> ?line net_kernel:set_net_ticktime(10, 0);
-	_ ->  ?line rpc:multicall(nodes([this, connected]), net_kernel,
-				  set_net_ticktime, [10, 5])
+tick_change(DCfg, _Config) ->
+    [BN, CN] = get_nodenames(2, tick_change),
+    DefaultTT = net_kernel:get_net_ticktime(),
+    unchanged = net_kernel:set_net_ticktime(DefaultTT, 60),
+    case DefaultTT of
+	I when is_integer(I) -> ok;
+	_                 -> ct:fail(DefaultTT)
     end,
 
-    ?line wait_until(fun () -> 10 == net_kernel:get_net_ticktime() end),
-    ?line {ok, B} = start_node(BN, "-kernel net_ticktime 10 -pa " ++ PaDir),
-    ?line {ok, C} = start_node(CN, "-kernel net_ticktime 10 -hidden -pa "
-			       ++ PaDir),
+    %% In case other nodes are connected
+    case nodes(connected) of
+	[] -> net_kernel:set_net_ticktime(10, 0);
+	_ ->  rpc:multicall(nodes([this, connected]), net_kernel,
+			    set_net_ticktime, [10, 5])
+    end,
 
-    ?line OTE = process_flag(trap_exit, true),
+    wait_until(fun () -> 10 == net_kernel:get_net_ticktime() end),
+    {ok, B} = start_node(DCfg, BN, "-kernel net_ticktime 10"),
+    {ok, C} = start_node(DCfg, CN, "-kernel net_ticktime 10 -hidden"),
+
+    OTE = process_flag(trap_exit, true),
     case catch begin
-		   ?line run_tick_change_test(B, C, 10, 1, PaDir),
-		   ?line run_tick_change_test(B, C, 1, 10, PaDir)
+		   run_tick_change_test(DCfg, B, C, 10, 1),
+		   run_tick_change_test(DCfg, B, C, 1, 10)
 	       end of
 	{'EXIT', Reason} ->
-	    ?line stop_node(B),
-	    ?line stop_node(C),
+	    stop_node(B),
+	    stop_node(C),
 	    %% In case other nodes are connected
 	    case nodes(connected) of
-		[] -> ?line net_kernel:set_net_ticktime(DefaultTT, 0);
-		_ ->  ?line rpc:multicall(nodes([this, connected]), net_kernel,
-					  set_net_ticktime, [DefaultTT, 10])
+		[] -> net_kernel:set_net_ticktime(DefaultTT, 0);
+		_ ->  rpc:multicall(nodes([this, connected]), net_kernel,
+				    set_net_ticktime, [DefaultTT, 10])
 	    end,
-	    ?line wait_until(fun () -> 
-				     DefaultTT == net_kernel:get_net_ticktime()
-			     end),
-	    ?line process_flag(trap_exit, OTE),
-	    ?t:fail(Reason);
+	    wait_until(fun () ->
+			       DefaultTT == net_kernel:get_net_ticktime()
+		       end),
+	    process_flag(trap_exit, OTE),
+	    ct:fail(Reason);
 	_ ->
 	    ok
     end,
-    ?line process_flag(trap_exit, OTE),
-    ?line stop_node(B),
-    ?line stop_node(C),
+    process_flag(trap_exit, OTE),
+    stop_node(B),
+    stop_node(C),
 
-    % In case other nodes are connected
+    %% In case other nodes are connected
     case nodes(connected) of
-	[] -> ?line net_kernel:set_net_ticktime(DefaultTT, 0);
-	_ ->  ?line rpc:multicall(nodes([this, connected]), net_kernel,
-				  set_net_ticktime, [DefaultTT, 5])
+	[] -> net_kernel:set_net_ticktime(DefaultTT, 0);
+	_ ->  rpc:multicall(nodes([this, connected]), net_kernel,
+			    set_net_ticktime, [DefaultTT, 5])
     end,
 
-    ?line wait_until(fun () -> DefaultTT == net_kernel:get_net_ticktime() end),
-    ?line ok.
+    wait_until(fun () -> DefaultTT == net_kernel:get_net_ticktime() end),
+    ok.
 
 
 wait_for_nodedowns(Tester, Ref) ->
     receive
 	{nodedown, Node} ->
-	    ?t:format("~p~n", [{node(), {nodedown, Node}}]),
-	    ?line Tester ! {Ref, {node(), {nodedown, Node}}}
+	    io:format("~p~n", [{node(), {nodedown, Node}}]),
+	    Tester ! {Ref, {node(), {nodedown, Node}}}
     end,
     wait_for_nodedowns(Tester, Ref).
 
-run_tick_change_test(B, C, PrevTT, TT, PaDir) ->
-    ?line [DN, EN] = get_nodenames(2, tick_change),
+run_tick_change_test(DCfg, B, C, PrevTT, TT) ->
+    [DN, EN] = get_nodenames(2, tick_change),
 
-    ?line Tester = self(),
-    ?line Ref = make_ref(),
-    ?line MonitorNodes = fun (Nodes) ->
-				 ?line lists:foreach(
-					 fun (N) ->
-						 ?line monitor_node(N,true)
-					 end,
-					 Nodes),
-				 wait_for_nodedowns(Tester, Ref)
-			 end,
+    Tester = self(),
+    Ref = make_ref(),
+    MonitorNodes = fun (Nodes) ->
+			   lists:foreach(
+			     fun (N) ->
+				     monitor_node(N,true)
+			     end,
+			     Nodes),
+			   wait_for_nodedowns(Tester, Ref)
+		   end,
 
-    ?line {ok, D} = start_node(DN, "-kernel net_ticktime "
-			       ++ integer_to_list(PrevTT) ++ " -pa " ++ PaDir),
+    {ok, D} = start_node(DCfg, DN, "-kernel net_ticktime "
+			 ++ integer_to_list(PrevTT)),
 
-    ?line NMA = spawn_link(fun () -> MonitorNodes([B, C, D]) end),
-    ?line NMB = spawn_link(B, fun () -> MonitorNodes([node(), C, D]) end),
-    ?line NMC = spawn_link(C, fun () -> MonitorNodes([node(), B, D]) end),
+    NMA = spawn_link(fun () -> MonitorNodes([B, C, D]) end),
+    NMB = spawn_link(B, fun () -> MonitorNodes([node(), C, D]) end),
+    NMC = spawn_link(C, fun () -> MonitorNodes([node(), B, D]) end),
 
-    ?line MaxTT = case PrevTT > TT of
-		      true  -> ?line PrevTT;
-		      false -> ?line TT
-		  end,
+    MaxTT = case PrevTT > TT of
+		true  -> PrevTT;
+		false -> TT
+	    end,
 
-    ?line CheckResult = make_ref(),
-    ?line spawn_link(fun () ->
-			     receive
-			     after (25 + MaxTT)*1000 ->
-				     Tester ! CheckResult
-			     end
-		     end),
+    CheckResult = make_ref(),
+    spawn_link(fun () ->
+		       receive
+		       after (25 + MaxTT)*1000 ->
+			       Tester ! CheckResult
+		       end
+	       end),
 
-    % In case other nodes than these are connected
+    %% In case other nodes than these are connected
     case nodes(connected) -- [B, C, D] of
-	[] -> ?line ok;
-	OtherNodes -> ?line rpc:multicall(OtherNodes, net_kernel,
-					  set_net_ticktime, [TT, 20])
+	[] -> ok;
+	OtherNodes -> rpc:multicall(OtherNodes, net_kernel,
+				    set_net_ticktime, [TT, 20])
     end,
 
-    ?line change_initiated = net_kernel:set_net_ticktime(TT,20),
-    ?line {ongoing_change_to,_} = net_kernel:set_net_ticktime(TT,20),
-    ?line sleep(3),
-    ?line change_initiated = rpc:call(B,net_kernel,set_net_ticktime,[TT,15]),
-    ?line sleep(7),
-    ?line change_initiated = rpc:call(C,net_kernel,set_net_ticktime,[TT,10]),
+    change_initiated = net_kernel:set_net_ticktime(TT,20),
+    {ongoing_change_to,_} = net_kernel:set_net_ticktime(TT,20),
+    sleep(3),
+    change_initiated = rpc:call(B,net_kernel,set_net_ticktime,[TT,15]),
+    sleep(7),
+    change_initiated = rpc:call(C,net_kernel,set_net_ticktime,[TT,10]),
 
-    ?line {ok, E} = start_node(EN, "-kernel net_ticktime "
-			       ++ integer_to_list(TT) ++ " -pa " ++ PaDir),
-    ?line NME  = spawn_link(E, fun () -> MonitorNodes([node(), B, C, D]) end),
-    ?line NMA2 = spawn_link(fun () -> MonitorNodes([E]) end),
-    ?line NMB2 = spawn_link(B, fun () -> MonitorNodes([E]) end),
-    ?line NMC2 = spawn_link(C, fun () -> MonitorNodes([E]) end),
+    {ok, E} = start_node(DCfg, EN, "-kernel net_ticktime "
+			 ++ integer_to_list(TT)),
+    NME  = spawn_link(E, fun () -> MonitorNodes([node(), B, C, D]) end),
+    NMA2 = spawn_link(fun () -> MonitorNodes([E]) end),
+    NMB2 = spawn_link(B, fun () -> MonitorNodes([E]) end),
+    NMC2 = spawn_link(C, fun () -> MonitorNodes([E]) end),
 
-    receive CheckResult -> ?line ok end,
+    receive CheckResult -> ok end,
 
-    ?line unlink(NMA),  exit(NMA, kill),
-    ?line unlink(NMB),  exit(NMB, kill),
-    ?line unlink(NMC),  exit(NMC, kill),
-    ?line unlink(NME),  exit(NME, kill),
-    ?line unlink(NMA2), exit(NMA2, kill),
-    ?line unlink(NMB2), exit(NMB2, kill),
-    ?line unlink(NMC2), exit(NMC2, kill),
+    unlink(NMA),  exit(NMA, kill),
+    unlink(NMB),  exit(NMB, kill),
+    unlink(NMC),  exit(NMC, kill),
+    unlink(NME),  exit(NME, kill),
+    unlink(NMA2), exit(NMA2, kill),
+    unlink(NMB2), exit(NMB2, kill),
+    unlink(NMC2), exit(NMC2, kill),
 
     %% The node not changing ticktime should have been disconnected from the
     %% other nodes
-    receive {Ref, {Node, {nodedown, D}}} when Node == node() -> ?line ok
-    after 0 -> ?line exit({?LINE, no_nodedown})
+    receive {Ref, {Node, {nodedown, D}}} when Node == node() -> ok
+    after 0 -> exit({?LINE, no_nodedown})
     end,
-    receive {Ref, {B, {nodedown, D}}} -> ?line ok
-    after 0 -> ?line exit({?LINE, no_nodedown})
+    receive {Ref, {B, {nodedown, D}}} -> ok
+    after 0 -> exit({?LINE, no_nodedown})
     end,
-    receive {Ref, {C, {nodedown, D}}} -> ?line ok
-    after 0 -> ?line exit({?LINE, no_nodedown})
+    receive {Ref, {C, {nodedown, D}}} -> ok
+    after 0 -> exit({?LINE, no_nodedown})
     end,
-    receive {Ref, {E, {nodedown, D}}} -> ?line ok
-    after 0 -> ?line exit({?LINE, no_nodedown})
+    receive {Ref, {E, {nodedown, D}}} -> ok
+    after 0 -> exit({?LINE, no_nodedown})
     end,
 
     %% No other connections should have been broken
     receive
 	{Ref, Reason} ->
-	    ?line stop_node(E),
-	    ?line exit({?LINE, Reason});
+	    stop_node(E),
+	    exit({?LINE, Reason});
 	{'EXIT', Pid, Reason} when Pid == NMA;
 				   Pid == NMB;
 				   Pid == NMC;
@@ -457,70 +804,66 @@ run_tick_change_test(B, C, PrevTT, TT, PaDir) ->
 				   Pid == NMA2;
 				   Pid == NMB2;
 				   Pid == NMC2 ->
-	    ?line stop_node(E),
+	    stop_node(E),
 
-	    ?line exit({?LINE, {node(Pid), Reason}})
+	    exit({?LINE, {node(Pid), Reason}})
     after 0 ->
-	    ?line TT = net_kernel:get_net_ticktime(),
-	    ?line TT = rpc:call(B, net_kernel, get_net_ticktime, []),
-	    ?line TT = rpc:call(C, net_kernel, get_net_ticktime, []),
-	    ?line TT = rpc:call(E, net_kernel, get_net_ticktime, []),
-	    ?line stop_node(E),
-	    ?line ok
+	    TT = net_kernel:get_net_ticktime(),
+	    TT = rpc:call(B, net_kernel, get_net_ticktime, []),
+	    TT = rpc:call(C, net_kernel, get_net_ticktime, []),
+	    TT = rpc:call(E, net_kernel, get_net_ticktime, []),
+	    stop_node(E),
+	    ok
     end.
 
 %%
 %% Basic tests of hidden node.
 %%
-hidden_node(doc) ->
-    ["Basic test of hidden node"];
-hidden_node(suite) ->
-    [];
+%% Basic test of hidden node.
 hidden_node(Config) when is_list(Config) ->
-    ?line Dog = ?t:timetrap(?t:seconds(40)),
-    PaDir = filename:dirname(code:which(?MODULE)),
-    VArgs = "-pa " ++ PaDir,
-    HArgs = "-hidden -pa " ++ PaDir,
-    ?line {ok, V} = start_node(visible_node, VArgs),
+    run_dist_configs(fun hidden_node/2, Config).
+
+hidden_node(DCfg, _Config) ->
+    HArgs = "-hidden",
+    {ok, V} = start_node(DCfg, visible_node),
     VMN = start_monitor_nodes_proc(V),
-    ?line {ok, H} = start_node(hidden_node, HArgs),
-    % Connect visible_node -> hidden_node
+    {ok, H} = start_node(DCfg, hidden_node, HArgs),
+    %% Connect visible_node -> hidden_node
     connect_nodes(V, H),
     test_nodes(V, H),
     stop_node(H),
     sleep(5),
     check_monitor_nodes_res(VMN, H),
     stop_node(V),
-    ?line {ok, H} = start_node(hidden_node, HArgs),
+    {ok, H} = start_node(DCfg, hidden_node, HArgs),
     HMN = start_monitor_nodes_proc(H),
-    ?line {ok, V} = start_node(visible_node, VArgs),
-    % Connect hidden_node -> visible_node
+    {ok, V} = start_node(DCfg, visible_node),
+    %% Connect hidden_node -> visible_node
     connect_nodes(H, V),
     test_nodes(V, H),
     stop_node(V),
     sleep(5),
     check_monitor_nodes_res(HMN, V),
     stop_node(H),
-    ?line ?t:timetrap_cancel(Dog),
     ok.
 
 connect_nodes(A, B) ->
-    % Check that they haven't already connected.
-    ?line false = lists:member(A, rpc:call(B, erlang, nodes, [connected])),
-    ?line false = lists:member(B, rpc:call(A, erlang, nodes, [connected])),
-    % Connect them.
-    ?line pong = rpc:call(A, net_adm, ping, [B]).
-    
+    %% Check that they haven't already connected.
+    false = lists:member(A, rpc:call(B, erlang, nodes, [connected])),
+    false = lists:member(B, rpc:call(A, erlang, nodes, [connected])),
+    %% Connect them.
+    pong = rpc:call(A, net_adm, ping, [B]).
+
 
 test_nodes(V, H) ->
-    % No nodes should be visible on hidden_node
-    ?line [] = rpc:call(H, erlang, nodes, []),
-    % visible_node should be hidden on hidden_node
-    ?line true = lists:member(V, rpc:call(H, erlang, nodes, [hidden])),
-    % hidden_node node shouldn't be visible on visible_node
-    ?line false = lists:member(H, rpc:call(V, erlang, nodes, [])),
-    % hidden_node should be hidden on visible_node
-    ?line true = lists:member(H, rpc:call(V, erlang, nodes, [hidden])).
+    %% No nodes should be visible on hidden_node
+    [] = rpc:call(H, erlang, nodes, []),
+    %% visible_node should be hidden on hidden_node
+    true = lists:member(V, rpc:call(H, erlang, nodes, [hidden])),
+    %% hidden_node node shouldn't be visible on visible_node
+    false = lists:member(H, rpc:call(V, erlang, nodes, [])),
+    %% hidden_node should be hidden on visible_node
+    true = lists:member(H, rpc:call(V, erlang, nodes, [hidden])).
 
 mn_loop(MNs) ->
     receive
@@ -548,21 +891,19 @@ start_monitor_nodes_proc(Node) ->
 	    ok
     end,
     Pid.
-	    
+
 
 check_monitor_nodes_res(Pid, Node) ->
     Ref = make_ref(),
     Pid ! {monitor_nodes_result, Ref, self()},
     receive
 	{Ref, MNs} ->
-	    ?line false = lists:keysearch(Node, 2, MNs)
+	    false = lists:keysearch(Node, 2, MNs)
     end.
 
 
 
-inet_dist_options_options(suite) -> [];
-inet_dist_options_options(doc) ->
-    ["Check the kernel inet_dist_{listen,connect}_options options"];
+%% Check the kernel inet_dist_{listen,connect}_options options.
 inet_dist_options_options(Config) when is_list(Config) ->
     Prio = 1,
     case gen_udp:open(0, [{priority,Prio}]) of
@@ -571,7 +912,7 @@ inet_dist_options_options(Config) when is_list(Config) ->
 		{ok,[{priority,Prio}]} ->
 		    ok = gen_udp:close(Socket),
 		    do_inet_dist_options_options(Prio);
-		      _ ->
+		_ ->
 		    ok = gen_udp:close(Socket),
 		    {skip,
 		     "Can not set priority "++integer_to_list(Prio)++
@@ -595,25 +936,25 @@ do_inet_dist_options_options(Prio) ->
 	"-hidden "
 	"-kernel inet_dist_connect_options "++PriorityString++" "
 	"-kernel inet_dist_listen_options "++PriorityString,
-    ?line {ok,Node1} =
-	start_node(inet_dist_options_1, InetDistOptions),
-    ?line {ok,Node2} =
-	start_node(inet_dist_options_2, InetDistOptions),
+    {ok,Node1} =
+	start_node("", inet_dist_options_1, InetDistOptions),
+    {ok,Node2} =
+	start_node("", inet_dist_options_2, InetDistOptions),
     %%
-    ?line pong =
+    pong =
 	rpc:call(Node1, net_adm, ping, [Node2]),
-    ?line PrioritiesNode1 =
+    PrioritiesNode1 =
 	rpc:call(Node1, ?MODULE, get_socket_priorities, []),
-    ?line PrioritiesNode2 =
+    PrioritiesNode2 =
 	rpc:call(Node2, ?MODULE, get_socket_priorities, []),
-    ?line ?t:format("PrioritiesNode1 = ~p", [PrioritiesNode1]),
-    ?line ?t:format("PrioritiesNode2 = ~p", [PrioritiesNode2]),
-    ?line Elevated = [P || P <- PrioritiesNode1, P =:= Prio],
-    ?line Elevated = [P || P <- PrioritiesNode2, P =:= Prio],
-    ?line [_|_] = Elevated,
+    io:format("PrioritiesNode1 = ~p", [PrioritiesNode1]),
+    io:format("PrioritiesNode2 = ~p", [PrioritiesNode2]),
+    Elevated = [P || P <- PrioritiesNode1, P =:= Prio],
+    Elevated = [P || P <- PrioritiesNode2, P =:= Prio],
+    [_|_] = Elevated,
     %%
-    ?line stop_node(Node2),
-    ?line stop_node(Node1),
+    stop_node(Node2),
+    stop_node(Node1),
     ok.
 
 get_socket_priorities() ->
@@ -624,185 +965,187 @@ get_socket_priorities() ->
 		element(2, erlang:port_info(Port, name)) =:= "tcp_inet"]].
 
 
-	    
+
 %%
 %% Testcase:
 %%   monitor_nodes_nodedown_reason
 %%
 
-monitor_nodes_nodedown_reason(doc) -> [];
-monitor_nodes_nodedown_reason(suite) -> [];
 monitor_nodes_nodedown_reason(Config) when is_list(Config) ->
-    ?line MonNodeState = monitor_node_state(),
-    ?line ok = net_kernel:monitor_nodes(true),
-    ?line ok = net_kernel:monitor_nodes(true, [nodedown_reason]),
+    run_dist_configs(fun monitor_nodes_nodedown_reason/2, Config).
 
-    ?line Names = get_numbered_nodenames(5, node),
-    ?line [NN1, NN2, NN3, NN4, NN5] = Names,
+monitor_nodes_nodedown_reason(DCfg, _Config) ->
+    MonNodeState = monitor_node_state(),
+    ok = net_kernel:monitor_nodes(true),
+    ok = net_kernel:monitor_nodes(true, [nodedown_reason]),
 
-    ?line {ok, N1} = start_node(NN1),
-    ?line {ok, N2} = start_node(NN2),
-    ?line {ok, N3} = start_node(NN3),
-    ?line {ok, N4} = start_node(NN4, "-hidden"),
-    
-    ?line receive {nodeup, N1} -> ok end,
-    ?line receive {nodeup, N2} -> ok end,
-    ?line receive {nodeup, N3} -> ok end,
+    Names = get_numbered_nodenames(5, node),
+    [NN1, NN2, NN3, NN4, NN5] = Names,
 
-    ?line receive {nodeup, N1, []} -> ok end,
-    ?line receive {nodeup, N2, []} -> ok end,
-    ?line receive {nodeup, N3, []} -> ok end,
+    {ok, N1} = start_node(DCfg, NN1),
+    {ok, N2} = start_node(DCfg, NN2),
+    {ok, N3} = start_node(DCfg, NN3),
+    {ok, N4} = start_node(DCfg, NN4, "-hidden"),
 
-    ?line stop_node(N1),
-    ?line stop_node(N4),
-    ?line true = net_kernel:disconnect(N2),
-    ?line TickTime = net_kernel:get_net_ticktime(),
-    ?line SleepTime = TickTime + (TickTime div 4),
-    ?line spawn(N3, fun () ->
-			    block_emu(SleepTime*1000),
-			    halt()
-		    end),
+    receive {nodeup, N1} -> ok end,
+    receive {nodeup, N2} -> ok end,
+    receive {nodeup, N3} -> ok end,
 
-    ?line receive {nodedown, N1} -> ok end,
-    ?line receive {nodedown, N2} -> ok end,
-    ?line receive {nodedown, N3} -> ok end,
+    receive {nodeup, N1, []} -> ok end,
+    receive {nodeup, N2, []} -> ok end,
+    receive {nodeup, N3, []} -> ok end,
 
-    ?line receive {nodedown, N1, [{nodedown_reason, R1}]} -> connection_closed = R1 end,
-    ?line receive {nodedown, N2, [{nodedown_reason, R2}]} -> disconnect = R2 end,
-    ?line receive {nodedown, N3, [{nodedown_reason, R3}]} -> net_tick_timeout = R3 end,
+    stop_node(N1),
+    stop_node(N4),
+    true = net_kernel:disconnect(N2),
+    TickTime = net_kernel:get_net_ticktime(),
+    SleepTime = TickTime + (TickTime div 2),
+    spawn(N3, fun () ->
+		      block_emu(SleepTime*1000),
+		      halt()
+	      end),
 
-    ?line ok = net_kernel:monitor_nodes(false, [nodedown_reason]),
+    receive {nodedown, N1} -> ok end,
+    receive {nodedown, N2} -> ok end,
+    receive {nodedown, N3} -> ok end,
 
-    ?line {ok, N5} = start_node(NN5),
-    ?line stop_node(N5),
+    receive {nodedown, N1, [{nodedown_reason, R1}]} -> connection_closed = R1 end,
+    receive {nodedown, N2, [{nodedown_reason, R2}]} -> disconnect = R2 end,
+    receive {nodedown, N3, [{nodedown_reason, R3}]} -> net_tick_timeout = R3 end,
 
-    ?line receive {nodeup, N5} -> ok end,
-    ?line receive {nodedown, N5} -> ok end,
-    ?line print_my_messages(),
-    ?line ok = check_no_nodedown_nodeup(1000),
-    ?line ok = net_kernel:monitor_nodes(false),
-    ?line MonNodeState = monitor_node_state(),
-    ?line ok.
+    ok = net_kernel:monitor_nodes(false, [nodedown_reason]),
+
+    {ok, N5} = start_node(DCfg, NN5),
+    stop_node(N5),
+
+    receive {nodeup, N5} -> ok end,
+    receive {nodedown, N5} -> ok end,
+    print_my_messages(),
+    ok = check_no_nodedown_nodeup(1000),
+    ok = net_kernel:monitor_nodes(false),
+    MonNodeState = monitor_node_state(),
+    ok.
 
 
-monitor_nodes_complex_nodedown_reason(doc) -> [];
-monitor_nodes_complex_nodedown_reason(suite) -> [];
 monitor_nodes_complex_nodedown_reason(Config) when is_list(Config) ->
-    ?line MonNodeState = monitor_node_state(),
-    ?line Me = self(),
-    ?line ok = net_kernel:monitor_nodes(true, [nodedown_reason]),
-    ?line [Name] = get_nodenames(1, monitor_nodes_complex_nodedown_reason),
-    ?line {ok, Node} = start_node(Name, ""),
-    ?line Pid = spawn(Node,
-		      fun() ->
-			      Me ! {stuff,
-				    self(),
-				    [make_ref(),
-				     {processes(), erlang:ports()}]}
-		      end),
-    ?line receive {nodeup, Node, []} -> ok end,
-    ?line {ok, NodeInfo} = net_kernel:node_info(Node),
-    ?line {value,{owner, Owner}} = lists:keysearch(owner, 1, NodeInfo),
-    ?line ComplexTerm = receive {stuff, Pid, _} = Msg ->
-				{Msg, term_to_binary(Msg)}
-			end,
-    ?line exit(Owner, ComplexTerm),
-    ?line receive
-	      {nodedown, Node, [{nodedown_reason, NodeDownReason}]} ->
-		  ?line ok
-	  end,
+    run_dist_configs(fun monitor_nodes_complex_nodedown_reason/2, Config).
+
+monitor_nodes_complex_nodedown_reason(DCfg, _Config) ->
+    MonNodeState = monitor_node_state(),
+    Me = self(),
+    ok = net_kernel:monitor_nodes(true, [nodedown_reason]),
+    [Name] = get_nodenames(1, monitor_nodes_complex_nodedown_reason),
+    {ok, Node} = start_node(DCfg, Name, ""),
+    Pid = spawn(Node,
+		fun() ->
+			Me ! {stuff,
+			      self(),
+			      [make_ref(),
+			       {processes(), erlang:ports()}]}
+		end),
+    receive {nodeup, Node, []} -> ok end,
+    {ok, NodeInfo} = net_kernel:node_info(Node),
+    {value,{owner, Owner}} = lists:keysearch(owner, 1, NodeInfo),
+    ComplexTerm = receive {stuff, Pid, _} = Msg ->
+			  {Msg, term_to_binary(Msg)}
+		  end,
+    exit(Owner, ComplexTerm),
+    receive
+	{nodedown, Node, [{nodedown_reason, NodeDownReason}]} ->
+	    ok
+    end,
     %% If the complex nodedown_reason messed something up garbage collections
     %% are likely to dump core
-    ?line garbage_collect(),
-    ?line garbage_collect(),
-    ?line garbage_collect(),
-    ?line ComplexTerm = NodeDownReason,
-    ?line ok = net_kernel:monitor_nodes(false, [nodedown_reason]),
-    ?line no_msgs(),
-    ?line MonNodeState = monitor_node_state(),
-    ?line ok.
-    
+    garbage_collect(),
+    garbage_collect(),
+    garbage_collect(),
+    ComplexTerm = NodeDownReason,
+    ok = net_kernel:monitor_nodes(false, [nodedown_reason]),
+    no_msgs(),
+    MonNodeState = monitor_node_state(),
+    ok.
 
-    
+
+
 
 %%
 %% Testcase:
 %%   monitor_nodes_node_type
 %%
 
-monitor_nodes_node_type(doc) -> [];
-monitor_nodes_node_type(suite) -> [];
 monitor_nodes_node_type(Config) when is_list(Config) ->
-    ?line MonNodeState = monitor_node_state(),
-    ?line ok = net_kernel:monitor_nodes(true),
-    ?line ok = net_kernel:monitor_nodes(true, [{node_type, all}]),
-    ?line Names = get_numbered_nodenames(9, node),
-%    ?line ?t:format("Names: ~p~n", [Names]),
-    ?line [NN1, NN2, NN3, NN4, NN5, NN6, NN7, NN8, NN9] = Names,
+    run_dist_configs(fun monitor_nodes_node_type/2, Config).
 
-    ?line {ok, N1} = start_node(NN1),
-    ?line {ok, N2} = start_node(NN2),
-    ?line {ok, N3} = start_node(NN3, "-hidden"),
-    ?line {ok, N4} = start_node(NN4, "-hidden"),
+monitor_nodes_node_type(DCfg, _Config) ->
+    MonNodeState = monitor_node_state(),
+    ok = net_kernel:monitor_nodes(true),
+    ok = net_kernel:monitor_nodes(true, [{node_type, all}]),
+    Names = get_numbered_nodenames(9, node),
+    [NN1, NN2, NN3, NN4, NN5, NN6, NN7, NN8, NN9] = Names,
 
-    ?line receive {nodeup, N1} -> ok end,
-    ?line receive {nodeup, N2} -> ok end,
-    
-    ?line receive {nodeup, N1, [{node_type, visible}]} -> ok end,
-    ?line receive {nodeup, N2, [{node_type, visible}]} -> ok end,
-    ?line receive {nodeup, N3, [{node_type, hidden}]} -> ok end,
-    ?line receive {nodeup, N4, [{node_type, hidden}]} -> ok end,
+    {ok, N1} = start_node(DCfg, NN1),
+    {ok, N2} = start_node(DCfg, NN2),
+    {ok, N3} = start_node(DCfg, NN3, "-hidden"),
+    {ok, N4} = start_node(DCfg, NN4, "-hidden"),
 
-    ?line stop_node(N1),
-    ?line stop_node(N2),
-    ?line stop_node(N3),
-    ?line stop_node(N4),
+    receive {nodeup, N1} -> ok end,
+    receive {nodeup, N2} -> ok end,
 
-    ?line receive {nodedown, N1} -> ok end,
-    ?line receive {nodedown, N2} -> ok end,
+    receive {nodeup, N1, [{node_type, visible}]} -> ok end,
+    receive {nodeup, N2, [{node_type, visible}]} -> ok end,
+    receive {nodeup, N3, [{node_type, hidden}]} -> ok end,
+    receive {nodeup, N4, [{node_type, hidden}]} -> ok end,
 
-    ?line receive {nodedown, N1, [{node_type, visible}]} -> ok end,
-    ?line receive {nodedown, N2, [{node_type, visible}]} -> ok end,
-    ?line receive {nodedown, N3, [{node_type, hidden}]} -> ok end,
-    ?line receive {nodedown, N4, [{node_type, hidden}]} -> ok end,
+    stop_node(N1),
+    stop_node(N2),
+    stop_node(N3),
+    stop_node(N4),
 
-    ?line ok = net_kernel:monitor_nodes(false, [{node_type, all}]),
-    ?line {ok, N5} = start_node(NN5),
+    receive {nodedown, N1} -> ok end,
+    receive {nodedown, N2} -> ok end,
 
-    ?line receive {nodeup, N5} -> ok end,
-    ?line stop_node(N5),
-    ?line receive {nodedown, N5} -> ok end,
+    receive {nodedown, N1, [{node_type, visible}]} -> ok end,
+    receive {nodedown, N2, [{node_type, visible}]} -> ok end,
+    receive {nodedown, N3, [{node_type, hidden}]} -> ok end,
+    receive {nodedown, N4, [{node_type, hidden}]} -> ok end,
 
-    ?line ok = net_kernel:monitor_nodes(true, [{node_type, hidden}]),
-    ?line {ok, N6} = start_node(NN6),
-    ?line {ok, N7} = start_node(NN7, "-hidden"),
+    ok = net_kernel:monitor_nodes(false, [{node_type, all}]),
+    {ok, N5} = start_node(DCfg, NN5),
+
+    receive {nodeup, N5} -> ok end,
+    stop_node(N5),
+    receive {nodedown, N5} -> ok end,
+
+    ok = net_kernel:monitor_nodes(true, [{node_type, hidden}]),
+    {ok, N6} = start_node(DCfg, NN6),
+    {ok, N7} = start_node(DCfg, NN7, "-hidden"),
 
 
-    ?line receive {nodeup, N6} -> ok end,
-    ?line receive {nodeup, N7, [{node_type, hidden}]} -> ok end,
-    ?line stop_node(N6),
-    ?line stop_node(N7),
+    receive {nodeup, N6} -> ok end,
+    receive {nodeup, N7, [{node_type, hidden}]} -> ok end,
+    stop_node(N6),
+    stop_node(N7),
 
-    ?line receive {nodedown, N6} -> ok end,
-    ?line receive {nodedown, N7, [{node_type, hidden}]} -> ok end,
+    receive {nodedown, N6} -> ok end,
+    receive {nodedown, N7, [{node_type, hidden}]} -> ok end,
 
-    ?line ok = net_kernel:monitor_nodes(true, [{node_type, visible}]),
-    ?line ok = net_kernel:monitor_nodes(false, [{node_type, hidden}]),
-    ?line ok = net_kernel:monitor_nodes(false),
+    ok = net_kernel:monitor_nodes(true, [{node_type, visible}]),
+    ok = net_kernel:monitor_nodes(false, [{node_type, hidden}]),
+    ok = net_kernel:monitor_nodes(false),
 
-    ?line {ok, N8} = start_node(NN8),
-    ?line {ok, N9} = start_node(NN9, "-hidden"),
+    {ok, N8} = start_node(DCfg, NN8),
+    {ok, N9} = start_node(DCfg, NN9, "-hidden"),
 
-    ?line receive {nodeup, N8, [{node_type, visible}]} -> ok end,
-    ?line stop_node(N8),
-    ?line stop_node(N9),
+    receive {nodeup, N8, [{node_type, visible}]} -> ok end,
+    stop_node(N8),
+    stop_node(N9),
 
-    ?line receive {nodedown, N8, [{node_type, visible}]} -> ok end,
-    ?line print_my_messages(),
-    ?line ok = check_no_nodedown_nodeup(1000),
-    ?line ok = net_kernel:monitor_nodes(false, [{node_type, visible}]),
-    ?line MonNodeState = monitor_node_state(),
-    ?line ok.
+    receive {nodedown, N8, [{node_type, visible}]} -> ok end,
+    print_my_messages(),
+    ok = check_no_nodedown_nodeup(1000),
+    ok = net_kernel:monitor_nodes(false, [{node_type, visible}]),
+    MonNodeState = monitor_node_state(),
+    ok.
 
 
 %%
@@ -810,95 +1153,95 @@ monitor_nodes_node_type(Config) when is_list(Config) ->
 %%   monitor_nodes
 %%
 
-monitor_nodes_misc(doc) -> [];
-monitor_nodes_misc(suite) -> [];
 monitor_nodes_misc(Config) when is_list(Config) ->
-    ?line MonNodeState = monitor_node_state(),
-    ?line ok = net_kernel:monitor_nodes(true),
-    ?line ok = net_kernel:monitor_nodes(true, [{node_type, all}, nodedown_reason]),
-    ?line ok = net_kernel:monitor_nodes(true, [nodedown_reason, {node_type, all}]),
-    ?line Names = get_numbered_nodenames(3, node),
-%    ?line ?t:format("Names: ~p~n", [Names]),
-    ?line [NN1, NN2, NN3] = Names,
+    run_dist_configs(fun monitor_nodes_misc/2, Config).
 
-    ?line {ok, N1} = start_node(NN1),
-    ?line {ok, N2} = start_node(NN2, "-hidden"),
+monitor_nodes_misc(DCfg, _Config) ->
+    MonNodeState = monitor_node_state(),
+    ok = net_kernel:monitor_nodes(true),
+    ok = net_kernel:monitor_nodes(true, [{node_type, all}, nodedown_reason]),
+    ok = net_kernel:monitor_nodes(true, [nodedown_reason, {node_type, all}]),
+    Names = get_numbered_nodenames(3, node),
+    [NN1, NN2, NN3] = Names,
 
-    ?line receive {nodeup, N1} -> ok end,
+    {ok, N1} = start_node(DCfg, NN1),
+    {ok, N2} = start_node(DCfg, NN2, "-hidden"),
 
-    ?line receive {nodeup, N1, [{node_type, visible}]} -> ok end,
-    ?line receive {nodeup, N1, [{node_type, visible}]} -> ok end,
-    ?line receive {nodeup, N2, [{node_type, hidden}]} -> ok end,
-    ?line receive {nodeup, N2, [{node_type, hidden}]} -> ok end,
+    receive {nodeup, N1} -> ok end,
 
-    ?line stop_node(N1),
-    ?line stop_node(N2),
+    receive {nodeup, N1, [{node_type, visible}]} -> ok end,
+    receive {nodeup, N1, [{node_type, visible}]} -> ok end,
+    receive {nodeup, N2, [{node_type, hidden}]} -> ok end,
+    receive {nodeup, N2, [{node_type, hidden}]} -> ok end,
 
-    ?line VisbleDownInfo = lists:sort([{node_type, visible},
-				       {nodedown_reason, connection_closed}]),
-    ?line HiddenDownInfo = lists:sort([{node_type, hidden},
-				       {nodedown_reason, connection_closed}]),
+    stop_node(N1),
+    stop_node(N2),
 
-    ?line receive {nodedown, N1} -> ok end,
+    VisbleDownInfo = lists:sort([{node_type, visible},
+				 {nodedown_reason, connection_closed}]),
+    HiddenDownInfo = lists:sort([{node_type, hidden},
+				 {nodedown_reason, connection_closed}]),
 
-    ?line receive {nodedown, N1, Info1A} -> VisbleDownInfo = lists:sort(Info1A) end,
-    ?line receive {nodedown, N1, Info1B} -> VisbleDownInfo = lists:sort(Info1B) end,
-    ?line receive {nodedown, N2, Info2A} -> HiddenDownInfo = lists:sort(Info2A) end,
-    ?line receive {nodedown, N2, Info2B} -> HiddenDownInfo = lists:sort(Info2B) end,
+    receive {nodedown, N1} -> ok end,
 
-    ?line ok = net_kernel:monitor_nodes(false, [{node_type, all}, nodedown_reason]),
+    receive {nodedown, N1, Info1A} -> VisbleDownInfo = lists:sort(Info1A) end,
+    receive {nodedown, N1, Info1B} -> VisbleDownInfo = lists:sort(Info1B) end,
+    receive {nodedown, N2, Info2A} -> HiddenDownInfo = lists:sort(Info2A) end,
+    receive {nodedown, N2, Info2B} -> HiddenDownInfo = lists:sort(Info2B) end,
 
-    ?line {ok, N3} = start_node(NN3),
-    ?line receive {nodeup, N3} -> ok end,
-    ?line stop_node(N3),
-    ?line receive {nodedown, N3} -> ok end,
-    ?line print_my_messages(),
-    ?line ok = check_no_nodedown_nodeup(1000),
-    ?line ok = net_kernel:monitor_nodes(false),
-    ?line MonNodeState = monitor_node_state(),
-    ?line ok.
+    ok = net_kernel:monitor_nodes(false, [{node_type, all}, nodedown_reason]),
+
+    {ok, N3} = start_node(DCfg, NN3),
+    receive {nodeup, N3} -> ok end,
+    stop_node(N3),
+    receive {nodedown, N3} -> ok end,
+    print_my_messages(),
+    ok = check_no_nodedown_nodeup(1000),
+    ok = net_kernel:monitor_nodes(false),
+    MonNodeState = monitor_node_state(),
+    ok.
 
 
-monitor_nodes_otp_6481(doc) ->
-    ["Tests that {nodeup, Node} messages are received before "
-     "messages from Node and that {nodedown, Node} messages are"
-     "received after messages from Node"];
-monitor_nodes_otp_6481(suite) ->
-    [];
+%% Tests that {nodeup, Node} messages are received before
+%% messages from Node and that {nodedown, Node} messages are
+%% received after messages from Node.
 monitor_nodes_otp_6481(Config) when is_list(Config) ->
-    ?line ?t:format("Testing nodedown...~n"),
-    ?line monitor_nodes_otp_6481_test(Config, nodedown),
-    ?line ?t:format("ok~n"),
-    ?line ?t:format("Testing nodeup...~n"),
-    ?line monitor_nodes_otp_6481_test(Config, nodeup),
-    ?line ?t:format("ok~n"),
-    ?line ok.
+    run_dist_configs(fun monitor_nodes_otp_6481/2, Config).
 
-monitor_nodes_otp_6481_test(Config, TestType) when is_list(Config) ->
-    ?line MonNodeState = monitor_node_state(),
-    ?line NodeMsg = make_ref(),
-    ?line Me = self(),
-    ?line [Name] = get_nodenames(1, monitor_nodes_otp_6481),
-    ?line case TestType of
-	      nodedown -> ?line ok = net_kernel:monitor_nodes(true);
-	      nodeup -> ?line ok
-	  end,
-    ?line Seq = lists:seq(1,10000),
-    ?line MN = spawn_link(
-		 fun () ->
-			 ?line lists:foreach(
-				 fun (_) ->
-					 ?line ok = net_kernel:monitor_nodes(true)
-				 end,
-				 Seq),
-			 ?line Me ! {mon_set, self()},
-			 ?line receive after infinity -> ok end
-		 end),
-    ?line receive {mon_set, MN} -> ok end,
-    ?line case TestType of
-	      nodedown -> ?line ok;
-	      nodeup -> ?line ok = net_kernel:monitor_nodes(true)
-	  end,
+monitor_nodes_otp_6481(DCfg, Config) ->
+    io:format("Testing nodedown...~n"),
+    monitor_nodes_otp_6481_test(DCfg, Config, nodedown),
+    io:format("ok~n"),
+    io:format("Testing nodeup...~n"),
+    monitor_nodes_otp_6481_test(DCfg, Config, nodeup),
+    io:format("ok~n"),
+    ok.
+
+monitor_nodes_otp_6481_test(DCfg, Config, TestType) when is_list(Config) ->
+    MonNodeState = monitor_node_state(),
+    NodeMsg = make_ref(),
+    Me = self(),
+    [Name] = get_nodenames(1, monitor_nodes_otp_6481),
+    case TestType of
+	nodedown -> ok = net_kernel:monitor_nodes(true);
+	nodeup -> ok
+    end,
+    Seq = lists:seq(1,10000),
+    MN = spawn_link(
+	   fun () ->
+		   lists:foreach(
+		     fun (_) ->
+			     ok = net_kernel:monitor_nodes(true)
+		     end,
+		     Seq),
+		   Me ! {mon_set, self()},
+		   receive after infinity -> ok end
+	   end),
+    receive {mon_set, MN} -> ok end,
+    case TestType of
+	nodedown -> ok;
+	nodeup -> ok = net_kernel:monitor_nodes(true)
+    end,
 
     %% Whitebox:
     %% nodedown test: Since this process was the first one monitoring
@@ -909,170 +1252,165 @@ monitor_nodes_otp_6481_test(Config, TestType) when is_list(Config) ->
     %%                on nodeup
 
     %% Verify the monitor_nodes order expected
-    ?line TestMonNodeState = monitor_node_state(),
-    %?line ?t:format("~p~n", [TestMonNodeState]),
-    ?line TestMonNodeState = 
-	MonNodeState
-	++ case TestType of
-	      nodedown -> [{self(), []}];
-	      nodeup -> []
-	   end
+    TestMonNodeState = monitor_node_state(),
+    %% io:format("~p~n", [TestMonNodeState]),
+    TestMonNodeState =
+	case TestType of
+	    nodedown -> [];
+	    nodeup -> [{self(), []}]
+	end
 	++ lists:map(fun (_) -> {MN, []} end, Seq)
 	++ case TestType of
-	      nodedown -> [];
-	      nodeup -> [{self(), []}]
-	   end,
+	       nodedown -> [{self(), []}];
+	       nodeup -> []
+	   end
+	++ MonNodeState,
 
+    {ok, Node} = start_node(DCfg, Name, "", this),
+    receive {nodeup, Node} -> ok end,
 
-    ?line {ok, Node} = start_node(Name, "", this),
-    ?line receive {nodeup, Node} -> ok end,
+    RemotePid = spawn(Node,
+		      fun () ->
+			      receive after 1500 -> ok end,
+			      %% infinite loop of msgs
+			      %% we want an endless stream of messages and the kill
+			      %% the node mercilessly.
+			      %% We then want to ensure that the nodedown message arrives
+			      %% last ... without garbage after it.
+			      _ = spawn(fun() -> node_loop_send(Me, NodeMsg, 1) end),
+			      receive {Me, kill_it} -> ok end,
+			      halt()
+		      end),
 
-    ?line RemotePid = spawn(Node,
-		fun () ->
-			receive after 1500 -> ok end,
-			% infinit loop of msgs
-			% we want an endless stream of messages and the kill
-			% the node mercilessly.
-			% We then want to ensure that the nodedown message arrives
-			% last ... without garbage after it.
-			_ = spawn(fun() -> node_loop_send(Me, NodeMsg, 1) end),
-			receive {Me, kill_it} -> ok end, 
-			halt()
-		end),
-
-    ?line net_kernel:disconnect(Node),
-    ?line receive {nodedown, Node} -> ok end,
+    net_kernel:disconnect(Node),
+    receive {nodedown, Node} -> ok end,
 
     %% Verify that '{nodeup, Node}' comes before '{NodeMsg, 1}' (the message
     %% bringing up the connection).
-    ?line no_msgs(500),
-    ?line {nodeup, Node} = receive Msg1 -> Msg1 end,
-    ?line {NodeMsg, 1}   = receive Msg2 -> Msg2 end,
-    % msg stream has begun, kill the node
-    ?line RemotePid ! {self(), kill_it},
+    {nodeup, Node} = receive Msg1 -> Msg1 end,
+    {NodeMsg, N}   = receive Msg2 -> Msg2 end,
+    %% msg stream has begun, kill the node
+    RemotePid ! {self(), kill_it},
 
     %% Verify that '{nodedown, Node}' comes after the last '{NodeMsg, N}'
     %% message.
-    ?line {nodedown, Node} = flush_node_msgs(NodeMsg, 2),
-    ?line no_msgs(500),
+    {nodedown, Node} = flush_node_msgs(NodeMsg, N+1),
+    no_msgs(500),
 
-    ?line Mon = erlang:monitor(process, MN),
-    ?line unlink(MN),
-    ?line exit(MN, bang),
-    ?line receive {'DOWN', Mon, process, MN, bang} -> ok end,
-    ?line ok = net_kernel:monitor_nodes(false),
-    ?line MonNodeState = monitor_node_state(),
-    ?line ok.
+    Mon = erlang:monitor(process, MN),
+    unlink(MN),
+    exit(MN, bang),
+    receive {'DOWN', Mon, process, MN, bang} -> ok end,
+    ok = net_kernel:monitor_nodes(false),
+    MonNodeState = monitor_node_state(),
+    ok.
 
 flush_node_msgs(NodeMsg, No) ->
     case receive Msg -> Msg end of
-	{NodeMsg, No} -> flush_node_msgs(NodeMsg, No+1);
-	OtherMsg -> OtherMsg
+	{NodeMsg, N} when N >= No ->
+	    flush_node_msgs(NodeMsg, N+1);
+	OtherMsg ->
+	    OtherMsg
     end.
 
 node_loop_send(Pid, Msg, No) ->
     Pid ! {Msg, No},
     node_loop_send(Pid, Msg, No + 1).
 
-monitor_nodes_errors(doc) ->
-    [];
-monitor_nodes_errors(suite) ->
-    [];
 monitor_nodes_errors(Config) when is_list(Config) ->
-    ?line MonNodeState = monitor_node_state(),
-    ?line error = net_kernel:monitor_nodes(asdf),
-    ?line {error,
-	   {unknown_options,
-	    [gurka]}} = net_kernel:monitor_nodes(true,
-						 [gurka]),
-    ?line {error,
-	   {options_not_a_list,
-	    gurka}} = net_kernel:monitor_nodes(true,
-					       gurka),
-    ?line {error,
-	   {option_value_mismatch,
-	    [{node_type,visible},
-	     {node_type,hidden}]}}
+    MonNodeState = monitor_node_state(),
+    error = net_kernel:monitor_nodes(asdf),
+    {error,
+     {unknown_options,
+      [gurka]}} = net_kernel:monitor_nodes(true,
+					   [gurka]),
+    {error,
+     {options_not_a_list,
+      gurka}} = net_kernel:monitor_nodes(true,
+					 gurka),
+    {error,
+     {option_value_mismatch,
+      [{node_type,visible},
+       {node_type,hidden}]}}
 	= net_kernel:monitor_nodes(true,
 				   [{node_type,hidden},
 				    {node_type,visible}]),
-    ?line {error,
-	   {option_value_mismatch,
-	    [{node_type,visible},
-	     {node_type,all}]}}
+    {error,
+     {option_value_mismatch,
+      [{node_type,visible},
+       {node_type,all}]}}
 	= net_kernel:monitor_nodes(true,
 				   [{node_type,all},
 				    {node_type,visible}]),
-    ?line {error,
-	   {bad_option_value,
-	    {node_type,
-	     blaha}}}
+    {error,
+     {bad_option_value,
+      {node_type,
+       blaha}}}
 	= net_kernel:monitor_nodes(true, [{node_type, blaha}]),
-    ?line MonNodeState = monitor_node_state(),
-    ?line ok.
+    MonNodeState = monitor_node_state(),
+    ok.
 
-monitor_nodes_combinations(doc) ->
-    [];
-monitor_nodes_combinations(suite) ->
-    [];
 monitor_nodes_combinations(Config) when is_list(Config) ->
-    ?line MonNodeState = monitor_node_state(),
-    ?line monitor_nodes_all_comb(true),
-    ?line [VisibleName, HiddenName] = get_nodenames(2,
-						    monitor_nodes_combinations),
-    ?line {ok, Visible} = start_node(VisibleName, ""),
-    ?line receive_all_comb_nodeup_msgs(visible, Visible),
-    ?line no_msgs(),
-    ?line stop_node(Visible),
-    ?line receive_all_comb_nodedown_msgs(visible, Visible, connection_closed),
-    ?line no_msgs(),
-    ?line {ok, Hidden} = start_node(HiddenName, "-hidden"),
-    ?line receive_all_comb_nodeup_msgs(hidden, Hidden),
-    ?line no_msgs(),
-    ?line stop_node(Hidden),
-    ?line receive_all_comb_nodedown_msgs(hidden, Hidden, connection_closed),
-    ?line no_msgs(),
-    ?line monitor_nodes_all_comb(false),
-    ?line MonNodeState = monitor_node_state(),
-    ?line no_msgs(),
-    ?line ok.
+    run_dist_configs(fun monitor_nodes_combinations/2, Config).
+
+monitor_nodes_combinations(DCfg, _Config) ->
+    MonNodeState = monitor_node_state(),
+    monitor_nodes_all_comb(true),
+    [VisibleName, HiddenName] = get_nodenames(2,
+					      monitor_nodes_combinations),
+    {ok, Visible} = start_node(DCfg, VisibleName, ""),
+    receive_all_comb_nodeup_msgs(visible, Visible),
+    no_msgs(),
+    stop_node(Visible),
+    receive_all_comb_nodedown_msgs(visible, Visible, connection_closed),
+    no_msgs(),
+    {ok, Hidden} = start_node(DCfg, HiddenName, "-hidden"),
+    receive_all_comb_nodeup_msgs(hidden, Hidden),
+    no_msgs(),
+    stop_node(Hidden),
+    receive_all_comb_nodedown_msgs(hidden, Hidden, connection_closed),
+    no_msgs(),
+    monitor_nodes_all_comb(false),
+    MonNodeState = monitor_node_state(),
+    no_msgs(),
+    ok.
 
 monitor_nodes_all_comb(Flag) ->
-    ?line ok = net_kernel:monitor_nodes(Flag),
-    ?line ok = net_kernel:monitor_nodes(Flag,
-					[nodedown_reason]),
-    ?line ok = net_kernel:monitor_nodes(Flag,
-					[{node_type, hidden}]),
-    ?line ok = net_kernel:monitor_nodes(Flag,
-					[{node_type, visible}]),
-    ?line ok = net_kernel:monitor_nodes(Flag,
-					[{node_type, all}]),
-    ?line ok = net_kernel:monitor_nodes(Flag,
-					[nodedown_reason,
-					 {node_type, hidden}]),
-    ?line ok = net_kernel:monitor_nodes(Flag,
-					[nodedown_reason,
-					 {node_type, visible}]),
-    ?line ok = net_kernel:monitor_nodes(Flag,
-					[nodedown_reason,
-					 {node_type, all}]),
+    ok = net_kernel:monitor_nodes(Flag),
+    ok = net_kernel:monitor_nodes(Flag,
+				  [nodedown_reason]),
+    ok = net_kernel:monitor_nodes(Flag,
+				  [{node_type, hidden}]),
+    ok = net_kernel:monitor_nodes(Flag,
+				  [{node_type, visible}]),
+    ok = net_kernel:monitor_nodes(Flag,
+				  [{node_type, all}]),
+    ok = net_kernel:monitor_nodes(Flag,
+				  [nodedown_reason,
+				   {node_type, hidden}]),
+    ok = net_kernel:monitor_nodes(Flag,
+				  [nodedown_reason,
+				   {node_type, visible}]),
+    ok = net_kernel:monitor_nodes(Flag,
+				  [nodedown_reason,
+				   {node_type, all}]),
     %% There currently are 8 different combinations
-    ?line 8.
+    8.
 
 
 receive_all_comb_nodeup_msgs(visible, Node) ->
-    ?t:format("Receive nodeup visible...~n"),
+    io:format("Receive nodeup visible...~n"),
     Exp = [{nodeup, Node},
 	   {nodeup, Node, []}]
 	++ mk_exp_mn_all_comb_nodeup_msgs_common(visible, Node),
     receive_mn_msgs(Exp),
-    ?t:format("ok~n"),
+    io:format("ok~n"),
     ok;
 receive_all_comb_nodeup_msgs(hidden, Node) ->
-    ?t:format("Receive nodeup hidden...~n"),
+    io:format("Receive nodeup hidden...~n"),
     Exp = mk_exp_mn_all_comb_nodeup_msgs_common(hidden, Node),
     receive_mn_msgs(Exp),
-    ?t:format("ok~n"),
+    io:format("ok~n"),
     ok.
 
 mk_exp_mn_all_comb_nodeup_msgs_common(Type, Node) ->
@@ -1083,20 +1421,20 @@ mk_exp_mn_all_comb_nodeup_msgs_common(Type, Node) ->
      {nodeup, Node, InfoNt}].
 
 receive_all_comb_nodedown_msgs(visible, Node, Reason) ->
-    ?t:format("Receive nodedown visible...~n"),
+    io:format("Receive nodedown visible...~n"),
     Exp = [{nodedown, Node},
 	   {nodedown, Node, [{nodedown_reason, Reason}]}]
 	++ mk_exp_mn_all_comb_nodedown_msgs_common(visible,
 						   Node,
 						   Reason),
     receive_mn_msgs(Exp),
-    ?t:format("ok~n"),
+    io:format("ok~n"),
     ok;
 receive_all_comb_nodedown_msgs(hidden, Node, Reason) ->
-    ?t:format("Receive nodedown hidden...~n"),
+    io:format("Receive nodedown hidden...~n"),
     Exp = mk_exp_mn_all_comb_nodedown_msgs_common(hidden, Node, Reason),
     receive_mn_msgs(Exp),
-    ?t:format("ok~n"),
+    io:format("ok~n"),
     ok.
 
 mk_exp_mn_all_comb_nodedown_msgs_common(Type, Node, Reason) ->
@@ -1110,83 +1448,373 @@ mk_exp_mn_all_comb_nodedown_msgs_common(Type, Node, Reason) ->
 receive_mn_msgs([]) ->
     ok;
 receive_mn_msgs(Msgs) ->
-    ?t:format("Expecting msgs: ~p~n", [Msgs]),
+    io:format("Expecting msgs: ~p~n", [Msgs]),
     receive
 	{_Dir, _Node} = Msg ->
-	    ?t:format("received ~p~n", [Msg]),
+	    io:format("received ~p~n", [Msg]),
 	    case lists:member(Msg, Msgs) of
 		true -> receive_mn_msgs(lists:delete(Msg, Msgs));
-		false -> ?t:fail({unexpected_message, Msg,
+		false -> ct:fail({unexpected_message, Msg,
 				  expected_messages, Msgs})
 	    end;
 	{Dir, Node, Info} ->
 	    Msg = {Dir, Node, lists:sort(Info)},
-	    ?t:format("received ~p~n", [Msg]),
+	    io:format("received ~p~n", [Msg]),
 	    case lists:member(Msg, Msgs) of
 		true -> receive_mn_msgs(lists:delete(Msg, Msgs));
-		false -> ?t:fail({unexpected_message, Msg,
+		false -> ct:fail({unexpected_message, Msg,
 				  expected_messages, Msgs})
 	    end;
 	Msg ->
-	    ?t:format("received ~p~n", [Msg]),
-	    ?t:fail({unexpected_message, Msg,
+	    io:format("received ~p~n", [Msg]),
+	    ct:fail({unexpected_message, Msg,
 		     expected_messages, Msgs})
     end.
 
-monitor_nodes_cleanup(doc) ->
-    [];
-monitor_nodes_cleanup(suite) ->
-    [];
 monitor_nodes_cleanup(Config) when is_list(Config) ->
-    ?line MonNodeState = monitor_node_state(),
-    ?line Me = self(),
-    ?line No = monitor_nodes_all_comb(true),
-    ?line Inf = spawn(fun () ->
-			      monitor_nodes_all_comb(true),
-			      Me ! {mons_set, self()},
-			      receive after infinity -> ok end
-		      end),
-    ?line TO = spawn(fun () ->
-			     monitor_nodes_all_comb(true),
-			     Me ! {mons_set, self()},
-			     receive after 500 -> ok end
-		     end),
-    ?line receive {mons_set, Inf} -> ok end,
-    ?line receive {mons_set, TO} -> ok end,
-    ?line MNLen = length(MonNodeState) + No*3,
-    ?line MNLen = length(monitor_node_state()),
-    ?line MonInf = erlang:monitor(process, Inf),
-    ?line MonTO = erlang:monitor(process, TO),
-    ?line exit(Inf, bang),
-    ?line No = monitor_nodes_all_comb(false),
-    ?line receive {'DOWN', MonInf, process, Inf, bang} -> ok end,
-    ?line receive {'DOWN', MonTO, process, TO, normal} -> ok end,
-    ?line MonNodeState = monitor_node_state(),
-    ?line no_msgs(),
-    ?line ok.
+    MonNodeState = monitor_node_state(),
+    Me = self(),
+    No = monitor_nodes_all_comb(true),
+    Inf = spawn(fun () ->
+			monitor_nodes_all_comb(true),
+			Me ! {mons_set, self()},
+			receive after infinity -> ok end
+		end),
+    TO = spawn(fun () ->
+		       monitor_nodes_all_comb(true),
+		       Me ! {mons_set, self()},
+		       receive after 500 -> ok end
+	       end),
+    receive {mons_set, Inf} -> ok end,
+    receive {mons_set, TO} -> ok end,
+    MNLen = length(MonNodeState) + No*3,
+    MNLen = length(monitor_node_state()),
+    MonInf = erlang:monitor(process, Inf),
+    MonTO = erlang:monitor(process, TO),
+    exit(Inf, bang),
+    No = monitor_nodes_all_comb(false),
+    receive {'DOWN', MonInf, process, Inf, bang} -> ok end,
+    receive {'DOWN', MonTO, process, TO, normal} -> ok end,
+    MonNodeState = monitor_node_state(),
+    no_msgs(),
+    ok.
 
-monitor_nodes_many(doc) ->
-    [];
-monitor_nodes_many(suite) ->
-    [];
 monitor_nodes_many(Config) when is_list(Config) ->
-    ?line MonNodeState = monitor_node_state(),
-    ?line [Name] = get_nodenames(1, monitor_nodes_many),
+    run_dist_configs(fun monitor_nodes_many/2, Config).
+
+monitor_nodes_many(DCfg, _Config) ->
+    MonNodeState = monitor_node_state(),
+    [Name] = get_nodenames(1, monitor_nodes_many),
     %% We want to perform more than 2^16 net_kernel:monitor_nodes
     %% since this will wrap an internal counter
-    ?line No = (1 bsl 16) + 17,
-    ?line repeat(fun () -> ok = net_kernel:monitor_nodes(true) end, No),
-    ?line No = length(monitor_node_state()) - length(MonNodeState),
-    ?line {ok, Node} = start_node(Name),
-    ?line repeat(fun () -> receive {nodeup, Node} -> ok end end, No),
-    ?line stop_node(Node),
-    ?line repeat(fun () -> receive {nodedown, Node} -> ok end end, No),
-    ?line ok = net_kernel:monitor_nodes(false),
-    ?line no_msgs(10),
-    ?line MonNodeState = monitor_node_state(),
-    ?line ok.
+    No = (1 bsl 16) + 17,
+    repeat(fun () -> ok = net_kernel:monitor_nodes(true) end, No),
+    No = length(monitor_node_state()) - length(MonNodeState),
+    {ok, Node} = start_node(DCfg, Name),
+    repeat(fun () -> receive {nodeup, Node} -> ok end end, No),
+    stop_node(Node),
+    repeat(fun () -> receive {nodedown, Node} -> ok end end, No),
+    ok = net_kernel:monitor_nodes(false),
+    no_msgs(10),
+    MonNodeState = monitor_node_state(),
+    ok.
+
+%% Test order of messages nodedown and nodeup.
+monitor_nodes_down_up(Config) when is_list(Config) ->
+    [An] = get_nodenames(1, monitor_nodeup),
+    {ok, A} = ct_slave:start(An),
+
+    try
+        monitor_nodes_yoyo(A)
+    after
+        catch ct_slave:stop(A)
+    end.
+
+monitor_nodes_yoyo(A) ->
+    net_kernel:monitor_nodes(true),
+    Papa = self(),
+
+    %% Spawn lots of processes doing one erlang:monitor_node(A,true) each
+    %% just to get lots of other monitors to fire when connection goes down
+    %% and thereby give time for {nodeup,A} to race before {nodedown,A}.
+    NodeMonCnt = 10000,
+    NodeMons = [my_spawn_opt(fun F() ->
+                                     monitor_node = receive_any(),
+                                     monitor_node(A, true),
+                                     Papa ! ready,
+                                     {nodedown, A} =  receive_any(),
+                                     F()
+                             end,
+                             [link, monitor, {priority, low}])
+                ||
+                   _ <- lists:seq(1, NodeMonCnt)],
+
+    %% Spawn message spamming process to trigger new connection setups
+    %% as quick as possible.
+    Spammer = my_spawn_opt(fun F() ->
+                                   {dummy, A} ! trigger_auto_connect,
+                                   F()
+                           end,
+                           [link, monitor]),
+
+    %% Now bring connection down and verify we get {nodedown,A} before {nodeup,A}.
+    Yoyos = 20,
+    [begin
+         [P ! monitor_node || P <- NodeMons],
+         [receive ready -> ok end || _ <- NodeMons],
+
+         Owner = get_conn_owner(A),
+         exit(Owner, kill),
+
+         {nodedown, A} = receive_any(),
+         {nodeup, A} = receive_any()
+     end
+     || _ <- lists:seq(1,Yoyos)],
+
+    unlink(Spammer),
+    exit(Spammer, die),
+    receive {'DOWN',_,process,Spammer,_} -> ok end,
+
+    [begin unlink(P), exit(P, die) end || P <- NodeMons],
+    [receive {'DOWN',_,process,P,_} -> ok end || P <- NodeMons],
+
+    net_kernel:monitor_nodes(false),
+    ok.
+
+receive_any() ->
+    receive_any(infinity).
+
+receive_any(Timeout) ->
+    receive
+        M -> M
+    after
+        Timeout -> timeout
+    end.
+
+my_spawn_opt(Fun, Opts) ->
+    case spawn_opt(Fun, Opts) of
+        {Pid, _Mref} -> Pid;
+        Pid -> Pid
+    end.
+
+get_conn_owner(Node) ->
+    {ok, NodeInfo} = net_kernel:node_info(Node),
+    {value,{owner, Owner}} = lists:keysearch(owner, 1, NodeInfo),
+    Owner.
+
+dist_ctrl_proc_smoke(Config) when is_list(Config) ->
+    dist_ctrl_proc_test(get_nodenames(2, ?FUNCTION_NAME)).
+
+dist_ctrl_proc_reject(Config) when is_list(Config) ->
+    ToReject = combinations(dist_util:rejectable_flags()),
+    lists:map(fun(Flags) ->
+                      ct:log("Try to reject ~p",[Flags]),
+                      dist_ctrl_proc_test(get_nodenames(2, ?FUNCTION_NAME),
+                        "-gen_tcp_dist_reject_flags " ++ integer_to_list(Flags))
+              end, ToReject).
+
+combinations([H | T]) ->
+    lists:flatten([[(1 bsl H) bor C || C <- combinations(T)] | combinations(T)]);
+combinations([]) ->
+    [0];
+combinations(BitField) ->
+    lists:sort(combinations(bits(BitField, 0))).
+
+bits(0, _) ->
+    [];
+bits(BitField, Cnt) when BitField band 1 == 1 ->
+    [Cnt | bits(BitField bsr 1, Cnt + 1)];
+bits(BitField, Cnt) ->
+    bits(BitField bsr 1, Cnt + 1).
+
+dist_ctrl_proc_test(Nodes) ->
+    dist_ctrl_proc_test(Nodes,"").
+
+dist_ctrl_proc_test([Name1,Name2], Extra) ->
+    ThisNode = node(),
+    GenTcpOptProlog = "-proto_dist gen_tcp "
+        "-gen_tcp_dist_output_loop " ++ atom_to_list(?MODULE) ++ " " ++
+        "dist_cntrlr_output_test_size " ++ Extra,
+    {ok, Node1} = start_node("", Name1, "-proto_dist gen_tcp"),
+    {ok, Node2} = start_node("", Name2, GenTcpOptProlog),
+    NL = lists:sort([ThisNode, Node1, Node2]),
+    wait_until(fun () ->
+                       NL == lists:sort([node()|nodes()])
+               end),
+    wait_until(fun () ->
+                       NL == lists:sort([rpc:call(Node1,erlang, node, [])
+                                         | rpc:call(Node1, erlang, nodes, [])])
+               end),
+    wait_until(fun () ->
+                       NL == lists:sort([rpc:call(Node2,erlang, node, [])
+                                         | rpc:call(Node2, erlang, nodes, [])])
+               end),
+
+    smoke_communicate(Node1, gen_tcp_dist, dist_cntrlr_output_loop),
+    smoke_communicate(Node2, erl_distribution_SUITE, dist_cntrlr_output_loop_size),
+
+    stop_node(Node1),
+    stop_node(Node2),
+    ok.
+
+smoke_communicate(Node, OLoopMod, OLoopFun) ->
+    %% Verify that we actually are executing the distribution
+    %% module we expect and also massage message passing over
+    %% the connection a bit...
+    Ps = rpc:call(Node, erlang, processes, []),
+    try
+        lists:foreach(
+          fun (P) ->
+                  case rpc:call(Node, erlang, process_info, [P, current_stacktrace]) of
+                      undefined ->
+                          ok;
+                      {current_stacktrace, StkTrace} ->
+                          lists:foreach(fun ({Mod, Fun, 2, _}) when Mod == OLoopMod,
+                                                                    Fun == OLoopFun ->
+                                                io:format("~p ~p~n", [P, StkTrace]),
+                                                throw(found_it);
+                                            (_) ->
+                                                ok
+                                        end, StkTrace)
+                  end
+          end, Ps),
+        exit({missing, {OLoopMod, OLoopFun}})
+    catch
+        throw:found_it -> ok
+    end,
+    Bin = list_to_binary(lists:duplicate(1000,100)),
+    BitStr = <<0:7999>>,
+    List = [[Bin], atom, [BitStr|Bin], make_ref(), [[[BitStr|"hopp"]]],
+            4711, 111122222211111111111111,"hej", fun () -> ok end, BitStr,
+            self(), fun erlang:node/1],
+    Pid = spawn_link(Node, fun () -> receive {From1, Msg1} -> From1 ! Msg1 end,
+                                     receive {From2, Msg2} -> From2 ! Msg2 end
+                           end),
+    R = make_ref(),
+    Pid ! {self(), [R, List]},
+    receive [R, L1] -> List = L1 end,
+
+    %% Send a huge message in order to trigger message fragmentation if enabled
+    FragBin = <<0:(2*(1024*64*8))>>,
+    Pid ! {self(), [R, List, FragBin]},
+    receive [R, L2, B] -> List = L2, FragBin = B end,
+
+    unlink(Pid),
+    exit(Pid, kill),
+    ok.
 
 %% Misc. functions
+
+run_dist_configs(Func, Config) ->
+    GetOptProlog = "-proto_dist gen_tcp -gen_tcp_dist_output_loop "
+        ++ atom_to_list(?MODULE) ++ " ",
+    GenTcpDistTest = case get_gen_tcp_dist_test_type() of
+                         default ->
+                             {"gen_tcp_dist", "-proto_dist gen_tcp"};
+                         size ->
+                             {"gen_tcp_dist (get_size)",
+                              GetOptProlog ++ "dist_cntrlr_output_test_size"}
+                     end,
+    lists:map(fun ({DCfgName, DCfg}) ->
+                      io:format("~n~n=== Running ~s configuration ===~n~n",
+                                [DCfgName]),
+                      Func(DCfg, Config)
+              end,
+              [{"default", ""}, GenTcpDistTest]).
+
+start_gen_tcp_dist_test_type_server() ->
+    Me = self(),
+    Go = make_ref(),
+    io:format("STARTING: gen_tcp_dist_test_type_server~n",[]),
+    {P, M} = spawn_monitor(fun () ->
+                                   register(gen_tcp_dist_test_type_server, self()),
+                                   Me ! Go,
+                                   gen_tcp_dist_test_type_server()
+                           end),
+    receive
+        Go ->
+            ok;
+        {'DOWN', M, process, P, _} ->
+            start_gen_tcp_dist_test_type_server()
+    end.
+
+kill_gen_tcp_dist_test_type_server() ->
+    case whereis(gen_tcp_dist_test_type_server) of
+        undefined ->
+            ok;
+        Pid ->
+            exit(Pid,kill),
+            %% Sync death, before continuing...
+            false = erlang:is_process_alive(Pid)
+    end.
+
+gen_tcp_dist_test_type_server() ->
+    Type = case abs(erlang:monotonic_time(second)) rem 2 of
+               0 -> default;
+               1 -> size
+           end,
+    gen_tcp_dist_test_type_server(Type).
+
+gen_tcp_dist_test_type_server(Type) ->
+    receive
+        {From, Ref} ->
+            From ! {Ref, Type},
+            NewType = case Type of
+                          default -> size;
+                          size -> default
+                      end,
+            gen_tcp_dist_test_type_server(NewType)
+    end.
+
+get_gen_tcp_dist_test_type() ->
+    Ref = make_ref(),
+    try
+        gen_tcp_dist_test_type_server ! {self(), Ref},
+        receive
+            {Ref, Type} ->
+                Type
+        end
+    catch
+        error:badarg ->
+            start_gen_tcp_dist_test_type_server(),
+            get_gen_tcp_dist_test_type()
+    end.
+
+dist_cntrlr_output_test_size(DHandle, Socket) ->
+    false = erlang:dist_ctrl_get_opt(DHandle, get_size),
+    false = erlang:dist_ctrl_set_opt(DHandle, get_size, true),
+    true = erlang:dist_ctrl_get_opt(DHandle, get_size),
+    true = erlang:dist_ctrl_set_opt(DHandle, get_size, false),
+    false = erlang:dist_ctrl_get_opt(DHandle, get_size),
+    false = erlang:dist_ctrl_set_opt(DHandle, get_size, true),
+    true = erlang:dist_ctrl_get_opt(DHandle, get_size),
+    dist_cntrlr_output_loop_size(DHandle, Socket).
+
+dist_cntrlr_output_loop_size(DHandle, Socket) ->
+    receive
+        dist_data ->
+            %% Outgoing data from this node...
+            dist_cntrlr_send_data_size(DHandle, Socket);
+        _ ->
+            ok %% Drop garbage message...
+    end,
+    dist_cntrlr_output_loop_size(DHandle, Socket).
+
+dist_cntrlr_send_data_size(DHandle, Socket) ->
+    case erlang:dist_ctrl_get_data(DHandle) of
+        none ->
+            erlang:dist_ctrl_get_data_notification(DHandle);
+        {Size, Data} ->
+            ok = ensure_iovec(Data),
+            Size = erlang:iolist_size(Data),
+            ok = gen_tcp:send(Socket, Data),
+            dist_cntrlr_send_data_size(DHandle, Socket)
+    end.
+
+ensure_iovec([]) ->
+    ok;
+ensure_iovec([X|Y]) when is_binary(X) ->
+    ensure_iovec(Y).
 
 monitor_node_state() ->
     erts_debug:set_internal_state(available_internal_state, true),
@@ -1196,59 +1824,45 @@ monitor_node_state() ->
 
 
 check_no_nodedown_nodeup(TimeOut) ->
-    ?line receive
-	      {nodeup, _, _} = Msg -> ?line ?t:fail({unexpected_nodeup, Msg});
-	      {nodeup, _} = Msg -> ?line ?t:fail({unexpected_nodeup, Msg});
-	      {nodedown, _, _} = Msg -> ?line ?t:fail({unexpected_nodedown, Msg});
-	      {nodedown, _} = Msg -> ?line ?t:fail({unexpected_nodedown, Msg})
-	  after TimeOut ->
-		  ok
-	  end.
+    receive
+	{nodeup, _, _} = Msg -> ct:fail({unexpected_nodeup, Msg});
+	{nodeup, _} = Msg -> ct:fail({unexpected_nodeup, Msg});
+	{nodedown, _, _} = Msg -> ct:fail({unexpected_nodedown, Msg});
+	{nodedown, _} = Msg -> ct:fail({unexpected_nodedown, Msg})
+    after TimeOut ->
+	    ok
+    end.
 
 print_my_messages() ->
-    ?line {messages, Messages} = process_info(self(), messages),
-    ?line ?t:format("Messages: ~p~n", [Messages]),
-    ?line ok.
+    {messages, Messages} = process_info(self(), messages),
+    io:format("Messages: ~p~n", [Messages]),
+    ok.
 
 
 sleep(T) -> receive after T * 1000 -> ok end.	
 
-start_node(Name, Param, this) ->
+start_node(_DCfg, Name, Param, this) ->
     NewParam = Param ++ " -pa " ++ filename:dirname(code:which(?MODULE)),
-    ?t:start_node(Name, peer, [{args, NewParam}, {erl, [this]}]);
-start_node(Name, Param, "this") ->
-    NewParam = Param ++ " -pa " ++ filename:dirname(code:which(?MODULE)),
-    ?t:start_node(Name, peer, [{args, NewParam}, {erl, [this]}]);
-start_node(Name, Param, Rel) when is_atom(Rel) ->
-    NewParam = Param ++ " -pa " ++ filename:dirname(code:which(?MODULE)),
-    ?t:start_node(Name, peer, [{args, NewParam}, {erl, [{release, atom_to_list(Rel)}]}]);
-start_node(Name, Param, Rel) when is_list(Rel) ->
-    NewParam = Param ++ " -pa " ++ filename:dirname(code:which(?MODULE)),
-    ?t:start_node(Name, peer, [{args, NewParam}, {erl, [{release, Rel}]}]).
+    test_server:start_node(Name, peer, [{args, NewParam}, {erl, [this]}]);
+start_node(DCfg, Name, Param, "this") ->
+    NewParam = Param ++ " -pa " ++ filename:dirname(code:which(?MODULE)) ++ " " ++ DCfg,
+    test_server:start_node(Name, peer, [{args, NewParam}, {erl, [this]}]);
+start_node(DCfg, Name, Param, Rel) when is_atom(Rel) ->
+    NewParam = Param ++ " -pa " ++ filename:dirname(code:which(?MODULE)) ++ " " ++ DCfg,
+    test_server:start_node(Name, peer, [{args, NewParam}, {erl, [{release, atom_to_list(Rel)}]}]);
+start_node(DCfg, Name, Param, Rel) when is_list(Rel) ->
+    NewParam = Param ++ " -pa " ++ filename:dirname(code:which(?MODULE)) ++ " " ++ DCfg,
+    test_server:start_node(Name, peer, [{args, NewParam}, {erl, [{release, Rel}]}]).
 
-start_node(Name, Param) ->
-    NewParam = Param ++ " -pa " ++ filename:dirname(code:which(?MODULE)),
-    ?t:start_node(Name, slave, [{args, NewParam}]).
-%    M = list_to_atom(from($@, atom_to_list(node()))),
-%    slave:start_link(M, Name, Param).
+start_node(DCfg, Name, Param) ->
+    NewParam = Param ++ " -pa " ++ filename:dirname(code:which(?MODULE)) ++ " " ++ DCfg,
+    test_server:start_node(Name, slave, [{args, NewParam}]).
 
-start_node(Name) ->
-    start_node(Name, "").
+start_node(DCfg, Name) ->
+    start_node(DCfg, Name, "").
 
 stop_node(Node) ->
-    ?t:stop_node(Node).
-%    erlang:monitor_node(Node, true),
-%    rpc:cast(Node, init, stop, []),
-%    receive
-%	{nodedown, Node} ->
-%	    ok
-%    after 10000 ->
-%	    test_server:fail({stop_node, Node})
-%    end.
-
-% from(H, [H | T]) -> T;
-% from(H, [_ | T]) -> from(H, T);
-% from(H, []) -> [].
+    test_server:stop_node(Node).
 
 get_nodenames(N, T) ->
     get_nodenames(N, T, []).
@@ -1305,3 +1919,5 @@ block_emu(Ms) ->
     Res = erts_debug:set_internal_state(block, Ms),
     erts_debug:set_internal_state(available_internal_state, false),
     Res.
+
+    

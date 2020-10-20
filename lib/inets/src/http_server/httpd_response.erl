@@ -1,7 +1,7 @@
 %%
 %% %CopyrightBegin%
 %% 
-%% Copyright Ericsson AB 1997-2015. All Rights Reserved.
+%% Copyright Ericsson AB 1997-2018. All Rights Reserved.
 %% 
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -19,17 +19,21 @@
 %%
 %%
 -module(httpd_response).
--export([generate_and_send_response/1, send_status/3, send_header/3, 
-	 send_body/3, send_chunk/3, send_final_chunk/2, split_header/2,
-	 is_disable_chunked_send/1, cache_headers/2]).
+-export([generate_and_send_response/1, send_status/3, send_status/4, send_header/3, 
+	 send_body/3, send_chunk/3, send_final_chunk/2, send_final_chunk/3, 
+	 split_header/2, is_disable_chunked_send/1, cache_headers/2, handle_continuation/1]).
 -export([map_status_code/2]).
 
 -include_lib("inets/src/inets_app/inets_internal.hrl").
 -include_lib("inets/include/httpd.hrl").
 -include_lib("inets/src/http_lib/http_internal.hrl").
 -include_lib("inets/src/http_server/httpd_internal.hrl").
+-include_lib("kernel/include/logger.hrl").
 
 -define(VMODULE,"RESPONSE").
+
+handle_continuation(Mod) ->
+    generate_and_send_response(Mod).
 
 %% If peername does not exist the client already discarded the
 %% request so we do not need to send a reply.
@@ -39,11 +43,13 @@ generate_and_send_response(#mod{init_data =
 generate_and_send_response(#mod{config_db = ConfigDB} = ModData) ->
     Modules = httpd_util:lookup(ConfigDB, modules, ?DEFAULT_MODS),
     case traverse_modules(ModData, Modules) of
+        {continue, _} = Continue ->
+            Continue;
 	done ->
 	    ok;
 	{proceed, Data} ->
 	    case proplists:get_value(status, Data) of
-		{StatusCode, PhraseArgs, _Reason} ->
+		{StatusCode, PhraseArgs, _Reason} ->                                   
 		    send_status(ModData, StatusCode, PhraseArgs),
 		    ok;		
 		undefined ->
@@ -56,8 +62,12 @@ generate_and_send_response(#mod{config_db = ConfigDB} = ModData) ->
 			{StatusCode, Response} ->   %% Old way
 			    send_response_old(ModData, StatusCode, Response),
 			    ok;
-			undefined ->
-			    send_status(ModData, 500, none),
+			undefined -> 
+                            %% Happens when no mod_* 
+                            %% handles the request
+			    send_status(ModData, 501, {ModData#mod.method,
+                                                       ModData#mod.request_uri,
+                                                       ModData#mod.http_version}),
 			    ok
 		    end
 	    end
@@ -69,28 +79,23 @@ generate_and_send_response(#mod{config_db = ConfigDB} = ModData) ->
 traverse_modules(ModData,[]) ->
   {proceed,ModData#mod.data};
 traverse_modules(ModData,[Module|Rest]) ->
-    ?hdrd("traverse modules", [{callback_module, Module}]), 
     try apply(Module, do, [ModData]) of
+        {continue, _} = Continue ->
+            Continue;
 	done ->
-	    ?hdrt("traverse modules - done", []), 
-	    done;
+            done;
 	{break, NewData} ->
-	    ?hdrt("traverse modules - break", [{new_data, NewData}]), 
-	    {proceed, NewData};
+            {proceed, NewData};
 	{proceed, NewData} ->
-	    ?hdrt("traverse modules - proceed", [{new_data, NewData}]), 
-	    traverse_modules(ModData#mod{data = NewData}, Rest)
+            traverse_modules(ModData#mod{data = NewData}, Rest)
     catch 
-	T:E ->
-	    String = 
-		lists:flatten(
-		  io_lib:format("module traverse failed: ~p:do => "
-				"~n   Error Type:  ~p"
-				"~n   Error:       ~p"
-				"~n   Stack trace: ~p",
-				[Module, T, E, ?STACK()])),
-	    report_error(mod_log, ModData#mod.config_db, String),
-	    report_error(mod_disk_log, ModData#mod.config_db, String),
+	T:E:Stacktrace ->
+	    httpd_util:error_log(ModData#mod.config_db,  
+                                 httpd_logger:error_report('HTTP',
+                                                           [{module, Module}, 
+                                                            {class, T},
+                                                            {error, E}, 
+                                                            {stacktrace, Stacktrace}], ModData, ?LOCATION)),
 	    send_status(ModData, 500, none),
 	    done
     end.
@@ -101,23 +106,36 @@ traverse_modules(ModData,[Module|Rest]) ->
 send_status(ModData, 100, _PhraseArgs) ->
     send_header(ModData, 100, [{content_length, "0"}]);
 
+send_status(ModData, StatusCode, PhraseArgs) ->
+    send_status(ModData, StatusCode, PhraseArgs, undefined).
+
 send_status(#mod{socket_type = SocketType, 
 		 socket      = Socket, 
-		 config_db   = ConfigDB} = ModData, StatusCode, PhraseArgs) ->
-
-    ?hdrd("send status", [{status_code, StatusCode}, 
-			  {phrase_args, PhraseArgs}]), 
+		 config_db   = ConfigDB} = ModData, StatusCode, PhraseArgs, Details) ->
 
     ReasonPhrase = httpd_util:reason_phrase(StatusCode),
     Message      = httpd_util:message(StatusCode, PhraseArgs, ConfigDB),
     Body         = get_body(ReasonPhrase, Message),
 
-    ?hdrt("send status - header", [{reason_phrase, ReasonPhrase}, 
-     				   {message,       Message}]), 
     send_header(ModData, StatusCode, 
 		[{content_type,   "text/html"},
 		 {content_length, integer_to_list(length(Body))}]),
 
+    if StatusCode >= 400 ->
+            case Details of
+                undefined ->
+                    httpd_util:error_log(ConfigDB, httpd_logger:error_report('HTTP', 
+                                                                   [{statuscode, StatusCode}, {description, ReasonPhrase}], 
+                                                                   ModData, ?LOCATION));
+                _ ->
+                    httpd_util:error_log(ConfigDB, httpd_logger:error_report('HTTP', 
+                                                                   [{statuscode,StatusCode}, {description, ReasonPhrase}, 
+                                                                    {details, Details}], ModData, 
+                                                                   ?LOCATION))
+            end;
+       true ->
+            ok
+    end,  
     httpd_socket:deliver(SocketType, Socket, Body).
 
 
@@ -245,7 +263,6 @@ send_chunk(_, <<>>, _) ->
     ok;
 send_chunk(_, [], _) ->
     ok;
-
 send_chunk(#mod{http_version = "HTTP/1.1", 
 		socket_type = Type, socket = Sock}, Response0, false) ->
     Response = http_chunk:encode(Response0),
@@ -254,10 +271,13 @@ send_chunk(#mod{http_version = "HTTP/1.1",
 send_chunk(#mod{socket_type = Type, socket = Sock} = _ModData, Response, _) ->
     httpd_socket:deliver(Type, Sock, Response).
 
+send_final_chunk(Mod, IsDisableChunkedSend) ->
+    send_final_chunk(Mod, [], IsDisableChunkedSend).
+
 send_final_chunk(#mod{http_version = "HTTP/1.1", 
-		      socket_type = Type, socket = Sock}, false) ->
-    httpd_socket:deliver(Type, Sock, http_chunk:encode_last());
-send_final_chunk(#mod{socket_type = Type, socket = Sock}, _) ->
+		      socket_type = Type, socket = Sock}, Trailers, false) ->
+    httpd_socket:deliver(Type, Sock, http_chunk:encode_last(Trailers));
+send_final_chunk(#mod{socket_type = Type, socket = Sock}, _, _) ->
     httpd_socket:close(Type, Sock).
 
 is_disable_chunked_send(Db) ->
@@ -287,14 +307,21 @@ create_header(ConfigDb, KeyValueTupleHeaders) ->
     Date        = httpd_util:rfc1123_date(), 
     ContentType = "text/html", 
     Server      = server(ConfigDb),
-    Headers0  = add_default_headers([{"date",         Date},
-				     {"content-type", ContentType}
-				     | if Server=="" -> [];
-					  true -> [{"server",       Server}]
-				       end
-				    ], 
-				    KeyValueTupleHeaders),
     CustomizeCB = httpd_util:lookup(ConfigDb, customize, httpd_custom),
+
+    CustomDefaults = httpd_custom:response_default_headers(CustomizeCB),
+    SystemDefaultes = ([{"date", Date},
+			{"content-type", ContentType}
+			| if Server=="" -> [];
+			     true -> [{"server", Server}]
+			  end
+		       ]),
+
+    %% System defaults not present in custom defaults will be added
+    %% to defaults    
+    Defaults = add_default_headers(SystemDefaultes, CustomDefaults),
+    
+    Headers0 = add_default_headers(Defaults, KeyValueTupleHeaders),
     lists:filtermap(fun(H) ->
 			    httpd_custom:customize_headers(CustomizeCB, response_header, H)
 		    end,
@@ -382,23 +409,12 @@ send_response_old(#mod{socket_type = Type,
 	    send_header(ModData, StatusCode, [{content_length,
 					       content_length(NewResponse)}]),
 	    httpd_socket:deliver(Type, Sock, NewResponse);
-
-	{error, _Reason} ->
+	_ ->
 	    send_status(ModData, 500, "Internal Server Error")
     end.
 
 content_length(Body)->
     integer_to_list(httpd_util:flatlength(Body)).
-
-report_error(Mod, ConfigDB, Error) ->
-    Modules = httpd_util:lookup(ConfigDB, modules,
-				[mod_get, mod_head, mod_log]),
-    case lists:member(Mod, Modules) of
-	true ->
-	    Mod:report_error(ConfigDB, Error);
-	_ ->
-	    ok
-    end.
 
 handle_headers([], NewHeaders) ->
     {ok, NewHeaders};

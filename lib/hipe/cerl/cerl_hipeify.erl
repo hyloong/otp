@@ -1,8 +1,3 @@
-%%
-%% %CopyrightBegin%
-%% 
-%% Copyright Ericsson AB 2003-2012. All Rights Reserved.
-%% 
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
 %% You may obtain a copy of the License at
@@ -14,11 +9,9 @@
 %% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 %% See the License for the specific language governing permissions and
 %% limitations under the License.
-%% 
-%% %CopyrightEnd%
 %%
-%% @author Richard Carlsson <richardc@it.uu.se>
 %% @copyright 2000-2004 Richard Carlsson
+%% @author Richard Carlsson <carlsson.richard@gmail.com>
 %% @doc HiPE-ification of Core Erlang code. Prepares Core Erlang code
 %% for translation to ICode.
 %% @see cerl_to_icode
@@ -623,12 +616,12 @@ ren__map(Key, Ren) ->
 %% ---------------------------------------------------------------------
 %% State
 
-%% pmatch = 'true' | 'false' | 'no_duplicates' | 'duplicate_all'
+-type pmatch() :: 'true' | 'false' | 'no_duplicates' | 'duplicate_all'.
 
--record(state, {module::atom(),
-		function::{atom(), 0..256},
-		pmatch=true,
-		revisit = false}).
+-record(state, {module          :: module(),
+		function        :: {atom(), arity()} | 'undefined',
+		pmatch = true   :: pmatch(),
+		revisit = false :: boolean()}).
 
 s__new(Module) ->
     #state{module = Module}.

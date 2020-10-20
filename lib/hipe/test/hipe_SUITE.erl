@@ -16,11 +16,12 @@
 %%
 -module(hipe_SUITE).
 
--compile([export_all]).
--include_lib("common_test/include/ct.hrl").
+-export([all/0, groups/0,
+	 init_per_suite/1, end_per_suite/1,
+	 init_per_group/2, end_per_group/2,
+	 app/0, app/1, appup/0, appup/1]).
 
-suite() ->
-    [{ct_hooks, [ts_install_cth]}].
+-include_lib("common_test/include/ct.hrl").
 
 all() ->
     [app, appup].

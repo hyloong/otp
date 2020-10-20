@@ -1,7 +1,7 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 1997-2014. All Rights Reserved.
+%% Copyright Ericsson AB 1997-2017. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -31,10 +31,13 @@
 	 convert_netscapecookie_date/1, enable_debug/1, valid_options/3,
 	 modules_validate/1, module_validate/1, 
 	 dir_validate/2, file_validate/2, mime_type_validate/1, 
-	 mime_types_validate/1, custom_date/0]).
+	 mime_types_validate/1, custom_date/0, error_log/2]).
 
+-compile({nowarn_deprecated_function, [{http_uri, encode, 1}]}).
+-compile({nowarn_deprecated_function, [{http_uri, decode, 1}]}).
 -export([encode_hex/1, decode_hex/1]).
 -include_lib("kernel/include/file.hrl").
+-include_lib("inets/include/httpd.hrl").
 
 ip_address({_,_,_,_} = Address, _IpFamily) ->
     {ok, Address};
@@ -42,17 +45,7 @@ ip_address({_,_,_,_,_,_,_,_} = Address, _IpFamily) ->
     {ok, Address};
 ip_address(Host, IpFamily) 
   when ((IpFamily =:= inet) orelse (IpFamily =:= inet6)) ->
-    inet:getaddr(Host, IpFamily);
-ip_address(Host, inet6fb4 = _IpFamily) ->
-    Inet = case gen_tcp:listen(0, [inet6]) of
-	       {ok, Dummyport} ->
-		   gen_tcp:close(Dummyport),
-		   inet6;
-	       _ ->
-		   inet
-	   end,
-    inet:getaddr(Host, Inet).
-
+    inet:getaddr(Host, IpFamily).
 
 %% lookup
 
@@ -176,7 +169,7 @@ reason_phrase(_) -> "Internal Server Error".
 %% message
 
 message(301,URL,_) ->
-    "The document has moved <A HREF=\""++ maybe_encode(URL) ++"\">here</A>.";
+    "The document has moved <A HREF=\""++ html_encode(URL) ++"\">here</A>.";
 message(304, _URL,_) ->
     "The document has not been changed.";
 message(400, none, _) ->
@@ -193,11 +186,11 @@ browser doesn't understand how to supply
 the credentials required.";
 message(403,RequestURI,_) ->
     "You don't have permission to access " ++ 
-	html_encode(RequestURI) ++ 
+	html_encode(RequestURI) ++
 	" on this server.";
 message(404,RequestURI,_) ->
     "The requested URL " ++ 
-	html_encode(RequestURI) ++ 
+	html_encode(RequestURI) ++
 	" was not found on this server.";
 message(408, Timeout, _) ->
     Timeout;
@@ -212,7 +205,7 @@ message(500,_,ConfigDB) ->
     "The server encountered an internal error or "
 	"misconfiguration and was unable to complete "
 	"your request.<P>Please contact the server administrator "
-	++ html_encode(ServerAdmin) ++ 
+	++ html_encode(ServerAdmin) ++
 	", and inform them of the time the error occurred "
 	"and anything you might have done that may have caused the error.";
 
@@ -221,12 +214,12 @@ message(501,{Method, RequestURI, HTTPVersion}, _ConfigDB) ->
 	is_atom(Method) ->
 	    atom_to_list(Method) ++
 		" to " ++ 
-		html_encode(RequestURI) ++ 
+		html_encode(RequestURI) ++
 		" (" ++ HTTPVersion ++ ") not supported.";
 	is_list(Method) ->
 	    Method ++
 		" to " ++ 
-		html_encode(RequestURI) ++ 
+		html_encode(RequestURI) ++
 		" (" ++ HTTPVersion ++ ") not supported."
     end;
 
@@ -234,23 +227,9 @@ message(503, String, _ConfigDB) ->
     "This service in unavailable due to: " ++ html_encode(String);
 message(_, ReasonPhrase, _) ->
     html_encode(ReasonPhrase).
-
-maybe_encode(URI) ->
-    Decoded = try http_uri:decode(URI) of
-	N -> N
-    catch
-	error:_ -> URI
-    end,
-    http_uri:encode(Decoded).
-
+                
 html_encode(String) ->
-    try http_uri:decode(String) of
-	Decoded when is_list(Decoded) ->
-	    http_util:html_encode(Decoded)
-    catch 
-	_:_ ->
-	    http_util:html_encode(String)
-    end.
+    http_util:html_encode(String).
 
 %%convert_rfc_date(Date)->{{YYYY,MM,DD},{HH,MIN,SEC}}
 
@@ -343,7 +322,9 @@ rfc1123_date(LocalTime) ->
     {{YYYY,MM,DD},{Hour,Min,Sec}} = 
 	case calendar:local_time_to_universal_time_dst(LocalTime) of
 	    [Gmt]   -> Gmt;
-	    [_,Gmt] -> Gmt
+	    [_,Gmt] -> Gmt;
+        % Should not happen, but handle the empty list to prevent an error.
+        [] -> LocalTime
 	end,
     DayNumber = calendar:day_of_the_week({YYYY,MM,DD}),
     lists:flatten(
@@ -427,23 +408,29 @@ flatlength([_H|T],L) ->
 flatlength([],L) ->
     L.
 
-%% split_path
+%% split_path, URI has been decoded once when validate
+%% and should only be decoded once(RFC3986, 2.4).
 
-split_path(Path) ->
-    case inets_regexp:match(Path,"[\?].*\$") of
-	%% A QUERY_STRING exists!
-	{match,Start,Length} ->
-	    {http_uri:decode(string:substr(Path,1,Start-1)),
-	     string:substr(Path,Start,Length)};
-	%% A possible PATH_INFO exists!
-	nomatch ->
-	    split_path(Path,[])
+split_path(URI) -> 
+    case uri_string:parse(URI) of
+       #{fragment := Fragment,
+         path := Path,
+         query := Query} ->
+            {Path, add_hashmark(Query, Fragment)};
+        #{path := Path,
+          query := Query} ->
+            {Path, Query};
+        #{path := Path} ->            
+            split_path(Path, [])
     end.
 
+add_hashmark(Query, Fragment) ->
+    Query ++ "#" ++ Fragment.
+   
 split_path([],SoFar) ->
-    {http_uri:decode(lists:reverse(SoFar)),[]};
+    {lists:reverse(SoFar),[]};
 split_path([$/|Rest],SoFar) ->
-    Path=http_uri:decode(lists:reverse(SoFar)),
+    Path=lists:reverse(SoFar),
     case file:read_file_info(Path) of
 	{ok,FileInfo} when FileInfo#file_info.type =:= regular ->
 	    {Path,[$/|Rest]};
@@ -455,58 +442,23 @@ split_path([$/|Rest],SoFar) ->
 split_path([C|Rest],SoFar) ->
     split_path(Rest,[C|SoFar]).
 
-%% split_script_path
+%% split_script_path, URI has been decoded once when validate
+%% and should only be decoded once(RFC3986, 2.4).
 
-split_script_path(Path) ->
-    case split_script_path(Path, []) of
-	{Script, AfterPath} ->
-	    {PathInfo, QueryString} = pathinfo_querystring(AfterPath),
-	    {Script, {PathInfo, QueryString}};
-	not_a_script ->
-	    not_a_script
+
+split_script_path(URI) -> 
+    case uri_string:parse(URI) of
+       #{fragment := _Fragment,
+         path := _Path,
+         query := _Query} ->
+            not_a_script;
+        #{path := Path,
+          query := Query} ->
+            {Script, PathInfo} = split_path(Path, []),
+            {Script, {PathInfo, Query}};
+        #{path := Path} ->            
+            split_path(Path, [])
     end.
-
-pathinfo_querystring(Str) ->
-    pathinfo_querystring(Str, []).
-pathinfo_querystring([], SoFar) ->
-    {lists:reverse(SoFar), []};
-pathinfo_querystring([$?|Rest], SoFar) ->
-    {lists:reverse(SoFar), Rest};
-pathinfo_querystring([C|Rest], SoFar) ->
-    pathinfo_querystring(Rest, [C|SoFar]).
-
-split_script_path([$?|QueryString], SoFar) ->
-    Path = http_uri:decode(lists:reverse(SoFar)),
-    case file:read_file_info(Path) of
-	{ok,FileInfo} when FileInfo#file_info.type =:= regular ->
-	    {Path, [$?|QueryString]};
-	{ok, _FileInfo} ->
-	    not_a_script;
-	{error, _Reason} ->
-	    not_a_script
-    end;
-split_script_path([], SoFar) ->
-    Path = http_uri:decode(lists:reverse(SoFar)),
-    case file:read_file_info(Path) of
-	{ok,FileInfo} when FileInfo#file_info.type =:= regular ->
-	    {Path, []};
-	{ok, _FileInfo} ->
-	    not_a_script;
-	{error, _Reason} ->
-	    not_a_script
-    end;
-split_script_path([$/|Rest], SoFar) ->
-    Path = http_uri:decode(lists:reverse(SoFar)),
-    case file:read_file_info(Path) of
-	{ok, FileInfo} when FileInfo#file_info.type =:= regular ->
-	    {Path, [$/|Rest]};
-	{ok, _FileInfo} ->
-	    split_script_path(Rest, [$/|SoFar]);
-	{error, _Reason} ->
-	    split_script_path(Rest, [$/|SoFar])
-    end;
-split_script_path([C|Rest], SoFar) ->
-    split_script_path(Rest,[C|SoFar]).
 
 %% suffix
 
@@ -532,25 +484,8 @@ remove_ws(Rest) ->
 
 %% split
 
-split(String,RegExp,Limit) ->
-    case inets_regexp:parse(RegExp) of
-	{error,Reason} ->
-	    {error,Reason};
-	{ok,_} ->
-	    {ok,do_split(String,RegExp,Limit)}
-    end.
-
-do_split(String, _RegExp, 1) ->
-    [String];
-
-do_split(String,RegExp,Limit) ->
-    case inets_regexp:first_match(String,RegExp) of 
-	{match,Start,Length} ->
-	    [string:substr(String,1,Start-1)|
-	     do_split(lists:nthtail(Start+Length-1,String),RegExp,Limit-1)];
-	nomatch ->
-	    [String]
-    end.
+split(String,RegExp,N) ->
+    {ok, re:split(String, RegExp, [{parts, N}, {return, list}])}.
 
 %% make_name/2, make_name/3
 %% Prefix  -> string()
@@ -786,3 +721,34 @@ do_enable_debug([{Level,Modules}|Rest])
 	    ok
     end,
     do_enable_debug(Rest).
+
+
+error_log(ConfigDB, Report) ->
+    case lookup(ConfigDB, logger) of
+        undefined ->
+            mod_error_logging(mod_log, ConfigDB, Report),
+            mod_error_logging(mod_disk_log, ConfigDB, Report);
+        Logger  ->
+            Domain = proplists:get_value(error, Logger),
+            httpd_logger:log(error, Report, Domain),
+            %% Backwards compat
+            mod_error_logging(mod_log, ConfigDB, Report),
+            mod_error_logging(mod_disk_log, ConfigDB, Report)
+    end.
+
+mod_error_logging(Mod, ConfigDB, Report) ->
+    Modules = httpd_util:lookup(ConfigDB, modules,
+				[mod_get, mod_head, mod_log]),
+    case lists:member(Mod, Modules) of
+	true ->
+            %% Make it oneline string for backwards compatibility
+            Msg = httpd_logger:format(Report),
+            ErrorStr = lists:flatten(logger_formatter:format(#{level => error,
+                                                               msg => Msg,
+                                                               meta => #{}
+                                                              },
+                                                             #{template => [msg]})),
+            Mod:report_error(ConfigDB, ErrorStr);
+	_ ->
+	    ok
+    end.

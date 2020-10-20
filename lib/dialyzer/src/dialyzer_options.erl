@@ -1,8 +1,4 @@
 %% -*- erlang-indent-level: 2 -*-
-%%-----------------------------------------------------------------------
-%% %CopyrightBegin%
-%%
-%% Copyright Ericsson AB 2006-2015. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -16,16 +12,9 @@
 %% See the License for the specific language governing permissions and
 %% limitations under the License.
 %%
-%% %CopyrightEnd%
-%%
-
-%%%----------------------------------------------------------------------
-%%% File    : dialyzer_options.erl
-%%% Authors : Richard Carlsson <richardc@it.uu.se>
-%%% Description : Provides a better way to start Dialyzer from a script.
-%%%
-%%% Created : 17 Oct 2004 by Richard Carlsson <richardc@it.uu.se>
-%%%----------------------------------------------------------------------
+%% @copyright 2004 Richard Carlsson
+%% @author Richard Carlsson <carlsson.richard@gmail.com>
+%% @doc Provides a better way to start Dialyzer from a script.
 
 -module(dialyzer_options).
 
@@ -47,6 +36,7 @@ build(Opts) ->
 		  ?WARN_CALLGRAPH,
 		  ?WARN_FAILING_CALL,
 		  ?WARN_BIN_CONSTRUCTION,
+		  ?WARN_MAP_CONSTRUCTION,
 		  ?WARN_CONTRACT_RANGE,
 		  ?WARN_CONTRACT_TYPES,
 		  ?WARN_CONTRACT_SYNTAX,
@@ -72,8 +62,14 @@ preprocess_opts([Opt|Opts]) ->
   [Opt|preprocess_opts(Opts)].
 
 postprocess_opts(Opts = #options{}) ->
+  check_file_existence(Opts),
   Opts1 = check_output_plt(Opts),
   adapt_get_warnings(Opts1).
+
+check_file_existence(#options{analysis_type = plt_remove}) -> ok;
+check_file_existence(#options{files = Files, files_rec = FilesRec}) ->
+  assert_filenames_exist(Files),
+  assert_filenames_exist(FilesRec).
 
 check_output_plt(Opts = #options{analysis_type = Mode, from = From,
 				 output_plt = OutPLT}) ->
@@ -116,7 +112,7 @@ adapt_get_warnings(Opts = #options{analysis_type = Mode,
 -spec bad_option(string(), term()) -> no_return().
 
 bad_option(String, Term) ->
-  Msg = io_lib:format("~s: ~P", [String, Term, 25]),
+  Msg = io_lib:format("~ts: ~tP", [String, Term, 25]),
   throw({dialyzer_options_error, lists:flatten(Msg)}).
 
 build_options([{OptName, undefined}|Rest], Options) when is_atom(OptName) ->
@@ -126,14 +122,14 @@ build_options([{OptionName, Value} = Term|Rest], Options) ->
     apps ->
       OldValues = Options#options.files_rec,
       AppDirs = get_app_dirs(Value),
-      assert_filenames(Term, AppDirs),
+      assert_filenames_form(Term, AppDirs),
       build_options(Rest, Options#options{files_rec = AppDirs ++ OldValues});
     files ->
-      assert_filenames(Term, Value),
+      assert_filenames_form(Term, Value),
       build_options(Rest, Options#options{files = Value});
     files_rec ->
       OldValues = Options#options.files_rec,
-      assert_filenames(Term, Value),
+      assert_filenames_form(Term, Value),
       build_options(Rest, Options#options{files_rec = Value ++ OldValues});
     analysis_type ->
       NewOptions =
@@ -181,6 +177,8 @@ build_options([{OptionName, Value} = Term|Rest], Options) ->
     filename_opt ->
       assert_filename_opt(Value),
       build_options(Rest, Options#options{filename_opt = Value});
+    indent_opt ->
+      build_options(Rest, Options#options{indent_opt = Value});
     output_plt ->
       assert_filename(Value),
       build_options(Rest, Options#options{output_plt = Value});
@@ -199,6 +197,10 @@ build_options([{OptionName, Value} = Term|Rest], Options) ->
     solvers ->
       assert_solvers(Value),
       build_options(Rest, Options#options{solvers = Value});
+    native ->
+      build_options(Rest, Options#options{native = Value});
+    native_cache ->
+      build_options(Rest, Options#options{native_cache = Value});
     _ ->
       bad_option("Unknown dialyzer command line option", Term)
   end;
@@ -210,16 +212,26 @@ get_app_dirs(Apps) when is_list(Apps) ->
 get_app_dirs(Apps) ->
   bad_option("Use a list of otp applications", Apps).
 
-assert_filenames(Term, [FileName|Left]) when length(FileName) >= 0 ->
+assert_filenames(Term, Files) ->
+  assert_filenames_form(Term, Files),
+  assert_filenames_exist(Files).
+
+assert_filenames_form(Term, [FileName|Left]) when length(FileName) >= 0 ->
+  assert_filenames_form(Term, Left);
+assert_filenames_form(_Term, []) ->
+  ok;
+assert_filenames_form(Term, [_|_]) ->
+  bad_option("Malformed or non-existing filename", Term).
+
+assert_filenames_exist([FileName|Left]) ->
   case filelib:is_file(FileName) orelse filelib:is_dir(FileName) of
     true -> ok;
-    false -> bad_option("No such file, directory or application", FileName)
+    false ->
+      bad_option("No such file, directory or application", FileName)
   end,
-  assert_filenames(Term, Left);
-assert_filenames(_Term, []) ->
-  ok;
-assert_filenames(Term, [_|_]) ->
-  bad_option("Malformed or non-existing filename", Term).
+  assert_filenames_exist(Left);
+assert_filenames_exist([]) ->
+  ok.
 
 assert_filename(FileName) when length(FileName) >= 0 ->
   ok;
@@ -271,6 +283,9 @@ assert_solvers([Term|_]) ->
 
 -spec build_warnings([atom()], dial_warn_tags()) -> dial_warn_tags().
 
+%% The warning options are checked by the code linter.
+%% The function erl_lint:is_module_dialyzer_option/1 must
+%% be updated if options are added or removed.
 build_warnings([Opt|Opts], Warnings) ->
   NewWarnings =
     case Opt of

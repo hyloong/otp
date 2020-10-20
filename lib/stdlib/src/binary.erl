@@ -1,7 +1,7 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2010-2013. All Rights Reserved.
+%% Copyright Ericsson AB 2010-2020. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -20,11 +20,11 @@
 -module(binary).
 %%
 %% Implemented in this module:
--export([split/2,split/3,replace/3,replace/4]).
+-export([replace/3,replace/4]).
 
 -export_type([cp/0]).
 
--opaque cp() :: {'am' | 'bm', binary()}.
+-opaque cp() :: {'am' | 'bm', reference()}.
 -type part() :: {Start :: non_neg_integer(), Length :: integer()}.
 
 %%% BIFs.
@@ -34,7 +34,8 @@
          decode_unsigned/2, encode_unsigned/1, encode_unsigned/2,
          first/1, last/1, list_to_bin/1, longest_common_prefix/1,
          longest_common_suffix/1, match/2, match/3, matches/2,
-         matches/3, part/2, part/3, referenced_byte_size/1]).
+         matches/3, part/2, part/3, referenced_byte_size/1,
+         split/2, split/3]).
 
 -spec at(Subject, Pos) -> byte() when
       Subject :: binary(),
@@ -46,23 +47,39 @@ at(_, _) ->
 -spec bin_to_list(Subject) -> [byte()] when
       Subject :: binary().
 
-bin_to_list(_) ->
-    erlang:nif_error(undef).
+bin_to_list(Subject) ->
+    binary_to_list(Subject).
 
 -spec bin_to_list(Subject, PosLen) -> [byte()] when
       Subject :: binary(),
       PosLen :: part().
 
-bin_to_list(_, _) ->
-    erlang:nif_error(undef).
+bin_to_list(Subject, {Pos, Len}) ->
+    bin_to_list(Subject, Pos, Len);
+bin_to_list(_Subject, _BadArg) ->
+    erlang:error(badarg).
 
 -spec bin_to_list(Subject, Pos, Len) -> [byte()] when
       Subject :: binary(),
       Pos :: non_neg_integer(),
       Len :: integer().
 
-bin_to_list(_, _, _) ->
-    erlang:nif_error(undef).
+bin_to_list(Subject, Pos, Len) when not is_binary(Subject);
+                                    not is_integer(Pos);
+                                    not is_integer(Len) ->
+    %% binary_to_list/3 allows bitstrings as long as the slice fits, and we
+    %% want to badarg when Pos/Len aren't integers instead of raising badarith
+    %% when adjusting args for binary_to_list/3.
+    erlang:error(badarg);
+bin_to_list(Subject, Pos, 0) when Pos >= 0, Pos =< byte_size(Subject) ->
+    %% binary_to_list/3 doesn't handle this case.
+    [];
+bin_to_list(_Subject, _Pos, 0) ->
+    erlang:error(badarg);
+bin_to_list(Subject, Pos, Len) when Len < 0 ->
+    bin_to_list(Subject, Pos + Len, -Len);
+bin_to_list(Subject, Pos, Len) when Len > 0 ->
+    binary_to_list(Subject, Pos + 1, Pos + Len).
 
 -spec compile_pattern(Pattern) -> cp() when
       Pattern :: binary() | [binary()].
@@ -124,7 +141,7 @@ last(_) ->
     erlang:nif_error(undef).
 
 -spec list_to_bin(ByteList) -> binary() when
-      ByteList :: iodata().
+      ByteList :: iolist().
 
 list_to_bin(_) ->
     erlang:nif_error(undef).
@@ -198,19 +215,13 @@ part(_, _, _) ->
 referenced_byte_size(_) ->
     erlang:nif_error(undef).
 
-%%% End of BIFs.
-
-%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-%% split
-%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-
 -spec split(Subject, Pattern) -> Parts when
       Subject :: binary(),
       Pattern :: binary() | [binary()] | cp(),
       Parts :: [binary()].
 
-split(H,N) ->
-    split(H,N,[]).
+split(_, _) ->
+    erlang:nif_error(undef).
 
 -spec split(Subject, Pattern, Options) -> Parts when
       Subject :: binary(),
@@ -219,53 +230,10 @@ split(H,N) ->
       Option :: {scope, part()} | trim | global | trim_all,
       Parts :: [binary()].
 
-split(Haystack,Needles,Options) ->
-    try
-	{Part,Global,Trim,TrimAll} =
-        get_opts_split(Options,{no,false,false,false}),
-	Moptlist = case Part of
-		       no ->
-			   [];
-		       {A,B} ->
-			   [{scope,{A,B}}]
-		   end,
-	MList = if
-		    Global ->
-			binary:matches(Haystack,Needles,Moptlist);
-		    true ->
-			case binary:match(Haystack,Needles,Moptlist) of
-			    nomatch -> [];
-			    Match -> [Match]
-			end
-		end,
-	do_split(Haystack,MList,0,Trim,TrimAll)
-    catch
-	_:_ ->
-	    erlang:error(badarg)
-    end.
+split(_, _, _) ->
+    erlang:nif_error(undef).
 
-do_split(H,[],N,true,_) when N >= byte_size(H) ->
-    [];
-do_split(H,[],N,_,true) when N >= byte_size(H) ->
-    [];
-do_split(H,[],N,_,_) ->
-    [binary:part(H,{N,byte_size(H)-N})];
-do_split(H,[{A,B}|T],N,Trim,TrimAll) ->
-    case binary:part(H,{N,A-N}) of
-	<<>> when TrimAll == true ->
-	    do_split(H,T,A+B,Trim,TrimAll);
-	<<>> ->
-	    Rest =  do_split(H,T,A+B,Trim,TrimAll),
-	    case {Trim, Rest} of
-		{true,[]} ->
-		    [];
-		_ ->
-		    [<<>> | Rest]
-	    end;
-	Oth ->
-	    [Oth | do_split(H,T,A+B,Trim,TrimAll)]
-    end.
-
+%%% End of BIFs.
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %% replace
@@ -351,19 +319,6 @@ splitat(H,N,[I|T]) ->
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %% Simple helper functions
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-
-get_opts_split([],{Part,Global,Trim,TrimAll}) ->
-    {Part,Global,Trim,TrimAll};
-get_opts_split([{scope,{A,B}} | T],{_Part,Global,Trim,TrimAll}) ->
-    get_opts_split(T,{{A,B},Global,Trim,TrimAll});
-get_opts_split([global | T],{Part,_Global,Trim,TrimAll}) ->
-    get_opts_split(T,{Part,true,Trim,TrimAll});
-get_opts_split([trim | T],{Part,Global,_Trim,TrimAll}) ->
-    get_opts_split(T,{Part,Global,true,TrimAll});
-get_opts_split([trim_all | T],{Part,Global,Trim,_TrimAll}) ->
-    get_opts_split(T,{Part,Global,Trim,true});
-get_opts_split(_,_) ->
-    throw(badopt).
 
 get_opts_replace([],{Part,Global,Insert}) ->
     {Part,Global,Insert};

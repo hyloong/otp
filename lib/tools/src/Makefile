@@ -1,7 +1,7 @@
 #
 # %CopyrightBegin%
 #
-# Copyright Ericsson AB 1996-2013. All Rights Reserved.
+# Copyright Ericsson AB 1996-2018. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -37,7 +37,6 @@ RELSYSDIR = $(RELEASE_PATH)/lib/tools-$(VSN)
 
 MODULES= \
 	cover                \
-	cover_web	     \
 	eprof                \
 	fprof                \
 	cprof                \
@@ -72,6 +71,9 @@ APP_TARGET = $(EBIN)/$(APP_FILE)
 
 APPUP_SRC = $(APPUP_FILE).src
 APPUP_TARGET = $(EBIN)/$(APPUP_FILE)
+
+PRIVDIR = ../priv
+CSS = $(PRIVDIR)/styles.css
 
 # ----------------------------------------------------
 # FLAGS
@@ -111,5 +113,7 @@ release_spec: opt
 	$(INSTALL_DIR) "$(RELSYSDIR)/ebin"
 	$(INSTALL_DATA) $(TARGET_FILES) $(APP_TARGET) $(APPUP_TARGET) \
 		"$(RELSYSDIR)/ebin"
+	$(INSTALL_DIR) "$(RELSYSDIR)/priv"
+	$(INSTALL_DATA) $(CSS) "$(RELSYSDIR)/priv"
 
 release_docs_spec:

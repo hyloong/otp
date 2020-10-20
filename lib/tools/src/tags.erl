@@ -1,7 +1,7 @@
 %%
 %% %CopyrightBegin%
 %% 
-%% Copyright Ericsson AB 1996-2015. All Rights Reserved.
+%% Copyright Ericsson AB 1996-2016. All Rights Reserved.
 %% 
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -101,7 +101,7 @@ files(Files, Options) ->
     case open_out(Options) of
 	{ok, Os} ->
 	    files_loop(Files, Os),
-	    close_out(Os),
+	    ok = close_out(Os),
 	    ok;
 	_ ->
 	    error
@@ -169,7 +169,7 @@ filename(Name, Os) ->
     case file:open(Name, [read]) of
 	{ok, Desc} ->
 	    Acc = module(Desc, [], [], {1, 0}),
-	    file:close(Desc),
+	    ok = file:close(Desc),
 	    genout(Os, Name, Acc),
 	    ok;
 	_ ->

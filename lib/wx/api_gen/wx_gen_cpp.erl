@@ -1,7 +1,7 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2008-2014. All Rights Reserved.
+%% Copyright Ericsson AB 2008-2018. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -116,8 +116,13 @@ taylormade_class(#class{name=CName, methods=Ms}) ->
 gen_constructors(#class{name=Class, methods=Ms0}) ->
     Ms = lists:append(Ms0),
     Cs = lists:filter(fun(#method{method_type=MT}) -> MT =:= constructor end, Ms),
-    [gen_constructor(Class, Const) || Const <- Cs].
-
+    [gen_constructor(Class, Const) || Const <- Cs],
+    case need_copy_constr(Class) of
+	true ->
+	    w(" E~s(~s copy) : ~s(copy) {};~n", [Class, Class, Class]);
+	false ->
+	    ignore
+    end.
 gen_constructor(_Class, #method{where=merged_c}) -> ok;
 gen_constructor(_Class, #method{where=erl_no_opt}) -> ok;
 gen_constructor(Class, _M=#method{params=Ps, opts=FOpts}) ->
@@ -144,6 +149,14 @@ gen_constructor(Class, _M=#method{params=Ps, opts=FOpts}) ->
     end,
     Endif andalso w("#endif~n", []),
     ok.
+
+
+need_copy_constr("wxFont") -> true;
+need_copy_constr("wxIcon") -> true;
+need_copy_constr("wxImage") -> true;
+need_copy_constr("wxBitmap") -> true;
+%%need_copy_constr("wxGraphics" ++ _) -> true;
+need_copy_constr(_) -> false.
 
 gen_type(#type{name=Type, ref={pointer,1}, mod=Mod},_) ->
     mods(Mod) ++ to_string(Type) ++ " * ";
@@ -182,11 +195,13 @@ gen_funcs(Defs) ->
 
     w("void WxeApp::wxe_dispatch(wxeCommand& Ecmd)~n{~n"),
     w(" char * bp = Ecmd.buffer;~n"),
+    w(" int op = Ecmd.op;~n"),
+    w(" Ecmd.op = -1;~n"),
     w(" wxeMemEnv *memenv = getMemEnv(Ecmd.port);~n"),
 %%    w(" wxMBConvUTF32 UTFconverter;~n"),
-    w("  wxeReturn rt = wxeReturn(WXE_DRV_PORT, Ecmd.caller, true);~n"),
+    w(" wxeReturn rt = wxeReturn(WXE_DRV_PORT, Ecmd.caller, true);~n"),
     w(" try {~n"),
-    w(" switch (Ecmd.op)~n{~n"),
+    w(" switch (op)~n{~n"),
 %%     w("  case WXE_CREATE_PORT:~n", []),
 %%     w("   { newMemEnv(Ecmd.port); } break;~n", []),
 %%     w("  case WXE_REMOVE_PORT:~n", []),
@@ -195,8 +210,8 @@ gen_funcs(Defs) ->
     w("     void *This = getPtr(bp,memenv);~n"),
     w("     wxeRefData *refd = getRefData(This);~n"),
     w("     if(This && refd) {~n"),
-    w("       if(recurse_level > 1 && refd->type != 4) {~n"),
-    w("          delayed_delete->Append(Ecmd.Save());~n"),
+    w("       if(recurse_level > 1 && refd->type != 8) {~n"),
+    w("          delayed_delete->Append(Ecmd.Save(op));~n"),
     w("       } else {~n"),
     w("          delete_object(This, refd);~n"),
     w("          ((WxeApp *) wxTheApp)->clearPtr(This);}~n"),
@@ -215,7 +230,7 @@ gen_funcs(Defs) ->
     w("  default: {~n"),
     w("    wxeReturn error = wxeReturn(WXE_DRV_PORT, Ecmd.caller, false);"),
     w("    error.addAtom(\"_wxe_error_\");~n"),
-    w("    error.addInt((int) Ecmd.op);~n"),
+    w("    error.addInt((int) op);~n"),
     w("    error.addAtom(\"not_supported\");~n"),
     w("    error.addTupleCount(3);~n"),
     w("    error.send();~n"),
@@ -226,7 +241,7 @@ gen_funcs(Defs) ->
     w("} catch (wxe_badarg badarg) {  // try~n"),
     w("    wxeReturn error = wxeReturn(WXE_DRV_PORT, Ecmd.caller, false);"),
     w("    error.addAtom(\"_wxe_error_\");~n"),
-    w("    error.addInt((int) Ecmd.op);~n"),
+    w("    error.addInt((int) op);~n"),
     w("    error.addAtom(\"badarg\");~n"),
     w("    error.addInt((int) badarg.ref);~n"),
     w("    error.addTupleCount(2);~n"),
@@ -235,11 +250,26 @@ gen_funcs(Defs) ->
     w("}} /* The End */~n~n~n"),
 
     UglySkipList = ["wxCaret", "wxCalendarDateAttr",
-		    "wxFileDataObject", "wxTextDataObject", "wxBitmapDataObject"
+		    "wxFileDataObject", "wxTextDataObject", "wxBitmapDataObject",
+		    "wxAuiSimpleTabArt"
 		   ],
 
     w("bool WxeApp::delete_object(void *ptr, wxeRefData *refd) {~n", []),
+    w(" if(wxe_debug) {\n"
+      "     wxString msg;\n"
+      "	    const wxChar *class_info = wxT(\"unknown\");\n"
+      "	    if(refd->type < 10) {\n"
+      "		wxClassInfo *cinfo = ((wxObject *)ptr)->GetClassInfo();\n"
+      "		    class_info = cinfo->GetClassName();\n"
+      "	       }\n"
+      "      msg.Printf(wxT(\"Deleting {wx_ref, %d, %s} at %p \"), refd->ref, class_info, ptr);\n"
+      "      send_msg(\"debug\", &msg);\n"
+      " };\n"),
+
     w(" switch(refd->type) {~n", []),
+    w("#if wxUSE_GRAPHICS_CONTEXT~n", []),
+    w("  case 4: delete (wxGraphicsObject *) ptr; break;~n", []),
+    w("#endif~n", []),
     Case = fun(C=#class{name=Class, id=Id, abstract=IsAbs, parent=P}) when P /= "static" ->
 		   UglyWorkaround = lists:member(Class, UglySkipList),
 		   HaveVirtual = virtual_dest(C),
@@ -323,12 +353,8 @@ gen_method(CName,  M=#method{name=N,params=Ps0,type=T,method_type=MT,id=MethodId
     put(current_func, N),
     put(bin_count,-1),
     ?WTC("gen_method"),
-    Endif = case lists:keysearch(deprecated, 1, FOpts) of
-		{value, {deprecated, IfDef}} ->
-		    w("#if ~s~n", [IfDef]),
-		    true;
-		_ -> false
-	    end,
+    Endif1 = gen_if(deprecated, FOpts),
+    Endif2 = gen_if(test_if, FOpts),
     w("case ~s: { // ~s::~s~n", [wx_gen_erl:get_unique_name(MethodId),CName,N]),
     Ps1 = declare_variables(void, Ps0),
     {Ps2,Align} = decode_arguments(Ps1),
@@ -347,9 +373,18 @@ gen_method(CName,  M=#method{name=N,params=Ps0,type=T,method_type=MT,id=MethodId
     free_args(),
     build_return_vals(T,Ps3),
     w(" break;~n}~n", []),
-    Endif andalso w("#endif~n", []),
+    Endif1 andalso w("#endif~n", []),
+    Endif2 andalso w("#endif~n", []),
     erase(current_func),
     M.
+
+gen_if(What, Opts) ->
+    case lists:keysearch(What, 1, Opts) of
+	{value, {What, IfDef}} ->
+	    w("#if ~s~n", [IfDef]),
+	    true;
+	_ -> false
+    end.
 
 declare_variables(void,Ps) ->
     [declare_var(P) || P <- Ps];
@@ -592,7 +627,7 @@ decode_arg(N,#type{name="wxArrayString"},Place,A0) ->
     w(" int * ~sLen = (int *) bp; bp += 4;~n", [N]),
     case Place of
 	arg -> w(" wxArrayString ~s;~n", [N]);
-	opt -> ignore %% Allready declared
+	opt -> ignore %% Already declared
     end,
     w(" int ~sASz = 0, * ~sTemp;~n", [N,N]),
     w(" for(int i=0; i < *~sLen; i++) {~n", [N]),
@@ -740,7 +775,7 @@ call_wx(_N,{constructor,_},#type{base={class,RClass}},Ps) ->
 		    end;
 		false ->
 		    case is_dc(RClass) of
-			true -> 4;
+			true -> 8;
 			false ->
 			    case hd(reverse(wx_gen_erl:parents(RClass))) of
 				root -> Id;
@@ -798,19 +833,22 @@ return_res1(#type{name=Type,base={class,_},single=list,ref=reference}) ->
 return_res1(#type{name=Type,base={comp,_,_},single=array,by_val=true}) ->
     {Type ++ " Result = ", ""};
 return_res1(#type{name=Type,single=true,by_val=true, base={class, _}}) ->
-    %% Temporary memory leak !!!!!!
-    case Type of
-	"wxImage" ->  ok;
-	"wxFont"  ->  ok;
-	"wxBitmap" -> ok;
-	"wxIcon" ->   ok;
-	"wxGraphics" ++ _ -> ok;
-	_ ->
+    case {need_copy_constr(Type), Type} of
+	{true, _} ->
+	    {Type ++ " * Result = new E" ++ Type ++ "(", "); newPtr((void *) Result,"
+	     ++ "3, memenv);"};
+	{false, "wxGraphics" ++ _} ->
+	    %% {"wxGraphicsObject * Result = new wxGraphicsObject(", "); newPtr((void *) Result,"
+	    %%  ++ "3, memenv);"};
+	    {Type ++ " * Result = new " ++ Type ++ "(", "); newPtr((void *) Result,"
+	     ++ "4, memenv);"};
+	{false, _} ->
+	    %% Temporary memory leak !!!!!!
 	    io:format("~s::~s Building return value of temp ~s~n",
-		      [get(current_class),get(current_func),Type])
-    end,
-    {Type ++ " * Result = new " ++ Type ++ "(", "); newPtr((void *) Result,"
-     ++ "3, memenv);"};
+		      [get(current_class),get(current_func),Type]),
+	    {Type ++ " * Result = new " ++ Type ++ "(", "); newPtr((void *) Result,"
+	     ++ "3, memenv);"}
+    end;
 return_res1(#type{base={enum,_Type},single=true,by_val=true}) ->
     {"int Result = " , ""};
 return_res1(#type{name="wxCharBuffer", base={binary,_},single=true,by_val=true}) ->
@@ -957,8 +995,13 @@ build_ret_types(Type,Ps) ->
 	   end,
     lists:foldl(Calc, Free, Ps).
 
-build_ret(Name,_,#type{base={class,Class},single=true}) ->
-    w(" rt.addRef(getRef((void *)~s,memenv), \"~s\");~n",[Name,Class]);
+build_ret(Name,_D,#type{base={class,Class},single=true}=_T) ->
+    case Class of
+        "wxGraphicsContext" ->
+            w(" rt.addRef(getRef((void *)~s,memenv,8), \"~s\");~n",[Name,Class]);
+        _ ->
+            w(" rt.addRef(getRef((void *)~s,memenv), \"~s\");~n",[Name,Class])
+    end;
 build_ret(Name,_,#type{name="wxTreeItemId",single=true}) ->
     w(" rt.add((wxUIntPtr *) ~s.m_pItem);~n",[Name]);
 build_ret(Name,_,#type{name="wxTreeItemIdValue",single=true}) ->
@@ -1014,6 +1057,10 @@ build_ret(Name,_,#type{base={comp,_,_},single=array}) ->
     w(" for(unsigned int i=0; i < ~s.GetCount(); i++) {~n", [Name]),
     w("  rt.add(~s[i]);~n }~n",[Name]),
     w(" rt.endList(~s.GetCount());~n",[Name]);
+build_ret(Name,_,#type{base={class,Class},single=array}) ->
+    w(" for(unsigned int i=0; i < ~s.GetCount(); i++) {~n", [Name]),
+    w("  rt.addRef(getRef((void *) &~s.Item(i), memenv), \"~s\");~n }~n",[Name, Class]),
+    w(" rt.endList(~s.GetCount());~n",[Name]);
 build_ret(Name,_,#type{name=List,single=list,base={class,Class}}) ->
     w(" int i=0;~n"),
     w(" for(~s::const_iterator it = ~s.begin(); it != ~s.end(); ++it) {~n",
@@ -1037,6 +1084,13 @@ build_ret(Name,_,#type{base=string,single=true}) ->
     w(" rt.add(~s);~n",[Name]);
 build_ret(Name,_,#type{name="wxArrayString", single=array}) ->
     w(" rt.add(~s);~n", [Name]);
+build_ret(Name,_,#type{name="wxString", single={list,Variable}}) ->
+    Obj = case Name of
+              "ev->" ++ _ -> "ev";
+              _ -> "This"
+          end,
+    w(" wxArrayString tmpArrayStr(~s->~s, ~s);~n", [Obj,Variable,Name]),
+    w(" rt.add(tmpArrayStr);~n", []);
 build_ret(Name,In,T) ->
     ?error({nyi, Name,In, T}).
 
@@ -1078,6 +1132,15 @@ build_gvar({Name, {address,Class}, _Id}, Cnt) ->
     w("   rt.addAtom(\"~s\"); rt.addRef(getRef((void *)&~s,memenv), \"~s\");~n",[Name,Name,Class]),
     w("   rt.addTupleCount(2);~n"),
     Cnt+1;
+build_gvar({Name, {test_if,Test}, _Id}, Cnt) ->
+    w("#if ~s~n", [Test]),
+    w(" rt.addAtom(\"~s\"); rt.addInt(~s);~n", [Name, Name]),
+    w(" rt.addTupleCount(2);~n"),
+    w("#else~n", []),
+    w(" rt.addAtom(\"~s\"); rt.addAtom(\"undefined\");~n", [Name]),
+    w(" rt.addTupleCount(2);~n"),
+    w("#endif~n", []),
+    Cnt+1;
 build_gvar({Name, Class, _Id}, Cnt) ->
     w("   rt.addAtom(\"~s\"); rt.addRef(getRef((void *)~s,memenv),\"~s\");~n",[Name,Name,Class]),
     w("   rt.addTupleCount(2);~n"),
@@ -1102,6 +1165,7 @@ gen_macros() ->
     w("#include <wx/fontdlg.h>~n"),
     w("#include <wx/progdlg.h>~n"),
     w("#include <wx/printdlg.h>~n"),
+    w("#include <wx/display.h>~n"),
     w("#include <wx/dcbuffer.h>~n"),
     w("#include <wx/dcmirror.h>~n"),
     w("#include <wx/glcanvas.h>~n"),
@@ -1113,6 +1177,7 @@ gen_macros() ->
     w("#include <wx/sashwin.h>~n"),
     w("#include <wx/laywin.h>~n"),
     w("#include <wx/graphics.h>~n"),
+    w("#include <wx/dcgraph.h>~n"),
     w("#include <wx/aui/aui.h>~n"),
     w("#include <wx/datectrl.h>~n"),
     w("#include <wx/filepicker.h>~n"),
@@ -1131,6 +1196,7 @@ gen_macros() ->
     w("#include <wx/html/htmlcell.h>~n"),
     w("#include <wx/filename.h>~n"),
     w("#include <wx/sysopt.h>~n"),
+    w("#include <wx/overlay.h>~n"),
 
     w("~n~n", []),
     w("#ifndef wxICON_DEFAULT_BITMAP_TYPE~n",[]),
@@ -1266,6 +1332,14 @@ encode_events(Evs) ->
     w(" } else {~n"),
     w("   send_res =  rt.send();~n"),
     w("   if(cb->skip) event->Skip();~n"),
+    #class{id=SizeId} = lists:keyfind("wxSizeEvent", #class.name, Evs),
+    #class{id=MoveId} = lists:keyfind("wxMoveEvent", #class.name, Evs),
+    w("   if(app->recurse_level < 1 && (Etype->cID == ~w || Etype->cID == ~w)) {~n",
+      [SizeId, MoveId]),
+    w("     app->recurse_level++;~n"),
+    w("     app->dispatch_cmds();~n"),
+    w("     app->recurse_level--;~n"),
+    w("   }~n"),
     w(" };~n"),
     w(" return send_res;~n"),
     w(" }~n").

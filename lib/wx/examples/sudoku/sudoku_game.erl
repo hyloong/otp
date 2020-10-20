@@ -1,7 +1,7 @@
 %%
 %% %CopyrightBegin%
 %% 
-%% Copyright Ericsson AB 2009-2011. All Rights Reserved.
+%% Copyright Ericsson AB 2009-2018. All Rights Reserved.
 %% 
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -18,7 +18,9 @@
 %% %CopyrightEnd%
 
 -module(sudoku_game).
--compile(export_all).
+
+-export([init/1,
+         indx/1, rcm/1, level/1]).
 -include("sudoku.hrl").
 
 init(GFX) ->
@@ -128,17 +130,6 @@ rebuild_all(_, S0) ->
 			add(rcm(Indx),Val,Acc)
 		end, S1, Solved).
 
-is_ok({RI,CI,MI}, Vals) ->
-    [Ri,Ci,Mi] = all(RI,CI,MI),
-    case element(indx(RI,CI),Vals) of
-	0  -> true;
-	Val ->
-	    Vs  = [[element(indx(R,C),Vals)||{R,C} <- Obs, 
-					     not ((R == RI) and (C == CI))]
-		   || Obs <- [Ri,Ci,Mi]],
-	    not lists:member(Val,lists:flatten(Vs))
-    end.
-
 test() ->  %% Known to solvable
     [{{1,2},6}, {{1,4},1}, {{1,6},4}, {{1,8},5}, 
      {{2,3},8}, {{2,4},3}, {{2,6},5}, {{2,7},6}, 
@@ -151,8 +142,7 @@ test() ->  %% Known to solvable
      {{9,2},4}, {{9,4},5}, {{9,6},8}, {{9,8},7}].
 
 new_game(S) ->
-    {X,Y,Z} = erlang:now(),
-    random:seed(Y,X,Z),
+    rand:seed(exsplus),
     case new_game(1,1,gb_sets:empty(),empty_table(S#s{}),[], 0) of
 	stop -> new_game(S); 
 	Game -> Game
@@ -171,7 +161,7 @@ new_game(R,C,BT,St,Acc,Cnt) when R < 10, C < 10 ->
 	    [{{BR,BC},BVal,BBT,BST}|BAcc] = Acc,
 	    new_game(BR,BC,gb_sets:add(BVal,BBT),BST,BAcc,Cnt+1);
 	Size -> 
-	    Ind = random:uniform(Size),
+	    Ind = rand:uniform(Size),
 	    V = lists:nth(Ind,gb_sets:to_list(S)),
 	    new_game(R,C+1,gb_sets:empty(),
 		     add({R,C,M},V,St),		    
@@ -207,7 +197,7 @@ pick_shown(Given,Left,S0,Level,Gfx) ->
 	    io:format("Below level ~p ~p~n", [GivenSz,Level]),
             S0;
        true ->
-	    Ran = random:uniform(LeftSz),
+	    Ran = rand:uniform(LeftSz),
 	    V   = lists:nth(Ran,gb_sets:to_list(Left)),
 	    S1  = rebuild_all(rcm(V),S0#s{v=setelement(V,S0#s.v,0)}),
 	    case solve(S1, true) of
@@ -377,14 +367,6 @@ get_poss([],_,Tot) -> Tot;
 get_poss([H|R],What,Tot) ->
     %%     io:format("~p~n",[H]),
     get_poss(R,What, gb_sets:union(element(H,What),Tot)).
-
-r2rs(R) -> 
-    R0 = (R-1)*3,
-    [R0+1,R0+2,R0+3].
-
-c2cs(C) ->
-    C0 = (C-1) rem 9,
-    [C0+1, C0+10, C0+19].
 
 mindx(row,Indx) -> 
     {R,_C,M} = rcm(Indx),

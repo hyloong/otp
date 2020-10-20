@@ -1,7 +1,7 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 1996-2014. All Rights Reserved.
+%% Copyright Ericsson AB 1996-2020. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -32,6 +32,7 @@
 	 init/0,
 	 mktab/2,
 	 unsafe_mktab/2,
+         unsafe_create_external/4,
 	 mnesia_down/2,
 	 needs_protocol_conversion/1,
 	 negotiate_protocol/1,
@@ -82,9 +83,9 @@
 		going_down = [], tm_started = false, early_connects = [],
 		connecting, mq = [], remote_node_status = []}).
 
--define(current_protocol_version,  {8,1}).
+-define(current_protocol_version,  {8,5}).
 
--define(previous_protocol_version, {8,0}).
+-define(previous_protocol_version, {8,4}).
 
 start() ->
     gen_server:start_link({local, ?MODULE}, ?MODULE,
@@ -129,6 +130,8 @@ close_log(Name) ->
 unsafe_close_log(Name) ->
     unsafe_call({unsafe_close_log, Name}).
 
+unsafe_create_external(Tab, Alias, Mod, Cs) ->
+    unsafe_call({unsafe_create_external, Tab, Alias, Mod, Cs}).
 
 disconnect(Node) ->
     cast({disconnect, Node}).
@@ -166,7 +169,7 @@ check_protocol([{Node, {accept, Mon, Version, Protocol}} | Tail], Protocols) ->
 	    verbose("Failed to connect with ~p. ~p protocols rejected. "
 		    "expected version = ~p, expected protocol = ~p~n",
 		    [Node, Protocols, Version, Protocol]),
-	    unlink(Mon), % Get rid of unneccessary link
+	    unlink(Mon), % Get rid of unnecessary link
 	    check_protocol(Tail, Protocols)
     end;
 check_protocol([{Node, {reject, _Mon, Version, Protocol}} | Tail], Protocols) ->
@@ -175,10 +178,10 @@ check_protocol([{Node, {reject, _Mon, Version, Protocol}} | Tail], Protocols) ->
 	    [Node, Protocols, Version, Protocol]),
     check_protocol(Tail, Protocols);
 check_protocol([{error, _Reason} | Tail], Protocols) ->
-    dbg_out("~p connect failed error: ~p~n", [?MODULE, _Reason]),
+    dbg_out("~p connect failed error: ~tp~n", [?MODULE, _Reason]),
     check_protocol(Tail, Protocols);
 check_protocol([{badrpc, _Reason} | Tail], Protocols) ->
-    dbg_out("~p connect failed badrpc: ~p~n", [?MODULE, _Reason]),
+    dbg_out("~p connect failed badrpc: ~tp~n", [?MODULE, _Reason]),
     check_protocol(Tail, Protocols);
 check_protocol([], [Protocol | _Protocols]) ->
     set(protocol_version, Protocol),
@@ -193,7 +196,7 @@ protocol_version() ->
 %% A sorted list of acceptable protocols the
 %% preferred protocols are first in the list
 acceptable_protocol_versions() ->
-    [protocol_version(), ?previous_protocol_version, {7,6}].
+    [protocol_version(), ?previous_protocol_version, {8,3}].
 
 needs_protocol_conversion(Node) ->
     case {?catch_val({protocol, Node}), protocol_version()} of
@@ -243,10 +246,10 @@ start_proc(Who, Mod, Fun, Args) ->
     proc_lib:start_link(mnesia_sp, init_proc, Args2, infinity).
 
 terminate_proc(Who, R, State) when R /= shutdown, R /= killed ->
-    fatal("~p crashed: ~p state: ~p~n", [Who, R, State]);
+    fatal("~p crashed: ~p state: ~tp~n", [Who, R, State]);
 
 terminate_proc(Who, Reason, _State) ->
-    mnesia_lib:verbose("~p terminated: ~p~n", [Who, Reason]),
+    mnesia_lib:verbose("~p terminated: ~tp~n", [Who, Reason]),
     ok.
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
@@ -291,7 +294,7 @@ init([Parent]) ->
 
 	    {ok, #state{supervisor = Parent}}
     catch _:Reason ->
-	    mnesia_lib:report_fatal("Bad configuration: ~p~n", [Reason]),
+	    mnesia_lib:report_fatal("Bad configuration: ~tp~n", [Reason]),
 	    {stop, {bad_config, Reason}}
     end.
 
@@ -330,7 +333,7 @@ handle_call({mktab, Tab, Args}, _From, State) ->
     catch error:ExitReason ->
 	    Msg = "Cannot create ets table",
 	    Reason = {system_limit, Msg, Tab, Args, ExitReason},
-	    fatal("~p~n", [Reason]),
+	    fatal("~tp~n", [Reason]),
 	    {noreply, State}
     end;
 
@@ -350,7 +353,7 @@ handle_call({open_dets, Tab, Args}, _From, State) ->
 	{error, Reason} ->
 	    Msg = "Cannot open dets table",
 	    Error = {error, {Msg, Tab, Args, Reason}},
-	    fatal("~p~n", [Error]),
+	    fatal("~tp~n", [Error]),
 	    {noreply, State}
     end;
 
@@ -382,7 +385,7 @@ handle_call({reopen_log, Name, Fname, Head}, _From, State) ->
         {error, Reason} ->
 	    Msg = "Cannot rename disk_log file",
             Error = {error, {Msg, Name, Fname, Head, Reason}},
-	    fatal("~p~n", [Error]),
+	    fatal("~tp~n", [Error]),
  	    {noreply, State}
     end;
 
@@ -397,13 +400,21 @@ handle_call({close_log, Name}, _From, State) ->
         {error, Reason} ->
 	    Msg = "Cannot close disk_log file",
             Error = {error, {Msg, Name, Reason}},
-	    fatal("~p~n", [Error]),
+	    fatal("~tp~n", [Error]),
 	    {noreply, State}
     end;
 
 handle_call({unsafe_close_log, Name}, _From, State) ->
     _ = disk_log:close(Name),
     {reply, ok, State};
+
+handle_call({unsafe_create_external, Tab, Alias, Mod, Cs}, _From, State) ->
+    case ?CATCH(Mod:create_table(Alias, Tab, mnesia_schema:cs2list(Cs))) of
+	{'EXIT', ExitReason} ->
+	    {reply, {error, ExitReason}, State};
+	Reply ->
+	    {reply, Reply, State}
+    end;
 
 handle_call({negotiate_protocol, Mon, _Version, _Protocols}, _From, State)
   when State#state.tm_started == false ->
@@ -424,8 +435,6 @@ handle_call({negotiate_protocol, Mon, Version, Protocols}, From, State)
 	    case hd(Protocols) of
 		?previous_protocol_version ->
 		    accept_protocol(Mon, MyVersion, ?previous_protocol_version, From, State);
-		{7,6} ->
-		    accept_protocol(Mon, MyVersion, {7,6}, From, State);
 		_ ->
 		    verbose("Connection with ~p rejected. "
 			    "version = ~p, protocols = ~p, "
@@ -452,7 +461,7 @@ handle_call(init, _From, State) ->
     {reply, EarlyNodes, State2};
 
 handle_call(Msg, _From, State) ->
-    error("~p got unexpected call: ~p~n", [?MODULE, Msg]),
+    error("~p got unexpected call: ~tp~n", [?MODULE, Msg]),
     {noreply, State}.
 
 accept_protocol(Mon, Version, Protocol, From, State) ->
@@ -526,7 +535,7 @@ handle_cast({inconsistent_database, Context, Node}, State) ->
     {noreply, State};
 
 handle_cast(Msg, State) ->
-    error("~p got unexpected cast: ~p~n", [?MODULE, Msg]),
+    error("~p got unexpected cast: ~tp~n", [?MODULE, Msg]),
     {noreply, State}.
 
 %%----------------------------------------------------------------------
@@ -563,7 +572,7 @@ handle_info(Msg = {'EXIT',Pid,_}, State) ->
 	    %% We have probably got an exit signal from
 	    %% disk_log or dets
 	    Hint = "Hint: check that the disk still is writable",
-	    fatal("~p got unexpected info: ~p; ~p~n",
+	    fatal("~p got unexpected info: ~tp; ~p~n",
 		  [?MODULE, Msg, Hint])
     end;
 
@@ -590,13 +599,13 @@ handle_info({disk_log, _Node, Log, Info}, State) ->
 	{truncated, _No} ->
 	    ok;
 	_ ->
-	    mnesia_lib:important("Warning Log file ~p error reason ~s~n",
+	    mnesia_lib:important("Warning Log file ~tp error reason ~ts~n",
 				 [Log, disk_log:format_error(Info)])
     end,
     {noreply, State};
 
 handle_info(Msg, State) ->
-    error("~p got unexpected info (~p): ~p~n", [?MODULE, State, Msg]).
+    error("~p got unexpected info (~tp): ~tp~n", [?MODULE, State, Msg]).
 
 process_q(State = #state{mq=[]}) -> {noreply,State};
 process_q(State = #state{mq=[{info,Msg}|R]}) ->
@@ -660,6 +669,7 @@ get_env(E) ->
 env() ->
     [
      access_module,
+     allow_index_on_key,
      auto_repair,
      backup_module,
      debug,
@@ -673,19 +683,23 @@ env() ->
      extra_db_nodes,
      ignore_fallback_at_startup,
      fallback_error_function,
+     fold_chunk_size,
      max_wait_for_decision,
      schema_location,
      core_dir,
      pid_sort_order,
      no_table_loaders,
      dc_dump_limit,
-     send_compressed
+     send_compressed,
+     schema
     ].
 
 default_env(access_module) ->
     mnesia;
 default_env(auto_repair) ->
     true;
+default_env(allow_index_on_key) ->
+    false;
 default_env(backup_module) ->
     mnesia_backup;
 default_env(debug) ->
@@ -711,6 +725,8 @@ default_env(ignore_fallback_at_startup) ->
     false;
 default_env(fallback_error_function) ->
     {mnesia, lkill};
+default_env(fold_chunk_size) ->
+    100;
 default_env(max_wait_for_decision) ->
     infinity;
 default_env(schema_location) ->
@@ -724,7 +740,9 @@ default_env(no_table_loaders) ->
 default_env(dc_dump_limit) ->
     4;
 default_env(send_compressed) ->
-    0.
+    0;
+default_env(schema) ->
+    [].
 
 check_type(Env, Val) ->
     try do_check_type(Env, Val)
@@ -732,6 +750,7 @@ check_type(Env, Val) ->
     end.
 
 do_check_type(access_module, A) when is_atom(A) -> A;
+do_check_type(allow_index_on_key, B) -> bool(B);
 do_check_type(auto_repair, B) -> bool(B);
 do_check_type(backup_module, B) when is_atom(B) -> B;
 do_check_type(debug, debug) -> debug;
@@ -755,6 +774,8 @@ do_check_type(extra_db_nodes, L) when is_list(L) ->
 	     (A) when is_atom(A) -> true
 	  end,
     lists:filter(Fun, L);
+do_check_type(fold_chunk_size, I) when is_integer(I), I > 0;
+				       I =:= infinity -> I;
 do_check_type(max_wait_for_decision, infinity) -> infinity;
 do_check_type(max_wait_for_decision, I) when is_integer(I), I > 0 -> I;
 do_check_type(schema_location, M) -> media(M);
@@ -768,7 +789,8 @@ do_check_type(pid_sort_order, "standard") -> standard;
 do_check_type(pid_sort_order, _) -> false;
 do_check_type(no_table_loaders, N) when is_integer(N), N > 0 -> N;
 do_check_type(dc_dump_limit,N) when is_number(N), N > 0 -> N;
-do_check_type(send_compressed, L) when is_integer(L), L >= 0, L =< 9 -> L.
+do_check_type(send_compressed, L) when is_integer(L), L >= 0, L =< 9 -> L;
+do_check_type(schema, L) when is_list(L) -> L.
 
 bool(true) -> true;
 bool(false) -> false.

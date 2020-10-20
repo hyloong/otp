@@ -1,7 +1,7 @@
 %%
 %% %CopyrightBegin%
 %% 
-%% Copyright Ericsson AB 2000-2009. All Rights Reserved.
+%% Copyright Ericsson AB 2000-2016. All Rights Reserved.
 %% 
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -21,52 +21,25 @@
 
 -module(core_lib).
 
--deprecated({get_anno,1,next_major_release}).
--deprecated({set_anno,2,next_major_release}).
--deprecated({is_literal,1,next_major_release}).
--deprecated({is_literal_list,1,next_major_release}).
--deprecated({literal_value,1,next_major_release}).
-
--export([get_anno/1,set_anno/2]).
--export([is_literal/1,is_literal_list/1]).
--export([literal_value/1]).
 -export([make_values/1]).
 -export([is_var_used/2]).
 
 -include("core_parse.hrl").
 
-%%
-%% Generic get/set annotation that should be used only with cerl() structures.
-%%
--spec get_anno(cerl:cerl()) -> term().
+%% Removed functions
 
-get_anno(C) -> cerl:get_ann(C).
+-removed([{get_anno,1,"use cerl:get_ann/1 instead"},
+          {set_anno,2,"use cerl:set_ann/2 instead"}]).
 
--spec set_anno(cerl:cerl(), term()) -> cerl:cerl().
-
-set_anno(C, A) -> cerl:set_ann(C, A).
-
--spec is_literal(cerl:cerl()) -> boolean().
-
-is_literal(Cerl) ->
-    cerl:is_literal(cerl:fold_literal(Cerl)).
-
--spec is_literal_list([cerl:cerl()]) -> boolean().
-
-is_literal_list(Es) -> lists:all(fun is_literal/1, Es).
-
-%% Return the value of LitExpr.
--spec literal_value(cerl:c_literal() | cerl:c_binary() |
-		    cerl:c_map() | cerl:c_cons() | cerl:c_tuple()) -> term().
-
-literal_value(Cerl) ->
-    cerl:concrete(cerl:fold_literal(Cerl)).
+-removed([{is_literal,1,"use cerl:is_literal/1 instead"},
+          {is_literal_list,1,"use cerl:is_literal_list/1 instead"},
+          {literal_value,1,"use cerl:concrete/1 instead"}]).
 
 %% Make a suitable values structure, expr or values, depending on Expr.
 -spec make_values([cerl:cerl()] | cerl:cerl()) -> cerl:cerl().
 
 make_values([E]) -> E;
-make_values([H|_]=Es) -> #c_values{anno=get_anno(H),es=Es};
+make_values([H|_]=Es) -> #c_values{anno=cerl:get_ann(H),es=Es};
 make_values([]) -> #c_values{es=[]};
 make_values(E) -> E.
 
@@ -78,10 +51,6 @@ is_var_used(V, B) -> vu_expr(V, B).
 vu_expr(V, #c_values{es=Es}) ->
     vu_expr_list(V, Es);
 vu_expr(V, #c_var{name=V2}) -> V =:= V2;
-vu_expr(V, #c_alias{var=V2,pat=Pat}) ->
-    %% XXX Must handle aliases in expressions because of sys_core_fold:kill_types/2,
-    %% that uses a pattern as if it was an expression.
-    V =:= V2 orelse vu_expr(V, Pat);
 vu_expr(_, #c_literal{}) -> false;
 vu_expr(V, #c_cons{hd=H,tl=T}) ->
     vu_expr(V, H) orelse vu_expr(V, T);
@@ -115,8 +84,6 @@ vu_expr(V, #c_seq{arg=Arg,body=B}) ->
     vu_expr(V, Arg) orelse vu_expr(V, B);
 vu_expr(V, #c_case{arg=Arg,clauses=Cs}) ->
     vu_expr(V, Arg) orelse vu_clauses(V, Cs);
-vu_expr(V, #c_receive{clauses=Cs,timeout=T,action=A}) ->
-    vu_clauses(V, Cs) orelse vu_expr(V, T) orelse vu_expr(V, A);
 vu_expr(V, #c_apply{op=Op,args=As}) ->
     vu_expr_list(V, [Op|As]);
 vu_expr(V, #c_call{module=M,name=N,args=As}) ->
@@ -151,77 +118,47 @@ vu_seg_list(V, Ss) ->
 		      vu_expr(V, Val) orelse vu_expr(V, Size)
 	      end, Ss).
 
-%% Have to get the pattern results right.
-
 -spec vu_clause(cerl:var_name(), cerl:c_clause()) -> boolean().
 
 vu_clause(V, #c_clause{pats=Ps,guard=G,body=B}) ->
-    case vu_pattern_list(V, Ps) of
-	{true,_Shad} -> true;			%It is used
-	{false,true} -> false;			%Shadowed
-	{false,false} ->			%Not affected
-	    %% Neither used nor shadowed. Check guard and body.
-	    vu_expr(V, G) orelse vu_expr(V, B)
-    end.
+    vu_pattern_list(V, Ps) orelse  vu_expr(V, G) orelse vu_expr(V, B).
 
 -spec vu_clauses(cerl:var_name(), [cerl:c_clause()]) -> boolean().
 
 vu_clauses(V, Cs) ->
     lists:any(fun(C) -> vu_clause(V, C) end, Cs).
 
-%% vu_pattern(VarName, Pattern) -> {Used,Shadow}.
-%% vu_pattern_list(VarName, [Pattern]) -> {Used,Shadow}.
-%%  Binaries complicate patterns as a variable can both be properly
-%%  used, in a bit segment size, and shadow.  They can also do both.
- 
-%% vu_pattern(V, Pat) -> vu_pattern(V, Pat, {false,false}).
+%% vu_pattern(VarName, Pattern) -> Used.
+%% vu_pattern_list(VarName, [Pattern]) -> Used.
+%%  Binary and map patterns can use variables.
 
-vu_pattern(V, #c_var{name=V2}, {Used,_}) ->
-    {Used,V =:= V2};
-vu_pattern(V, #c_cons{hd=H,tl=T}, St0) ->
-    case vu_pattern(V, H, St0) of
-	{true,_}=St1 -> St1;			%Nothing more to know
-	St1 -> vu_pattern(V, T, St1)
-    end;
-vu_pattern(V, #c_tuple{es=Es}, St) ->
-    vu_pattern_list(V, Es, St);
-vu_pattern(V, #c_binary{segments=Ss}, St) ->
-    vu_pat_seg_list(V, Ss, St);
-vu_pattern(V, #c_map{es=Es}, St) ->
-    vu_map_pairs(V, Es, St);
-vu_pattern(V, #c_alias{var=Var,pat=P}, St0) ->
-    case vu_pattern(V, Var, St0) of
-	{true,_}=St1 -> St1;
-	St1 -> vu_pattern(V, P, St1)
-    end;
-vu_pattern(_, _, St) -> St.
+vu_pattern(V, #c_var{name=V2}) ->
+    V =:= V2;
+vu_pattern(V, #c_cons{hd=H,tl=T}) ->
+    vu_pattern(V, H) orelse vu_pattern(V, T);
+vu_pattern(V, #c_tuple{es=Es}) ->
+    vu_pattern_list(V, Es);
+vu_pattern(V, #c_binary{segments=Ss}) ->
+    vu_pat_seg_list(V, Ss);
+vu_pattern(V, #c_map{es=Es}) ->
+    vu_map_pairs(V, Es);
+vu_pattern(V, #c_alias{var=Var,pat=P}) ->
+    vu_pattern(V, Var) orelse vu_pattern(V, P);
+vu_pattern(_V, #c_literal{}) -> false.
 
-vu_pattern_list(V, Ps) -> vu_pattern_list(V, Ps, {false,false}).
+vu_pattern_list(V, Ps) ->
+    lists:any(fun(P) -> vu_pattern(V, P) end, Ps).
 
-vu_pattern_list(V, Ps, St0) ->
-    lists:foldl(fun(P, St) -> vu_pattern(V, P, St) end, St0, Ps).
+vu_pat_seg_list(V, Ss) ->
+    lists:any(fun(#c_bitstr{size=Size}) ->
+                      vu_pattern(V, Size)
+              end, Ss).
 
-vu_pat_seg_list(V, Ss, St) ->
-    lists:foldl(fun(_, {true,_}=St0) -> St0;
-		   (#c_bitstr{val=Val,size=Size}, St0) ->
-			case vu_pattern(V, Val, St0) of
-			    {true,_}=St1 -> St1;
-			    {false,Shad} ->
-				{vu_expr(V, Size),Shad}
-			end
-		end, St, Ss).
-
-vu_map_pairs(V, [#c_map_pair{key=Key,val=Pat}|T], St0) ->
-    case vu_expr(V, Key) of
-	true ->
-	    {true,false};
-	false ->
-	    case vu_pattern(V, Pat, St0) of
-		{true,_}=St -> St;
-		St -> vu_map_pairs(V, T, St)
-	    end
-    end;
-vu_map_pairs(_, [], St) -> St.
+vu_map_pairs(V, [#c_map_pair{key=Key,val=Pat}|T]) ->
+    vu_expr(V, Key) orelse
+        vu_pattern(V, Pat) orelse
+        vu_map_pairs(V, T);
+vu_map_pairs(_, []) -> false.
 
 -spec vu_var_list(cerl:var_name(), [cerl:c_var()]) -> boolean().
 

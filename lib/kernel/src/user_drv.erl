@@ -1,7 +1,7 @@
 %%
 %% %CopyrightBegin%
 %% 
-%% Copyright Ericsson AB 1996-2013. All Rights Reserved.
+%% Copyright Ericsson AB 1996-2020. All Rights Reserved.
 %% 
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -32,9 +32,10 @@
 -define(OP_BEEP,4).
 -define(OP_PUTC_SYNC,5).
 % Control op
--define(CTRL_OP_GET_WINSIZE,100).
--define(CTRL_OP_GET_UNICODE_STATE,101).
--define(CTRL_OP_SET_UNICODE_STATE,102).
+-define(ERTS_TTYSL_DRV_CONTROL_MAGIC_NUMBER, 16#018b0900).
+-define(CTRL_OP_GET_WINSIZE, (100 + ?ERTS_TTYSL_DRV_CONTROL_MAGIC_NUMBER)).
+-define(CTRL_OP_GET_UNICODE_STATE, (101 + ?ERTS_TTYSL_DRV_CONTROL_MAGIC_NUMBER)).
+-define(CTRL_OP_SET_UNICODE_STATE, (102 + ?ERTS_TTYSL_DRV_CONTROL_MAGIC_NUMBER)).
 
 %% start()
 %% start(ArgumentList)
@@ -119,7 +120,20 @@ server1(Iport, Oport, Shell) ->
     {Curr,Shell1} =
 	case init:get_argument(remsh) of
 	    {ok,[[Node]]} ->
-		ANode = list_to_atom(Node),
+                ANode =
+                    if
+                        node() =:= nonode@nohost ->
+                            %% We try to connect to the node if the current node is not
+                            %% a distributed node yet. If this succeeds it means that we
+                            %% are running using "-sname undefined".
+                            _ = net_kernel:start([undefined, shortnames]),
+                            NodeName = append_hostname(Node, net_kernel:nodename()),
+                            true = net_kernel:connect_node(NodeName),
+                            NodeName;
+                        true ->
+                            append_hostname(Node, node())
+                    end,
+
 		RShell = {ANode,shell,start,[]},
 		RGr = group:start(self(), RShell, rem_sh_opts(ANode)),
 		{RGr,RShell};
@@ -137,6 +151,14 @@ server1(Iport, Oport, Shell) ->
 
     %% Enter the server loop.
     server_loop(Iport, Oport, Curr, User, Gr, {false, queue:new()}).
+
+append_hostname(Node, LocalNode) ->
+    case string:find(Node,"@") of
+        nomatch ->
+            list_to_atom(Node ++ string:find(atom_to_list(LocalNode),"@"));
+        _ ->
+            list_to_atom(Node)
+    end.
 
 rem_sh_opts(Node) ->
     [{expand_fun,fun(B)-> rpc:call(Node,edlin_expand,expand,[B]) end}].
@@ -175,6 +197,18 @@ server_loop(Iport, Oport, Curr, User, Gr, {Resp, IOQ} = IOQueue) ->
 	{Iport,eof} ->
 	    Curr ! {self(),eof},
 	    server_loop(Iport, Oport, Curr, User, Gr, IOQueue);
+
+        %% We always handle geometry and unicode requests
+        {Requester,tty_geometry} ->
+            Requester ! {self(),tty_geometry,get_tty_geometry(Iport)},
+            server_loop(Iport, Oport, Curr, User, Gr, IOQueue);
+        {Requester,get_unicode_state} ->
+            Requester ! {self(),get_unicode_state,get_unicode_state(Iport)},
+            server_loop(Iport, Oport, Curr, User, Gr, IOQueue);
+        {Requester,set_unicode_state, Bool} ->
+            Requester ! {self(),set_unicode_state,set_unicode_state(Iport,Bool)},
+            server_loop(Iport, Oport, Curr, User, Gr, IOQueue);
+
         Req when element(1,Req) =:= User orelse element(1,Req) =:= Curr,
                  tuple_size(Req) =:= 2 orelse tuple_size(Req) =:= 3 ->
             %% We match {User|Curr,_}|{User|Curr,_,_}
@@ -224,21 +258,16 @@ server_loop(Iport, Oport, Curr, User, Gr, {Resp, IOQ} = IOQueue) ->
 		_ ->				% not current, just remove it
 		    server_loop(Iport, Oport, Curr, User, gr_del_pid(Gr, Pid), IOQueue)
 	    end;
+        {Requester, {put_chars_sync, _, _, Reply}} ->
+            %% We need to ack the Req otherwise originating process will hang forever
+            %% Do discard the output to non visible shells (as was done previously)
+            Requester ! {reply, Reply},
+            server_loop(Iport, Oport, Curr, User, Gr, IOQueue);
 	_X ->
-	    %% Ignore unknown messages.
-	    server_loop(Iport, Oport, Curr, User, Gr, IOQueue)
+            %% Ignore unknown messages.
+            server_loop(Iport, Oport, Curr, User, Gr, IOQueue)
     end.
 
-%% We always handle geometry and unicode requests
-handle_req({Curr,tty_geometry},Iport,_Oport,IOQueue) ->
-    Curr ! {self(),tty_geometry,get_tty_geometry(Iport)},
-    IOQueue;
-handle_req({Curr,get_unicode_state},Iport,_Oport,IOQueue) ->
-    Curr ! {self(),get_unicode_state,get_unicode_state(Iport)},
-    IOQueue;
-handle_req({Curr,set_unicode_state, Bool},Iport,_Oport,IOQueue) ->
-    Curr ! {self(),set_unicode_state,set_unicode_state(Iport,Bool)},
-    IOQueue;
 handle_req(next,Iport,Oport,{false,IOQ}=IOQueue) ->
     case queue:out(IOQ) of
         {empty,_} ->
@@ -529,19 +558,14 @@ set_unicode_state(Iport, Bool) ->
 %% io_request(Request, InPort, OutPort)
 %% io_requests(Requests, InPort, OutPort)
 %% Note: InPort is unused.
-
-io_request(Request, Iport, Oport) ->
-    try io_command(Request) of
-        {command,_} = Command ->
-            Oport ! {self(),Command},
-            ok;
-        {Command,Reply} ->
-            Oport ! {self(),Command},
-            Reply
-    catch
-        {requests,Rs} ->
-            io_requests(Rs, Iport, Oport);
-        _ ->
+io_request({requests,Rs}, Iport, Oport) ->
+    io_requests(Rs, Iport, Oport);
+io_request(Request, _Iport, Oport) ->
+    case io_command(Request) of
+        {Data, Reply} ->
+            true = port_command(Oport, Data),
+            Reply;
+        unhandled ->
             ok
     end.
 
@@ -559,20 +583,21 @@ put_int16(N, Tail) ->
 %% is sent back to the process sending the request. This command was added in
 %% OTP 18 to make sure that data sent from io:format is actually printed
 %% to the console before the vm stops when calling erlang:halt(integer()).
+-dialyzer({no_improper_lists, io_command/1}).
 io_command({put_chars_sync, unicode,Cs,Reply}) ->
-    {{command,[?OP_PUTC_SYNC|unicode:characters_to_binary(Cs,utf8)]},Reply};
+    {[?OP_PUTC_SYNC|unicode:characters_to_binary(Cs,utf8)], Reply};
 io_command({put_chars, unicode,Cs}) ->
-    {command,[?OP_PUTC|unicode:characters_to_binary(Cs,utf8)]};
+    {[?OP_PUTC|unicode:characters_to_binary(Cs,utf8)], ok};
 io_command({move_rel,N}) ->
-    {command,[?OP_MOVE|put_int16(N, [])]};
+    {[?OP_MOVE|put_int16(N, [])], ok};
 io_command({insert_chars,unicode,Cs}) ->
-    {command,[?OP_INSC|unicode:characters_to_binary(Cs,utf8)]};
+    {[?OP_INSC|unicode:characters_to_binary(Cs,utf8)], ok};
 io_command({delete_chars,N}) ->
-    {command,[?OP_DELC|put_int16(N, [])]};
+    {[?OP_DELC|put_int16(N, [])], ok};
 io_command(beep) ->
-    {command,[?OP_BEEP]};
-io_command(Else) ->
-    throw(Else).
+    {[?OP_BEEP], ok};
+io_command(_) ->
+    unhandled.
 
 %% gr_new()
 %% gr_get_num(Group, Index)

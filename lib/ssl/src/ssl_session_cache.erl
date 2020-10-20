@@ -1,7 +1,7 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2008-2014. All Rights Reserved.
+%% Copyright Ericsson AB 2008-2016. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -27,7 +27,7 @@
 -include("ssl_internal.hrl").
 
 -export([init/1, terminate/1, lookup/2, update/3, delete/2, foldl/3, 
-	 select_session/2]). 
+	 select_session/2, size/1, take_oldest/1]). 
 
 %%--------------------------------------------------------------------
 %% Description: Return table reference. Called by ssl_manager process. 
@@ -42,15 +42,18 @@ terminate(Cache) ->
     ets:delete(Cache).
 
 %%--------------------------------------------------------------------
-%% Description: Looks up a cach entry. Should be callable from any
+%% Description: Looks up a cache entry. Should be callable from any
 %% process.
 %%--------------------------------------------------------------------
 lookup(Cache, Key) ->
-    case ets:lookup(Cache, Key) of
+    try ets:lookup(Cache, Key) of
 	[{Key, Session}] ->
 	    Session;
 	[] ->
 	    undefined
+    catch
+        _:_ ->
+            undefined
     end.
 
 %%--------------------------------------------------------------------
@@ -61,7 +64,7 @@ update(Cache, Key, Session) ->
     ets:insert(Cache, {Key, Session}).
 
 %%--------------------------------------------------------------------
-%% Description: Delets a cache entry.
+%% Description: Deletes a cache entry.
 %% Will only be called from the ssl_manager process.
 %%--------------------------------------------------------------------
 delete(Cache, Key) ->
@@ -75,15 +78,41 @@ delete(Cache, Key) ->
 %% is empty.Should be callable from any process
 %%--------------------------------------------------------------------
 foldl(Fun, Acc0, Cache) ->
-    ets:foldl(Fun, Acc0, Cache).
+    try ets:foldl(Fun, Acc0, Cache) of
+        Result ->
+            Result
+    catch
+        _:_ ->
+            Acc0
+    end.
   
 %%--------------------------------------------------------------------
 %% Description: Selects a session that could be reused. Should be callable
 %% from any process.
 %%--------------------------------------------------------------------
 select_session(Cache, PartialKey) ->    
-    ets:select(Cache, 
-	       [{{{PartialKey,'$1'}, '$2'},[],['$$']}]).
+    try ets:select(Cache, 
+                   [{{{PartialKey,'_'}, '$1'},[],['$1']}]) of
+        Result ->
+            Result
+    catch 
+        _:_ ->
+            []
+    end.
+
+%%--------------------------------------------------------------------
+%% Description: Returns the cache size
+%%--------------------------------------------------------------------
+size(Cache) ->
+    ets:info(Cache, size).
+
+%%--------------------------------------------------------------------
+%% Description: Returns the oldest entry
+%%--------------------------------------------------------------------
+take_oldest(Cache) ->
+    {Key, Oldest} = ets:first(Cache),
+    delete(Cache, Key),
+    {Oldest, Cache}.
 
 %%--------------------------------------------------------------------
 %%% Internal functions

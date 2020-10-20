@@ -1,7 +1,7 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2010-2011. All Rights Reserved.
+%% Copyright Ericsson AB 2010-2018. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -24,7 +24,12 @@
 %%----------------------------------------------------------------------
 -module(wx_app_SUITE).
 
--compile(export_all).
+-export([all/0, suite/0,groups/0,init_per_group/2,end_per_group/2,
+	 init_per_suite/1, end_per_suite/1,
+	 init_per_testcase/2, end_per_testcase/2]).
+
+-export([t/0, t/1, fields/1, modules/1, exportall/1, app_depend/1,
+         undef_funcs/0, undef_funcs/1, appup/1]).
 
 -include("wx_test_lib.hrl").
 -include_lib("common_test/include/ct.hrl").
@@ -49,7 +54,7 @@ end_per_testcase(Func,Config) ->
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
-suite() -> [{ct_hooks,[ts_install_cth]}].
+suite() -> [{ct_hooks,[ts_install_cth]}, {timetrap,{minutes,5}}].
 
 all() -> 
     [fields, modules, exportall, app_depend, undef_funcs, appup].
@@ -221,12 +226,10 @@ check_apps([App|Apps]) ->
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
-undef_funcs(suite) ->
-    [];
-undef_funcs(doc) ->
-    [];
+undef_funcs() ->
+    [{timetrap,{minutes,10}}].
+
 undef_funcs(Config) when is_list(Config) ->
-    catch test_server:timetrap(timer:minutes(10)),
     App            = wx,
     AppFile        = key1search(app_file, Config),
     Mods           = key1search(modules, AppFile),

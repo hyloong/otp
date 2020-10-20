@@ -277,6 +277,9 @@ while testing, you can write to the `user' output stream, as in
 `io:format(user, "~w", [Term])'. The recommended way of doing this is to
 use the EUnit {@section Debugging macros}, which make it much simpler.
 
+For checking the output produced by the unit under test, see
+{@section Macros for checking output}.
+
 === Writing test generating functions ===
 
 A drawback of simple test functions is that you must write a separate
@@ -415,6 +418,7 @@ your code is compiled with testing enabled or disabled.
 <li>{@section Compilation control macros}</li>
 <li>{@section Utility macros}</li>
 <li>{@section Assert macros}</li>
+<li>{@section Macros for checking output}</li>
 <li>{@section Macros for running external commands}</li>
 <li>{@section Debugging macros}</li>
 </ul>
@@ -578,7 +582,7 @@ results for equality, if testing is enabled. If the values are not
 equal, an informative exception will be generated; see the `assert'
 macro for further details.
 
-`assertEqual' is more suitable than than `assertMatch' when the
+`assertEqual' is more suitable than `assertMatch' when the
 left-hand side is a computed value rather than a simple pattern, and
 gives more details than `?assert(Expect =:= Expr)'.
 
@@ -605,6 +609,22 @@ Examples:
 ```?assertError(badarith, X/0)'''
 ```?assertExit(normal, exit(normal))'''
 ```?assertException(throw, {not_found,_}, throw({not_found,42}))'''
+</dd>
+</dl>
+
+=== Macros for checking output ===
+
+The following macro can be used within a test case to retreive the
+output written to standard output.
+
+<dl>
+<dt>`capturedOutput'</dt>
+<dd>The output captured by EUnit in the current test case, as a string.
+
+Examples:
+
+```io:format("Hello~n"),
+   ?assertEqual("Hello\n", ?capturedOutput)'''
 </dd>
 </dl>
 
@@ -690,9 +710,12 @@ it like `debugMsg'. The result is always `ok'.</dd>
 <dt>`debugVal(Expr)'</dt>
 <dd>Prints both the source code for `Expr' and its current value. E.g.,
 `?debugVal(f(X))' might be displayed as "`f(X) = 42'". (Large terms are
-shown truncated.) The result is always the value of `Expr', so this
-macro can be wrapped around any expression to display its value when
-the code is compiled with debugging enabled.</dd>
+truncated to the depth given by the macro `EUNIT_DEBUG_VAL_DEPTH', which
+defaults to 15 but can be overridden by the user.) The result is always the
+value of `Expr', so this macro can be wrapped around any expression to
+display its value when the code is compiled with debugging enabled.</dd>
+<dt>`debugVal(Expr, Depth)'</dt>
+<dd>Like `debugVal(Expr)', but prints terms truncated to the given depth.</dd>
 <dt>`debugTime(Text,Expr)'</dt>
 <dd>Prints `Text' and the wall clock time for evaluation of `Expr'. The
 result is always the value of `Expr', so this macro can be wrapped
@@ -885,7 +908,7 @@ the timeout is exceeded, the unfinished tests will be forced to
 terminate. Note that if a timeout is set around a fixture, it includes
 the time for setup and cleanup, and if the timeout is triggered, the
 entire fixture is abruptly terminated (without running the
-cleanup).</dd>
+cleanup). The default timeout for an individual test is 5 seconds.</dd>
 <dt>`{inorder, Tests}'</dt>
 <dd>Runs the specified tests in strict order. Also see `{inparallel,
 Tests}'. By default, tests are neither marked as `inorder' or
@@ -907,7 +930,6 @@ the test set is finished, regardless of the outcome (success, failures,
 timeouts, etc.).
 
 To make the descriptions simpler, we first list some definitions:
-<center>
 <table border="0" cellspacing="4">
 <tr>
 <td>`Setup'</td><td>`() -> (R::any())'</td>
@@ -928,7 +950,6 @@ To make the descriptions simpler, we first list some definitions:
 <td>`Where'</td><td>`local | spawn | {spawn, Node::atom()}'</td>
 </tr>
 </table>
-</center>
 (these are explained in more detail further below.)
 
 The following representations specify fixture handling for test sets:
@@ -993,7 +1014,7 @@ specified node. `local' means that the current process will handle both
 setup/teardown and running the tests - the drawback is that if a test
 times out so that the process is killed, the <em>cleanup will not be
 performed</em>; hence, avoid this for persistent fixtures such as file
-operations. In general, 'local' should only be used when:
+operations. In general, `local' should only be used when:
 <ul>
   <li>the setup/teardown needs to be executed by the process that will
   run the tests;</li>

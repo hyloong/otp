@@ -2,7 +2,7 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 1997-2013. All Rights Reserved.
+%% Copyright Ericsson AB 1997-2020. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -23,10 +23,9 @@
 
 %% Main Module for ASN.1 compile time functions
 
-%-compile(export_all).
 -export([check/2,storeindb/2,format_error/1]).
-%-define(debug,1).
 -include("asn1_records.hrl").
+
 %%% The tag-number for universal types
 -define(N_BOOLEAN, 1). 
 -define(N_INTEGER, 2). 
@@ -63,7 +62,8 @@
 -define(TAG_CONSTRUCTED(Num),
 	#tag{class='UNIVERSAL',number=Num,type='IMPLICIT',form=32}).
 
--record(newt,{type=unchanged,tag=unchanged,constraint=unchanged,inlined=no}). % used in check_type to update type and tag
+%% used in check_type to update type and tag
+-record(newt,{type=unchanged,tag=unchanged,constraint=unchanged,inlined=no}).
  
 check(S,{Types,Values,ParameterizedTypes,Classes,Objects,ObjectSets}) ->
     %%Predicates used to filter errors
@@ -561,7 +561,6 @@ check_class_fields(S,[F|Fields],Acc) ->
 			    D;
 			{undefined,user} -> 
 			    %% neither of {primitive,bif} or {constructed,bif}
-				    
 			    {_,D} = get_referenced_type(S,#'Externaltypereference'{module=S#state.mname,type=Type#type.def}),
 			    D;
 			_ ->
@@ -623,7 +622,6 @@ if_current_checked_type(S,#type{def=Def}) ->
     CurrentModule = S#state.mname,
     CurrentCheckedName = S#state.tname,
     MergedModules = S#state.inputmodules,
- %   CurrentCheckedModule = S#state.mname,
     case Def of
 	#'Externaltypereference'{module=CurrentModule,
 				 type=CurrentCheckedName} ->
@@ -656,7 +654,6 @@ check_pobjectset(S,PObjSet) ->
 	    ClassName = #'Externaltypereference'{module=Mod,
 						 type=get_datastr_name(Def)},
 	    {valueset,Set} = ValueSet,
-%	    ObjectSet = #'ObjectSet'{class={objectclassname,ClassName},
 	    ObjectSet = #'ObjectSet'{class=ClassName,
 				     set=Set},
 	    #pobjectsetdef{pos=Pos,name=Name,args=Args,class=Type#type.def,
@@ -1552,9 +1549,11 @@ match_syntax_objset_1(_, {object,_,_}=Object, ClassDef) ->
 make_objset(ClassDef, Set) ->
     #typedef{typespec=#'ObjectSet'{class=ClassDef,set=Set}}.
 
+-spec syntax_match_error(_) -> no_return().
 syntax_match_error(S) ->
     asn1_error(S, syntax_nomatch).
 
+-spec syntax_match_error(_, _) -> no_return().
 syntax_match_error(S, What0) ->
     What = printable_string(What0),
     asn1_error(S, {syntax_nomatch,What}).
@@ -1577,13 +1576,15 @@ printable_string_1(#'Externalvaluereference'{value=Type}) ->
 printable_string_1({Atom,Line}) when is_atom(Atom), is_integer(Line) ->
     q(Atom);
 printable_string_1({object,definedsyntax,L}) ->
-    q(string:join([printable_string_1(Item) || Item <- L], " "));
+    Str = lists:join($\s, [printable_string_1(Item) || Item <- L]),
+    q(lists:flatten(Str));
 printable_string_1([_|_]=Def) ->
     case lists:all(fun is_integer/1, Def) of
 	true ->
 	    lists:flatten(io_lib:format("~p", [Def]));
 	false ->
-	    q(string:join([printable_string_1(Item) || Item <- Def], " "))
+            Str = lists:join($\s, [printable_string_1(Item) || Item <- Def]),
+            q(lists:flatten(Str))
     end;
 printable_string_1(Def) ->
     lists:flatten(io_lib:format("~p", [Def])).
@@ -1694,7 +1695,7 @@ check_value(OldS,V) when is_record(V,typedef) ->
 		    %% reference to class
 		    check_value(OldS,V#typedef{typespec=TS#'ObjectSet'{class=Eref}});
 		#typedef{typespec=HostType} ->
-		    % an ordinary value set with a type in #typedef.typespec
+		    %% an ordinary value set with a type in #typedef.typespec
 		    ValueSet0 = TS#'ObjectSet'.set,
 		    Constr = check_constraints(OldS, HostType, [ValueSet0]),
 		    Type = check_type(OldS,TSDef,TSDef#typedef.typespec),
@@ -1709,7 +1710,7 @@ check_value(S,#valuedef{pos=Pos,name=Name,type=Type,
     {valueset,
      check_type(S,#typedef{pos=Pos,name=Name,typespec=NewType},NewType)};
 check_value(S, #valuedef{}=V) ->
-    ?dbg("check_value, V: ~p~n",[V0]),
+    ?dbg("check_value, V: ~p~n",[V]),
     case V of
 	#valuedef{checked=true} ->
 	    V;
@@ -1720,7 +1721,8 @@ check_value(S, #valuedef{}=V) ->
 check_valuedef(#state{recordtopname=TopName}=S0, V0) ->
     #valuedef{name=Name,type=Vtype0,value=Value,module=ModName} = V0,
     V = V0#valuedef{checked=true},
-    Vtype = check_type(S0, #typedef{name=Name,typespec=Vtype0},Vtype0),
+    Vtype1 = expand_valuedef_type(Vtype0),
+    Vtype = check_type(S0, #typedef{name=Name,typespec=Vtype1},Vtype1),
     Def = Vtype#type.def,
     S1 = S0#state{tname=Def},
     SVal = update_state(S1, ModName),
@@ -1765,6 +1767,27 @@ check_valuedef(#state{recordtopname=TopName}=S0, V0) ->
 	_ ->
 	    V#valuedef{value=normalize_value(SVal, Vtype, Value, TopName)}
     end.
+
+expand_valuedef_type(#type{def=Seq}=Type)
+  when is_record(Seq,'SEQUENCE') ->
+    NewComponents = case Seq#'SEQUENCE'.components of
+                        {R1,_Ext,R2} -> R1 ++ R2;
+                        {Root,_Ext} -> Root;
+                        Root -> take_only_rootset(Root)
+                    end,
+    NewSeq = Seq#'SEQUENCE'{components = NewComponents},
+    Type#type{def=NewSeq};
+expand_valuedef_type(#type{def=Set}=Type)
+  when is_record(Set,'SET') ->
+    NewComponents = case Set#'SET'.components of
+                        {R1,_Ext,R2} -> R1 ++ R2;
+                        {Root,_Ext} -> Root;
+                        Root -> take_only_rootset(Root)
+                    end,
+    NewSet = Set#'SET'{components = NewComponents},
+    Type#type{def=NewSet};
+expand_valuedef_type(Type) ->
+    Type.
 
 is_contextswitchtype(#typedef{name='EXTERNAL'})->
     true;
@@ -1997,7 +2020,8 @@ normalize_value(S, Type, {'DEFAULT',Value}, NameList) ->
 	{'ENUMERATED',CType,_} ->
 	    normalize_enumerated(S,Value,CType);
 	{'CHOICE',CType,NewNameList} ->
-	    normalize_choice(S,Value,CType,NewNameList);
+	    ChoiceComponents = get_choice_components(S, {'CHOICE',CType}),
+	    normalize_choice(S,Value,ChoiceComponents,NewNameList);
 	{'SEQUENCE',CType,NewNameList} ->
 	    normalize_sequence(S,Value,CType,NewNameList);
 	{'SEQUENCE OF',CType,NewNameList} ->
@@ -2139,6 +2163,9 @@ normalize_octetstring(S, Value) ->
 		_ ->
 		    asn1_error(S, illegal_octet_string_value)
 	    end;
+        Val when is_binary(Val) ->
+            %% constant default value
+            Val;
 	_ ->
 	    asn1_error(S, illegal_octet_string_value)
     end.
@@ -2237,12 +2264,18 @@ normalized_record(SorS,S,Value,Components,NameList) ->
     case is_record_normalized(S,NewName,Value,length(Components)) of
 	true ->
 	    Value;
-	_ ->
+	false ->
 	    NoComps = length(Components),
 	    ListOfVals = normalize_seq_or_set(SorS,S,Value,Components,NameList,[]),
-	    NoComps = length(ListOfVals), %% Assert
-	    list_to_tuple([NewName|ListOfVals])
+	    NoComps = length(ListOfVals),       %Assertion.
+            case use_maps(S) of
+                false ->
+                    list_to_tuple([NewName|ListOfVals]);
+                true ->
+                    create_map_value(Components, ListOfVals)
+            end
     end.
+
 is_record_normalized(S,Name,V = #'Externalvaluereference'{},NumComps) ->
     case get_referenced_type(S,V) of
 	{_M,#valuedef{type=_T1,value=V2}} ->
@@ -2251,8 +2284,19 @@ is_record_normalized(S,Name,V = #'Externalvaluereference'{},NumComps) ->
     end;
 is_record_normalized(_S,Name,Value,NumComps) when is_tuple(Value) ->
     (tuple_size(Value) =:= (NumComps + 1)) andalso (element(1, Value) =:= Name);
+is_record_normalized(_S, _Name, Value, _NumComps) when is_map(Value) ->
+    true;
 is_record_normalized(_,_,_,_) ->
     false.
+
+use_maps(#state{options=Opts}) ->
+    lists:member(maps, Opts).
+
+create_map_value(Components, ListOfVals) ->
+    Zipped = lists:zip(Components, ListOfVals),
+    L = [{Name,V} || {#'ComponentType'{name=Name},V} <- Zipped,
+                     V =/= asn1_NOVALUE],
+    maps:from_list(L).
 
 normalize_seq_or_set(SorS, S,
 		     [{#seqtag{val=Cname},V}|Vs],
@@ -2362,15 +2406,6 @@ normalize_s_of(SorS,S,Value,Type,NameList)
 
 
 %% normalize_restrictedstring handles all format of restricted strings.
-%% tuple case
-% normalize_restrictedstring(_S,[Int1,Int2],_) when is_integer(Int1),is_integer(Int2) ->
-%     {Int1,Int2};
-% %% quadruple case
-% normalize_restrictedstring(_S,[Int1,Int2,Int3,Int4],_) when is_integer(Int1),
-% 							   is_integer(Int2),
-% 							   is_integer(Int3),
-% 							   is_integer(Int4) ->
-%     {Int1,Int2,Int3,Int4};
 %% character string list case
 normalize_restrictedstring(S,[H|T],CType) when is_list(H);is_tuple(H) ->
     [normalize_restrictedstring(S,H,CType)|normalize_restrictedstring(S,T,CType)];
@@ -2472,7 +2507,7 @@ check_ptype(S,Type,Ts) when is_record(Ts,type) ->
 		  Ts#type{def=TDef}
 	  end,
     Ts2;
-%parameterized class
+%% parameterized class
 check_ptype(_S,_PTDef,Ts) when is_record(Ts,objectclass) ->
     throw({asn1_param_class,Ts}).
 
@@ -2487,8 +2522,6 @@ check_formal_parameter(_, #'Externaltypereference'{}) ->
 check_formal_parameter(S, #'Externalvaluereference'{value=Name}) ->
     asn1_error(S, {illegal_typereference,Name}).
 
-% check_type(S,Type,ObjSpec={{objectclassname,_},_}) ->
- %     check_class(S,ObjSpec);
 check_type(_S,Type,Ts) when is_record(Type,typedef),
 			   (Type#typedef.checked==true) ->
     Ts;
@@ -2587,7 +2620,6 @@ check_type(S=#state{recordtopname=TopName},Type,Ts) when is_record(Ts,type) ->
 			  constraint = NewC};
 		    _ ->
 			%% Here we only expand the tags and keep the ext ref.
-			    
 			NewExt = ExtRef#'Externaltypereference'{module=merged_mod(S,RefMod,Ext)},
 			TempNewDef#newt{
 			  type = check_externaltypereference(S,NewExt),
@@ -2730,7 +2762,6 @@ check_type(S=#state{recordtopname=TopName},Type,Ts) when is_record(Ts,type) ->
 		    case TopName of
 			[] ->
 			    [get_datastr_name(Type)];
-%			    [Type#typedef.name];
 			_ -> 
 			    TopName
 		    end,
@@ -2746,15 +2777,15 @@ check_type(S=#state{recordtopname=TopName},Type,Ts) when is_record(Ts,type) ->
 		TempNewDef#newt{type={'SEQUENCE OF',check_sequenceof(S,Type,Components)},
 				tag=
 				merge_tags(Tag,?TAG_CONSTRUCTED(?N_SEQUENCE))};
-	    {'CHOICE',Components} ->
+	    {'CHOICE',_} = Choice->
 		Ct = maybe_illicit_implicit_tag(S, choice, Tag),
+                Components = get_choice_components(S, Choice),
 		TempNewDef#newt{type={'CHOICE',check_choice(S,Type,Components)},tag=Ct};
 	    Set when is_record(Set,'SET') ->
 		RecordName=
 		    case TopName of
 			[] ->
 			    [get_datastr_name(Type)];
-%			    [Type#typedef.name];
 			_ -> 
 			    TopName
 		    end,
@@ -2879,8 +2910,6 @@ tablecinf_choose(#'SEQUENCE'{tablecinf=TCI}) ->
 
 get_innertag(_S,#'ObjectClassFieldType'{type=Type}) ->
     case Type of
-%	#type{tag=Tag} -> Tag;
-%	{fixedtypevaluefield,_,#type{tag=[]}=T} -> get_taglist(S,T);
 	{fixedtypevaluefield,_,#type{tag=Tag}} -> Tag;
 	{TypeFieldName,_} when is_atom(TypeFieldName) -> [];
 	_ -> []
@@ -3735,14 +3764,8 @@ check_reference(S,#'Externaltypereference'{pos=Pos,module=Emod,type=Name}) ->
 		{ok,Imodule} ->
 		    check_imported(S,Imodule,Name),
 		    #'Externaltypereference'{module=Imodule,type=Name};
-%% 		    case check_imported(S,Imodule,Name) of
-%% 			ok ->
-%% 			    #'Externaltypereference'{module=Imodule,type=Name};
-%% 			Err ->
-%% 			    Err
-%% 		    end;
 		_ ->
-		    %may be a renamed type in multi file compiling!
+		    %% may be a renamed type in multi file compiling!
 		    {M,T}=get_renamed_reference(S,Name,Emod),
 		    NewName = asn1ct:get_name_of_def(T),
 		    NewPos = asn1ct:get_pos_of_def(T),
@@ -4151,7 +4174,6 @@ iof_associated_type(S,[]) ->
 					    def=AssociateSeq}},
 	    asn1_db:dbput(S#state.mname,'INSTANCE OF',TypeDef),
 	    instance_of_decl(S#state.mname);
-%%	    put(instance_of,{generate,S#state.mname});
 	_ ->
 	    instance_of_decl(S#state.mname),
 	    ok
@@ -4180,17 +4202,15 @@ iof_associated_type1(S,C) ->
     ObjectIdentifier =
 	#'ObjectClassFieldType'{classname=TypeIdentifierRef,
 				class=[],
-%%				fieldname=[{valuefieldreference,id}],
 				fieldname={id,[]},
 				type={fixedtypevaluefield,id,
 				      #type{def='OBJECT IDENTIFIER'}}},
     Typefield =
 	#'ObjectClassFieldType'{classname=TypeIdentifierRef,
 				class=[],
-%%				fieldname=[{typefieldreference,'Type'}],
 				fieldname={'Type',[]},
 				type=Typefield_type},
-    IOFComponents =
+    IOFComponents0 =
 	[#'ComponentType'{name='type-id',
 			  typespec=#type{tag=C1TypeTag,
 					 def=ObjectIdentifier,
@@ -4207,6 +4227,7 @@ iof_associated_type1(S,C) ->
 					 tablecinf=Comp2tablecinf},
 			  prop=mandatory,
 			  tags=[{'CONTEXT',0}]}],
+    IOFComponents = textual_order(IOFComponents0),
     #'SEQUENCE'{tablecinf=TableCInf,
 		components=simplify_comps(IOFComponents)}.
 	   
@@ -4340,11 +4361,11 @@ check_boolean(_S,_Constr) ->
 check_octetstring(_S,_Constr) ->
     ok.
 
-% check all aspects of a SEQUENCE
-% - that all component names are unique
-% - that all TAGS are ok (when TAG default is applied)
-% - that each component is of a valid type
-% - that the extension marks are valid
+%% check all aspects of a SEQUENCE
+%% - that all component names are unique
+%% - that all TAGS are ok (when TAG default is applied)
+%% - that each component is of a valid type
+%% - that the extension marks are valid
 
 check_sequence(S,Type,Comps)  ->
     Components = expand_components(S,Comps),    
@@ -4685,11 +4706,11 @@ check_objectidentifier(_S,_Constr) ->
 
 check_relative_oid(_S,_Constr) ->
     ok.
-% check all aspects of a CHOICE
-% - that all alternative names are unique
-% - that all TAGS are ok (when TAG default is applied)
-% - that each alternative is of a valid type
-% - that the extension marks are valid
+%% check all aspects of a CHOICE
+%% - that all alternative names are unique
+%% - that all TAGS are ok (when TAG default is applied)
+%% - that each alternative is of a valid type
+%% - that the extension marks are valid
 check_choice(S,Type,Components) when is_list(Components) ->
     Components1 = [C||C = #'ComponentType'{} <- Components],
     case check_unique(Components1,#'ComponentType'.name) of
@@ -4928,7 +4949,7 @@ componentrelation_leadingattr(S,CompList) ->
 
 %%FIXME expand_ExtAddGroups([C#'ExtensionAdditionGroup'{components=ExtAdds}|T],
 %% 		    CurrPos,PosAcc,CompAcc) ->
-%%     expand_ExtAddGroups(T,CurrPos+ L = lenght(ExtAdds),[{CurrPos,L}|PosAcc],ExtAdds++CompAcc);
+%%     expand_ExtAddGroups(T,CurrPos+ L = length(ExtAdds),[{CurrPos,L}|PosAcc],ExtAdds++CompAcc);
 %% expand_ExtAddGroups([C|T],CurrPos,PosAcc,CompAcc) ->
 %%     expand_ExtAddGroups(T,CurrPos+ 1,PosAcc,[C|CompAcc]);
 %% expand_ExtAddGroups([],_CurrPos,PosAcc,CompAcc) ->
@@ -5043,12 +5064,12 @@ remove_doubles1(El,L) ->
 %% referred to in the ObjectClassFieldType, and the name of the unique
 %% field of the class of the ObjectClassFieldType. 
 %%
-% %% The level information outermost/innermost must be kept. There are
-% %% at least two possibilities to cover here for an outermost case: 1)
-% %% Both the simple table and the component relation have a common path
-% %% at least one step below the outermost level, i.e. the leading
-% %% information shall be on a sub level. 2) They don't have any common
-% %% path.
+%% The level information outermost/innermost must be kept. There are
+%% at least two possibilities to cover here for an outermost case: 1)
+%% Both the simple table and the component relation have a common path
+%% at least one step below the outermost level, i.e. the leading
+%% information shall be on a sub level. 2) They don't have any common
+%% path.
 get_simple_table_info(S, Cs, AtLists) ->
     [get_simple_table_info1(S, Cs, AtList, []) || AtList <- AtLists].
 
@@ -5089,10 +5110,10 @@ simple_table_info(S,#'ObjectClassFieldType'{classname=ClRef,
 	    {_FirstFieldName,FieldNames} ->
 		lists:last(FieldNames)
 	end,
-    %%ObjectClassFieldName is the last element in the dotted
-    %%list of the ObjectClassFieldType. The last element may
-    %%be of another class, that is referenced from the class
-    %%of the ObjectClassFieldType
+    %% ObjectClassFieldName is the last element in the dotted list of
+    %% the ObjectClassFieldType. The last element may be of another
+    %% class, that is referenced from the class of the
+    %% ObjectClassFieldType
     ClassDef =
 	case ObjectClass of
 	    [] ->
@@ -5108,7 +5129,7 @@ simple_table_info(S,#'ObjectClassFieldType'{classname=ClRef,
 %% the "name path" in the at-list to the component relation constraint
 %% that must refer to a simple table constraint. The list is empty if
 %% no component relation constraints were found.
-%% 
+%%
 %% NamePath has the names of all components that are followed from the
 %% beginning of the search. CNames holds the names of all components
 %% of the start level, this info is used if an outermost at-notation
@@ -5121,6 +5142,7 @@ any_component_relation(S,[#'ComponentType'{name=CName,typespec=Type}|Cs],CNames,
 		%% whether this constraint is relevant for the level
 		%% where the search started
 		AtNot = extract_at_notation(AtNotation),
+
 		%% evaluate_atpath returns the relative path to the
 		%% simple table constraint from where the component
 		%% relation is found.
@@ -5226,12 +5248,10 @@ get_components(_,#'SET'{components=Cs}) ->
     tuple2complist(Cs);
 get_components(_,{'CHOICE',Cs}) ->
     tuple2complist(Cs);
-%do not step in inlined structures
+%%do not step in inlined structures
 get_components(any,{'SEQUENCE OF',T = #type{def=_Def,inlined=no}}) ->
-%    get_components(any,Def);
     T;
 get_components(any,{'SET OF',T = #type{def=_Def,inlined=no}}) ->
-%    get_components(any,Def);
     T;
 get_components(_,_) ->
     [].
@@ -5261,15 +5281,12 @@ extract_at_notation([{Level,ValueRefs}]) ->
 componentrelation1(S,C = #type{def=Def,constraint=Constraint,tablecinf=TCI},
 		   Path) ->
     Ret =
-%	case Constraint of
-%	    [{componentrelation,{_,_,ObjectSet},AtList}|_Rest] ->
 	case lists:keyfind(componentrelation, 1, Constraint) of
 	    {_,{_,_,ObjectSet},AtList} ->
 		[{_,AL=[#'Externalvaluereference'{}|_R1]}|_R2] = AtList,
 		%% Note: if Path is longer than one,i.e. it is within
 		%% an inner type of the actual level, then the only
 		%% relevant at-list is of "outermost" type.
-%%		#'ObjectClassFieldType'{class=ClassDef} = Def,
 		ClassDef = get_ObjectClassFieldType_classdef(S,Def),
 		AtPath = 
 		    lists:map(fun(#'Externalvaluereference'{value=V})->V end,
@@ -5355,7 +5372,6 @@ innertype_comprel1(S,T = #type{def=Def,constraint=Cons,tablecinf=TCI},Path) ->
 		%% relevent here.
 		[{_,AL=[#'Externalvaluereference'{value=_Attr}|_R1]}|_R2] 
 		    = AtList,
-%%		#'ObjectClassFieldType'{class=ClassDef} = Def,
 		ClassDef = get_ObjectClassFieldType_classdef(S,Def),
 		AtPath = 
 		    lists:map(fun(#'Externalvaluereference'{value=V})->V end,
@@ -5424,7 +5440,7 @@ leading_attr_index1(S,[C|Cs],Arg={ObjectSet,_,CDef,P},
 value_match(S,C,Name,SubAttr) ->
     value_match(S,C,Name,SubAttr,[]). % C has name Name
 value_match(_S,#'ComponentType'{},_Name,[],Acc) ->
-    Acc;% do not reverse, indexes in reverse order
+    Acc;                    % do not reverse, indexes in reverse order
 value_match(S,#'ComponentType'{typespec=Type},Name,[At|Ats],Acc) ->
     InnerType = asn1ct_gen:get_inner(Type#type.def),
     Components =
@@ -5494,8 +5510,6 @@ get_tableconstraint_info(S,Type,[C=#'ComponentType'{typespec=CheckedTs}|Cs],Acc)
 				  CheckedTs#type{
 				    def=NewOCFT
 				    }};
-%				    constraint=[{tableconstraint_info,
-%						 FieldRef}]}};
 	    {'SEQUENCE OF',SOType} when is_record(SOType,type),
 					(element(1,SOType#type.def)=='CHOICE') ->
 		CTypeList = element(2,SOType#type.def),
@@ -5598,51 +5612,6 @@ get_taglist1(S,[_H|Rest]) -> % skip EXTENSIONMARK
 get_taglist1(_S,[]) ->
     [].
 
-%% def_to_tag(S,Def) ->
-%%     case asn1ct_gen:def_to_tag(Def) of
-%% 	{'UNIVERSAL',T} ->
-%% 	    case asn1ct_gen:prim_bif(T) of
-%% 		true ->
-%% 		    ?TAG_PRIMITIVE(tag_number(T));
-%% 		_ ->
-%% 		    ?TAG_CONSTRUCTED(tag_number(T))
-%% 	    end;
-%% 	_ -> []
-%%     end.
-%% tag_number('BOOLEAN') -> 1;
-%% tag_number('INTEGER') -> 2;
-%% tag_number('BIT STRING') -> 3;
-%% tag_number('OCTET STRING') -> 4;
-%% tag_number('NULL') -> 5;
-%% tag_number('OBJECT IDENTIFIER') -> 6;
-%% tag_number('ObjectDescriptor') -> 7;
-%% tag_number('EXTERNAL') -> 8;
-%% tag_number('INSTANCE OF') -> 8;
-%% tag_number('REAL') -> 9;
-%% tag_number('ENUMERATED') -> 10;
-%% tag_number('EMBEDDED PDV') -> 11;
-%% tag_number('UTF8String') -> 12;
-%% %%tag_number('RELATIVE-OID') -> 13;
-%% tag_number('SEQUENCE') -> 16;
-%% tag_number('SEQUENCE OF') -> 16;
-%% tag_number('SET') -> 17;
-%% tag_number('SET OF') -> 17;
-%% tag_number('NumericString') -> 18;
-%% tag_number('PrintableString') -> 19;
-%% tag_number('TeletexString') -> 20;
-%% %%tag_number('T61String') -> 20;
-%% tag_number('VideotexString') -> 21;
-%% tag_number('IA5String') -> 22;
-%% tag_number('UTCTime') -> 23;
-%% tag_number('GeneralizedTime') -> 24;
-%% tag_number('GraphicString') -> 25;
-%% tag_number('VisibleString') -> 26;
-%% %%tag_number('ISO646String') -> 26;
-%% tag_number('GeneralString') -> 27;
-%% tag_number('UniversalString') -> 28;
-%% tag_number('CHARACTER STRING') -> 29;
-%% tag_number('BMPString') -> 30.
-
 merge_tags(T1, T2) when is_list(T2) ->
     merge_tags2(T1 ++ T2, []);
 merge_tags(T1, T2) ->
@@ -5671,7 +5640,8 @@ storeindb(S0, #module{name=ModName,typeorval=TVlist0}=M) ->
 
 storeindb_1(S, #module{name=ModName}=M, TVlist0, TVlist) ->
     NewM = M#module{typeorval=findtypes_and_values(TVlist0)},
-    asn1_db:dbnew(ModName, S#state.erule),
+    Maps = lists:member(maps, S#state.options),
+    asn1_db:dbnew(ModName, S#state.erule, Maps),
     asn1_db:dbput(ModName, 'MODULE',  NewM),
     asn1_db:dbput(ModName, TVlist),
     include_default_class(S, NewM#module.name),
@@ -5745,6 +5715,7 @@ return_asn1_error(#state{mname=Where}, Item, Error) ->
     Pos = asn1ct:get_pos_of_def(Item),
     {structured_error,{Where,Pos},?MODULE,Error}.
 
+-spec asn1_error(_, _) -> no_return().
 asn1_error(S, Error) ->
     throw({error,return_asn1_error(S, Error)}).
 
@@ -5826,7 +5797,7 @@ format_error({missing_ocft,Component}) ->
 format_error(multiple_uniqs) ->
     "implementation limitation: only one UNIQUE field is allowed in CLASS";
 format_error({namelist_redefinition,Name}) ->
-    io_lib:format("the name '~s' can not be redefined", [Name]);
+    io_lib:format("the name '~s' cannot be redefined", [Name]);
 format_error({param_bad_type, Ref}) ->
     io_lib:format("'~p' is not a parameterized type", [Ref]);
 format_error(param_wrong_number_of_arguments) ->

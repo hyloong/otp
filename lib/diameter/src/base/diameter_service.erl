@@ -1,7 +1,7 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2010-2015. All Rights Reserved.
+%% Copyright Ericsson AB 2010-2020. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -32,6 +32,7 @@
 -export([subscribe/1,
          unsubscribe/1,
          services/0,
+         peer_info/1,
          info/2]).
 
 %% towards diameter_config
@@ -83,23 +84,9 @@
 -define(DEFAULT_TC,     30000).  %% RFC 3588 ch 2.1
 -define(RESTART_TC,      1000).  %% if restart was this recent
 
-%% Used to be able to swap this with anything else dict-like but now
-%% rely on the fact that a service's #state{} record does not change
-%% in storing in it ?STATE table and not always going through the
-%% service process. In particular, rely on the fact that operations on
-%% a ?Dict don't change the handle to it.
--define(Dict, diameter_dict).
-
-%% Maintains state in a table. In contrast to previously, a service's
-%% stat is not constant and is accessed outside of the service
-%% process.
+%% Maintain state in a table since a service's state is accessed
+%% outside of the service process.
 -define(STATE_TABLE, ?MODULE).
-
-%% The default sequence mask.
--define(NOMASK, {0,32}).
-
-%% The default restrict_connections.
--define(RESTRICT, nodes).
 
 %% Workaround for dialyzer's lack of understanding of match specs.
 -type match(T)
@@ -117,42 +104,56 @@
          service :: #diameter_service{},
          watchdogT = ets_new(watchdogs) %% #watchdog{} at start
                   :: ets:tid(),
-         peerT = ets_new(peers)         %% #peer{pid = TPid} at okay/reopen
-              :: ets:tid(),
-         shared_peers = ?Dict:new()          %% Alias -> [{TPid, Caps}, ...]
-                     :: ets:tid(),
-         local_peers  = ?Dict:new()          %% Alias -> [{TPid, Caps}, ...]
-                     :: ets:tid(),
+         local  :: {ets:tid(), ets:tid(), ets:tid()},
+         remote :: {ets:tid(), ets:tid(), ets:tid()},
          monitor = false :: false | pid(),   %% process to die with
-         options
-         :: [{sequence, diameter:sequence()}  %% sequence mask
-             | {share_peers, diameter:remotes()}       %% broadcast to
-             | {use_shared_peers, diameter:remotes()}  %% use from
-             | {restrict_connections, diameter:restriction()}
-             | {string_decode, boolean()}
-             | {incoming_maxlen, diameter:message_length()}]}).
-%% shared_peers reflects the peers broadcast from remote nodes.
+         options :: #{sequence := diameter:sequence(),  %% sequence mask
+                      share_peers := diameter:remotes(),%% broadcast to
+                      use_shared_peers := diameter:remotes(),%% use from
+                      restrict_connections := diameter:restriction(),
+                      incoming_maxlen := diameter:message_length(),
+                      strict_arities => diameter:strict_arities(),
+                      strict_mbit := boolean(),
+                      decode_format := diameter:decode_format(),
+                      avp_dictionaries => nonempty_list(module()),
+                      traffic_counters := boolean(),
+                      string_decode := boolean(),
+                      capabilities_cb => diameter:evaluable(),
+                      pool_size => pos_integer(),
+                      capx_timeout => diameter:'Unsigned32'(),
+                      strict_capx => boolean(),
+                      disconnect_cb => diameter:evaluable(),
+                      dpr_timeout => diameter:'Unsigned32'(),
+                      dpa_timeout => diameter:'Unsigned32'(),
+                      length_errors => exit | handle | discard,
+                      connect_timer => diameter:'Unsigned32'(),
+                      watchdog_timer => diameter:'Unsigned32'()
+                                      | {module(), atom(), list()},
+                      watchdog_config => [{okay|suspect, non_neg_integer()}],
+                      spawn_opt := list() | {module(), atom(), list()}}}).
 
 %% Record representing an RFC 3539 watchdog process implemented by
 %% diameter_watchdog.
 -record(watchdog,
-        {pid  :: match(pid()),
+        {pid  :: match(pid()) | undefined,
          type :: match(connect | accept),
          ref  :: match(reference()),  %% key into diameter_config
          options :: match([diameter:transport_opt()]),%% from start_transport
          state = ?WD_INITIAL :: match(wd_state()),
          started = diameter_lib:now(),%% at process start
          peer = false :: match(boolean() | pid())}).
-                      %% true at accepted, pid() at okay/reopen
+                      %% true at accepted/remove, pid() at okay/reopen
 
-%% Record representing an Peer State Machine processes implemented by
+%% Record representing a Peer State Machine processes implemented by
 %% diameter_peer_fsm.
 -record(peer,
-        {pid   :: pid(),
-         apps  :: [{0..16#FFFFFFFF, diameter:app_alias()}], %% {Id, Alias}
-         caps  :: #diameter_caps{},
-         started = diameter_lib:now(),  %% at process start
-         watchdog :: pid()}). %% key into watchdogT
+        {pid  :: pid(),
+         apps :: match([{0..16#FFFFFFFF, diameter:app_alias()}] %% {Id, Alias}
+                       | [diameter:app_alias()]),               %% remote
+         caps :: match(#diameter_caps{}),
+         started = diameter_lib:now(),     %% at connection_up
+         watchdog :: match(pid()           %% key into watchdogT
+                           | undefined)}). %% undefined if remote
 
 %% ---------------------------------------------------------------------------
 %% # start/1
@@ -180,7 +181,7 @@ stop(SvcName) ->
     end.
 
 stop(ok, Pid) ->
-    MRef = erlang:monitor(process, Pid),
+    MRef = monitor(process, Pid),
     receive {'DOWN', MRef, process, _, _} -> ok end;
 stop(No, _) ->
     No.
@@ -207,7 +208,7 @@ stop_transport(SvcName, [_|_] = Refs) ->
 
 info(SvcName, Item) ->
     case lookup_state(SvcName) of
-        [#state{} = S] ->
+        [S] ->
             service_info(Item, S);
         [] ->
             undefined
@@ -216,7 +217,35 @@ info(SvcName, Item) ->
 %% lookup_state/1
 
 lookup_state(SvcName) ->
-    ets:lookup(?STATE_TABLE, SvcName).
+    case ets:lookup(?STATE_TABLE, SvcName) of
+        [#state{}] = L ->
+            L;
+        _ ->
+            []
+    end.
+
+%% ---------------------------------------------------------------------------
+%% # peer_info/2
+%% ---------------------------------------------------------------------------
+
+%% An extended version of info_peer/1 for peer_info/1.
+peer_info(Pid) ->
+    try
+        {_, PD} = process_info(Pid, dictionary),
+        {_, T} = lists:keyfind({diameter_peer_fsm, start}, 1, PD),
+        {TPid, {{Type, Ref}, TMod, Cfg}} = T,
+        {_, TD} = process_info(TPid, dictionary),
+        {_, Data} = lists:keyfind({TMod, info}, 1, TD),
+        [{ref, Ref},
+         {type, Type},
+         {owner, TPid},
+         {module, TMod},
+         {config, Cfg}
+         | try TMod:info(Data) catch _:_ -> [] end]
+    catch
+        error:_ ->
+            []
+    end.
 
 %% ---------------------------------------------------------------------------
 %% # subscribe/1
@@ -227,7 +256,7 @@ subscribe(SvcName) ->
     diameter_reg:add({?MODULE, subscriber, SvcName}).
 
 unsubscribe(SvcName) ->
-    diameter_reg:del({?MODULE, subscriber, SvcName}).
+    diameter_reg:remove({?MODULE, subscriber, SvcName}).
 
 subscriptions(Pat) ->
     pmap(diameter_reg:match({?MODULE, subscriber, Pat})).
@@ -261,7 +290,7 @@ whois(SvcName) ->
 %% ---------------------------------------------------------------------------
 
 -spec pick_peer(SvcName, AppOrAlias, Opts)
-   -> {{TPid, Caps, App}, Mask, SvcOpts}
+   -> {{{TPid, Caps}, App}, SvcOpts}
     | false  %% no selection
     | {error, no_service}
  when SvcName :: diameter:service_name(),
@@ -269,14 +298,12 @@ whois(SvcName) ->
                   | {alias, diameter:app_alias()},
       Opts :: {fun((Dict :: module()) -> [term()]),
                diameter:peer_filter(),
-               Xtra :: list()},
+               Xtra :: list(),
+               [diameter:peer_ref()]},
       TPid :: pid(),
       Caps :: #diameter_caps{},
       App  :: #diameter_app{},
-      Mask :: diameter:sequence(),
-      SvcOpts :: [diameter:service_opt()].
-%% Extract Mask in the returned tuple so that diameter_traffic doesn't
-%% need to know about the ordering of SvcOpts used here.
+      SvcOpts :: map().
 
 pick_peer(SvcName, App, Opts) ->
     pick(lookup_state(SvcName), App, Opts).
@@ -296,16 +323,16 @@ pick(#state{service = #diameter_service{applications = Apps}}
 pick(_, false = No, _) ->
     No;
 
-pick(#state{options = [{_, Mask} | SvcOpts]}
+pick(#state{options = SvcOpts}
      = S,
      #diameter_app{module = ModX, dictionary = Dict}
      = App0,
-     {DestF, Filter, Xtra}) ->
+     {DestF, Filter, Xtra, TPids}) ->
     App = App0#diameter_app{module = ModX ++ Xtra},
     [_,_] = RealmAndHost = diameter_lib:eval([DestF, Dict]),
-    case pick_peer(App, RealmAndHost, Filter, S) of
-        {TPid, Caps} ->
-            {{TPid, Caps, App}, Mask, SvcOpts};
+    case pick_peer(App, RealmAndHost, [Filter | TPids], S) of
+        {_TPid, _Caps} = TC ->
+            {{TC, App}, SvcOpts};
         false = No ->
             No
     end.
@@ -489,6 +516,9 @@ transition({service, Pid}, S) ->
 transition({peer, TPid, Aliases, Caps}, S) ->
     remote_peer_up(TPid, Aliases, Caps, S),
     ok;
+transition({peer, TPid}, S) ->
+    remote_peer_down(TPid, S),
+    ok;
 
 %% Remote peer process has died.
 transition({'DOWN', _, process, TPid, _}, S) ->
@@ -500,6 +530,13 @@ transition({tc_timeout, T}, S) ->
     tc_timeout(T, S),
     ok;
 
+transition({nodeup, Node, _}, S) ->
+    nodeup(Node, S),
+    ok;
+
+transition({nodedown, _Node, _}, _) ->
+    ok;
+
 transition(Req, S) ->
     unexpected(handle_info, [Req], S),
     ok.
@@ -508,7 +545,7 @@ transition(Req, S) ->
 %% # terminate/2
 %% ---------------------------------------------------------------------------
 
-terminate(Reason, #state{service_name = Name, peerT = PeerT} = S) ->
+terminate(Reason, #state{service_name = Name, local = {PeerT, _, _}} = S) ->
     send_event(Name, stop),
     ets:delete(?STATE_TABLE, Name),
 
@@ -517,45 +554,37 @@ terminate(Reason, #state{service_name = Name, peerT = PeerT} = S) ->
     %% wait for watchdog state changes to take care of if. That this
     %% takes place after deleting the state entry ensures that the
     %% resulting failover by request processes accomplishes nothing.
-    ets:foldl(fun(#peer{pid = TPid}, _) ->
-                      diameter_traffic:peer_down(TPid)
-              end,
-              ok,
-              PeerT),
+    ets:foldl(fun peer_down/2, ok, PeerT),
 
     shutdown == Reason  %% application shutdown
         andalso shutdown(application, S).
+
+%% peer_down/1
+%%
+%% Entries with watchdog state SUSPECT are already down: ignore the
+%% expected failure. This assumes the current implementation, but
+%% double the number of lookups (in the typical case) could be the
+%% greater evil if there are many peer connections.
+
+peer_down(#peer{pid = TPid}, _) ->
+    try
+        diameter_traffic:peer_down(TPid)
+    catch
+        error: {badmatch, []} -> ok
+    end.
 
 %% ---------------------------------------------------------------------------
 %% # code_change/3
 %% ---------------------------------------------------------------------------
 
-code_change(FromVsn,
-            #state{service_name = SvcName,
-                   service = #diameter_service{applications = Apps}}
-            = S,
-            Extra) ->
-    lists:foreach(fun(A) ->
-                          code_change(FromVsn, SvcName, Extra, A)
-                  end,
-                  Apps),
+code_change(_FromVsn, S, _Extra) ->
     {ok, S}.
-
-code_change(FromVsn, SvcName, Extra, #diameter_app{alias = Alias} = A) ->
-    {ok, S} = cb(A, code_change, [FromVsn,
-                                  mod_state(Alias),
-                                  Extra,
-                                  SvcName]),
-    mod_state(Alias, S).
 
 %% ===========================================================================
 %% ===========================================================================
 
 unexpected(F, A, #state{service_name = Name}) ->
     ?UNEXPECTED(F, A ++ [Name]).
-
-cb(#diameter_app{module = [_|_] = M}, F, A) ->
-    eval(M, F, A).
 
 eval([M|X], F, A) ->
     apply(M, F, A ++ X).
@@ -575,10 +604,6 @@ choose(false, _, X) -> X.
 
 ets_new(Tbl) ->
     ets:new(Tbl, [{keypos, 2}]).
-
-insert(Tbl, Rec) ->
-    ets:insert(Tbl, Rec),
-    Rec.
 
 %% Using the process dictionary for the callback state was initially
 %% just a way to make what was horrendous trace (big state record and
@@ -600,25 +625,34 @@ mod_state(Alias, ModS) ->
 %% remove_transport
 shutdown(Refs, #state{watchdogT = WatchdogT})
   when is_list(Refs) ->
-    ets:foldl(fun(P,ok) -> st(P, Refs), ok end, ok, WatchdogT);
+    ets:insert(WatchdogT, ets:foldl(fun(R,A) -> st(R, Refs, A) end,
+                                    [],
+                                    WatchdogT));
 
 %% application/service shutdown
 shutdown(Reason, #state{watchdogT = WatchdogT})
   when Reason == application;
        Reason == service ->
-    diameter_lib:wait(ets:foldl(fun(P,A) -> st(P, Reason, A) end,
+    diameter_lib:wait(ets:foldl(fun(P,A) -> ss(P, Reason, A) end,
                                 [],
                                 WatchdogT)).
 
-%% st/2
-
-st(#watchdog{ref = Ref, pid = Pid}, Refs) ->
-    lists:member(Ref, Refs)
-        andalso (Pid ! {shutdown, self(), transport}).  %% 'DOWN' cleans up
-
 %% st/3
 
-st(#watchdog{pid = Pid}, Reason, Acc) ->
+%% Mark replacement as started so that a subsequent accept doesn't
+%% result in a new process that isn't terminated.
+st(#watchdog{ref = Ref, pid = Pid, peer = P} = Rec, Refs, Acc) ->
+    case lists:member(Ref, Refs) of
+        true ->
+            Pid ! {shutdown, self(), transport},  %% 'DOWN' cleans up
+            [Rec#watchdog{peer = true} || P == false] ++ Acc;
+        false ->
+            Acc
+    end.
+
+%% ss/3
+
+ss(#watchdog{pid = Pid}, Reason, Acc) ->
     MRef = monitor(process, Pid),
     Pid ! {shutdown, self(), Reason},
     [MRef | Acc].
@@ -678,10 +712,15 @@ i(SvcName) ->
 cfg_acc({SvcName, #diameter_service{applications = Apps} = Rec, Opts},
         {false, Acc}) ->
     lists:foreach(fun init_mod/1, Apps),
+    #{monitor := M}
+        = SvcOpts
+        = service_opts(Opts),
     S = #state{service_name = SvcName,
                service = Rec#diameter_service{pid = self()},
-               monitor = mref(get_value(monitor, Opts)),
-               options = service_options(Opts)},
+               local   = init_peers(),
+               remote  = init_peers(),
+               monitor = mref(M),
+               options = maps:remove(monitor, SvcOpts)},
     {S, Acc};
 
 cfg_acc({_Ref, Type, _Opts} = T, {S, Acc})
@@ -689,25 +728,48 @@ cfg_acc({_Ref, Type, _Opts} = T, {S, Acc})
        Type == listen ->
     {S, [T | Acc]}.
 
-service_options(Opts) ->
-    [{sequence, proplists:get_value(sequence, Opts, ?NOMASK)},
-     {share_peers, get_value(share_peers, Opts)},
-     {use_shared_peers, get_value(use_shared_peers, Opts)},
-     {restrict_connections, proplists:get_value(restrict_connections,
-                                                Opts,
-                                                ?RESTRICT)},
-     {spawn_opt, proplists:get_value(spawn_opt, Opts, [])},
-     {string_decode, proplists:get_value(string_decode, Opts, true)},
-     {incoming_maxlen, proplists:get_value(incoming_maxlen, Opts, 16#FFFFFF)}].
-%% The order of options is significant since we match against the list.
+init_peers() ->
+    {ets_new(caps),            %% #peer{}
+     ets:new(apps, [bag]),     %% {Alias, TPid}
+     ets:new(idents, [bag])}.  %% {{host, OH} | {realm, OR} | {OR, OH},
+                               %%  Alias,
+                               %%  TPid}
+
+%% Valid service options are all 2-tuples.
+service_opts(Opts) ->
+    remove([{strict_arities, true}, {avp_dictionaries, []}],
+           merge(lists:append([[{monitor, false}] | def_opts()]), Opts)).
+
+merge(List1, List2) ->
+    maps:merge(maps:from_list(List1), maps:from_list(List2)).
+
+remove(List, Map) ->
+    maps:filter(fun(K,V) -> not lists:member({K,V}, List) end,
+                Map).
+
+def_opts() ->  %% defaults on the options map
+    [[{decode_format, record},        %% service options
+      {restrict_connections, nodes},
+      {sequence, {0,32}},
+      {share_peers, false},
+      {strict_arities, true},
+      {string_decode, true},
+      {traffic_counters, true},
+      {use_shared_peers, false}],
+     [{avp_dictionaries, []},         %% common options
+      {incoming_maxlen, 16#FFFFFF},
+      {spawn_opt, []},
+      {strict_mbit, true}]].
 
 mref(false = No) ->
     No;
 mref(P) ->
-    erlang:monitor(process, P).
+    monitor(process, P).
 
-init_shared(#state{options = [_, _, {_,T} | _],
+init_shared(#state{options = #{use_shared_peers := T},
                    service_name = Svc}) ->
+    T == false orelse net_kernel:monitor_nodes(true, [{node_type, visible},
+                                                      nodedown_reason]),
     notify(T, Svc, {service, self()}).
 
 init_mod(#diameter_app{alias = Alias,
@@ -717,15 +779,16 @@ init_mod(#diameter_app{alias = Alias,
 start_fsm({Ref, Type, Opts}, S) ->
     start(Ref, {Type, Opts}, S).
 
-get_value(Key, Vs) ->
-    {_, V} = lists:keyfind(Key, 1, Vs),
-    V.
-
 notify(Share, SvcName, T) ->
     Nodes = remotes(Share),
     [] /= Nodes andalso diameter_peer:notify(Nodes, SvcName, T).
 %% Test for the empty list for upgrade reasons: there's no
 %% diameter_peer:notify/3 in old code.
+
+nodeup(Node, #state{options = #{share_peers := SP},
+                    service_name = SvcName}) ->
+    lists:member(Node, remotes(SP))
+        andalso diameter_peer:notify([Node], SvcName, {service, self()}).
 
 remotes(false) ->
     [];
@@ -747,8 +810,8 @@ remotes(F) ->
             error_report(invalid_return, share_peers, F),
             []
     catch
-        E:R ->
-            ?LOG(failure, {E, R, F, diameter_lib:get_stacktrace()}),
+        E:R:S ->
+            ?LOG(failure, {E, R, F, diameter_lib:stacktrace(S)}),
             error_report(failure, share_peers, F),
             []
     end.
@@ -803,8 +866,9 @@ start(Ref, Type, Opts, State) ->
 %% start/5
 
 start(Ref, Type, Opts, N, #state{watchdogT = WatchdogT,
-                                 peerT = PeerT,
-                                 options = SvcOpts,
+                                 local = {PeerT, _, _},
+                                 options = #{string_decode := SD}
+                                 = SvcOpts,
                                  service_name = SvcName,
                                  service = Svc0})
   when Type == connect;
@@ -812,20 +876,47 @@ start(Ref, Type, Opts, N, #state{watchdogT = WatchdogT,
     #diameter_service{applications = Apps}
         = Svc1
         = merge_service(Opts, Svc0),
-    Svc = binary_caps(Svc1, proplists:get_value(string_decode, SvcOpts, true)),
-    RecvData = diameter_traffic:make_recvdata([SvcName,
-                                               PeerT,
-                                               Apps,
-                                               SvcOpts]),
-    T = {{spawn_opts([Opts, SvcOpts]), RecvData}, Opts, SvcOpts, Svc},
+    Svc = binary_caps(Svc1, SD),
+    {Map, Rest} = merge_opts(SvcOpts, Opts),
+    RecvData = diameter_traffic:make_recvdata([SvcName, PeerT, Apps, Map]),
+    T = {Rest, Map, RecvData, Svc},
     Rec = #watchdog{type = Type,
                     ref = Ref,
-                    options = Opts},
+                    options = Opts},  %% original options, returned
+                                      %% by service_info/2
     diameter_lib:fold_n(fun(_,A) ->
                                 [wd(Type, Ref, T, WatchdogT, Rec) | A]
                         end,
                         [],
                         N).
+
+%% This is awkward. We have service options that have been passed to
+%% diameter:start_service/2 (minus application and capabilities
+%% options, removed in diameter_config) and transport options passed
+%% to diameter:add_transport/2. The former can include defaults for
+%% the latter, but the latter can also contain arbitrary options that
+%% are just returned by diameter:service_info/2. There's nothing
+%% stopping these arbitrary options from being valid service options,
+%% but these aren't interpreted as such.
+%%
+%% The options are merged (transport defaults have already been merged
+%% into the service options in service_opts/1) and split into a map
+%% for the service options and a few transport options, and a list for
+%% the rest. This is historical convolution. Some options are are
+%% pulled out of the list on the way to starting the transport process
+%% in diameter_peer_fsm, but more work could probably be done here to
+%% simplify things.
+%%
+%% Transport options are not necessarily 2-tuples: the transport_config
+%% 3-tuple means they can't just be turned into a map.
+merge_opts(SOpts, TOpts) ->
+    [SD,TD] = Def = def_opts(),
+    Keys = [K || L <- Def, {K,_} <- L],
+    Opts = [T || {K,_} = T <- TOpts, lists:keymember(K, 1, TD)],
+    {maps:merge(maps:with(Keys, SOpts), maps:from_list(Opts)),%% merge TOpts
+     TOpts ++ [T || {K,_} = T <- maps:to_list(SOpts),         %% append SOpts
+                    not lists:keymember(K, 1, SD),
+                    [] == [A || {A,_} <- TOpts, A == K]]}.
 
 binary_caps(Svc, true) ->
     Svc;
@@ -834,18 +925,12 @@ binary_caps(#diameter_service{capabilities = Caps} = Svc, false) ->
 
 wd(Type, Ref, T, WatchdogT, Rec) ->
     Pid = start_watchdog(Type, Ref, T),
-    insert(WatchdogT, Rec#watchdog{pid = Pid}),
+    ets:insert(WatchdogT, Rec#watchdog{pid = Pid}),
     Pid.
 
 %% Note that the service record passed into the watchdog is the merged
 %% record so that each watchdog may get a different record. This
 %% record is what is passed back into application callbacks.
-
-spawn_opts(Optss) ->
-    SpawnOpts = get_value(spawn_opt, Optss, []),
-    [T || T <- SpawnOpts,
-          T /= link,
-          T /= monitor].
 
 start_watchdog(Type, Ref, T) ->
     {_MRef, Pid} = diameter_watchdog:start({Type, Ref}, T),
@@ -888,11 +973,22 @@ ms(_, Svc) ->
 %% ---------------------------------------------------------------------------
 
 accepted(Pid, _TPid, #state{watchdogT = WatchdogT} = S) ->
-    #watchdog{ref = Ref, type = accept = T, peer = false, options = Opts}
+    #watchdog{type = accept = T, peer = P}
         = Wd
         = fetch(WatchdogT, Pid),
-    insert(WatchdogT, Wd#watchdog{peer = true}),%% mark replacement as started
-    start(Ref, T, Opts, S).                     %% start new watchdog
+    if not P ->
+            #watchdog{ref = Ref, options = Opts} = Wd,
+            %% Mark replacement started, and start new watchdog.
+            ets:insert(WatchdogT, Wd#watchdog{peer = true}),
+            start(Ref, T, Opts, S);
+       P ->
+            %% Transport removal in progress: true has been set in
+            %% shutdown/2, and the transport will die as a
+            %% consequence.
+            ok
+    end.
+
+%% fetch/2
 
 fetch(Tid, Key) ->
     [T] = ets:lookup(Tid, Key),
@@ -918,13 +1014,14 @@ watchdog(TPid, [], ?WD_SUSPECT, ?WD_OKAY, Wd, State) ->
     #watchdog{peer = TPid} = Wd,  %% assert
     connection_up(Wd, State);
 
-%% Watchdog has an unresponsive connection.
+%% Watchdog has an unresponsive connection. Note that the peer table
+%% entry isn't removed until DOWN.
 watchdog(TPid, [], ?WD_OKAY, ?WD_SUSPECT = To, Wd, State) ->
     #watchdog{peer = TPid} = Wd,  %% assert
     watchdog_down(Wd, To, State);
 
 %% Watchdog has lost its connection.
-watchdog(TPid, [], _, ?WD_DOWN = To, Wd, #state{peerT = PeerT} = S) ->
+watchdog(TPid, [], _, ?WD_DOWN = To, Wd, #state{local = {PeerT, _, _}} = S) ->
     close(Wd),
     watchdog_down(Wd, To, S),
     ets:delete(PeerT, TPid);
@@ -933,7 +1030,7 @@ watchdog(_, [], _, _, _, _) ->
     ok.
 
 watchdog_down(Wd, To, #state{watchdogT = WatchdogT} = S) ->
-    insert(WatchdogT, Wd#watchdog{state = To}),
+    ets:insert(WatchdogT, Wd#watchdog{state = To}),
     connection_down(Wd, To, S).
 
 %% ---------------------------------------------------------------------------
@@ -945,14 +1042,14 @@ watchdog_down(Wd, To, #state{watchdogT = WatchdogT} = S) ->
 connection_up({TPid, {Caps, SupportedApps, Pkt}},
               #watchdog{pid = Pid}
               = Wd,
-              #state{peerT = PeerT}
+              #state{local = {PeerT, _, _}}
               = S) ->
-    Pr = #peer{pid = TPid,
-               apps = SupportedApps,
-               caps = Caps,
-               watchdog = Pid},
-    insert(PeerT, Pr),
-    connection_up([Pkt], Wd#watchdog{peer = TPid}, Pr, S).
+    Rec = #peer{pid = TPid,
+                apps = SupportedApps,
+                caps = Caps,
+                watchdog = Pid},
+    ets:insert(PeerT, Rec),
+    connection_up([Pkt], Wd#watchdog{peer = TPid}, Rec, S).
 
 %% ---------------------------------------------------------------------------
 %% # reopen/3
@@ -962,22 +1059,23 @@ reopen({TPid, {Caps, SupportedApps, _Pkt}},
        #watchdog{pid = Pid}
        = Wd,
        #state{watchdogT = WatchdogT,
-              peerT = PeerT}) ->
-    insert(PeerT, #peer{pid = TPid,
-                        apps = SupportedApps,
-                        caps = Caps,
-                        watchdog = Pid}),
-    insert(WatchdogT, Wd#watchdog{state = ?WD_REOPEN,
-                                  peer = TPid}).
+              local = {PeerT, _, _}}) ->
+    ets:insert(PeerT, #peer{pid = TPid,
+                            apps = SupportedApps,
+                            caps = Caps,
+                            watchdog = Pid}),
+    ets:insert(WatchdogT, Wd#watchdog{state = ?WD_REOPEN,
+                                      peer = TPid}).
 
 %% ---------------------------------------------------------------------------
 %% # connection_up/2
 %% ---------------------------------------------------------------------------
 
-%% Watchdog has recovered as suspect connection. Note that there has
+%% Watchdog has recovered a suspect connection. Note that there has
 %% been no new capabilties exchange in this case.
 
-connection_up(#watchdog{peer = TPid} = Wd, #state{peerT = PeerT} = S) ->
+connection_up(#watchdog{peer = TPid} = Wd, #state{local = {PeerT, _, _}}
+                                           = S) ->
     connection_up([], Wd, fetch(PeerT, TPid), S).
 
 %% connection_up/4
@@ -988,23 +1086,23 @@ connection_up(Extra,
               #peer{apps = SApps, caps = Caps}
               = Pr,
               #state{watchdogT = WatchdogT,
-                     local_peers = LDict,
+                     local = LT,
                      service_name = SvcName,
                      service = #diameter_service{applications = Apps}}
               = S) ->
-    insert(WatchdogT, Wd#watchdog{state = ?WD_OKAY}),
+    ets:insert(WatchdogT, Wd#watchdog{state = ?WD_OKAY}),
     diameter_traffic:peer_up(TPid),
-    insert_local_peer(SApps, {{TPid, Caps}, {SvcName, Apps}}, LDict),
+    local_peer_up(SApps, {TPid, Caps}, {SvcName, Apps}, LT),
     report_status(up, Wd, Pr, S, Extra).
 
-insert_local_peer(SApps, T, LDict) ->
-    lists:foldl(fun(A,D) -> ilp(A, T, D) end, LDict, SApps).
+local_peer_up(SApps, {TPid, Caps} = TC, SA, LT) ->
+    insert_peer(TPid, [A || {_,A} <- SApps], Caps, LT),
+    lists:foreach(fun(A) -> peer_up(A, TC, SA) end, SApps).
 
-ilp({Id, Alias}, {TC, SA}, LDict) ->
-    init_conn(Id, Alias, TC, SA),
-    ?Dict:append(Alias, TC, LDict).
+peer_up({Id, Alias}, TC, SA) ->
+    peer_up(Id, Alias, TC, SA).
 
-init_conn(Id, Alias, {TPid, _} = TC, {SvcName, Apps}) ->
+peer_up(Id, Alias, {TPid, _} = TC, {SvcName, Apps}) ->
     #diameter_app{id = Id}  %% assert
         = App
         = find_app(Alias, Apps),
@@ -1046,18 +1144,6 @@ keyfind([Key | Rest], Pos, L) ->
             T
     end.
 
-%% get_value/3
-
-get_value(_, [], Def) ->
-    Def;
-get_value(Key, [L | Rest], Def) ->
-    case lists:keyfind(Key, 1, L) of
-        {_,V} ->
-            V;
-        _ ->
-            get_value(Key, Rest, Def)
-    end.
-
 %% find_outgoing_app/2
 
 find_outgoing_app(Alias, Apps) ->
@@ -1081,11 +1167,11 @@ peer_cb(App, F, A) ->
             mod_state(App#diameter_app.alias, ModS),
             true
     catch
-        E:R ->
+        E:R:S ->
             %% Don't include arguments since a #diameter_caps{} strings
             %% from the peer, which could be anything (especially, large).
             [Mod|X] = App#diameter_app.module,
-            ?LOG(failure, {E, R, Mod, F, diameter_lib:get_stacktrace()}),
+            ?LOG(failure, {E, R, Mod, F, diameter_lib:stacktrace(S)}),
             error_report(failure, F, {Mod, F, A ++ X}),
             false
     end.
@@ -1102,17 +1188,17 @@ connection_down(#watchdog{state = ?WD_OKAY,
                 = Pr,
                 #state{service_name = SvcName,
                        service = #diameter_service{applications = Apps},
-                       local_peers = LDict}
+                       local = LT}
                 = S) ->
     report_status(down, Wd, Pr, S, []),
-    remove_local_peer(SApps, {{TPid, Caps}, {SvcName, Apps}}, LDict),
+    local_peer_down(SApps, {TPid, Caps}, {SvcName, Apps}, LT),
     diameter_traffic:peer_down(TPid);
 
 connection_down(#watchdog{state = ?WD_OKAY,
                           peer = TPid}
                 = Wd,
                 To,
-                #state{peerT = PeerT}
+                #state{local = {PeerT, _, _}}
                 = S)
   when is_atom(To) ->
     connection_down(Wd, #peer{} = fetch(PeerT, TPid), S);
@@ -1120,15 +1206,14 @@ connection_down(#watchdog{state = ?WD_OKAY,
 connection_down(#watchdog{}, _, _) ->
     ok.
 
-remove_local_peer(SApps, T, LDict) ->
-    lists:foldl(fun(A,D) -> rlp(A, T, D) end, LDict, SApps).
+local_peer_down(SApps, {TPid, _Caps} = TC, SA, LT) ->
+    delete_peer(TPid, LT),
+    lists:foreach(fun(A) -> peer_down(A, TC, SA) end, SApps).
 
-rlp({Id, Alias}, {TC, SA}, LDict) ->
-    L = ?Dict:fetch(Alias, LDict),
-    down_conn(Id, Alias, TC, SA),
-    ?Dict:store(Alias, lists:delete(TC, L), LDict).
+peer_down({Id, Alias}, TC, SA) ->
+    peer_down(Id, Alias, TC, SA).
 
-down_conn(Id, Alias, TC, {SvcName, Apps}) ->
+peer_down(Id, Alias, TC, {SvcName, Apps}) ->
     #diameter_app{id = Id}  %% assert
         = App
         = find_app(Alias, Apps),
@@ -1153,7 +1238,7 @@ wd_down(#watchdog{peer = B}, _)
     ok;
 
 %% ... or maybe it has.
-wd_down(#watchdog{peer = TPid} = Wd, #state{peerT = PeerT} = S) ->
+wd_down(#watchdog{peer = TPid} = Wd, #state{local = {PeerT, _, _}} = S) ->
     connection_down(Wd, ?WD_DOWN, S),
     ets:delete(PeerT, TPid).
 
@@ -1230,8 +1315,7 @@ start_tc(Tc, T, _) ->
 tc_timeout({Ref, _Type, _Opts} = T, #state{service_name = SvcName} = S) ->
     tc(diameter_config:have_transport(SvcName, Ref), T, S).
 
-tc(true, {Ref, Type, Opts}, #state{service_name = SvcName}
-                            = S) ->
+tc(true, {Ref, Type, Opts}, #state{service_name = SvcName} = S) ->
     send_event(SvcName, {reconnect, Ref, Opts}),
     start(Ref, Type, Opts, S);
 tc(false = No, _, _) ->  %% removed
@@ -1313,9 +1397,9 @@ cm([#diameter_app{alias = Alias} = App], Req, From, Svc) ->
             ?LOG(invalid_return, {ModX, handle_call, Args, T}),
             invalid
     catch
-        E: Reason ->
+        E: Reason: S ->
             ModX = App#diameter_app.module,
-            Stack = diameter_lib:get_stacktrace(),
+            Stack = diameter_lib:stacktrace(S),
             ?LOG(failure, {E, Reason, ModX, handle_call, Stack}),
             failure
     end;
@@ -1357,23 +1441,41 @@ send_event(#diameter_event{service = SvcName} = E) ->
 %% # share_peer/5
 %% ---------------------------------------------------------------------------
 
-share_peer(up, Caps, Apps, TPid, #state{options = [_, {_,T} | _],
+share_peer(up, Caps, Apps, TPid, #state{options = #{share_peers := SP},
                                         service_name = Svc}) ->
-    notify(T, Svc, {peer, TPid, [A || {_,A} <- Apps], Caps});
+    notify(SP, Svc, {peer, TPid, [A || {_,A} <- Apps], Caps});
 
-share_peer(_, _, _, _, _) ->
-    ok.
+share_peer(down, _Caps, _Apps, TPid, #state{options = #{share_peers := SP},
+                                            service_name = Svc}) ->
+    notify(SP, Svc, {peer, TPid}).
 
 %% ---------------------------------------------------------------------------
 %% # share_peers/2
 %% ---------------------------------------------------------------------------
 
-share_peers(Pid, #state{options = [_, {_,T} | _], local_peers = PDict}) ->
-    is_remote(Pid, T)
-        andalso ?Dict:fold(fun(A,Ps,ok) -> sp(Pid, A, Ps), ok end, ok, PDict).
+share_peers(Pid, #state{options = #{share_peers := SP},
+                        local = {PeerT, AppT, _}}) ->
+    is_remote(Pid, SP)
+        andalso ets:foldl(fun(T, N) -> N + sp(Pid, AppT, T) end,
+                          0,
+                          PeerT).
 
-sp(Pid, Alias, Peers) ->
-    lists:foreach(fun({P,C}) -> Pid ! {peer, P, [Alias], C} end, Peers).
+%% An entry in the peer table doesn't mean the watchdog state is OKAY,
+%% an entry in the app table does.
+
+sp(Pid, AppT, #peer{pid = TPid,
+                    apps = [{_, Alias} | _] = Apps,
+                    caps = Caps}) ->
+    Spec = [{{'$1', TPid},
+             [{'==', '$1', {const, Alias}}],
+             ['$_']}],
+    case ets:select(AppT, Spec, 1) of
+        '$end_of_table' ->
+            0;
+        _ ->
+            Pid ! {peer, TPid, [A || {_,A} <- Apps], Caps},
+            1
+    end.
 
 is_remote(Pid, T) ->
     Node = node(Pid),
@@ -1383,32 +1485,57 @@ is_remote(Pid, T) ->
 %% # remote_peer_up/4
 %% ---------------------------------------------------------------------------
 
-remote_peer_up(Pid, Aliases, Caps, #state{options = [_, _, {_,T} | _]} = S) ->
-    is_remote(Pid, T)
-        andalso rpu(Pid, Aliases, Caps, S).
+remote_peer_up(TPid, Aliases, Caps, #state{options = #{use_shared_peers := T},
+                                           remote = {PeerT, _, _}}
+                                    = S) ->
+    is_remote(TPid, T)
+        andalso not ets:member(PeerT, TPid)
+        andalso rpu(TPid, Aliases, Caps, S).
 
-rpu(Pid, Aliases, Caps, #state{service = Svc, shared_peers = PDict}) ->
+%% Notification can be duplicate since remote nodes push and the local
+%% node pulls.
+
+rpu(TPid, Aliases, Caps, #state{service = Svc, remote = RT}) ->
     #diameter_service{applications = Apps} = Svc,
     Key = #diameter_app.alias,
     F = fun(A) -> lists:keymember(A, Key, Apps) end,
-    rpu(Pid, lists:filter(F, Aliases), Caps, PDict);
+    rpu(TPid, lists:filter(F, Aliases), Caps, RT);
 
 rpu(_, [] = No, _, _) ->
     No;
-rpu(Pid, Aliases, Caps, PDict) ->
-    erlang:monitor(process, Pid),
-    T = {Pid, Caps},
-    lists:foreach(fun(A) -> ?Dict:append(A, T, PDict) end, Aliases).
+
+rpu(TPid, Aliases, Caps, {PeerT, _, _} = RT) ->
+    monitor(process, TPid),
+    ets:insert(PeerT, #peer{pid = TPid,
+                            apps = Aliases,
+                            caps = Caps}),
+    insert_peer(TPid, Aliases, Caps, RT).
+
+%% insert_peer/4
+
+insert_peer(TPid, Aliases, Caps, {_PeerT, AppT, IdentT}) ->
+    #diameter_caps{origin_host = {_, OH},
+                   origin_realm = {_, OR}}
+        = Caps,
+    ets:insert(AppT, [{A, TPid} || A <- Aliases]),
+    H = iolist_to_binary(OH),
+    R = iolist_to_binary(OR),
+    ets:insert(IdentT, [{T, A, TPid} || T <- [{host, H}, {realm, R}, {R, H}],
+                                        A <- Aliases]).
 
 %% ---------------------------------------------------------------------------
 %% # remote_peer_down/2
 %% ---------------------------------------------------------------------------
 
-remote_peer_down(Pid, #state{shared_peers = PDict}) ->
-    lists:foreach(fun(A) -> rpd(Pid, A, PDict) end, ?Dict:fetch_keys(PDict)).
+remote_peer_down(TPid, #state{remote = {PeerT, _, _} = RT}) ->
+    ets:delete(PeerT, TPid),
+    delete_peer(TPid, RT).
 
-rpd(Pid, Alias, PDict) ->
-    ?Dict:update(Alias, fun(Ps) -> lists:keydelete(Pid, 1, Ps) end, PDict).
+%% delete_peer/2
+
+delete_peer(TPid, {_PeerT, AppT, IdentT}) ->
+    ets:select_delete(AppT, [{{'_', TPid}, [], [true]}]),
+    ets:select_delete(IdentT, [{{'_', '_', TPid}, [], [true]}]).
 
 %% ---------------------------------------------------------------------------
 %% pick_peer/4
@@ -1418,12 +1545,12 @@ pick_peer(#diameter_app{alias = Alias}
           = App,
           RealmAndHost,
           Filter,
-          #state{local_peers = L,
-                 shared_peers = S,
+          #state{local = LT,
+                 remote = RT,
                  service_name = SvcName,
                  service = #diameter_service{pid = Pid}}) ->
-    pick_peer(peers(Alias, RealmAndHost, Filter, L),
-              peers(Alias, RealmAndHost, Filter, S),
+    pick_peer(peers(Alias, RealmAndHost, Filter, LT),
+              peers(Alias, RealmAndHost, Filter, RT),
               Pid,
               SvcName,
               App).
@@ -1479,62 +1606,210 @@ pick_peer(Local,
             ?LOG(invalid_return, {ModX, pick_peer, T}),
             false
     catch
-        E: Reason when M ->
+        E: Reason: Stack when M ->
             ModX = App#diameter_app.module,
-            Stack = diameter_lib:get_stacktrace(),
-            ?LOG(failure, {E, Reason, ModX, pick_peer, Stack}),
+            Z = diameter_lib:stacktrace(Stack),
+            ?LOG(failure, {E, Reason, ModX, pick_peer, Z}),
             false
     end.
 
 %% peers/4
 
-peers(Alias, RH, Filter, Peers) ->
-    case ?Dict:find(Alias, Peers) of
-        {ok, L} ->
-            filter(L, RH, Filter);
-        error ->
+%% No peer options pointing at specific peers: search for them.
+peers(Alias, RH, [Filter], T) ->
+    filter(Alias, RH, Filter, T, true);
+
+%% Or just lookup.
+peers(_Alias, RH, [Filter | TPids], {PeerT, _AppT, _IdentT}) ->
+    {Ts, _} = filter(caps(PeerT, TPids), RH, Filter),
+    Ts.
+
+%% filter/5
+%%
+%% Try to limit the peers list by starting with a host/realm lookup.
+
+filter(Alias, RH, {neg, F}, T, B) ->
+    filter(Alias, RH, F, T, not B);
+
+filter(_, _, none, _, false) ->
+    [];
+
+filter(Alias, _, none, T, true) ->
+    all_peers(Alias, T);
+
+filter(Alias, [DR,DH] = RH, K, T, B)
+  when K == realm, DR == undefined;
+       K == host, DH == undefined ->
+    filter(Alias, RH, none, T, B);
+
+filter(Alias, [DR,_] = RH, realm = K, T, B) ->
+    filter(Alias, RH, {K, DR}, T, B);
+
+filter(Alias, [_,DH] = RH, host = K, T, B) ->
+    filter(Alias, RH, {K, DH}, T, B);
+
+filter(Alias, _, {K, D}, {PeerT, _AppT, IdentT}, true)
+  when K == host;
+       K == realm ->
+    try iolist_to_binary(D) of
+        B ->
+            caps(PeerT, ets:select(IdentT, [{{{K, B}, '$1', '$2'},
+                                             [{'==', '$1', {const, Alias}}],
+                                             ['$2']}]))
+    catch
+        error:_ ->
             []
-    end.
+    end;
+
+filter(Alias, RH, {all, Filters}, T, B)
+  when is_list(Filters) ->
+    fltr_all(Alias, RH, Filters, T, B);
+
+filter(Alias, RH, {first, Filters}, T, B)
+  when is_list(Filters) ->
+    fltr_first(Alias, RH, Filters, T, B);
+
+filter(Alias, RH, Filter, T, B) ->
+    {Ts, Fs} = filter(all_peers(Alias, T), RH, Filter),
+    choose(B, Ts, Fs).
+
+%% fltr_all/5
+
+fltr_all(Alias, RH, [{K, any} | Filters], T, B)
+  when K == host;
+       K == realm ->
+    fltr_all(Alias, RH, Filters, T, B);
+
+fltr_all(Alias, RH, [{host, _} = H, {realm, _} = R | Filters], T, B) ->
+    fltr_all(Alias, RH, [R, H | Filters], T, B);
+
+fltr_all(Alias, RH, [{realm, _} = R, {host, any} | Filters], T, B) ->
+    fltr_all(Alias, RH, [R | Filters], T, B);
+
+fltr_all(Alias, RH, [{realm, OR}, {host, OH} | Filters], T, true) ->
+    {PeerT, _AppT, IdentT} = T,
+    try {iolist_to_binary(OR), iolist_to_binary(OH)} of
+        BT ->
+            Peers = caps(PeerT,
+                         ets:select(IdentT, [{{BT, '$1', '$2'},
+                                              [{'==', '$1', {const, Alias}}],
+                                              ['$2']}])),
+            {Ts, _} = filter(Peers, RH, {all, Filters}),
+            Ts
+    catch
+        error:_ ->
+            []
+    end;
+
+fltr_all(Alias, [undefined,_] = RH, [realm | Filters], T, B) ->
+    fltr_all(Alias, RH, Filters, T, B);
+
+fltr_all(Alias, [DR,_] = RH, [realm | Filters], T, B) ->
+    fltr_all(Alias, RH, [{realm, DR} | Filters], T, B);
+
+fltr_all(Alias, [_,undefined] = RH, [host | Filters], T, B) ->
+    fltr_all(Alias, RH, Filters, T, B);
+
+fltr_all(Alias, [_,DH] = RH, [host | Filters], T, B) ->
+    fltr_all(Alias, RH, [{host, DH} | Filters], T, B);
+
+fltr_all(Alias, RH, [{K, _} = KT, KA | Filters], T, B)
+  when K == host, KA == realm;
+       K == realm, KA == host ->
+    fltr_all(Alias, RH, [KA, KT | Filters], T, B);
+
+fltr_all(Alias, RH, [F | Filters], T, B) ->
+    {Ts, Fs} = filter(filter(Alias, RH, F, T, B), RH, {all, Filters}),
+    choose(B, Ts, Fs);
+
+fltr_all(Alias, RH, [], T, B) ->
+    filter(Alias, RH, none, T, B).
+
+%% fltr_first/5
+%%
+%% Like any, but stop at the first filter with any matches.
+
+fltr_first(Alias, RH, [F | Filters], T, B) ->
+    case filter(Alias, RH, F, T, B) of
+        [] ->
+            fltr_first(Alias, RH, Filters, T, B);
+        [_|_] = Ts ->
+            Ts
+    end;
+
+fltr_first(Alias, RH, [], T, B) ->
+    filter(Alias, RH, none, T, not B).
+
+%% all_peers/2
+
+all_peers(Alias, {PeerT, AppT, _}) ->
+    ets:select(PeerT, [{#peer{pid = P, caps = '$1', _ = '_'},
+                        [],
+                        [{{P, '$1'}}]}
+                       || {_,P} <- ets:lookup(AppT, Alias)]).
+
+%% caps/2
+
+caps(PeerT, Pids) ->
+    ets:select(PeerT, [{#peer{pid = P, caps = '$1', _ = '_'},
+                        [],
+                        [{{P, '$1'}}]}
+                       || P <- Pids]).
 
 %% filter/3
 %%
 %% Return peers in match order.
 
-filter(Peers, RH, Filter) ->
-    {Ts, _} = fltr(Peers, RH, Filter),
-    Ts.
-
-%% fltr/4
-
-fltr(Peers, _, none) ->
+filter(Peers, _, none) ->
     {Peers, []};
 
-fltr(Peers, RH, {neg, F}) ->
-    {Ts, Fs} = fltr(Peers, RH, F),
+filter(Peers, RH, {neg, F}) ->
+    {Ts, Fs} = filter(Peers, RH, F),
     {Fs, Ts};
 
-fltr(Peers, RH, {all, L})
+filter(Peers, RH, {all, L})
   when is_list(L) ->
     lists:foldl(fun(F,A) -> fltr_all(F, A, RH) end,
                 {Peers, []},
                 L);
 
-fltr(Peers, RH, {any, L})
+filter(Peers, RH, {any, L})
   when is_list(L) ->
     lists:foldl(fun(F,A) -> fltr_any(F, A, RH) end,
                 {[], Peers},
                 L);
 
-fltr(Peers, RH, F) ->
+filter(Peers, RH, {first, L})
+  when is_list(L) ->
+    fltr_first(Peers, RH, L);
+
+filter(Peers, RH, F) ->
     lists:partition(fun({_,C}) -> caps_filter(C, RH, F) end, Peers).
 
+%% fltr_all/3
+
 fltr_all(F, {Ts0, Fs0}, RH) ->
-    {Ts1, Fs1} = fltr(Ts0, RH, F),
+    {Ts1, Fs1} = filter(Ts0, RH, F),
     {Ts1, Fs0 ++ Fs1}.
 
+%% fltr_any/3
+
 fltr_any(F, {Ts0, Fs0}, RH) ->
-    {Ts1, Fs1} = fltr(Fs0, RH, F),
+    {Ts1, Fs1} = filter(Fs0, RH, F),
     {Ts0 ++ Ts1, Fs1}.
+
+%% fltr_first/3
+
+fltr_first(Peers, _, []) ->
+    {[], Peers};
+
+fltr_first(Peers, RH, [F | Filters]) ->
+    case filter(Peers, RH, F) of
+        {[], _} ->
+            fltr_first(Peers, RH, Filters);
+        {_, _} = T ->
+            T
+    end.
 
 %% caps_filter/3
 
@@ -1575,13 +1850,6 @@ eq(Any, Id, PeerId) ->
 %% OctetString() can be specified as an iolist() so test for string
 %% rather then term equality.
 
-%% transports/1
-
-transports(#state{watchdogT = WatchdogT}) ->
-    ets:select(WatchdogT, [{#watchdog{peer = '$1', _ = '_'},
-                        [{'is_pid', '$1'}],
-                        ['$1']}]).
-
 %% ---------------------------------------------------------------------------
 %% # service_info/2
 %% ---------------------------------------------------------------------------
@@ -1604,7 +1872,6 @@ transports(#state{watchdogT = WatchdogT}) ->
 -define(ALL_INFO, [capabilities,
                    applications,
                    transport,
-                   pending,
                    options]).
 
 %% The rest.
@@ -1633,7 +1900,7 @@ tagged_info(Item, S)
             undefined
     end;
 
-tagged_info(TPid, #state{watchdogT = WatchdogT, peerT = PeerT})
+tagged_info(TPid, #state{watchdogT = WatchdogT, local = {PeerT, _, _}})
   when is_pid(TPid) ->
     try
         [#peer{watchdog = Pid}] = ets:lookup(PeerT, TPid),
@@ -1698,7 +1965,6 @@ complete_info(Item, #state{service = Svc} = S) ->
         applications -> info_apps(S);
         transport    -> info_transport(S);
         options      -> info_options(S);
-        pending      -> info_pending(S);
         keys         -> ?ALL_INFO ++ ?CAP_INFO ++ ?OTHER_INFO;
         all          -> service_info(?ALL_INFO, S);
         statistics   -> info_stats(S);
@@ -1783,7 +2049,7 @@ keys(connect = T, Opts) ->
 keys(_, _) ->
     [{listen, accept}].
 
-peer_dict(#state{watchdogT = WatchdogT, peerT = PeerT}, Dict0) ->
+peer_dict(#state{watchdogT = WatchdogT, local = {PeerT, _, _}}, Dict0) ->
     try ets:tab2list(WatchdogT) of
         L -> lists:foldl(fun(T,A) -> peer_acc(PeerT, A, T) end, Dict0, L)
     catch
@@ -1905,13 +2171,6 @@ info_apps(#state{service = #diameter_service{applications = Apps}}) ->
 
 mk_app(#diameter_app{} = A) ->
     lists:zip(record_info(fields, diameter_app), tl(tuple_to_list(A))).
-
-%% info_pending/1
-%%
-%% One entry for each outgoing request whose answer is outstanding.
-
-info_pending(#state{} = S) ->
-    diameter_traffic:pending(transports(S)).
 
 %% info_info/1
 %%

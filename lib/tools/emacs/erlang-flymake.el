@@ -22,7 +22,7 @@
 
 (require 'flymake)
 (eval-when-compile
-  (require 'cl))
+  (require 'cl-lib))
 
 (defvar erlang-flymake-command
   "erlc"
@@ -37,8 +37,7 @@
   "Return a list of include directories to add to the compiler options.")
 
 (defvar erlang-flymake-extra-opts
-  (list "+warn_obsolete_guard"
-        "+warn_unused_import"
+  (list "+warn_unused_import"
         "+warn_shadow_vars"
         "+warn_export_vars"
         "+strong_validation"
@@ -69,7 +68,7 @@ check on newline and when there are no changes)."
 
 (defun erlang-flymake-init ()
   (let* ((temp-file
-          (flet ((flymake-get-temp-dir () (erlang-flymake-temp-dir)))
+          (cl-letf (((symbol-function 'flymake-get-temp-dir) #'erlang-flymake-temp-dir))
             (flymake-init-create-temp-buffer-copy
              'flymake-create-temp-with-folder-structure)))
          (code-dir-opts

@@ -1,7 +1,7 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2004-2015. All Rights Reserved.
+%% Copyright Ericsson AB 2004-2018. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -50,6 +50,8 @@
 %% Exported to qlc_pt.erl only:
 -export([template_state/0, aux_name/3, name_suffix/2, vars/1,
          var_ufold/2, var_fold/3, all_selections/1]).
+
+-dialyzer(no_improper_lists).
 
 %% When cache=list lists bigger than ?MAX_LIST_SIZE bytes are put on
 %% file. Also used when merge join finds big equivalence classes.
@@ -299,11 +301,11 @@ eval(QH, Options) ->
                             post_funs(Post)
                         end
                 end
-            catch Term ->
-                case erlang:get_stacktrace() of
+            catch throw:Term:Stacktrace ->
+                case Stacktrace of
                     [?THROWN_ERROR | _] ->
                         Term;
-                    Stacktrace ->
+                    _ ->
                         erlang:raise(throw, Term, Stacktrace)
                 end
             end
@@ -357,11 +359,11 @@ fold(Fun, Acc0, QH, Options) ->
                             post_funs(Post)
                         end
                 end
-            catch Term ->
-                case erlang:get_stacktrace() of
+            catch throw:Term:Stacktrace ->
+                case Stacktrace of
                     [?THROWN_ERROR | _] ->
                         Term;
-                    Stacktrace ->
+                    _ ->
                         erlang:raise(throw, Term, Stacktrace)
                 end
             end
@@ -455,11 +457,11 @@ info(QH, Options) ->
                     debug -> % Not documented. Intended for testing only.
                         Info
                 end
-            catch Term ->
-                case erlang:get_stacktrace() of
+            catch throw:Term:Stacktrace ->
+                case Stacktrace of
                     [?THROWN_ERROR | _] ->
                         Term;
-                    Stacktrace ->
+                    _ ->
                         erlang:raise(throw, Term, Stacktrace)
                 end
             end
@@ -633,14 +635,25 @@ string_to_handle(Str, Options, Bindings) when is_list(Str) ->
         badarg ->
             erlang:error(badarg, [Str, Options, Bindings]);
         [Unique, Cache, MaxLookup, Join, Lookup] ->
-            case erl_scan:string(Str) of
+            case erl_scan:string(Str, 1, [text]) of
                 {ok, Tokens, _} ->
-                    case erl_parse:parse_exprs(Tokens) of
-                        {ok, [Expr]} ->
-                            case qlc_pt:transform_expression(Expr, Bindings) of
+                    ScanRes =
+                        case erl_eval:extended_parse_exprs(Tokens) of
+                            {ok, [Expr0], SBs} ->
+                                {ok, Expr0, SBs};
+                            {ok, _ExprList, _SBs} ->
+                                erlang:error(badarg,
+                                             [Str, Options, Bindings]);
+                            E ->
+                                E
+                        end,
+                    case ScanRes of
+                        {ok, Expr, XBs} ->
+                            Bs1 = merge_binding_structs(Bindings, XBs),
+                            case qlc_pt:transform_expression(Expr, Bs1) of
                                 {ok, {call, _, _QlcQ,  Handle}} ->
                                     {value, QLC_lc, _} = 
-                                        erl_eval:exprs(Handle, Bindings),
+                                        erl_eval:exprs(Handle, Bs1),
                                     O = #qlc_opt{unique = Unique, 
                                                  cache = Cache,
                                                  max_lookup = MaxLookup, 
@@ -650,8 +663,6 @@ string_to_handle(Str, Options, Bindings) when is_list(Str) ->
                                 {not_ok, [{error, Error} | _]} ->
                                     error(Error)
                             end;
-                        {ok, _ExprList} ->
-                            erlang:error(badarg, [Str, Options, Bindings]);
                         {error, ErrorInfo} ->
                             error(ErrorInfo)
                     end;
@@ -732,10 +743,11 @@ table(TraverseFun, Options) when is_function(TraverseFun) ->
 table(T1, T2) ->
     erlang:error(badarg, [T1, T2]).
 
--spec(transform_from_evaluator(LC, Bs) -> Expr when
+-spec(transform_from_evaluator(LC, Bs) -> Return when
       LC :: abstract_expr(),
-      Expr :: abstract_expr(),
-      Bs :: erl_eval:binding_struct()).
+      Bs :: erl_eval:binding_struct(),
+      Return :: {ok, abstract_expr()}
+              | {not_ok, {error, module(), Reason :: term()}}).
 
 transform_from_evaluator(LC, Bs0) ->
     qlc_pt:transform_from_evaluator(LC, Bs0).
@@ -767,9 +779,13 @@ all_selections([{I,Cs} | ICs]) ->
 %%% Local functions
 %%%
 
+merge_binding_structs(Bs1, Bs2) ->
+    lists:foldl(fun({N, V}, Bs) -> erl_eval:add_binding(N, V, Bs)
+                end, Bs1, erl_eval:bindings(Bs2)).
+
 aux_name1(Name, N, AllNames) ->
     SN = name_suffix(Name, N),
-    case sets:is_element(SN, AllNames) of
+    case gb_sets:is_member(SN, AllNames) of
         true -> aux_name1(Name, N + 1, AllNames);
         false -> {SN, N}
     end.
@@ -808,21 +824,21 @@ options(Options0, [Key | Keys], L) when is_list(Options0) ->
                 {ok, U};
             {pre_fun, U=undefined} ->
                 {ok, U};
-            {info_fun, Fun} when is_function(Fun), is_function(Fun, 1) ->
+            {info_fun, Fun} when is_function(Fun, 1) ->
                 {ok, Fun};
-            {pre_fun, Fun} when is_function(Fun), is_function(Fun, 1) ->
+            {pre_fun, Fun} when is_function(Fun, 1) ->
                 {ok, Fun};
-            {post_fun, Fun} when is_function(Fun), is_function(Fun, 0) ->
+            {post_fun, Fun} when is_function(Fun, 0) ->
                 {ok, Fun};
-            {lookup_fun, Fun} when is_function(Fun), is_function(Fun, 2) ->
+            {lookup_fun, Fun} when is_function(Fun, 2) ->
                 {ok, Fun};
             {max_lookup, Max} when is_integer(Max), Max >= 0 ->
                 {ok, Max};
             {max_lookup, infinity} ->
                 {ok, -1};
-            {format_fun, Fun} when is_function(Fun), is_function(Fun, 1) ->
+            {format_fun, Fun} when is_function(Fun, 1) ->
                 {ok, Fun};
-            {parent_fun, Fun} when is_function(Fun), is_function(Fun, 0) ->
+            {parent_fun, Fun} when is_function(Fun, 0) ->
                 {ok, Fun};
             {key_equality, KE='=='} ->
                 {ok, KE};
@@ -885,7 +901,7 @@ options(Options0, [Key | Keys], L) when is_list(Options0) ->
             {depth, Depth} when Depth =:= infinity;
                                 is_integer(Depth), Depth >= 0 ->
                 {ok, Depth};
-            {order, Order} when is_function(Order), is_function(Order, 2);
+            {order, Order} when is_function(Order, 2);
                                 (Order =:= ascending);
                                 (Order =:= descending) ->
                 {ok, Order};
@@ -1040,9 +1056,9 @@ cursor_process(H, GUnique, GCache, TmpDir, SpawnOptions, MaxList, TmpUsage) ->
                          Prep = prepare_qlc(H, not_a_list, GUnique, GCache, 
                                             TmpDir, MaxList, TmpUsage),
                          setup_qlc(Prep, Setup)
-                     catch Class:Reason ->
-                           Parent ! {self(), {caught, Class, Reason, 
-                                     erlang:get_stacktrace()}},
+                     catch Class:Reason:Stacktrace ->
+                           Parent ! {self(),
+                                     {caught, Class, Reason, Stacktrace}},
                            exit(normal)
                      end,
                  Parent ! {self(), ok},
@@ -1059,8 +1075,8 @@ parent_fun(Pid, Parent) ->
         {TPid, {parent_fun, Fun}} ->
             V = try 
                     {value, Fun()}
-                catch Class:Reason ->
-                    {parent_fun_caught, Class, Reason, erlang:get_stacktrace()}
+                catch Class:Reason:Stacktrace ->
+                    {parent_fun_caught, Class, Reason, Stacktrace}
             end,
             TPid ! {Parent, V},
             parent_fun(Pid, Parent);
@@ -1085,9 +1101,9 @@ reply(Parent, MonRef, Post, Cont) ->
                         throw_error(Cont)
                 end
             catch 
-                Class:Reason ->
+                Class:Reason:Stacktrace ->
                    post_funs(Post),
-                   Message = {caught, Class, Reason, erlang:get_stacktrace()},
+                   Message = {caught, Class, Reason, Stacktrace},
                    Parent ! {self(), Message},
                    exit(normal)
             end,
@@ -1116,7 +1132,7 @@ wait_for_request(Parent, MonRef, Post) ->
             wait_for_request(Parent, MonRef, Post);
         Other ->
             error_logger:error_msg(
-              "The qlc cursor ~w received an unexpected message:\n~p\n", 
+              "The qlc cursor ~w received an unexpected message:\n~tp\n",
               [self(), Other]),
             wait_for_request(Parent, MonRef, Post)
     end.
@@ -1177,9 +1193,12 @@ abstract1({table, {M, F, As0}}, _NElements, _Depth, Anno)
 abstract1({table, TableDesc}, _NElements, _Depth, _A) ->
     case io_lib:deep_char_list(TableDesc) of
         true ->
-            {ok, Tokens, _} = erl_scan:string(lists:flatten(TableDesc++".")),
-            {ok, [Expr]} = erl_parse:parse_exprs(Tokens),
-            Expr;
+            {ok, Tokens, _} =
+                erl_scan:string(lists:flatten(TableDesc++"."), 1, [text]),
+            {ok, Es, Bs} =
+                erl_eval:extended_parse_exprs(Tokens),
+            [Expr] = erl_eval:subst_values_for_vars(Es, Bs),
+            special(Expr);
         false -> % abstract expression
             TableDesc
     end;
@@ -1206,6 +1225,15 @@ abstract1({list, L}, NElements, Depth, _A) when NElements =:= infinity;
     abstract_term(depth(L, Depth), 1);
 abstract1({list, L}, NElements, Depth, _A) ->
     abstract_term(depth(lists:sublist(L, NElements), Depth) ++ '...', 1).
+
+special({value, _, Thing}) ->
+    abstract_term(Thing);
+special(Tuple) when is_tuple(Tuple) ->
+    list_to_tuple(special(tuple_to_list(Tuple)));
+special([E|Es]) ->
+    [special(E)|special(Es)];
+special(Expr) ->
+    Expr.
 
 depth(List, infinity) ->
     List;
@@ -1289,6 +1317,10 @@ abstr_term(Fun, Line) when is_function(Fun) ->
     end;
 abstr_term(PPR, Line) when is_pid(PPR); is_port(PPR); is_reference(PPR) ->
     {special, Line, lists:flatten(io_lib:write(PPR))};    
+abstr_term(Map, Line) when is_map(Map) ->
+    {map,Line,
+     [{map_field_assoc,Line,abstr_term(K, Line),abstr_term(V, Line)} ||
+         {K,V} <- maps:to_list(Map)]};
 abstr_term(Simple, Line) ->
     erl_parse:abstract(Simple, erl_anno:line(Line)).
 
@@ -1325,7 +1357,7 @@ flatten_abstr(E, VN, _Vars, Body) ->
     {VN, Body, E}.
 
 abstract_vars(Abstract) ->
-    sets:from_list(ordsets:to_list(vars(Abstract))).
+    gb_sets:from_list(ordsets:to_list(vars(Abstract))).
 
 collect([]=L) ->
     L;
@@ -1360,8 +1392,9 @@ next_loop(Pid, L, N) when N =/= 0 ->
         {caught, throw, Error, [?THROWN_ERROR | _]} ->
             Error;
         {caught, Class, Reason, Stacktrace} ->
-            _ = (catch erlang:error(foo)),
-            erlang:raise(Class, Reason, Stacktrace ++ erlang:get_stacktrace());
+            {current_stacktrace, CurrentStacktrace} =
+                erlang:process_info(self(), current_stacktrace),
+            erlang:raise(Class, Reason, Stacktrace ++ CurrentStacktrace);
         error ->
             erlang:error({qlc_cursor_pid_no_longer_exists, Pid})
     end;
@@ -2593,9 +2626,9 @@ table_handle(#qlc_table{trav_fun = TraverseFun, trav_MS = TravMS,
             Parent =:= self() ->
                 try
                     ParentFun() 
-                catch Class:Reason ->
+                catch Class:Reason:Stacktrace ->
                     post_funs(Post),
-                    erlang:raise(Class, Reason, erlang:get_stacktrace())
+                    erlang:raise(Class, Reason, Stacktrace)
                 end;
             true ->
                 case monitor_request(Parent, {parent_fun, ParentFun}) of
@@ -2999,9 +3032,9 @@ file_sort_handle(H, Kp, SortOptions, TmpDir, Compressed, Post, LocalPost) ->
         {terms, BTerms} ->
             try 
                 {[binary_to_term(B) || B <- BTerms], Post, LocalPost}
-            catch Class:Reason ->
+            catch Class:Reason:Stacktrace ->
                 post_funs(Post),
-                erlang:raise(Class, Reason, erlang:get_stacktrace())
+                erlang:raise(Class, Reason, Stacktrace)
             end
     end.
 
@@ -3011,9 +3044,9 @@ do_sort(In, Out, Sort, SortOptions, Post) ->
             {error, Reason} -> throw_reason(Reason);
             Reply -> Reply
         end
-    catch Class:Term ->
+    catch Class:Term:Stacktrace ->
         post_funs(Post),
-        erlang:raise(Class, Term, erlang:get_stacktrace())
+        erlang:raise(Class, Term, Stacktrace)
     end.
 
 do_sort(In, Out, sort, SortOptions) ->
@@ -3716,7 +3749,7 @@ maybe_error_logger(Name, Why) ->
 	expand_stacktrace(),
     Trimmer = fun(M, _F, _A) -> M =:= erl_eval end,
     Formater = fun(Term, I) -> io_lib:print(Term, I, 80, -1) end,
-    X = lib:format_stacktrace(1, Stacktrace, Trimmer, Formater),
+    X = erl_error:format_stacktrace(1, Stacktrace, Trimmer, Formater),
     error_logger:Name("qlc: temporary file was needed for ~w\n~ts\n",
                       [Why, lists:flatten(X)]).
 
@@ -3763,9 +3796,9 @@ call(undefined, _Arg, Default, _Post) ->
 call(Fun, Arg, _Default, Post) ->
     try
         Fun(Arg) 
-    catch Class:Reason ->
+    catch Class:Reason:Stacktrace ->
         post_funs(Post),
-        erlang:raise(Class, Reason, erlang:get_stacktrace())
+        erlang:raise(Class, Reason, Stacktrace)
     end.
 
 grd(undefined, _Arg) ->

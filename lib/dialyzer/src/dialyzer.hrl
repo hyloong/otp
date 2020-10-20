@@ -1,9 +1,5 @@
 %%% This is an -*- Erlang -*- file.
 %%%
-%%% %CopyrightBegin%
-%%%
-%%% Copyright Ericsson AB 2006-2014. All Rights Reserved.
-%%%
 %%% Licensed under the Apache License, Version 2.0 (the "License");
 %%% you may not use this file except in compliance with the License.
 %%% You may obtain a copy of the License at
@@ -15,8 +11,6 @@
 %%% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 %%% See the License for the specific language governing permissions and
 %%% limitations under the License.
-%%%
-%%% %CopyrightEnd%
 %%%
 %%%-------------------------------------------------------------------
 %%% File    : dialyzer.hrl
@@ -60,6 +54,7 @@
 -define(WARN_BEHAVIOUR, warn_behaviour).
 -define(WARN_UNDEFINED_CALLBACK, warn_undefined_callbacks).
 -define(WARN_UNKNOWN, warn_unknown).
+-define(WARN_MAP_CONSTRUCTION, warn_map_construction).
 
 %%
 %% The following type has double role:
@@ -75,7 +70,8 @@
                        | ?WARN_CONTRACT_SUPERTYPE | ?WARN_CALLGRAPH
                        | ?WARN_UNMATCHED_RETURN | ?WARN_RACE_CONDITION
                        | ?WARN_BEHAVIOUR | ?WARN_CONTRACT_RANGE
-		       | ?WARN_UNDEFINED_CALLBACK | ?WARN_UNKNOWN.
+		       | ?WARN_UNDEFINED_CALLBACK | ?WARN_UNKNOWN
+		       | ?WARN_MAP_CONSTRUCTION.
 
 %%
 %% This is the representation of each warning as they will be returned
@@ -112,6 +108,7 @@
 -type dial_options()  :: [dial_option()].
 -type fopt()          :: 'basename' | 'fullpath'.
 -type format()        :: 'formatted' | 'raw'.
+-type iopt()          :: boolean().
 -type label()	      :: non_neg_integer().
 -type dial_warn_tags():: ordsets:ordset(dial_warn_tag()).
 -type rep_mode()      :: 'quiet' | 'normal' | 'verbose'.
@@ -123,10 +120,14 @@
 %% Record declarations used by various files
 %%--------------------------------------------------------------------
 
--record(analysis, {analysis_pid			   :: pid(),
+-define(INDENT_OPT, true).
+
+-type doc_plt() :: 'undefined' | dialyzer_plt:plt().
+
+-record(analysis, {analysis_pid			   :: pid() | 'undefined',
 		   type		  = succ_typings   :: anal_type(),
 		   defines	  = []		   :: [dial_define()],
-		   doc_plt                         :: dialyzer_plt:plt(),
+		   doc_plt                         :: doc_plt(),
 		   files          = []		   :: [file:filename()],
 		   include_dirs	  = []		   :: [file:filename()],
 		   start_from     = byte_code	   :: start_from(),
@@ -135,7 +136,7 @@
 		   race_detection = false	   :: boolean(),
 		   behaviours_chk = false          :: boolean(),
 		   timing         = false          :: boolean() | 'debug',
-		   timing_server             :: dialyzer_timing:timing_server(),
+		   timing_server  = none           :: dialyzer_timing:timing_server(),
 		   callgraph_file = ""             :: file:filename(),
                    solvers                         :: [solver()]}).
 
@@ -156,9 +157,12 @@
 		  output_file     = none	   :: 'none' | file:filename(),
 		  output_format   = formatted      :: format(),
 		  filename_opt	  = basename       :: fopt(),
+                  indent_opt      = ?INDENT_OPT    :: iopt(),
 		  callgraph_file  = ""             :: file:filename(),
 		  check_plt       = true           :: boolean(),
-                  solvers         = []             :: [solver()]}).
+                  solvers         = []             :: [solver()],
+                  native          = maybe          :: boolean() | 'maybe',
+                  native_cache    = true           :: boolean()}).
 
 -record(contract, {contracts	  = []		   :: [contract_pair()],
 		   args		  = []		   :: [erl_types:erl_type()],

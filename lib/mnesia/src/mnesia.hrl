@@ -1,7 +1,7 @@
 %%
 %% %CopyrightBegin%
 %% 
-%% Copyright Ericsson AB 1996-2014. All Rights Reserved.
+%% Copyright Ericsson AB 1996-2018. All Rights Reserved.
 %% 
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -44,17 +44,23 @@
 -define(SAFE(OP), try (OP) catch error:_ -> ok end).
 -define(CATCH(OP), try (OP) catch _:_Reason -> {'EXIT', _Reason} end).
 
+-define(CATCHU(OP), fun() -> try (OP) catch _:_Reason -> {'EXIT', _Reason} end end()).
+
 -define(catch_val(Var), (try ?ets_lookup_element(mnesia_gvar, Var, 2)
 			 catch error:_ -> {'EXIT', {badarg, []}} end)).
 
+-define(catch_val_and_stack(Var),
+        (try ?ets_lookup_element(mnesia_gvar, Var, 2)
+         catch error:_:_Stacktrace -> {'EXIT', _Stacktrace} end)).
+
 %% It's important that counter is first, since we compare tid's
 
--record(tid, 
+-record(tid,
         {counter,         %% serial no for tid
          pid}).           %%  owner of tid
 
 
--record(tidstore,         
+-record(tidstore,
         {store,           %% current ets table for tid
          up_stores = [],  %% list of upper layer stores for nested trans
          level = 1}).     %% transaction level
@@ -68,6 +74,7 @@
 		  ram_copies = [],                 % [Node]
 		  disc_copies = [],                % [Node]
 		  disc_only_copies = [],           % [Node]
+                  external_copies = [],            % [{{Alias,Mod},[Node]}]
 		  load_order = 0,                  % Integer
 		  access_mode = read_write,        % read_write | read_only
 		  majority = false,                % true | false
@@ -103,7 +110,7 @@
 		 ram_copies = [],
 		 disc_copies = [],
 		 disc_only_copies = [],
-		 snmp = [],
+		 ext = [],
 		 schema_ops = []
 		}).
 
@@ -127,5 +134,4 @@
 	    mnesia_lib:eval_debug_fun(I, C, ?FILE, ?LINE)).
 -else.
     -define(eval_debug_fun(I, C), ok).
--endif.    
-
+-endif.

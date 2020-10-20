@@ -1,7 +1,7 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 1997-2013. All Rights Reserved.
+%% Copyright Ericsson AB 1997-2020. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -98,7 +98,7 @@ init() ->
 			      {win32,WinType} ->
 				  win32_load_from_registry(WinType);
 			      _ ->
-				  error("can not read win32 system registry~n", [])
+				  error("cannot read win32 system registry~n", [])
 			  end
 		  end, CfgFiles),
 
@@ -187,9 +187,6 @@ do_load_resolv({unix,Type}, longnames) ->
 do_load_resolv({win32,Type}, longnames) ->	
     win32_load_from_registry(Type),
     inet_db:set_lookup([native]);
-
-do_load_resolv({ose,_}, _) ->
-    inet_db:set_lookup([file]);
 
 do_load_resolv(_, _) ->
     inet_db:set_lookup([native]).
@@ -372,7 +369,7 @@ win32_load1(Reg,Type,HFileKey) ->
     end.
 
 win32_split_line(Line,nt) -> inet_parse:split_line(Line);
-win32_split_line(Line,windows) -> string:tokens(Line, ",").
+win32_split_line(Line,windows) -> string:lexemes(Line, ",").
 
 win32_get_strings(Reg, Names) ->
     win32_get_strings(Reg, Names, []).

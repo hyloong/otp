@@ -1,18 +1,23 @@
 %% =====================================================================
-%% This library is free software; you can redistribute it and/or modify
-%% it under the terms of the GNU Lesser General Public License as
-%% published by the Free Software Foundation; either version 2 of the
-%% License, or (at your option) any later version.
+%% Licensed under the Apache License, Version 2.0 (the "License"); you may
+%% not use this file except in compliance with the License. You may obtain
+%% a copy of the License at <http://www.apache.org/licenses/LICENSE-2.0>
 %%
-%% This library is distributed in the hope that it will be useful, but
-%% WITHOUT ANY WARRANTY; without even the implied warranty of
-%% MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
-%% Lesser General Public License for more details.
+%% Unless required by applicable law or agreed to in writing, software
+%% distributed under the License is distributed on an "AS IS" BASIS,
+%% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+%% See the License for the specific language governing permissions and
+%% limitations under the License.
 %%
-%% You should have received a copy of the GNU Lesser General Public
-%% License along with this library; if not, write to the Free Software
-%% Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307
-%% USA
+%% Alternatively, you may use this file under the terms of the GNU Lesser
+%% General Public License (the "LGPL") as published by the Free Software
+%% Foundation; either version 2.1, or (at your option) any later version.
+%% If you wish to allow use of your version of this file only under the
+%% terms of the LGPL, you should delete the provisions above and replace
+%% them with the notice and other provisions required by the LGPL; see
+%% <http://www.gnu.org/licenses/>. If you do not delete the provisions
+%% above, a recipient may use your version of this file under the terms of
+%% either the Apache License or the LGPL.
 %%
 %% @copyright 2001-2007 Richard Carlsson
 %% @author Richard Carlsson <carlsson.richard@gmail.com>
@@ -192,7 +197,7 @@ application(App, Dir, Options) when is_atom(App) ->
 			     ?OVERVIEW_FILE),
     Opts = Options ++ [{source_path, [Src]},
 		       subpackages,
-		       {title, io_lib:fwrite("The ~s application", [App])},
+		       {title, io_lib:fwrite("The ~ts application", [App])},
 		       {overview, Overview},
 		       {dir, filename:join(Dir, ?EDOC_DIR)},
 		       {includes, [filename:join(Dir, "include")]}],
@@ -254,10 +259,9 @@ opt_negations() ->
 %%  </dd>
 %%  <dt>{@type {doc_path, [string()]@}}
 %%  </dt>
-%%  <dd>Specifies a list of URI:s pointing to directories that contain
-%%      EDoc-generated documentation. URI without a `scheme://' part are
-%%      taken as relative to `file://'. (Note that such paths must use
-%%      `/' as separator, regardless of the host operating system.)
+%%  <dd>Specifies a list of file system paths pointing to directories that
+%%      contain EDoc-generated documentation. All paths for applications
+%%      in the code path are automatically added.
 %%  </dd>
 %%  <dt>{@type {doclet, Module::atom()@}}
 %%  </dt>
@@ -555,7 +559,6 @@ read_source(Name) ->
 %%  <dd>Specifies a list of pre-defined Erlang preprocessor (`epp')
 %%      macro definitions, used if the `preprocess' option is turned on.
 %%      The default value is the empty list.</dd>
-%% </dl>
 %%  <dt>{@type {report_missing_types, boolean()@}}
 %%  </dt>
 %%  <dd>If the value is `true', warnings are issued for missing types.
@@ -563,6 +566,7 @@ read_source(Name) ->
 %%      `no_report_missing_types' is an alias for
 %%      `{report_missing_types, false}'.
 %%  </dd>
+%% </dl>
 %%
 %% @see get_doc/2
 %% @see //syntax_tools/erl_syntax
@@ -573,7 +577,7 @@ read_source(Name, Opts0) ->
     Opts = expand_opts(Opts0),
     case read_source_1(Name, Opts) of
 	{ok, Forms} ->
-	    check_forms(Forms, Name),
+	    check_forms(Forms, Name, Opts),
 	    Forms;
 	{error, R} ->
 	    edoc_report:error({"error reading file '~ts'.",
@@ -653,20 +657,7 @@ find_invalid_unicode([]) -> none.
 parse_file(Epp) ->
     case scan_and_parse(Epp) of
 	{ok, Form} ->
-	    case Form of
-		{attribute,La,record,{Record, Fields}} ->
-		    case epp:normalize_typed_record_fields(Fields) of
-			{typed, NewFields} ->
-			    [{attribute, La, record, {Record, NewFields}},
-			     {attribute, La, type,
-			      {{record, Record}, Fields, []}}
-			     | parse_file(Epp)];
-			not_typed ->
-			    [Form | parse_file(Epp)]
-		    end;
-		_ ->
-		    [Form | parse_file(Epp)]
-	    end;
+            [Form | parse_file(Epp)];
 	{error, E} ->
 	    [{error, E} | parse_file(Epp)];
 	{eof, Location} ->
@@ -700,13 +691,19 @@ fll([T | L], LastLine, Ts) ->
 fll(L, _LastLine, Ts) ->
     lists:reverse(L, Ts).
 
-check_forms(Fs, Name) ->
+check_forms(Fs, Name, Opts) ->
     Fun = fun (F) ->
 	     case erl_syntax:type(F) of
 		 error_marker ->
 		     case erl_syntax:error_marker_info(F) of
 			 {L, M, D} ->
-			     edoc_report:error(L, Name, {format_error, M, D});
+                             edoc_report:error(L, Name, {format_error, M, D}),
+                             case proplists:get_bool(preprocess, Opts) of
+                                 true ->
+                                     ok;
+                                 false ->
+                                     helpful_message(Name)
+                             end;
 			 Other ->
 			     edoc_report:report(Name, "unknown error in "
                                                 "source code: ~w.", [Other])
@@ -718,6 +715,11 @@ check_forms(Fs, Name) ->
 	  end,
     lists:foreach(Fun, Fs).
 
+helpful_message(Name) ->
+    Ms = ["If the error is caused by too exotic macro",
+          "definitions or uses of macros, adding option",
+          "{preprocess, true} can help. See also edoc(3)."],
+    lists:foreach(fun(M) -> edoc_report:report(Name, M, []) end, Ms).
 
 %% @spec get_doc(File::filename()) -> {ModuleName, edoc_module()}
 %% @equiv get_doc(File, [])
@@ -731,7 +733,7 @@ get_doc(File) ->
 %%
 %% @type edoc_module(). The EDoc documentation data for a module,
 %% expressed as an XML document in {@link //xmerl. XMerL} format. See
-%% the file <a href="../priv/edoc.dtd">`edoc.dtd'</a> for details.
+%% the file <a href="edoc.dtd">`edoc.dtd'</a> for details.
 %%
 %% @doc Reads a source code file and extracts EDoc documentation data.
 %% Note that without an environment parameter (see {@link get_doc/3}),

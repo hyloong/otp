@@ -1,7 +1,7 @@
 %%
 %% %CopyrightBegin%
 %% 
-%% Copyright Ericsson AB 2008-2014. All Rights Reserved.
+%% Copyright Ericsson AB 2008-2018. All Rights Reserved.
 %% 
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -27,7 +27,10 @@
 	 init_per_suite/1, end_per_suite/1, 
 	 init_per_testcase/2, end_per_testcase/2]).
 
--compile(export_all).
+-export([connect/1, disconnect/1, disconnect_cb/1, connect_msg_20/1, connect_cb_20/1,
+         mouse_on_grid/1, spin_event/1, connect_in_callback/1, recursive/1,
+         dialog/1, char_events/1, mouse_events/1, callback_clean/1, handler_clean/1
+        ]).
 
 -include("wx_test_lib.hrl").
 
@@ -44,12 +47,12 @@ end_per_testcase(Func,Config) ->
     wx_test_lib:end_per_testcase(Func,Config).
 
 %% SUITE specification
-suite() -> [{ct_hooks,[ts_install_cth]}].
+suite() -> [{ct_hooks,[ts_install_cth]}, {timetrap,{minutes,2}}].
 
-all() -> 
-    [connect, disconnect, connect_msg_20, connect_cb_20,
+all() ->
+    [connect, disconnect, disconnect_cb, connect_msg_20, connect_cb_20,
      mouse_on_grid, spin_event, connect_in_callback, recursive,
-     dialog, char_events, callback_clean
+     dialog, char_events, mouse_events, callback_clean, handler_clean
     ].
 
 groups() -> 
@@ -162,8 +165,32 @@ disconnect(Config) ->
     ?m([], wx_test_lib:flush()),
 
     wx_test_lib:wx_destroy(Frame, Config).
-    
 
+
+
+disconnect_cb(TestInfo) when is_atom(TestInfo) -> wx_test_lib:tc_info(TestInfo);
+disconnect_cb(Config) ->
+    ?mr(wx_ref, wx:new()),
+    Frame = ?mt(wxFrame, wxFrame:new(wx:null(), 1, "Event Testing")),
+    Panel = ?mt(wxPanel, wxPanel:new(Frame)),
+
+    Tester = self(),
+    CB = fun(#wx{event=#wxSize{},userData=UserD}, SizeEvent) ->
+		 ?mt(wxSizeEvent, SizeEvent),
+		 wxEvtHandler:disconnect(Frame, close_window),
+		 Tester ! {got_size, UserD}
+	 end,
+    ?m(ok, wxFrame:connect(Frame,  close_window)),
+    ?m(ok, wxFrame:connect(Frame,  size)),
+    ?m(ok, wxEvtHandler:connect(Panel, size, [{callback,CB},{userData, panel}])),
+
+    ?m(true, wxFrame:show(Frame)),
+
+    wxWindow:setSize(Panel, {200,100}),
+    get_size_messages(Frame, [frame, panel_cb]),
+    wx_test_lib:flush(),
+
+    wx_test_lib:wx_destroy(Frame, Config).
 
 %% Test that the msg events are forwarded as supposed to 
 connect_msg_20(TestInfo) 
@@ -320,9 +347,9 @@ connect_in_callback(Config) ->
     %% such that new events are not fired until the previous
     %% callback have returned.
 
-    %% That means that a callback can not wait for other events
+    %% That means that a callback cannot wait for other events
     %% in receive since they will not come.
-    %% It also means that you can not attach a new callback directly from
+    %% It also means that you cannot attach a new callback directly from
     %% the callback since that callback will be removed when the temporary
     %% process that executes the outer callback (may) die(s) before the callback
     %% is invoked
@@ -469,6 +496,52 @@ char_events(Config) ->
 
     wx_test_lib:wx_destroy(Frame, Config).
 
+mouse_events(TestInfo) when is_atom(TestInfo) -> wx_test_lib:tc_info(TestInfo);
+mouse_events(Config) ->
+    Wx = wx:new(),
+    Frame = wxFrame:new(Wx, ?wxID_ANY, "Press mouse keys"),
+    SB = wxFrame:createStatusBar(Frame),
+    Panel = wxPanel:new(Frame, []),
+    Status = fun(#wxMouse{x=X,y=Y}) ->
+                     HasC = wxPanel:hasCapture(Panel),
+                     Str = io_lib:format("Pos: X=~w Y=~w Captured: ~w~n",[X,Y, HasC]),
+                     wxStatusBar:setStatusText(SB, Str),
+                     ok
+             end,
+    MouseEvent = fun(#wx{event=#wxMouse{type=mousewheel, wheelRotation=Rot}=Ev}, Obj) ->
+                         Status(Ev),
+                         Axis = wxMouseEvent:getWheelAxis(Obj),
+                         io:format("Got wheel ~w ~w~n",[Rot,Axis]),
+                         wxEvent:skip(Obj);
+                    (#wx{event=#wxMouse{type=right_up}=Ev}, _Obj) ->
+                         case wxPanel:hasCapture(Panel) of
+                             true  ->
+                                 io:format("right_up: release mouse~n"),
+                                 wxPanel:releaseMouse(Panel);
+                             false ->
+                                 io:format("right_up: capture mouse (release with right_up again)~n"),
+                                 wxPanel:captureMouse(Panel)
+                         end,
+                         Status(Ev);
+                    (#wx{event=#wxMouse{type=What}=Ev},Obj) ->
+                         io:format("Got ~p~n",[What]),
+                         Status(Ev),
+                         wxEvent:skip(Obj)
+                 end,
+    [wxWindow:connect(Panel, Types, [{callback,MouseEvent}])
+     || Types <- [left_down, left_up, right_up, right_down,
+                  middle_up, middle_down, mousewheel]],
+    Motion = fun(#wx{event=Ev}, Obj) ->
+                     Status(Ev),
+                     wxEvent:skip(Obj)
+             end,
+    wxWindow:connect(Panel, motion, [{callback,Motion}]),
+
+    wxFrame:show(Frame),
+    wx_test_lib:flush(),
+
+    wx_test_lib:wx_destroy(Frame, Config).
+
 callback_clean(TestInfo) when is_atom(TestInfo) -> wx_test_lib:tc_info(TestInfo);
 callback_clean(Config) ->
     %% Be sure that event handling are cleanup up correctly and don't keep references to old
@@ -553,6 +626,7 @@ handler_clean(_Config) ->
     Frame1 = wx_obj_test:start([{init, Init}]),
     ?mt(wxFrame, Frame1),
     wxWindow:show(Frame1),
+    timer:sleep(500),
     ?m([_|_], lists:sort(wx_test_lib:flush())),
     ?m(ok, wx_obj_test:stop(Frame1)),
     ?m([{terminate,normal}], lists:sort(wx_test_lib:flush())),
@@ -560,6 +634,7 @@ handler_clean(_Config) ->
     Terminate = fun({Frame,_}) -> wxWindow:destroy(Frame) end,
     Frame2 = wx_obj_test:start([{init, Init}, {terminate, Terminate}]),
     wxWindow:show(Frame2),
+    timer:sleep(500),
     ?m([_|_], lists:sort(wx_test_lib:flush())),
     ?m(ok, wx_obj_test:stop(Frame2)),
     ?m([{terminate,normal}], lists:sort(wx_test_lib:flush())),

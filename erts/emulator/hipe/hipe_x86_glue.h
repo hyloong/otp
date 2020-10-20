@@ -1,7 +1,7 @@
 /*
  * %CopyrightBegin%
  *
- * Copyright Ericsson AB 2001-2011. All Rights Reserved.
+ * Copyright Ericsson AB 2001-2016. All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -58,16 +58,17 @@ static __inline__ unsigned int max(unsigned int x, unsigned int y)
 
 static __inline__ void hipe_arch_glue_init(void)
 {
-    static struct sdesc_with_exnra nbif_return_sdesc = {
-	.exnra = (unsigned long)nbif_fail,
-	.sdesc = {
-	    .bucket = { .hvalue = (unsigned long)nbif_return },
-	    .summary = (1<<8),
-	#ifdef DEBUG
-	    .dbg_F = am_return,
-	#endif
-	},
-    };
+    static struct hipe_sdesc_with_exnra nbif_return_sdesc;
+
+    nbif_return_sdesc.exnra = (unsigned long)nbif_fail;
+    nbif_return_sdesc.sdesc.bucket.hvalue = (unsigned long)nbif_return;
+    nbif_return_sdesc.sdesc.fsize = 0;
+    nbif_return_sdesc.sdesc.has_exnra = 1;
+    nbif_return_sdesc.sdesc.stk_nargs = 0;
+    nbif_return_sdesc.sdesc.m_aix = atom_val(am_Empty);
+    nbif_return_sdesc.sdesc.f_aix = atom_val(am_return);
+    nbif_return_sdesc.sdesc.a     = 0;
+
     hipe_init_sdesc_table(&nbif_return_sdesc.sdesc);
 }
 

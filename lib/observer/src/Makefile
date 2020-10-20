@@ -1,7 +1,7 @@
 #
 # %CopyrightBegin%
 #
-# Copyright Ericsson AB 2002-2013. All Rights Reserved.
+# Copyright Ericsson AB 2002-2016. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -50,6 +50,7 @@ MODULES= \
 	cdv_mem_cb \
 	cdv_mod_cb \
 	cdv_multi_wx \
+	cdv_persistent_cb \
 	cdv_port_cb \
 	cdv_proc_cb \
 	cdv_sched_cb \
@@ -67,6 +68,7 @@ MODULES= \
 	observer_html_lib \
 	observer_lib \
 	observer_perf_wx \
+	observer_port_wx \
 	observer_pro_wx \
 	observer_procinfo \
 	observer_sys_wx \
@@ -91,7 +93,7 @@ EXAMPLE_FILES= multitrace.erl
 TARGET_FILES= $(MODULES:%=$(EBIN)/%.$(EMULATOR)) $(APP_TARGET) $(APPUP_TARGET)
 
 PRIVDIR= ../priv
-WEBTOOLFILES= $(PRIVDIR)/crashdump_viewer.tool $(PRIVDIR)/erlang_observer.png
+PNGFILES= $(PRIVDIR)/erlang_observer.png
 BINDIR= $(PRIVDIR)/bin
 ifeq ($(findstring win32,$(TARGET)),win32)
 WIN32_EXECUTABLES= $(BINDIR)/etop.bat $(BINDIR)/cdv.bat
@@ -102,10 +104,6 @@ EXECUTABLES= \
 	$(BINDIR)/etop \
 	$(BINDIR)/cdv \
 	$(WIN32_EXECUTABLES)
-CDVDIR= $(PRIVDIR)/crashdump_viewer
-GIF_FILES= \
-	$(CDVDIR)/collapsd.gif \
-	$(CDVDIR)/exploded.gif
 
 APP_FILE= observer.app
 
@@ -162,9 +160,7 @@ release_spec: opt
 	$(INSTALL_DATA) $(TARGET_FILES) "$(RELSYSDIR)/ebin"
 	$(INSTALL_DIR) "$(RELSYSDIR)/priv/bin"
 	$(INSTALL_SCRIPT) $(EXECUTABLES) "$(RELSYSDIR)/priv/bin"
-	$(INSTALL_DIR) "$(RELSYSDIR)/priv/crashdump_viewer"
-	$(INSTALL_DATA) $(WEBTOOLFILES) "$(RELSYSDIR)/priv"
-	$(INSTALL_DATA) $(GIF_FILES) "$(RELSYSDIR)/priv/crashdump_viewer"
+	$(INSTALL_DATA) $(PNGFILES) "$(RELSYSDIR)/priv"
 
 release_docs_spec:
 

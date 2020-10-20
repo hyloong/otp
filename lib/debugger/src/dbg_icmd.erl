@@ -1,7 +1,7 @@
 %%
 %% %CopyrightBegin%
 %% 
-%% Copyright Ericsson AB 1998-2015. All Rights Reserved.
+%% Copyright Ericsson AB 1998-2018. All Rights Reserved.
 %% 
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -171,10 +171,10 @@ handle_cmd(Bs, Status, Ieval) ->
 %% User control of process execution and settings
 %%====================================================================
 
-step(Meta) ->     Meta ! {user, {cmd, step}}.
-next(Meta) ->     Meta ! {user, {cmd, next}}.
-continue(Meta) -> Meta ! {user, {cmd, continue}}.
-finish(Meta) ->   Meta ! {user, {cmd, finish}}.
+step(Meta) ->     Meta ! {user, {cmd, step}}, ok.
+next(Meta) ->     Meta ! {user, {cmd, next}}, ok.
+continue(Meta) -> Meta ! {user, {cmd, continue}}, ok.
+finish(Meta) ->   Meta ! {user, {cmd, finish}}, ok.
 skip(Meta) ->     Meta ! {user, {cmd, skip}}.
 
 timeout(Meta) ->  Meta ! {user, timeout}.
@@ -248,7 +248,7 @@ handle_int_msg({attached, AttPid}, Status, _Bs,
 	    tell_attached({attached, M, Line, get(trace)}),
 
 	    %% Give info about status and call level as well
-	    %% In this case, Status can not be exit_at
+	    %% In this case, Status cannot be exit_at
 	    Msg = case Status of
 		      idle -> {func_at,M,Line,Le};
 		      break -> {break_at,M,Line,Le};
@@ -267,7 +267,7 @@ handle_int_msg({old_code,Mod}, Status, Bs,
 	       #ieval{level=Le,module=M}=Ieval) ->
     if
 	Status =:= idle, Le =:= 1 ->
-	    erase([Mod|db]),
+	    erase(?DB_REF_KEY(Mod)),
 	    put(cache, []);
 	true ->
 	    case dbg_istk:in_use_p(Mod, M) of
@@ -277,7 +277,7 @@ handle_int_msg({old_code,Mod}, Status, Bs,
 		    exit(get(self), kill),
 		    dbg_ieval:exception(exit, old_code, Bs, Ieval);
 		false ->
-		    erase([Mod|db]),
+		    erase(?DB_REF_KEY(Mod)),
 		    put(cache, [])
 	    end
     end;
@@ -382,14 +382,19 @@ eval_restricted({From,_Mod,Cmd,SP}, Bs) ->
     case catch parse_cmd(Cmd, 1) of
 	{'EXIT', _Reason} ->
 	    From ! {self(), {eval_rsp, 'Parse error'}};
-	[{var,_,Var}] ->
+	{[{var,_,Var}], XBs} ->
 	    Bs2 = bindings(Bs, SP),
 	    Res = case get_binding(Var, Bs2) of
 		      {value, Value} -> Value;
-		      unbound -> unbound
+		      unbound ->
+                          case get_binding(Var, XBs) of
+                              {value, _} ->
+                                  'Only possible to inspect variables';
+                              unbound -> unbound
+                          end
 		  end,
 	    From ! {self(), {eval_rsp, Res}};
-	_Forms ->
+	{_Forms, _XBs} ->
 	    Rsp = 'Only possible to inspect variables',
 	    From ! {self(), {eval_rsp, Rsp}}
     end.
@@ -404,22 +409,22 @@ eval_nonrestricted({From, _Mod, Cmd, _SP}, Bs,
 	{'EXIT', _Reason} ->
 	    From ! {self(), {eval_rsp, 'Parse error'}},
 	    Bs;
-	Forms ->
+	{Forms, XBs} ->
 	    mark_running(Line, Le),
+            Bs1 = merge_bindings(Bs, XBs),
 	    {Res, Bs2} =
 		lists:foldl(fun(Expr, {_Res, Bs0}) ->
 				    eval_nonrestricted_1(Expr,Bs0,Ieval)
 			    end,
-			    {null, Bs},
+			    {null, Bs1},
 			    Forms),
 	    mark_break(M, Line, Le),
 	    From ! {self(), {eval_rsp, Res}},
-	    Bs2
+	    remove_binding_structs(Bs2, XBs)
     end.
 
 eval_nonrestricted_1({match,_,{var,_,Var},Expr}, Bs, Ieval) ->
-    {value,Res,Bs2} = 
-	dbg_ieval:eval_expr(Expr, Bs, Ieval#ieval{top=false}),
+    {Res,Bs2} = eval_expr(Expr, Bs, Ieval),
     Bs3 = case lists:keyfind(Var, 1, Bs) of
 	      {Var,_Value} ->
 		  lists:keyreplace(Var, 1, Bs2, {Var,Res});
@@ -433,9 +438,20 @@ eval_nonrestricted_1({var,_,Var}, Bs, _Ieval) ->
 	  end,
     {Res,Bs};
 eval_nonrestricted_1(Expr, Bs, Ieval) ->
-    {value,Res,Bs2} = 
-	dbg_ieval:eval_expr(Expr, Bs, Ieval#ieval{top=false}),
+    eval_expr(Expr, Bs, Ieval).
+
+eval_expr(Expr, Bs, Ieval) ->
+    {value,Res,Bs2} =
+        dbg_ieval:eval_expr(Expr, Bs, Ieval#ieval{top=false}),
     {Res,Bs2}.
+
+%% XBs have unique keys.
+merge_bindings(Bs1, XBs) ->
+    Bs1 ++ erl_eval:bindings(XBs).
+
+remove_binding_structs(Bs1, XBs) ->
+    lists:foldl(fun({N, _V}, Bs) -> lists:keydelete(N, 1, Bs)
+                end, Bs1, erl_eval:bindings(XBs)).
 
 mark_running(LineNo, Le) ->
     put(next_break, running),
@@ -450,9 +466,9 @@ mark_break(Cm, LineNo, Le) ->
     dbg_iserver:cast(get(int), {set_status,self(),break,{Cm,LineNo}}).
 
 parse_cmd(Cmd, LineNo) ->
-    {ok,Tokens,_} = erl_scan:string(Cmd, LineNo),
-    {ok,Forms} = erl_parse:parse_exprs(Tokens),
-    Forms.
+    {ok,Tokens,_} = erl_scan:string(Cmd, LineNo, [text]),
+    {ok,Forms,Bs} = erl_eval:extended_parse_exprs(Tokens),
+    {Forms, Bs}.
 
 %%====================================================================
 %% Library functions for attached process handling

@@ -1,8 +1,8 @@
 #
 # %CopyrightBegin%
-# 
-# Copyright Ericsson AB 1997-2012. All Rights Reserved.
-# 
+#
+# Copyright Ericsson AB 1997-2020. All Rights Reserved.
+#
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
 # You may obtain a copy of the License at
@@ -14,10 +14,11 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-# 
+#
 # %CopyrightEnd%
 #
 #
+
 include $(ERL_TOP)/make/target.mk
 include $(ERL_TOP)/make/$(TARGET)/otp.mk
 
@@ -27,6 +28,8 @@ include $(ERL_TOP)/make/$(TARGET)/otp.mk
 include $(ERL_TOP)/erts/vsn.mk
 
 APPLICATION=otp-system-documentation
+XMLDIR := $(XMLDIR)/design_principles
+
 # ----------------------------------------------------
 # Release directory specification
 # ----------------------------------------------------
@@ -37,7 +40,7 @@ RELSYSDIR = "$(RELEASE_PATH)/doc/design_principles"
 # ----------------------------------------------------
 XML_PART_FILES = part.xml
 
-include xmlfiles.mk 
+include xmlfiles.mk
 
 XML_CHAPTER_FILES=$(DESIGN_PRINCIPLES_CHAPTER_FILES)
 
@@ -46,7 +49,6 @@ TOPDOCDIR=..
 BOOK_FILES = book.xml
 
 GIF_FILES = \
-	note.gif \
 	clientserver.gif \
 	dist1.gif \
 	dist2.gif \
@@ -58,9 +60,15 @@ GIF_FILES = \
 	sup5.gif \
 	sup6.gif
 
+SVG_FILES = \
+	code_lock.svg \
+	code_lock_2.svg
+
+IMAGE_FILES = $(GIF_FILES) $(SVG_FILES)
+
 XML_FILES = \
 	$(BOOK_FILES) $(XML_CHAPTER_FILES) \
-	$(XML_PART_FILES) 
+	$(XML_PART_FILES)
 
 # ----------------------------------------------------
 
@@ -72,47 +80,49 @@ HTMLDIR = ../html/design_principles
 HTML_UG_FILE = $(HTMLDIR)/users_guide.html
 
 # ----------------------------------------------------
-# FLAGS 
+# FLAGS
 # ----------------------------------------------------
-XML_FLAGS += 
-DVIPS_FLAGS += 
+XML_FLAGS +=
+DVIPS_FLAGS +=
 
 # ----------------------------------------------------
 # Targets
 # ----------------------------------------------------
-_create_dirs := $(shell mkdir -p $(HTMLDIR))
 
 $(HTMLDIR)/%.gif: %.gif
 	$(INSTALL_DATA) $< $@
 
-docs: html
+$(HTMLDIR)/%.svg: %.svg
+	$(INSTALL_DATA) $< $@
+
+DOC_TARGETS?=html
+
+docs: $(DOC_TARGETS)
 
 local_docs: PDFDIR=../../pdf
 
-html: $(HTML_UG_FILE) gifs
+html: $(HTML_UG_FILE) images
 
-gifs: $(GIF_FILES:%=$(HTMLDIR)/%)
+images: $(IMAGE_FILES:%=$(HTMLDIR)/%)
 
-debug opt: 
+debug opt:
 
 clean clean_docs:
-	rm -rf $(HTMLDIR)
+	rm -f $(XMLDIR)/*.xml
+	rm -f $(HTMLDIR)/*.gif $(HTMLDIR)/*.html
 	rm -f $(TOP_PDF_FILE) $(TOP_PDF_FILE:%.pdf=%.fo)
-	rm -f errs core *~ 
+	rm -f errs core *~
 
 # ----------------------------------------------------
 # Release Target
-# ---------------------------------------------------- 
+# ----------------------------------------------------
 include $(ERL_TOP)/make/otp_release_targets.mk
 
-release_docs_spec: docs
-#	$(INSTALL_DIR) "$(RELEASE_PATH)/pdf"
-#	$(INSTALL_DATA) $(TOP_PDF_FILE) "$(RELEASE_PATH)/pdf"
-	$(INSTALL_DIR) $(RELSYSDIR)
-	$(INSTALL_DATA) $(GIF_FILES) $(HTMLDIR)/*.html \
+release_html_spec: html
+	$(INSTALL_DIR) "$(RELSYSDIR)"
+	$(INSTALL_DATA) $(IMAGE_FILES) $(EXTRA_FILES) $(HTMLDIR)/*.html \
 		$(RELSYSDIR)
 
+release_docs_spec: $(DOC_TARGETS:%=release_%_spec)
 
 release_spec:
-
-

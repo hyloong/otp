@@ -1,7 +1,7 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2004-2013. All Rights Reserved.
+%% Copyright Ericsson AB 2004-2016. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -123,7 +123,7 @@
 	      mib_storage_options/0
              ]).
 
--deprecated([{old_info_format, 1, next_major_release}]).
+-deprecated([{old_info_format, 1, "use \"new\" format instead"}]).
 
 
 -include("snmpa_atl.hrl").

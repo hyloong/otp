@@ -1,7 +1,7 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2008-2013. All Rights Reserved.
+%% Copyright Ericsson AB 2008-2017. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -21,32 +21,31 @@
 -module(asn1_test_lib).
 
 -export([compile/3,compile_all/3,compile_erlang/3,
+	 rm_dirs/1,
 	 hex_to_bin/1,
 	 match_value/2,
-	 parallel/0,
-	 roundtrip/3,roundtrip/4,roundtrip_enc/3,roundtrip_enc/4]).
+	 roundtrip/3,roundtrip/4,roundtrip_enc/3,roundtrip_enc/4,
+         map_roundtrip/3]).
 
--include_lib("test_server/include/test_server.hrl").
+-include_lib("common_test/include/ct.hrl").
 
 run_dialyzer() ->
     false.
 
 compile(File, Config, Options) -> compile_all([File], Config, Options).
 
-compile_all(Files, Config, Options) ->
-    DataDir = ?config(data_dir, Config),
-    CaseDir = ?config(case_dir, Config),
-    [compile_file(filename:join(DataDir, F), [{outdir, CaseDir},
-					      debug_info|Options])
-         || F <- Files],
+compile_all(Files, Config, Options0) ->
+    DataDir = proplists:get_value(data_dir, Config),
+    CaseDir = proplists:get_value(case_dir, Config),
+    Options = [{outdir,CaseDir},debug_info|Options0],
+
+    Comp = fun(F) ->
+		   compile_file(filename:join(DataDir, F), Options)
+	   end,
+    p_run(Comp, Files),
+
     dialyze(Files, Options),
     ok.
-
-parallel() ->
-    case erlang:system_info(schedulers) > 1 andalso not run_dialyzer() of
-        true  -> [parallel];
-        false -> []
-    end.
 
 dialyze(Files, Options) ->
     case not run_dialyzer() orelse lists:member(abs, Options) of
@@ -58,7 +57,7 @@ dialyze(Files) ->
     Beams0 = [code:which(module(F)) || F <- Files],
     Beams = [code:which(asn1rt_nif)|Beams0],
     case dialyzer:run([{files,Beams},
-		       {warnings,[no_improper_lists]},
+		       {warnings,[]},
 		       {get_warnings,true}]) of
 	[] ->
 	    ok;
@@ -89,21 +88,76 @@ module(F0) ->
     list_to_atom(F).
 %%    filename:join(CaseDir, F ++ ".beam").
 
-compile_file(File, Options) ->
+compile_file(File, Options0) ->
+    Options = [warnings_as_errors|Options0],
     try
-        ok = asn1ct:compile(File, [warnings_as_errors|Options])
+        ok = asn1ct:compile(File, Options),
+        ok = compile_maps(File, Options)
     catch
-        Class:Reason ->
-	    ct:print("Failed to compile ~s\n", [File]),
-            erlang:error({compile_failed, {File, Options}, {Class, Reason}})
+        _:Reason ->
+	    ct:print("Failed to compile ~s\n~p", [File,Reason]),
+            error
     end.
 
+compile_maps(File, Options) ->
+    unload_map_mod(File),
+    Incompat = [abs,compact_bit_string,legacy_bit_string,
+                legacy_erlang_types,maps,asn1_test_lib_no_maps,jer],
+    case lists:any(fun(E) -> lists:member(E, Incompat) end, Options) of
+        true ->
+            ok;
+        false ->
+            compile_maps_1(File, Options)
+    end.
+
+compile_maps_1(File, Options) ->
+    ok = asn1ct:compile(File, [maps,no_ok_wrapper,noobj|Options]),
+    OutDir = proplists:get_value(outdir, Options),
+    Base0 = filename:rootname(filename:basename(File)),
+    Base = case filename:extension(Base0) of
+               ".set" ->
+                   filename:rootname(Base0);
+               _ ->
+                   Base0
+           end,
+    ErlBase = Base ++ ".erl",
+    ErlFile = filename:join(OutDir, ErlBase),
+    {ok,Erl0} = file:read_file(ErlFile),
+    Erl = re:replace(Erl0, <<"-module\\('">>, "&maps_"),
+    MapsErlFile = filename:join(OutDir, "maps_" ++ ErlBase),
+    ok = file:write_file(MapsErlFile, Erl),
+    {ok,_} = compile:file(MapsErlFile, [report,{outdir,OutDir},{i,OutDir}]),
+    ok.
+
+unload_map_mod(File0) ->
+    File1 = filename:basename(File0),
+    File2 = filename:rootname(File1, ".asn"),
+    File3 = filename:rootname(File2, ".asn1"),
+    File4 = filename:rootname(File3, ".py"),
+    File = filename:rootname(File4, ".set"),
+    MapMod = list_to_atom("maps_"++File),
+    code:delete(MapMod),
+    code:purge(MapMod),
+    ok.
+
 compile_erlang(Mod, Config, Options) ->
-    DataDir = ?config(data_dir, Config),
-    CaseDir = ?config(case_dir, Config),
+    DataDir = proplists:get_value(data_dir, Config),
+    CaseDir = proplists:get_value(case_dir, Config),
     M = list_to_atom(Mod),
     {ok, M} = compile:file(filename:join(DataDir, Mod),
                            [report,{i,CaseDir},{outdir,CaseDir}|Options]).
+
+rm_dirs([Dir|Dirs]) ->
+    {ok,L0} = file:list_dir(Dir),
+    L = [filename:join(Dir, F) || F <- L0],
+    IsDir = fun(F) -> filelib:is_dir(F) end,
+    {Subdirs,Files} = lists:partition(IsDir, L),
+    _ = [ok = file:delete(F) || F <- Files],
+    rm_dirs(Subdirs),
+    ok = file:del_dir(Dir),
+    rm_dirs(Dirs);
+rm_dirs([]) ->
+    ok.
 
 hex_to_bin(S) ->
     << <<(hex2num(C)):4>> || C <- S, C =/= $\s >>.
@@ -130,23 +184,59 @@ roundtrip(Mod, Type, Value) ->
     roundtrip(Mod, Type, Value, Value).
 
 roundtrip(Mod, Type, Value, ExpectedValue) ->
-    {ok,Encoded} = Mod:encode(Type, Value),
-    {ok,ExpectedValue} = Mod:decode(Type, Encoded),
-    test_ber_indefinite(Mod, Type, Encoded, ExpectedValue),
-    ok.
+    roundtrip_enc(Mod, Type, Value, ExpectedValue).
 
 roundtrip_enc(Mod, Type, Value) ->
     roundtrip_enc(Mod, Type, Value, Value).
 
 roundtrip_enc(Mod, Type, Value, ExpectedValue) ->
-    {ok,Encoded} = Mod:encode(Type, Value),
-    {ok,ExpectedValue} = Mod:decode(Type, Encoded),
+    case Mod:encode(Type, Value) of
+        {ok,Encoded} ->
+            {ok,ExpectedValue} = Mod:decode(Type, Encoded);
+        Encoded when is_binary(Encoded) ->
+            ExpectedValue = Mod:decode(Type, Encoded)
+    end,
+    map_roundtrip(Mod, Type, Encoded),
     test_ber_indefinite(Mod, Type, Encoded, ExpectedValue),
     Encoded.
+
+map_roundtrip(Mod, Type, Encoded) ->
+    MapMod = list_to_atom("maps_"++atom_to_list(Mod)),
+    try MapMod:maps() of
+        true ->
+            map_roundtrip_1(MapMod, Type, Encoded)
+    catch
+        error:undef ->
+            ok
+    end.
 
 %%%
 %%% Internal functions.
 %%%
+
+map_roundtrip_1(Mod, Type, Encoded) ->
+    Decoded = Mod:decode(Type, Encoded),
+    case Mod:encode(Type, Decoded) of
+        Encoded ->
+            ok;
+        OtherEncoding ->
+            case is_named_bitstring(Decoded) of
+                true ->
+                    %% In BER, named BIT STRINGs with different number of
+                    %% trailing zeroes decode to the same value.
+                    ok;
+                false ->
+                    error({encode_mismatch,Decoded,Encoded,OtherEncoding})
+            end
+    end,
+    ok.
+
+is_named_bitstring([H|T]) ->
+    is_atom(H) andalso is_named_bitstring(T);
+is_named_bitstring([]) ->
+    true;
+is_named_bitstring(_) ->
+    false.
 
 hex2num(C) when $0 =< C, C =< $9 -> C - $0;
 hex2num(C) when $A =< C, C =< $F -> C - $A + 10;
@@ -162,7 +252,12 @@ test_ber_indefinite(Mod, Type, Encoded, ExpectedValue) ->
     case Mod:encoding_rule() of
 	ber ->
 	    Indefinite = iolist_to_binary(ber_indefinite(Encoded)),
-	    {ok,ExpectedValue} = Mod:decode(Type, Indefinite);
+            case Mod:decode(Type, Indefinite) of
+                {ok,ExpectedValue} ->
+                    ok;
+                ExpectedValue ->
+                    ok
+            end;
 	_ ->
 	    ok
     end.
@@ -206,3 +301,38 @@ ber_get_len(<<0:1,L:7,T/binary>>) ->
 ber_get_len(<<1:1,Octets:7,T0/binary>>) ->
     <<L:Octets/unit:8,T/binary>> = T0,
     {L,T}.
+
+%% p_run(fun(Data) -> ok|error, List) -> ok
+%%  Will fail the test case if there were any errors.
+
+p_run(Test, List) ->
+    S = erlang:system_info(schedulers),
+    N = case test_server:is_cover() of
+	    false ->
+		S + 1;
+	    true ->
+		%% Cover is running. Using too many processes
+		%% could slow us down.
+		min(S, 4)
+	end,
+    %%io:format("p_run: ~p parallel processes\n", [N]),
+    p_run_loop(Test, List, N, [], 0).
+
+p_run_loop(_, [], _, [], Errors) ->
+    case Errors of
+	0 -> ok;
+	N -> ct:fail({N,errors})
+    end;
+p_run_loop(Test, [H|T], N, Refs, Errors) when length(Refs) < N ->
+    {_,Ref} = erlang:spawn_monitor(fun() -> exit(Test(H)) end),
+    p_run_loop(Test, T, N, [Ref|Refs], Errors);
+p_run_loop(Test, List, N, Refs0, Errors0) ->
+    receive
+	{'DOWN',Ref,process,_,Res} ->
+	    Errors = case Res of
+			 ok -> Errors0;
+			 error -> Errors0+1
+		     end,
+	    Refs = Refs0 -- [Ref],
+	    p_run_loop(Test, List, N, Refs, Errors)
+    end.

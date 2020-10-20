@@ -1,7 +1,7 @@
 %%
 %% %CopyrightBegin%
 %% 
-%% Copyright Ericsson AB 2005-2009. All Rights Reserved.
+%% Copyright Ericsson AB 2005-2020. All Rights Reserved.
 %% 
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -66,7 +66,7 @@
 %% This is ugly but...
 %%----------------------------------------------------------------------
 
-Expect 91.
+Expect 94.
 
 
 %%----------------------------------------------------------------------
@@ -1553,7 +1553,7 @@ value                -> safeToken     : ensure_value('$1').
 safeToken            -> safeToken2              : make_safe_token('$1') .
 
 safeToken2           -> 'SafeChars'             : '$1' .
-%% BMK BMK safeToken2           -> 'AddToken'              : '$1' .
+safeToken2           -> 'AddToken'              : '$1' .
 safeToken2           -> 'AuditToken'            : '$1' .
 safeToken2           -> 'AuditCapToken'         : '$1' .
 safeToken2           -> 'AuditValueToken'       : '$1' .
@@ -1579,7 +1579,7 @@ safeToken2           -> 'EmbedToken'            : '$1' .
 %% BMK BMK safeToken2           -> 'EmergencyOffToken'     : '$1' .
 safeToken2           -> 'ErrorToken'            : '$1' .
 %% v2-safeToken2           -> 'EventBufferToken'      : '$1' .
-%% v2-safeToken2           -> 'EventsToken'           : '$1' .
+safeToken2           -> 'EventsToken'           : '$1' .
 %% v3-safeToken2           -> 'ExternalToken'         : '$1' . % v3
 safeToken2           -> 'FailoverToken'         : '$1' .
 safeToken2           -> 'ForcedToken'           : '$1' .

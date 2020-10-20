@@ -1,7 +1,7 @@
 %%
 %% %CopyrightBegin%
 %% 
-%% Copyright Ericsson AB 1996-2009. All Rights Reserved.
+%% Copyright Ericsson AB 1996-2020. All Rights Reserved.
 %% 
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -21,74 +21,30 @@
 
 -behaviour(supervisor).
 
--export([start_link/0,start_link/1,init/1,start/1,stop/0]).
+-include_lib("kernel/include/logger.hrl").
+
+-export([start_link/0,start_link/3,init/1,start/1,stop/0]).
 
 -define(DBG,erlang:display([?MODULE,?LINE])).
 
+%% Called during system start-up.
+
 start_link() ->
-    case catch start_p() of
-	{ok,Args} ->
-	    start_link(Args);
-	_ ->
-	    ignore
-    end.
+    do_start_link([{sname,shortnames},{name,longnames}]).
 
-start_link(Args) ->
-    supervisor:start_link({local,net_sup},erl_distribution,Args).
-
-init(NetArgs) ->
-    Epmd = 
-	case init:get_argument(no_epmd) of
-	    {ok, [[]]} ->
-		[];
-	    _ ->
-		EpmdMod = net_kernel:epmd_module(),
-		[{EpmdMod,{EpmdMod,start_link,[]},
-		  permanent,2000,worker,[EpmdMod]}]
-	end,
-    Auth = {auth,{auth,start_link,[]},permanent,2000,worker,[auth]},
-    Kernel = {net_kernel,{net_kernel,start_link,[NetArgs]},
-	      permanent,2000,worker,[net_kernel]},
-    EarlySpecs = net_kernel:protocol_childspecs(),
-    {ok,{{one_for_all,0,1}, EarlySpecs ++ Epmd ++ [Auth,Kernel]}}.
-
-start_p() ->
-    sname(),
-    lname(),
-    false.
-
-sname() ->
-    case init:get_argument(sname) of
-	{ok,[[Name]]} ->
-	    throw({ok,[list_to_atom(Name),shortnames|ticktime()]});
-	_ ->
-	    false
-    end.
-
-lname() ->
-    case init:get_argument(name) of
-	{ok,[[Name]]} ->
-	    throw({ok,[list_to_atom(Name),longnames|ticktime()]});
-	_ ->
-	    false
-    end.
-
-ticktime() ->
-    %% catch, in case the system was started with boot file start_old,
-    %% i.e. running without the application_controller.
-    %% Time is given in seconds. The net_kernel tick time is
-    %% Time/4 milliseconds.
-    case catch application:get_env(net_ticktime) of
-	{ok, Value} when is_integer(Value), Value > 0 ->
-	    [Value * 250]; %% i.e. 1000 / 4 = 250 ms.
-	_ ->
-	    []
-    end.
+%% Called from net_kernel:start/1 to start distribution after the
+%% system has already started.
 
 start(Args) ->
-    C = {net_sup_dynamic, {erl_distribution, start_link, [Args]}, permanent,
-	 1000, supervisor, [erl_distribution]},
+    C = #{id => net_sup_dynamic,
+          start => {?MODULE,start_link,[Args,false,net_sup_dynamic]},
+          restart => permanent,
+          shutdown => 1000,
+          type => supervisor,
+          modules => [erl_distribution]},
     supervisor:start_child(kernel_sup, C).
+
+%% Stop distribution.
 
 stop() ->
     case supervisor:terminate_child(kernel_sup, net_sup_dynamic) of
@@ -104,3 +60,69 @@ stop() ->
 	    end
     end.
 
+%%%
+%%% Internal helper functions.
+%%%
+
+%% Helper start function.
+
+start_link(Args, CleanHalt, NetSup) ->
+    supervisor:start_link({local,net_sup}, ?MODULE, [Args,CleanHalt,NetSup]).
+
+init(NetArgs) ->
+    Epmd = 
+	case init:get_argument(no_epmd) of
+	    {ok, [[]]} ->
+		[];
+	    _ ->
+		EpmdMod = net_kernel:epmd_module(),
+		[#{id => EpmdMod,
+                   start => {EpmdMod,start_link,[]},
+                   restart => permanent,
+                   shutdown => 2000,
+                   type => worker,
+                   modules => [EpmdMod]}]
+	end,
+    Auth = #{id => auth,
+             start => {auth,start_link,[]},
+             restart => permanent,
+             shutdown => 2000,
+             type => worker,
+             modules => [auth]},
+    Kernel = #{id => net_kernel,
+               start => {net_kernel,start_link,NetArgs},
+               restart => permanent,
+               shutdown => 2000,
+               type => worker,
+               modules => [net_kernel]},
+    EarlySpecs = net_kernel:protocol_childspecs(),
+    SupFlags = #{strategy => one_for_all,
+                 intensity => 0,
+                 period => 1},
+    {ok, {SupFlags, EarlySpecs ++ Epmd ++ [Auth,Kernel]}}.
+
+do_start_link([{Arg,Flag}|T]) ->
+    case init:get_argument(Arg) of
+	{ok,[[Name]]} ->
+	    start_link([list_to_atom(Name),Flag|ticktime()], true, net_sup);
+        {ok,[[Name]|_Rest]} ->
+            ?LOG_WARNING("Multiple -~p given to erl, using the first, ~p",
+                         [Arg, Name]),
+	    start_link([list_to_atom(Name),Flag|ticktime()], true, net_sup);
+	_ ->
+	    do_start_link(T)
+    end;
+do_start_link([]) ->
+    ignore.
+
+ticktime() ->
+    %% catch, in case the system was started with boot file start_old,
+    %% i.e. running without the application_controller.
+    %% Time is given in seconds. The net_kernel tick time is
+    %% Time/4 milliseconds.
+    case catch application:get_env(net_ticktime) of
+	{ok, Value} when is_integer(Value), Value > 0 ->
+	    [Value * 250]; %% i.e. 1000 / 4 = 250 ms.
+	_ ->
+	    []
+    end.

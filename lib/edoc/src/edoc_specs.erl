@@ -1,7 +1,7 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 1996-2015. All Rights Reserved.
+%% Copyright Ericsson AB 1996-2017. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -21,7 +21,7 @@
 
 -module(edoc_specs).
 
--export([type/2, spec/2, dummy_spec/1, docs/2]).
+-export([type/2, spec/1, dummy_spec/1, docs/2]).
 
 -export([add_data/4, tag/1, is_tag/1]).
 
@@ -42,14 +42,15 @@
 %% TypeDocs is a dict of {Name, Doc}.
 %% Note: #t_typedef.name is set to {record, R} for record types.
 type(Form, TypeDocs) ->
-    {Name, Data0} = erl_syntax_lib:analyze_wild_attribute(Form),
-    type = tag(Name),
+    {Name, Data0} = analyze_type_attribute(Form),
     {TypeName, Type, Args, Doc} =
         case Data0 of
-            {{record, R}, Fs, []} ->
+            {R, Fs} ->
+                record = Name,
                 L = erl_syntax:get_pos(Form),
                 {{record, R}, {type, L, record, [{atom,L,R} | Fs]}, [], ""};
             {N,T,As} ->
+                type = tag(Name),
                 Doc0 =
                     case dict:find({N, length(As)}, TypeDocs) of
                         {ok, Doc1} ->
@@ -66,15 +67,14 @@ type(Form, TypeDocs) ->
                             type = d2e(opaque2abstr(Name, Type))},
                  Doc}}.
 
--spec spec(Form::syntaxTree(), ClauseN::pos_integer()) -> #tag{}.
+-spec spec(Form::syntaxTree()) -> #tag{}.
 
 %% @doc Convert an Erlang spec to EDoc representation.
-spec(Form, Clause) ->
+spec(Form) ->
     {Name, _Arity, TypeSpecs} = get_spec(Form),
-    TypeSpec = lists:nth(Clause, TypeSpecs),
-    #tag{name = spec, line = get_line(element(2, TypeSpec)),
+    #tag{name = spec, line = get_line(element(2, lists:nth(1, TypeSpecs))),
          origin = code,
-         data = aspec(d2e(TypeSpec), Name)}.
+         data = [aspec(d2e(TypeSpec), Name) || TypeSpec <- TypeSpecs]}.
 
 -spec dummy_spec(Form::syntaxTree()) -> #tag{}.
 
@@ -82,7 +82,7 @@ spec(Form, Clause) ->
 %% the given Erlang spec and an empty list of arguments.
 dummy_spec(Form) ->
     {#t_name{name = Name}, Arity, TypeSpecs} = get_spec(Form),
-    As = string:join(lists:duplicate(Arity, "_X"), ","),
+    As = lists:join(",", lists:duplicate(Arity, "_X")),
     S = lists:flatten(io_lib:format("~p(~s) -> true\n", [Name, As])),
     #tag{name = spec, line = get_line(element(2, hd(TypeSpecs))),
          origin = code, data = S}.
@@ -188,7 +188,7 @@ strip([_ | S]) ->
 %% Find the type name and the greatest line number of a type spec.
 %% Should use syntax_tools but this has to do for now.
 get_name_and_last_line(F) ->
-    {Name, Data} = erl_syntax_lib:analyze_wild_attribute(F),
+    {Name, Data} = analyze_type_attribute(F),
     type = edoc_specs:tag(Name),
     Attr = {attribute, erl_syntax:get_pos(F), Name, Data},
     Fun = fun(A) ->
@@ -229,6 +229,7 @@ get_all_tags(Es) ->
 %% Turns an opaque type into an abstract datatype.
 %% Note: top level annotation is ignored.
 opaque2abstr(opaque, _T) -> undefined;
+opaque2abstr(record, T) -> T;
 opaque2abstr(type, T) -> T.
 
 %% Replaces the parameters extracted from the source (by
@@ -262,26 +263,30 @@ use_tags([#tag{origin = code}=T | Ts], E, TypeTable, NTs) ->
 use_tags([T | Ts], E, TypeTable, NTs) ->
     use_tags(Ts, E, TypeTable, [T | NTs]).
 
-params(#tag{name = spec, data=#t_spec{type = #t_fun{args = As}}}, Default) ->
-    parms(As, Default).
+
+params(#tag{name = spec, data=Data}, Default) when is_list(Data) ->
+    [parms(As, Default) || #t_spec{type = #t_fun{args = As}} <- Data].
 
 parms([], []) ->
     [];
 parms([A | As], [D | Ds]) ->
     [param(A, D) | parms(As, Ds)].
 
-param(#t_list{type = Type}, Default) ->
-    param(Type, Default);
 param(#t_paren{type = Type}, Default) ->
     param(Type, Default);
-param(#t_nonempty_list{type = Type}, Default) ->
-    param(Type, Default);
-param(#t_record{name = #t_atom{val = Name}}, _Default) ->
-    list_to_atom(capitalize(atom_to_list(Name)));
+param(#t_record{name = #t_atom{val = Name}}=T, Default) ->
+    AtomList = atom_to_list(Name),
+    case AtomList =:= lists:flatten(io_lib:write_atom(Name)) of
+        true ->
+            list_to_atom(capitalize(AtomList));
+        false ->
+            arg_name(?t_ann(T), Default)
+    end;
 param(T, Default) ->
     arg_name(?t_ann(T), Default).
 
 capitalize([C | Cs]) when C >= $a, C =< $z -> [C - 32 | Cs];
+capitalize([C | Cs]) when C >= $\340, C =< $\376, C /= $\367 -> [C - 32 | Cs];
 capitalize(Cs) -> Cs.
 
 %% Like edoc_types:arg_name/1
@@ -367,15 +372,15 @@ d2e({type,_,binary,[Base,Unit]}, _Prec) ->
     {integer,_,U} = erl_eval:partial_eval(Unit),
     #t_binary{base_size = B, unit_size = U};
 d2e({type,_,map,any}, _Prec) ->
-    #t_map{types = []};
+    #t_type{name = #t_name{name = map}, args = []};
 d2e({type,_,map,Es}, _Prec) ->
     #t_map{types = d2e(Es) };
 d2e({type,_,map_field_assoc,[K,V]}, Prec) ->
-    T = #t_map_field{k_type = d2e(K), v_type=d2e(V) },
+    T = #t_map_field{assoc_type = assoc, k_type = d2e(K), v_type=d2e(V) },
     {P,_R} = erl_parse:type_preop_prec('#'),
     maybe_paren(P, Prec, T);
-d2e({type,_,map_field_exact,K,V}, Prec) ->
-    T = #t_map_field{k_type = d2e(K), v_type=d2e(V) },
+d2e({type,_,map_field_exact,[K,V]}, Prec) ->
+    T = #t_map_field{assoc_type = exact, k_type = d2e(K), v_type=d2e(V) },
     {P,_R} = erl_parse:type_preop_prec('#'),
     maybe_paren(P, Prec, T);
 d2e({type,_,tuple,Ts0}, _Prec) ->
@@ -480,13 +485,17 @@ entries([E0 | Es], P, Opts) ->
 entries([], _P, _Opts) ->
     [].
 
-specs([#tag{line = L, name = spec, origin = code, data = Spec}=Tag0 | Tags],
+specs([#tag{line = L, name = spec, origin = code, data = Specs}=Tag0 | Tags],
       P0) ->
-    #t_spec{type = Type0, defs = Defs0} = Spec,
     P = P0#parms{line = L},
-    Type = xrecs(Type0, P),
-    Defs = xrecs(Defs0, P),
-    Tag = Tag0#tag{data = Spec#t_spec{type = Type, defs = Defs}},
+    Data =
+    [ begin
+        #t_spec{type = Type0, defs = Defs0} = Spec,
+        Type = xrecs(Type0, P),
+        Defs = xrecs(Defs0, P),
+        Spec#t_spec{type = Type, defs = Defs}
+    end || Spec <- Specs],
+    Tag = Tag0#tag{data = Data},
     [Tag | specs(Tags, P)];
 specs([Tag | Tags], P) ->
     [Tag | specs(Tags, P)];
@@ -611,6 +620,16 @@ find_field(F, Fs) ->
 type_name(#tag{name = type,
                data = {#t_typedef{name = Name, args = As},_}}) ->
     {Name, length(As)}.
+
+analyze_type_attribute(Form) ->
+    Name = erl_syntax:atom_value(erl_syntax:attribute_name(Form)),
+    case tag(Name) of
+        type ->
+            erl_syntax_lib:analyze_wild_attribute(Form);
+        _ when Name =:= record ->
+            {attribute, _, record, {N, Fields}} = erl_syntax:revert(Form),
+            {record, {N, Fields}}
+    end.
 
 %% @doc Return `true' if `Tag' is one of the specification and type
 %% attribute tags recognized by the Erlang compiler.

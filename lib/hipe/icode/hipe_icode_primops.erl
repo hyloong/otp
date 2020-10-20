@@ -1,9 +1,5 @@
 %% -*- erlang-indent-level: 2 -*-
 %%
-%% %CopyrightBegin%
-%% 
-%% Copyright Ericsson AB 2001-2011. All Rights Reserved.
-%%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
 %% You may obtain a copy of the License at
@@ -15,8 +11,6 @@
 %% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 %% See the License for the specific language governing permissions and
 %% limitations under the License.
-%%
-%% %CopyrightEnd%
 %%
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %% Copyright (c) 2001 by Erik Johansson.  All Rights Reserved 
@@ -73,6 +67,8 @@ is_safe(fp_mul) -> false;
 is_safe(fp_sub) -> false;
 is_safe(mktuple) -> true;
 is_safe(next_msg) -> false;
+is_safe(recv_mark) -> false;
+is_safe(recv_set) -> false;
 is_safe(redtest) -> false;
 is_safe(select_msg) -> false;
 is_safe(self) -> true;
@@ -116,7 +112,7 @@ is_safe({hipe_bs_primop, {bs_init, _, _}}) -> false;
 is_safe({hipe_bs_primop, {bs_init_bits, _}}) -> false;
 is_safe({hipe_bs_primop, {bs_init_bits, _, _}}) -> false;
 is_safe({hipe_bs_primop, {bs_put_binary, _, _}}) -> false;
-is_safe({hipe_bs_primop, {bs_put_binary_all, _}}) -> false;  
+is_safe({hipe_bs_primop, {bs_put_binary_all, _, _}}) -> false;
 is_safe({hipe_bs_primop, {bs_put_float, _, _, _}}) -> false;
 is_safe({hipe_bs_primop, {bs_put_integer, _, _, _}}) -> false;
 is_safe({hipe_bs_primop, {bs_put_string, _, _}}) -> false;  
@@ -136,6 +132,8 @@ is_safe({hipe_bs_primop, {bs_match_string, _, _}}) -> false;
 is_safe({hipe_bs_primop, {bs_append, _, _, _, _}}) -> false;
 is_safe({hipe_bs_primop, {bs_private_append, _, _}}) -> false;
 is_safe({hipe_bs_primop, bs_init_writable}) -> true;
+is_safe(build_stacktrace) -> true;
+is_safe(raw_raise) -> false;
 is_safe(#mkfun{}) -> true;
 is_safe(#unsafe_element{}) -> true;
 is_safe(#unsafe_update_element{}) -> true;
@@ -171,6 +169,8 @@ fails(fp_mul) -> false;
 fails(fp_sub) -> false;
 fails(mktuple) -> false;
 fails(next_msg) -> false;
+fails(recv_mark) -> false;
+fails(recv_set) -> false;
 fails(redtest) -> false;
 fails(select_msg) -> false;
 fails(self) -> false;
@@ -219,7 +219,7 @@ fails({hipe_bs_primop, {bs_init, _, _}}) -> true;
 fails({hipe_bs_primop, {bs_init_bits, _}}) -> true;
 fails({hipe_bs_primop, {bs_init_bits, _, _}}) -> true;
 fails({hipe_bs_primop, {bs_put_binary, _, _}}) -> true;
-fails({hipe_bs_primop, {bs_put_binary_all, _}}) -> true;  
+fails({hipe_bs_primop, {bs_put_binary_all, _, _}}) -> true;
 fails({hipe_bs_primop, {bs_put_float, _, _, _}}) -> true;
 fails({hipe_bs_primop, {bs_put_integer, _, _, _}}) -> true;
 fails({hipe_bs_primop, {bs_put_string, _, _}}) -> true;  
@@ -236,6 +236,8 @@ fails({hipe_bs_primop, bs_final}) -> false;
 fails({hipe_bs_primop, {bs_append, _, _, _, _}}) -> true;
 fails({hipe_bs_primop, {bs_private_append, _, _}}) -> true;
 fails({hipe_bs_primop, bs_init_writable}) -> true;
+fails(build_stacktrace) -> false;
+fails(raw_raise) -> true;
 fails(#mkfun{}) -> false;
 fails(#unsafe_element{}) -> false;
 fails(#unsafe_update_element{}) -> false;
@@ -265,8 +267,8 @@ pp(Dev, Op) ->
       io:format(Dev, "gc_test<~w>", [N]);
     {hipe_bs_primop, BsOp}  ->
       case BsOp of
-	{bs_put_binary_all, Flags} -> 
-	  io:format(Dev, "bs_put_binary_all<~w>", [Flags]);
+	{bs_put_binary_all, Unit, Flags} ->
+	  io:format(Dev, "bs_put_binary_all<~w, ~w>", [Unit,Flags]);
 	{bs_put_binary, Size} ->
 	  io:format(Dev, "bs_put_binary<~w>", [Size]);
 	{bs_put_binary, Flags, Size} ->
@@ -287,8 +289,8 @@ pp(Dev, Op) ->
 	  io:format(Dev, "bs_start_match<~w>", [Max]);
 	{{bs_start_match, Type}, Max} ->
 	  io:format(Dev, "bs_start_match<~w,~w>", [Type,Max]);
-	{bs_match_string, String, SizeInBytes} ->
-	  io:format(Dev, "bs_match_string<~w, ~w>", [String, SizeInBytes]);
+	{bs_match_string, String, SizeInBits} ->
+	  io:format(Dev, "bs_match_string<~w, ~w>", [String, SizeInBits]);
 	{bs_get_integer, Size, Flags} ->
 	  io:format(Dev, "bs_get_integer<~w, ~w>", [Size, Flags]);
 	{bs_get_float, Size, Flags} ->
@@ -434,14 +436,8 @@ type(Primop, Args) ->
     #element{} ->
       erl_bif_types:type(erlang, element, 2, Args);
     #unsafe_element{index = N} ->
-      [Type] = Args,
-      case erl_types:t_is_tuple(Type) of
-	false ->
-	  erl_types:t_none();
-	true ->
-	  Index = erl_types:t_from_term(N),
-	  erl_bif_types:type(erlang, element, 2, [Index|Args])
-      end;
+      Index = erl_types:t_from_term(N),
+      erl_bif_types:type(erlang, element, 2, [Index | Args]);
     #unsafe_update_element{index = N} ->
       %% Same, same
       erl_bif_types:type(erlang, setelement, 3, [erl_types:t_integer(N)|Args]);
@@ -504,14 +500,16 @@ type(Primop, Args) ->
 	  NewBinType = match_bin(erl_types:t_bitstr(0, Size), BinType),
 	  NewMatchState = 
 	    erl_types:t_matchstate_update_present(NewBinType, MatchState),
-	  if Signed =:= 0 ->
-	      erl_types:t_product([erl_types:t_from_range(0, 1 bsl Size - 1), 
-				   NewMatchState]);
-	     Signed =:= 4 ->
-	      erl_types:t_product([erl_types:t_from_range(- (1 bsl (Size-1)), 
-							  (1 bsl (Size-1)) - 1),
-				   NewMatchState])
-	  end;
+	  Range =
+	    case Signed of
+	      0 ->
+		UpperBound = inf_add(safe_bsl_1(Size), -1),
+		erl_types:t_from_range(0, UpperBound);
+	      4 ->
+		Bound = safe_bsl_1(Size - 1),
+		erl_types:t_from_range(inf_inv(Bound), inf_add(Bound, -1))
+	    end,
+	  erl_types:t_product([Range, NewMatchState]);
 	[_Arg] ->
 	  NewBinType = match_bin(erl_types:t_bitstr(Size, 0), BinType),
 	  NewMatchState = 
@@ -594,10 +592,10 @@ type(Primop, Args) ->
 	erl_types:t_subtract(Type, erl_types:t_matchstate()),
 	erl_types:t_matchstate_slot(
 	  erl_types:t_inf(Type, erl_types:t_matchstate()), 0));
-    {hipe_bs_primop, {bs_match_string,_,Bytes}} ->
+    {hipe_bs_primop, {bs_match_string,_,Bits}} ->
       [MatchState] = Args,
       BinType = erl_types:t_matchstate_present(MatchState),
-      NewBinType = match_bin(erl_types:t_bitstr(0, Bytes*8), BinType),
+      NewBinType = match_bin(erl_types:t_bitstr(0, Bits), BinType),
       erl_types:t_matchstate_update_present(NewBinType, MatchState);
     {hipe_bs_primop, {bs_test_unit,Unit}} ->
       [MatchState] = Args,
@@ -628,8 +626,9 @@ type(Primop, Args) ->
 	[_SrcType, _BitsType, _Base, Type] ->
 	  erl_types:t_bitstr_concat(Type, erl_types:t_bitstr(Size, 0))
       end;
-    {hipe_bs_primop, {bs_put_binary_all, _Flags}} ->
-      [SrcType, _Base, Type] = Args,
+    {hipe_bs_primop, {bs_put_binary_all, Unit, _Flags}} ->
+      [SrcType0, _Base, Type] = Args,
+      SrcType = erl_types:t_inf(erl_types:t_bitstr(Unit, 0), SrcType0),
       erl_types:t_bitstr_concat(SrcType,Type);
     {hipe_bs_primop, {bs_put_string, _, Size}} ->
       [_Base, Type] = Args,
@@ -712,6 +711,10 @@ type(Primop, Args) ->
       erl_types:t_any();
     next_msg ->
       erl_types:t_any();
+    recv_mark ->
+      erl_types:t_any();
+    recv_set ->
+      erl_types:t_any();
     select_msg ->
       erl_types:t_any();
     set_timeout ->
@@ -726,6 +729,10 @@ type(Primop, Args) ->
       erl_types:t_any();
     debug_native_called ->
       erl_types:t_any();
+    build_stacktrace ->
+      erl_types:t_list();
+    raw_raise ->
+      erl_types:t_atom();
     {M, F, A} ->
       erl_bif_types:type(M, F, A, Args)
   end.
@@ -886,6 +893,10 @@ type(Primop) ->
       erl_types:t_any();
     next_msg ->
       erl_types:t_any();
+    recv_mark ->
+      erl_types:t_any();
+    recv_set ->
+      erl_types:t_any();
     select_msg ->
       erl_types:t_any();
     set_timeout ->
@@ -894,6 +905,10 @@ type(Primop) ->
       erl_types:t_any();
 %%% -----------------------------------------------------
 %%% Other
+    build_stacktrace ->
+      erl_types:t_any();
+    raw_raise ->
+      erl_types:t_any();
     #closure_element{} ->
       erl_types:t_any();
     redtest ->
@@ -965,3 +980,20 @@ check_fun_args(_, _) ->
 
 match_bin(Pattern, Match) ->
   erl_types:t_bitstr_match(Pattern, Match).
+
+-spec safe_bsl_1(non_neg_integer()) -> non_neg_integer() | 'pos_inf'.
+
+safe_bsl_1(Shift) when Shift =< 128 -> 1 bsl Shift;
+safe_bsl_1(_Shift) -> pos_inf.
+
+%%
+%% The following two functions are stripped-down versions of more
+%% general functions that exist in hipe_icode_range.erl
+%%
+
+inf_inv(pos_inf) -> neg_inf;
+inf_inv(Number) when is_integer(Number) -> -Number.
+
+inf_add(pos_inf, _Number) -> pos_inf;
+inf_add(Number1, Number2) when is_integer(Number1), is_integer(Number2) ->
+  Number1 + Number2.

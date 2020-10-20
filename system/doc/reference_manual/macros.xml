@@ -4,7 +4,7 @@
 <chapter>
   <header>
     <copyright>
-      <year>2003</year><year>2015</year>
+      <year>2003</year><year>2018</year>
       <holder>Ericsson AB. All Rights Reserved.</holder>
     </copyright>
     <legalnotice>
@@ -58,9 +58,9 @@
 	  <item>The directories given by the <c>include</c> option</item>
 	</list>
 	<p>For details, see the
-          <seealso marker="erts:erlc">erlc(1)</seealso> manual page
+          <seecom marker="erts:erlc">erlc(1)</seecom> manual page
            in ERTS and
-           <seealso marker="compiler:compile">compile(3)</seealso>
+           <seeerl marker="compiler:compile">compile(3)</seeerl>
            manual page in Compiler.</p>
       <p><em>Examples:</em></p>
       <pre>
@@ -146,6 +146,15 @@ bar(X) ->
       <item>The current line number.</item>
       <tag><c>?MACHINE</c>.</tag>
       <item>The machine name, <c>'BEAM'</c>.</item>
+      <tag><c>?FUNCTION_NAME</c></tag>
+      <item>The name of the current function.</item>
+      <tag><c>?FUNCTION_ARITY</c></tag>
+      <item>The arity (number of arguments) for the current function.</item>
+      <tag><c>?OTP_RELEASE</c></tag>
+      <item>The OTP release that the currently executing ERTS
+        application is part of, as an integer. For details, see
+        <seemfa marker="erts:erlang#system_info/1"><c>erlang:system_info(otp_release)</c></seemfa>.
+        This macro was introduced in OTP release 21.</item>
     </taglist>
   </section>
 
@@ -198,8 +207,16 @@ f() ->
        directive. If that condition is false, the lines following
       <c>else</c> are evaluated instead.</item>
       <tag><c>-endif.</c></tag>
-      <item>Specifies the end of an <c>ifdef</c> or <c>ifndef</c>
-       directive.</item>
+      <item>Specifies the end of an <c>ifdef</c>, an <c>ifndef</c>
+       directive, or the end of an <c>if</c> or <c>elif</c> directive.</item>
+      <tag><c>-if(Condition).</c></tag>
+      <item>Evaluates the following lines only if <c>Condition</c>
+       evaluates to true.</item>
+      <tag><c>-elif(Condition).</c></tag>
+      <item>Only allowed after an <c>if</c> or another <c>elif</c> directive.
+       If the preceding <c>if</c> or <c>elif</c> directives do not
+       evaluate to true, and the <c>Condition</c> evaluates to true,
+       the lines following the <c>elif</c> are evaluated instead.</item>
     </taglist>
     <note>
       <p>The macro directives cannot be used inside functions.</p>
@@ -227,6 +244,71 @@ or
 {ok,m}</pre>
     <p><c>?LOG(Arg)</c> is then expanded to a call to <c>io:format/2</c>
       and provide the user with some simple trace output.</p>
+
+    <p><em>Example:</em></p>
+    <code type="none">
+-module(m)
+...
+-ifdef(OTP_RELEASE).
+  %% OTP 21 or higher
+  -if(?OTP_RELEASE >= 22).
+    %% Code that will work in OTP 22 or higher
+  -elif(?OTP_RELEASE >= 21).
+    %% Code that will work in OTP 21 or higher
+  -endif.
+-else.
+  %% OTP 20 or lower.
+-endif.
+...</code>
+    <p>The code uses the <c>OTP_RELEASE</c> macro to conditionally
+    select code depending on release.</p>
+  </section>
+
+  <section>
+    <title>-error() and -warning() directives</title>
+
+    <p>The directive <c>-error(Term)</c> causes a compilation error.</p>
+
+    <p><em>Example:</em></p>
+    <code type="none">
+-module(t).
+-export([version/0]).
+
+-ifdef(VERSION).
+version() -> ?VERSION.
+-else.
+-error("Macro VERSION must be defined.").
+version() -> "".
+-endif.</code>
+
+    <p>The error message will look like this:</p>
+
+    <pre>
+% <input>erlc t.erl</input>
+t.erl:7: -error("Macro VERSION must be defined.").</pre>
+
+    <p>The directive <c>-warning(Term)</c> causes a compilation warning.</p>
+
+    <p><em>Example:</em></p>
+    <code type="none">
+-module(t).
+-export([version/0]).
+
+-ifndef(VERSION).
+-warning("Macro VERSION not defined -- using default version.").
+-define(VERSION, "0").
+-endif.
+version() -> ?VERSION.</code>
+
+    <p>The warning message will look like this:</p>
+
+    <pre>
+% <input>erlc t.erl</input>
+t.erl:5: Warning: -warning("Macro VERSION not defined -- using default version.").</pre>
+
+  <p>The <c>-error()</c> and <c>-warning()</c> directives were added
+  in OTP 19.</p>
+
   </section>
 
   <section>
@@ -235,7 +317,6 @@ or
       argument, is expanded to a string containing the tokens of
       the argument. This is similar to the <c>#arg</c> stringifying
       construction in C.</p>
-    <p>The feature was added in Erlang 5.0/OTP R7.</p>
     <p><em>Example:</em></p>
     <code type="none">
 -define(TESTCALL(Call), io:format("Call ~s: ~w~n", [??Call, Call])).
@@ -249,5 +330,6 @@ io:format("Call ~s: ~w~n",["you : function ( 2 , 1 )",you:function(2,1)]).</code
     <p>That is, a trace output, with both the function called and
       the resulting value.</p>
   </section>
+
 </chapter>
 

@@ -1,7 +1,7 @@
 %%
 %% %CopyrightBegin%
 %% 
-%% Copyright Ericsson AB 1996-2013. All Rights Reserved.
+%% Copyright Ericsson AB 1996-2016. All Rights Reserved.
 %% 
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -23,46 +23,29 @@
 
 -module(mnesia_sup).
 
--behaviour(application).
 -behaviour(supervisor).
 
--export([start/0, start/2, init/1, stop/1, start_event/0, kill/0]).
+-export([start_link/1, init/1, start_event/0, kill/0]).
+
+start_link(Args) ->
+    supervisor:start_link({local,?MODULE}, ?MODULE, [Args]).
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-%% application and suprvisor callback functions
+%% supervisor callback functions
 
-start(normal, Args) ->
-    SupName = {local,?MODULE},
-    case supervisor:start_link(SupName, ?MODULE, [Args]) of
-	{ok, Pid} ->
-	    {ok, Pid, {normal, Args}};
-	Error -> 
-	    Error
-    end;
-start(_, _) ->
-    {error, badarg}.
-
-start() ->
-    SupName = {local,?MODULE},
-    supervisor:start_link(SupName, ?MODULE, []).
-
-stop(_StartArgs) ->
-    ok.
-
-init([]) -> % Supervisor
-    init();
-init([[]]) -> % Application
+init([[]]) ->
     init();
 init(BadArg) ->
     {error, {badarg, BadArg}}.
-    
+
 init() ->
     Flags = {one_for_all, 0, 3600}, % Should be rest_for_one policy
 
     Event = event_procs(),
+    Ext = ext_procs(),
     Kernel = kernel_procs(),
 
-    {ok, {Flags, Event ++ Kernel}}.
+    {ok, {Flags, Event ++ Ext ++ Kernel}}.
 
 event_procs() ->
     KillAfter = timer:seconds(30),
@@ -72,6 +55,11 @@ event_procs() ->
 
 kernel_procs() ->
     K = mnesia_kernel_sup,
+    KA = infinity,
+    [{K, {K, start, []}, permanent, KA, supervisor, [K, supervisor]}].
+
+ext_procs() ->
+    K = mnesia_ext_sup,
     KA = infinity,
     [{K, {K, start, []}, permanent, KA, supervisor, [K, supervisor]}].
 
@@ -100,7 +88,7 @@ add_event_handler() ->
 
 kill() ->
     Mnesia = [mnesia_fallback | mnesia:ms()],
-    Kill = fun(Name) -> catch exit(whereis(Name), kill) end,
+    Kill = fun(Name) -> try exit(whereis(Name), kill) catch _:_ -> ok end end,
     lists:foreach(Kill, Mnesia),
     lists:foreach(fun ensure_dead/1, Mnesia),
     timer:sleep(10),
@@ -118,4 +106,3 @@ ensure_dead(Name) ->
 	    timer:sleep(10),
 	    ensure_dead(Name)
     end.
-

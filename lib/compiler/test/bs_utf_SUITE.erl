@@ -1,7 +1,7 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2008-2011. All Rights Reserved.
+%% Copyright Ericsson AB 2008-2018. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -26,12 +26,11 @@
 	 utf32_roundtrip/1,guard/1,extreme_tripping/1,
 	 literals/1,coverage/1]).
 
--include_lib("test_server/include/test_server.hrl").
+-include_lib("common_test/include/ct.hrl").
 
 suite() -> [{ct_hooks,[ts_install_cth]}].
 
 all() -> 
-    test_lib:recompile(?MODULE),
     [utf8_roundtrip, unused_utf_char, utf16_roundtrip,
      utf32_roundtrip, guard, extreme_tripping, literals,
      coverage].
@@ -40,6 +39,7 @@ groups() ->
     [].
 
 init_per_suite(Config) ->
+    test_lib:recompile(?MODULE),
     Config.
 
 end_per_suite(_Config) ->
@@ -53,14 +53,14 @@ end_per_group(_GroupName, Config) ->
 
 
 utf8_roundtrip(Config) when is_list(Config) ->
-    ?line [utf8_roundtrip_1(P) || P <- utf_data()],
+    [utf8_roundtrip_1(P) || P <- utf_data()],
     ok.
 
 utf8_roundtrip_1({Str,Bin,Bin}) ->
-    ?line Str = utf8_to_list(Bin),
-    ?line Bin = list_to_utf8(Str),
-    ?line [ok = utf8_guard(C, <<42,C/utf8>>) || C <- Str],
-    ?line [error = utf8_guard(C, <<C/utf8>>) || C <- Str],
+    Str = utf8_to_list(Bin),
+    Bin = list_to_utf8(Str),
+    [ok = utf8_guard(C, <<42,C/utf8>>) || C <- Str],
+    [error = utf8_guard(C, <<C/utf8>>) || C <- Str],
     ok.
 
 utf8_guard(C, Bin) when <<42,C/utf8>> =:= Bin -> ok;
@@ -90,14 +90,14 @@ utf8_len(<<_/utf8,T/binary>>, N) ->
 utf8_len(<<>>, N) -> N.
 
 utf16_roundtrip(Config) when is_list(Config) ->
-    ?line {Str,Big,Big,Little,Little} = utf16_data(),
-    ?line 4 = utf16_big_len(Big),
-    ?line 4 = utf16_little_len(Little),
-    ?line Str = big_utf16_to_list(Big),
-    ?line Str = little_utf16_to_list(Little),
+    {Str,Big,Big,Little,Little} = utf16_data(),
+    4 = utf16_big_len(Big),
+    4 = utf16_little_len(Little),
+    Str = big_utf16_to_list(Big),
+    Str = little_utf16_to_list(Little),
 
-    ?line Big = list_to_big_utf16(Str),
-    ?line Little = list_to_little_utf16(Str),
+    Big = list_to_big_utf16(Str),
+    Little = list_to_little_utf16(Str),
 
     ok.
 
@@ -138,14 +138,14 @@ little_utf16_to_list(<<H/little-utf16,T/binary>>) ->
 little_utf16_to_list(<<>>) -> [].
 
 utf32_roundtrip(Config) when is_list(Config) ->
-    ?line {Str,Big,Big,Little,Little} = utf32_data(),
-    ?line 4 = utf32_big_len(Big),
-    ?line 4 = utf32_little_len(Little),
-    ?line Str = big_utf32_to_list(Big),
-    ?line Str = little_utf32_to_list(Little),
+    {Str,Big,Big,Little,Little} = utf32_data(),
+    4 = utf32_big_len(Big),
+    4 = utf32_little_len(Little),
+    Str = big_utf32_to_list(Big),
+    Str = little_utf32_to_list(Little),
 
-    ?line Big = list_to_big_utf32(Str),
-    ?line Little = list_to_little_utf32(Str),
+    Big = list_to_big_utf32(Str),
+    Little = list_to_little_utf32(Str),
 
     ok.
 
@@ -187,7 +187,7 @@ little_utf32_to_list(<<>>) -> [].
 
 
 guard(Config) when is_list(Config) ->    
-    ?line error = do_guard(16#D800),
+    error = do_guard(16#D800),
     ok.
 
 do_guard(C) when byte_size(<<C/utf8>>) =/= 42 -> ok;
@@ -199,13 +199,13 @@ do_guard(_) -> error.
 %% the delayed creation of sub-binaries works.
 
 extreme_tripping(Config) when is_list(Config) ->
-    ?line Unicode = lists:seq(0, 1024),
-    ?line Utf8 = unicode_to_utf8(Unicode, <<>>),
-    ?line Utf16 = utf8_to_utf16(Utf8, <<>>),
-    ?line Utf32 = utf8_to_utf32(Utf8, <<>>),
-    ?line Utf32 = utf16_to_utf32(Utf16, <<>>),
-    ?line Utf8 = utf32_to_utf8(Utf32, <<>>),
-    ?line Unicode = utf32_to_unicode(Utf32),
+    Unicode = lists:seq(0, 1024),
+    Utf8 = unicode_to_utf8(Unicode, <<>>),
+    Utf16 = utf8_to_utf16(Utf8, <<>>),
+    Utf32 = utf8_to_utf32(Utf8, <<>>),
+    Utf32 = utf16_to_utf32(Utf16, <<>>),
+    Utf8 = utf32_to_utf8(Utf32, <<>>),
+    Unicode = utf32_to_unicode(Utf32),
     ok.
 
 unicode_to_utf8([C|T], Bin) ->
@@ -233,58 +233,71 @@ utf32_to_unicode(<<C/utf32,T/binary>>) ->
 utf32_to_unicode(<<>>) -> [].
 
 literals(Config) when is_list(Config) ->
-    ?line abc_utf8 = match_literal(<<"abc"/utf8>>),
-    ?line abc_utf8 = match_literal(<<$a,$b,$c>>),
+    <<>> = id(<<""/utf8>>),
+    <<>> = id(<<""/utf16>>),
+    <<>> = id(<<""/little-utf16>>),
+    <<>> = id(<<""/native-utf16>>),
+    <<>> = id(<<""/utf32>>),
+    <<>> = id(<<""/little-utf32>>),
+    <<>> = id(<<""/native-utf32>>),
 
-    ?line abc_utf16be = match_literal(<<"abc"/utf16>>),
-    ?line abc_utf16be = match_literal(<<$a:16,$b:16,$c:16>>),
-    ?line abc_utf16le = match_literal(<<"abc"/little-utf16>>),
-    ?line abc_utf16le = match_literal(<<$a:16/little,$b:16/little,$c:16/little>>),
+    abc_utf8 = match_literal(<<"abc"/utf8>>),
+    abc_utf8 = match_literal(<<$a,$b,$c>>),
+    abc_utf8 = match_literal(<<$a/utf8,$b/utf8,$c/utf8>>),
 
-    ?line abc_utf32be = match_literal(<<"abc"/utf32>>),
-    ?line abc_utf32be = match_literal(<<$a:32,$b:32,$c:32>>),
-    ?line abc_utf32le = match_literal(<<"abc"/little-utf32>>),
-    ?line abc_utf32le = match_literal(<<$a:32/little,$b:32/little,$c:32/little>>),
+    abc_utf16be = match_literal(<<"abc"/utf16>>),
+    abc_utf16be = match_literal(<<$a:16,$b:16,$c:16>>),
+    abc_utf16le = match_literal(<<"abc"/little-utf16>>),
+    abc_utf16le = match_literal(<<$a:16/little,$b:16/little,$c:16/little>>),
 
-    ?line bjorn_utf8 = match_literal(<<"bj\366rn"/utf8>>),
-    ?line bjorn_utf8 = match_literal(<<$b,$j,195,182,$r,$n>>),
+    abc_utf32be = match_literal(<<"abc"/utf32>>),
+    abc_utf32be = match_literal(<<$a:32,$b:32,$c:32>>),
+    abc_utf32le = match_literal(<<"abc"/little-utf32>>),
+    abc_utf32le = match_literal(<<$a:32/little,$b:32/little,$c:32/little>>),
 
-    ?line bjorn_utf16be = match_literal(<<"bj\366rn"/utf16>>),
-    ?line bjorn_utf16be = match_literal(<<$b:16,$j:16,246:16,$r:16,$n:16>>),
-    ?line bjorn_utf16le = match_literal(<<"bj\366rn"/little-utf16>>),
-    ?line bjorn_utf16le = match_literal(<<$b:16/little,$j:16/little,
+    mm_utf8 = match_literal(<<"Мастер и Маргарита"/utf8>>),
+    mm_utf16be = match_literal(<<"Мастер и Маргарита"/utf16>>),
+    mm_utf32be = match_literal(<<"Мастер и Маргарита"/utf32>>),
+
+    bjorn_utf8 = match_literal(<<"bj\366rn"/utf8>>),
+    bjorn_utf8 = match_literal(<<$b,$j,195,182,$r,$n>>),
+
+    bjorn_utf16be = match_literal(<<"bj\366rn"/utf16>>),
+    bjorn_utf16be = match_literal(<<$b:16,$j:16,246:16,$r:16,$n:16>>),
+    bjorn_utf16le = match_literal(<<"bj\366rn"/little-utf16>>),
+    bjorn_utf16le = match_literal(<<$b:16/little,$j:16/little,
 					 246:16/little,$r:16/little,
 					 $n:16/little>>),
-    ?line <<244,143,191,191>> = <<16#10ffff/utf8>>,
+    <<244,143,191,191>> = <<16#10ffff/utf8>>,
 
     %% Invalid literals.
     I = 0,
-    ?line {'EXIT',{badarg,_}} = (catch <<(-1)/utf8,I/utf8>>),
-    ?line {'EXIT',{badarg,_}} = (catch <<(-1)/utf16,I/utf8>>),
-    ?line {'EXIT',{badarg,_}} = (catch <<(-1)/little-utf16,I/utf8>>),
-    ?line {'EXIT',{badarg,_}} = (catch <<(-1)/utf32,I/utf8>>),
-    ?line {'EXIT',{badarg,_}} = (catch <<(-1)/little-utf32,I/utf8>>),
-    ?line {'EXIT',{badarg,_}} = (catch <<16#D800/utf8,I/utf8>>),
-    ?line {'EXIT',{badarg,_}} = (catch <<16#D800/utf16,I/utf8>>),
-    ?line {'EXIT',{badarg,_}} = (catch <<16#D800/little-utf16,I/utf8>>),
-    ?line {'EXIT',{badarg,_}} = (catch <<16#D800/utf32,I/utf8>>),
-    ?line {'EXIT',{badarg,_}} = (catch <<16#D800/little-utf32,I/utf8>>),
+    {'EXIT',{badarg,_}} = (catch <<(-1)/utf8,I/utf8>>),
+    {'EXIT',{badarg,_}} = (catch <<(-1)/utf16,I/utf8>>),
+    {'EXIT',{badarg,_}} = (catch <<(-1)/little-utf16,I/utf8>>),
+    {'EXIT',{badarg,_}} = (catch <<(-1)/utf32,I/utf8>>),
+    {'EXIT',{badarg,_}} = (catch <<(-1)/little-utf32,I/utf8>>),
+    {'EXIT',{badarg,_}} = (catch <<16#D800/utf8,I/utf8>>),
+    {'EXIT',{badarg,_}} = (catch <<16#D800/utf16,I/utf8>>),
+    {'EXIT',{badarg,_}} = (catch <<16#D800/little-utf16,I/utf8>>),
+    {'EXIT',{badarg,_}} = (catch <<16#D800/utf32,I/utf8>>),
+    {'EXIT',{badarg,_}} = (catch <<16#D800/little-utf32,I/utf8>>),
 
     B = 16#10FFFF+1,
-    ?line {'EXIT',{badarg,_}} = (catch <<B/utf8>>),
-    ?line {'EXIT',{badarg,_}} = (catch <<B/utf16>>),
-    ?line {'EXIT',{badarg,_}} = (catch <<B/little-utf16>>),
-    ?line {'EXIT',{badarg,_}} = (catch <<B/utf32>>),
-    ?line {'EXIT',{badarg,_}} = (catch <<B/little-utf32>>),
+    {'EXIT',{badarg,_}} = (catch <<B/utf8>>),
+    {'EXIT',{badarg,_}} = (catch <<B/utf16>>),
+    {'EXIT',{badarg,_}} = (catch <<B/little-utf16>>),
+    {'EXIT',{badarg,_}} = (catch <<B/utf32>>),
+    {'EXIT',{badarg,_}} = (catch <<B/little-utf32>>),
 
     %% Matching of bad literals.
-    ?line error = bad_literal_match(<<237,160,128>>), %16#D800 in UTF-8
-    ?line error = bad_literal_match(<<244,144,128,128>>), %16#110000 in UTF-8
+    error = bad_literal_match(<<237,160,128>>), %16#D800 in UTF-8
+    error = bad_literal_match(<<244,144,128,128>>), %16#110000 in UTF-8
 
-    ?line error = bad_literal_match(<<16#D800:32>>),
-    ?line error = bad_literal_match(<<16#110000:32>>),
-    ?line error = bad_literal_match(<<16#D800:32/little>>),
-    ?line error = bad_literal_match(<<16#110000:32/little>>),
+    error = bad_literal_match(<<16#D800:32>>),
+    error = bad_literal_match(<<16#110000:32>>),
+    error = bad_literal_match(<<16#D800:32/little>>),
+    error = bad_literal_match(<<16#110000:32/little>>),
 
     ok.
 
@@ -293,6 +306,9 @@ match_literal(<<"abc"/big-utf16>>) -> abc_utf16be;
 match_literal(<<"abc"/little-utf16>>) -> abc_utf16le;
 match_literal(<<"abc"/big-utf32>>) -> abc_utf32be;
 match_literal(<<"abc"/little-utf32>>) -> abc_utf32le;
+match_literal(<<"Мастер и Маргарита"/utf8>>) -> mm_utf8;
+match_literal(<<"Мастер и Маргарита"/utf16>>) -> mm_utf16be;
+match_literal(<<"Мастер и Маргарита"/big-utf32>>) -> mm_utf32be;
 match_literal(<<"bj\366rn"/utf8>>) -> bjorn_utf8;
 match_literal(<<"bj\366rn"/big-utf16>>) -> bjorn_utf16be;
 match_literal(<<"bj\366rn"/little-utf16>>) -> bjorn_utf16le.
@@ -307,13 +323,13 @@ bad_literal_match(_) -> error.
     
 coverage(Config) when is_list(Config) ->
     %% Cover bit syntax matching optimizations in v3_kernel.
-    ?line 0 = coverage_1(<<4096/utf8,65536/utf8,0>>),
-    ?line 1 = coverage_1(<<4096/utf8,65536/utf8,1>>),
+    0 = coverage_1(<<4096/utf8,65536/utf8,0>>),
+    1 = coverage_1(<<4096/utf8,65536/utf8,1>>),
 
-    ?line 0 = coverage_2(<<4096/utf8,65536/utf8,0>>),
-    ?line 1 = coverage_2(<<1024/utf8,1025/utf8,1>>),
+    0 = coverage_2(<<4096/utf8,65536/utf8,0>>),
+    1 = coverage_2(<<1024/utf8,1025/utf8,1>>),
 
-    ?line fc(catch coverage_3(1)),
+    fc(catch coverage_3(1)),
 
     %% Cover beam_flatten (combining the heap allocation in
     %% a subsequent test_heap instruction into the bs_init2
@@ -395,3 +411,5 @@ utf32_data() ->
      
 fc({'EXIT',{function_clause,_}}) -> ok;
 fc({'EXIT',{{case_clause,_},_}}) when ?MODULE =:= bs_utf_inline_SUITE -> ok.
+
+id(I) -> I.

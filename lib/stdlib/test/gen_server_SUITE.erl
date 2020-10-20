@@ -1,7 +1,7 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 1996-2014. All Rights Reserved.
+%% Copyright Ericsson AB 1996-2018. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -19,28 +19,34 @@
 %%
 -module(gen_server_SUITE).
 
--include_lib("test_server/include/test_server.hrl").
+-include_lib("common_test/include/ct.hrl").
 -include_lib("kernel/include/inet.hrl").
 
 -export([init_per_testcase/2, end_per_testcase/2]).
 
 -export([all/0, suite/0,groups/0,init_per_suite/1, end_per_suite/1, 
 	 init_per_group/2,end_per_group/2]).
--export([start/1, crash/1, call/1, cast/1, cast_fast/1,
-	 info/1, abcast/1, multicall/1, multicall_down/1,
+-export([start/1, crash/1, call/1, send_request/1, cast/1, cast_fast/1,
+	 continue/1, info/1, abcast/1, multicall/1, multicall_down/1,
 	 call_remote1/1, call_remote2/1, call_remote3/1,
 	 call_remote_n1/1, call_remote_n2/1, call_remote_n3/1, spec_init/1,
 	 spec_init_local_registered_parent/1, 
 	 spec_init_global_registered_parent/1,
-	 otp_5854/1, hibernate/1, otp_7669/1, call_format_status/1,
+	 otp_5854/1, hibernate/1, auto_hibernate/1, otp_7669/1, call_format_status/1,
 	 error_format_status/1, terminate_crash_format/1,
-	 get_state/1, replace_state/1, call_with_huge_message_queue/1
+	 get_state/1, replace_state/1, call_with_huge_message_queue/1,
+	 undef_handle_call/1, undef_handle_cast/1, undef_handle_info/1,
+	 undef_init/1, undef_code_change/1, undef_terminate1/1,
+	 undef_terminate2/1, undef_in_terminate/1, undef_in_handle_info/1,
+	 undef_handle_continue/1,
+
+         format_log_1/1, format_log_2/1
 	]).
 
 -export([stop1/1, stop2/1, stop3/1, stop4/1, stop5/1, stop6/1, stop7/1,
 	 stop8/1, stop9/1, stop10/1]).
 
-% spawn export
+%% spawn export
 -export([spec_init_local/2, spec_init_global/2, spec_init_via/2,
 	 spec_init_default_timeout/2, spec_init_global_default_timeout/2,
          spec_init_anonymous/1,
@@ -48,27 +54,35 @@
 	 spec_init_not_proc_lib/1, cast_fast_messup/0]).
 
 
-% The gen_server behaviour
--export([init/1, handle_call/3, handle_cast/2,
-	 handle_info/2, terminate/2, format_status/2]).
+%% The gen_server behaviour
+-export([init/1, handle_call/3, handle_cast/2, handle_continue/2,
+	 handle_info/2, code_change/3, terminate/2, format_status/2]).
 
-suite() -> [{ct_hooks,[ts_install_cth]}].
+suite() ->
+    [{ct_hooks,[ts_install_cth]},
+     {timetrap,{minutes,1}}].
 
 all() -> 
-    [start, {group,stop}, crash, call, cast, cast_fast, info, abcast,
-     multicall, multicall_down, call_remote1, call_remote2,
+    [start, {group,stop}, crash, call, send_request, cast, cast_fast, info, abcast,
+     continue, multicall, multicall_down, call_remote1, call_remote2,
      call_remote3, call_remote_n1, call_remote_n2,
      call_remote_n3, spec_init,
      spec_init_local_registered_parent,
-     spec_init_global_registered_parent, otp_5854, hibernate,
+     spec_init_global_registered_parent, otp_5854, hibernate, auto_hibernate,
      otp_7669,
      call_format_status, error_format_status, terminate_crash_format,
      get_state, replace_state,
-     call_with_huge_message_queue].
+     call_with_huge_message_queue, {group, undef_callbacks},
+     undef_in_terminate, undef_in_handle_info,
+     format_log_1, format_log_2].
 
 groups() -> 
     [{stop, [],
-      [stop1, stop2, stop3, stop4, stop5, stop6, stop7, stop8, stop9, stop10]}].
+      [stop1, stop2, stop3, stop4, stop5, stop6, stop7, stop8, stop9, stop10]},
+     {undef_callbacks, [],
+      [undef_handle_call, undef_handle_cast, undef_handle_info, undef_handle_continue,
+       undef_init, undef_code_change, undef_terminate1, undef_terminate2]}].
+
 
 init_per_suite(Config) ->
     Config.
@@ -76,6 +90,11 @@ init_per_suite(Config) ->
 end_per_suite(_Config) ->
     ok.
 
+init_per_group(undef_callbacks, Config) ->
+    DataDir = ?config(data_dir, Config),
+    Server = filename:join(DataDir, "oc_server.erl"),
+    {ok, oc_server} = compile:file(Server),
+    Config;
 init_per_group(_GroupName, Config) ->
     Config.
 
@@ -83,20 +102,19 @@ end_per_group(_GroupName, Config) ->
     Config.
 
 
--define(default_timeout, ?t:minutes(1)).
- 
 init_per_testcase(Case, Config) when Case == call_remote1;
 				     Case == call_remote2;
 				     Case == call_remote3;
 				     Case == call_remote_n1;
 				     Case == call_remote_n2;
-				     Case == call_remote_n3 ->
+				     Case == call_remote_n3;
+                                     Case == send_request ->
     {ok,N} = start_node(hubba),
-    ?line Dog = ?t:timetrap(?default_timeout),
-    [{node,N},{watchdog, Dog} | Config];
+    [{node,N} | Config];
+
 init_per_testcase(_Case, Config) ->
-    ?line Dog = ?t:timetrap(?default_timeout),
-    [{watchdog, Dog} | Config].
+    Config.
+
 end_per_testcase(_Case, Config) ->
     case proplists:get_value(node, Config) of
 	undefined ->
@@ -104,8 +122,6 @@ end_per_testcase(_Case, Config) ->
 	N ->
 	    test_server:stop_node(N)
     end,
-    Dog = ?config(watchdog, Config),
-    test_server:timetrap_cancel(Dog),
     ok.
 
 
@@ -113,131 +129,177 @@ end_per_testcase(_Case, Config) ->
 %% Start and stop a gen_server.
 %% --------------------------------------
 
-start(suite) -> [];
 start(Config) when is_list(Config) ->
     OldFl = process_flag(trap_exit, true),
 
     %% anonymous
-    ?line {ok, Pid0} = gen_server:start(gen_server_SUITE, [], []),
-    ?line ok = gen_server:call(Pid0, started_p),
-    ?line ok = gen_server:call(Pid0, stop),
-    ?line busy_wait_for_process(Pid0,600),
-    ?line {'EXIT', {noproc,_}} = (catch gen_server:call(Pid0, started_p, 1)),
+    {ok, Pid0} = gen_server:start(gen_server_SUITE, [], []),
+    ok = gen_server:call(Pid0, started_p),
+    ok = gen_server:call(Pid0, stop),
+    busy_wait_for_process(Pid0,600),
+    {'EXIT', {noproc,_}} = (catch gen_server:call(Pid0, started_p, 1)),
 
     %% anonymous with timeout
-    ?line {ok, Pid00} = gen_server:start(gen_server_SUITE, [],
-					 [{timeout,1000}]),
-    ?line ok = gen_server:call(Pid00, started_p),
-    ?line ok = gen_server:call(Pid00, stop),
-    ?line {error, timeout} = gen_server:start(gen_server_SUITE, sleep,
-					      [{timeout,100}]),
+    {ok, Pid00} = gen_server:start(gen_server_SUITE, [],
+				   [{timeout,1000}]),
+    ok = gen_server:call(Pid00, started_p),
+    ok = gen_server:call(Pid00, stop),
+    {error, timeout} = gen_server:start(gen_server_SUITE, sleep,
+					[{timeout,100}]),
 
     %% anonymous with ignore
-    ?line ignore = gen_server:start(gen_server_SUITE, ignore, []),
+    ignore = gen_server:start(gen_server_SUITE, ignore, []),
 
     %% anonymous with stop
-    ?line {error, stopped} = gen_server:start(gen_server_SUITE, stop, []),
+    {error, stopped} = gen_server:start(gen_server_SUITE, stop, []),
 
     %% anonymous linked
-    ?line {ok, Pid1} =
+    {ok, Pid1} =
 	gen_server:start_link(gen_server_SUITE, [], []),
-    ?line ok = gen_server:call(Pid1, started_p),
-    ?line ok = gen_server:call(Pid1, stop),
-    ?line receive
-	      {'EXIT', Pid1, stopped} ->
-		  ok
-	  after 5000 ->
-		  test_server:fail(not_stopped)
-	  end,
+    ok = gen_server:call(Pid1, started_p),
+    ok = gen_server:call(Pid1, stop),
+    receive
+	{'EXIT', Pid1, stopped} ->
+	    ok
+    after 5000 ->
+	    ct:fail(not_stopped)
+    end,
+
+    %% anonymous monitored
+    {ok, {Pid1b, Mon1b}} =
+	gen_server:start_monitor(gen_server_SUITE, [], []),
+    ok = gen_server:call(Pid1b, started_p),
+    ok = gen_server:call(Pid1b, stop),
+    receive
+	{'DOWN', Mon1b, process, Pid1b, stopped} ->
+	    ok
+    after 5000 ->
+	    ct:fail(not_stopped)
+    end,
 
     %% local register
-    ?line {ok, Pid2} =
+    {ok, Pid2} =
 	gen_server:start({local, my_test_name},
 			 gen_server_SUITE, [], []),
-    ?line ok = gen_server:call(my_test_name, started_p),
-    ?line {error, {already_started, Pid2}} =
+    ok = gen_server:call(my_test_name, started_p),
+    {error, {already_started, Pid2}} =
 	gen_server:start({local, my_test_name},
 			 gen_server_SUITE, [], []),
-    ?line ok = gen_server:call(my_test_name, stop),
+    ok = gen_server:call(my_test_name, stop),
 
-    ?line busy_wait_for_process(Pid2,600),
+    busy_wait_for_process(Pid2,600),
 
-    ?line {'EXIT', {noproc,_}} = (catch gen_server:call(Pid2, started_p, 10)),
+    {'EXIT', {noproc,_}} = (catch gen_server:call(Pid2, started_p, 10)),
 
     %% local register linked
-    ?line {ok, Pid3} =
+    {ok, Pid3} =
 	gen_server:start_link({local, my_test_name},
 			      gen_server_SUITE, [], []), 
-    ?line ok = gen_server:call(my_test_name, started_p),
-    ?line {error, {already_started, Pid3}} =
+    ok = gen_server:call(my_test_name, started_p),
+    {error, {already_started, Pid3}} =
 	gen_server:start({local, my_test_name},
 			 gen_server_SUITE, [], []),
-    ?line ok = gen_server:call(my_test_name, stop),
-    ?line receive
-	      {'EXIT', Pid3, stopped} ->
-		  ok
-	  after 5000 ->
-		  test_server:fail(not_stopped)
-	  end,
+    ok = gen_server:call(my_test_name, stop),
+    receive
+	{'EXIT', Pid3, stopped} ->
+	    ok
+    after 5000 ->
+	    ct:fail(not_stopped)
+    end,
+
+    %% local register monitored
+    {ok, {Pid3b, Mon3b}} =
+	gen_server:start_monitor({local, my_test_name},
+                                 gen_server_SUITE, [], []), 
+    ok = gen_server:call(my_test_name, started_p),
+    {error, {already_started, Pid3b}} =
+	gen_server:start_monitor({local, my_test_name},
+                                 gen_server_SUITE, [], []),
+    ok = gen_server:call(my_test_name, stop),
+    receive
+	{'DOWN', Mon3b, process, Pid3b, stopped} ->
+	    ok
+    after 5000 ->
+	    ct:fail(not_stopped)
+    end,
 
     %% global register
-    ?line {ok, Pid4} =
+    {ok, Pid4} =
 	gen_server:start({global, my_test_name},
 			 gen_server_SUITE, [], []),
-    ?line ok = gen_server:call({global, my_test_name}, started_p),
-    ?line {error, {already_started, Pid4}} =
+    ok = gen_server:call({global, my_test_name}, started_p),
+    {error, {already_started, Pid4}} =
 	gen_server:start({global, my_test_name},
 			 gen_server_SUITE, [], []),
-    ?line ok = gen_server:call({global, my_test_name}, stop),
-    test_server:sleep(1),
-    ?line {'EXIT', {noproc,_}} = (catch gen_server:call(Pid4, started_p, 10)),
+    ok = gen_server:call({global, my_test_name}, stop),
+    busy_wait_for_process(Pid4,600),
+    {'EXIT', {noproc,_}} = (catch gen_server:call(Pid4, started_p, 10)),
 
     %% global register linked
-    ?line {ok, Pid5} =
+    {ok, Pid5} =
 	gen_server:start_link({global, my_test_name},
 			      gen_server_SUITE, [], []), 
-    ?line ok = gen_server:call({global, my_test_name}, started_p),
-    ?line {error, {already_started, Pid5}} =
+    ok = gen_server:call({global, my_test_name}, started_p),
+    {error, {already_started, Pid5}} =
 	gen_server:start({global, my_test_name},
 			 gen_server_SUITE, [], []),
-    ?line ok = gen_server:call({global, my_test_name}, stop),
-    ?line receive
-	      {'EXIT', Pid5, stopped} ->
-		  ok
-	  after 5000 ->
-		  test_server:fail(not_stopped)
-	  end,
+    ok = gen_server:call({global, my_test_name}, stop),
+    receive
+	{'EXIT', Pid5, stopped} ->
+	    ok
+    after 5000 ->
+	    ct:fail(not_stopped)
+    end,
+
+    %% global register monitored
+    {ok, {Pid5b, Mon5b}} =
+	gen_server:start_monitor({global, my_test_name},
+                                 gen_server_SUITE, [], []), 
+    ok = gen_server:call({global, my_test_name}, started_p),
+    {error, {already_started, Pid5b}} =
+	gen_server:start_monitor({global, my_test_name},
+                                 gen_server_SUITE, [], []),
+    ok = gen_server:call({global, my_test_name}, stop),
+    receive
+	{'DOWN', Mon5b, process, Pid5b, stopped} ->
+	    ok
+    after 5000 ->
+	    ct:fail(not_stopped)
+    end,
 
     %% via register
-    ?line dummy_via:reset(),
-    ?line {ok, Pid6} =
+    dummy_via:reset(),
+    {ok, Pid6} =
 	gen_server:start({via, dummy_via, my_test_name},
 			 gen_server_SUITE, [], []),
-    ?line ok = gen_server:call({via, dummy_via, my_test_name}, started_p),
-    ?line {error, {already_started, Pid6}} =
+    ok = gen_server:call({via, dummy_via, my_test_name}, started_p),
+    {error, {already_started, Pid6}} =
 	gen_server:start({via, dummy_via, my_test_name},
 			 gen_server_SUITE, [], []),
-    ?line ok = gen_server:call({via, dummy_via, my_test_name}, stop),
-    test_server:sleep(1),
-    ?line {'EXIT', {noproc,_}} = (catch gen_server:call(Pid6, started_p, 10)),
+    ok = gen_server:call({via, dummy_via, my_test_name}, stop),
+    busy_wait_for_process(Pid6,600),
+    {'EXIT', {noproc,_}} = (catch gen_server:call(Pid6, started_p, 10)),
 
     %% via register linked
-    ?line dummy_via:reset(),
-    ?line {ok, Pid7} =
+    dummy_via:reset(),
+    {ok, Pid7} =
 	gen_server:start_link({via, dummy_via, my_test_name},
 			      gen_server_SUITE, [], []),
-    ?line ok = gen_server:call({via, dummy_via, my_test_name}, started_p),
-    ?line {error, {already_started, Pid7}} =
+    ok = gen_server:call({via, dummy_via, my_test_name}, started_p),
+    {error, {already_started, Pid7}} =
 	gen_server:start({via, dummy_via, my_test_name},
 			 gen_server_SUITE, [], []),
-    ?line ok = gen_server:call({via, dummy_via, my_test_name}, stop),
-    ?line receive
-	      {'EXIT', Pid7, stopped} ->
-		  ok
-	  after 5000 ->
-		  test_server:fail(not_stopped)
-	  end,
-    test_server:messages_get(),
+    ok = gen_server:call({via, dummy_via, my_test_name}, stop),
+    receive
+	{'EXIT', Pid7, stopped} ->
+	    ok
+    after 5000 ->
+	    ct:fail(not_stopped)
+    end,
+    receive
+	Msg -> ct:fail({unexpected,Msg})
+    after 1 -> ok
+    end,
 
     process_flag(trap_exit, OldFl),
     ok.
@@ -294,7 +356,7 @@ stop6(_Config) ->
 stop7(_Config) ->
     dummy_via:reset(),
     {ok, Pid} = gen_server:start({via, dummy_via, to_stop},
-				  ?MODULE, [], []),
+				 ?MODULE, [], []),
     ok = gen_server:stop({via, dummy_via, to_stop}),
     false = erlang:is_process_alive(Pid),
     {'EXIT',noproc} = (catch gen_server:stop({via, dummy_via, to_stop})),
@@ -333,7 +395,7 @@ stop10(_Config) ->
     Dir = filename:dirname(code:which(?MODULE)),
     rpc:call(Node,code,add_path,[Dir]),
     {ok, Pid} = rpc:call(Node,gen_server,start,[{global,to_stop},?MODULE,[],[]]),
-    global:sync(),
+    ok = global:sync(),
     ok = gen_server:stop({global,to_stop}),
     false = rpc:call(Node,erlang,is_process_alive,[Pid]),
     {'EXIT',noproc} = (catch gen_server:stop({global,to_stop})),
@@ -342,31 +404,31 @@ stop10(_Config) ->
     ok.
 
 crash(Config) when is_list(Config) ->
-    ?line error_logger_forwarder:register(),
+    error_logger_forwarder:register(),
 
     process_flag(trap_exit, true),
 
     %% This crash should not generate a crash report.
-    ?line {ok,Pid0} = gen_server:start_link(?MODULE, [], []),
-    ?line {'EXIT',{{shutdown,reason},_}} =
+    {ok,Pid0} = gen_server:start_link(?MODULE, [], []),
+    {'EXIT',{{shutdown,reason},_}} =
  	(catch gen_server:call(Pid0, shutdown_reason)),
     receive {'EXIT',Pid0,{shutdown,reason}} -> ok end,
 
     %% This crash should not generate a crash report.
-    ?line {ok,Pid1} = gen_server:start_link(?MODULE, {state,state1}, []),
-    ?line {'EXIT',{{shutdown,stop_reason},_}} =
+    {ok,Pid1} = gen_server:start_link(?MODULE, {state,state1}, []),
+    {'EXIT',{{shutdown,stop_reason},_}} =
 	(catch gen_server:call(Pid1, stop_shutdown_reason)),
     receive {'EXIT',Pid1,{shutdown,stop_reason}} -> ok end,
 
     %% This crash should not generate a crash report.
-    ?line {ok,Pid2} = gen_server:start_link(?MODULE, [], []),
-    ?line {'EXIT',{shutdown,_}} =
+    {ok,Pid2} = gen_server:start_link(?MODULE, [], []),
+    {'EXIT',{shutdown,_}} =
  	(catch gen_server:call(Pid2, exit_shutdown)),
     receive {'EXIT',Pid2,shutdown} -> ok end,
 
     %% This crash should not generate a crash report.
-    ?line {ok,Pid3} = gen_server:start_link(?MODULE, {state,state3}, []),
-    ?line {'EXIT',{shutdown,_}} =
+    {ok,Pid3} = gen_server:start_link(?MODULE, {state,state3}, []),
+    {'EXIT',{shutdown,_}} =
 	(catch gen_server:call(Pid3, stop_shutdown)),
     receive {'EXIT',Pid3,shutdown} -> ok end,
 
@@ -374,32 +436,34 @@ crash(Config) when is_list(Config) ->
 
     %% This crash should generate a crash report and a report
     %% from gen_server.
-    ?line {ok,Pid4} = gen_server:start(?MODULE, {state,state4}, []),
-    ?line {'EXIT',{crashed,_}} = (catch gen_server:call(Pid4, crash)),
+    {ok,Pid4} = gen_server:start(?MODULE, {state,state4}, []),
+    {'EXIT',{crashed,_}} = (catch gen_server:call(Pid4, crash)),
+    ClientPid = self(),
     receive
 	{error,_GroupLeader4,{Pid4,
 			      "** Generic server"++_,
 			      [Pid4,crash,{formatted, state4},
 			       {crashed,[{?MODULE,handle_call,3,_}
-					 |_Stacktrace]}]}} ->
+					 |_Stacktrace]},
+			       ClientPid, [_|_] = _ClientStack]}} ->
 	    ok;
 	Other4a ->
- 	    ?line io:format("Unexpected: ~p", [Other4a]),
- 	    ?line ?t:fail()
+	    io:format("Unexpected: ~p", [Other4a]),
+	    ct:fail(failed)
     end,
     receive
 	{error_report,_,{Pid4,crash_report,[List4|_]}} ->
-	    {exit,crashed,_} = proplists:get_value(error_info, List4),
+	    {exit,crashed,[{?MODULE, handle_call, 3, _}|_]} = proplists:get_value(error_info, List4),
 	    Pid4 = proplists:get_value(pid, List4);
 	Other4 ->
-	    ?line io:format("Unexpected: ~p", [Other4]),
-	    ?line ?t:fail()
+	    io:format("Unexpected: ~p", [Other4]),
+	    ct:fail(failed)
     end,
 
     receive
 	Any ->
-	    ?line io:format("Unexpected: ~p", [Any]),
-	    ?line ?t:fail()
+	    io:format("Unexpected: ~p", [Any]),
+	    ct:fail(failed)
     after 500 ->
 	    ok
     end,
@@ -412,128 +476,246 @@ crash(Config) when is_list(Config) ->
 %% handle_call.
 %% --------------------------------------
 
-call(suite) -> [];
 call(Config) when is_list(Config) ->
     OldFl = process_flag(trap_exit, true),
 
-    ?line {ok, _Pid} =
+    {ok, _Pid} =
 	gen_server:start_link({local, my_test_name},
 			      gen_server_SUITE, [], []),
 
-    ?line ok = gen_server:call(my_test_name, started_p),
-    ?line delayed = gen_server:call(my_test_name, {delayed_answer,1}),
+    ok = gen_server:call(my_test_name, started_p),
+    delayed = gen_server:call(my_test_name, {delayed_answer,1}),
 
     %% two requests within a specified time.
-    ?line ok = gen_server:call(my_test_name, {call_within, 1000}),
-    test_server:sleep(500),
-    ?line ok = gen_server:call(my_test_name, next_call),
-    ?line ok = gen_server:call(my_test_name, {call_within, 1000}),
-    test_server:sleep(1500),
-    ?line false = gen_server:call(my_test_name, next_call),
-    
+    ok = gen_server:call(my_test_name, {call_within, 1000}),
+    timer:sleep(500),
+    ok = gen_server:call(my_test_name, next_call),
+    ok = gen_server:call(my_test_name, {call_within, 1000}),
+    timer:sleep(1500),
+    false = gen_server:call(my_test_name, next_call),
+
     %% timeout call.
-    ?line delayed = gen_server:call(my_test_name, {delayed_answer,1}, 30),
-    ?line {'EXIT',{timeout,_}} =
+    delayed = gen_server:call(my_test_name, {delayed_answer,1}, 30),
+    {'EXIT',{timeout,_}} =
 	(catch gen_server:call(my_test_name, {delayed_answer,30}, 1)),
 
     %% bad return value in the gen_server loop from handle_call.
-    ?line {'EXIT',{{bad_return_value, badreturn},_}} =
+    {'EXIT',{{bad_return_value, badreturn},_}} =
 	(catch gen_server:call(my_test_name, badreturn)),
 
     process_flag(trap_exit, OldFl),
     ok.
 
 %% --------------------------------------
+%% Test gen_server:send_request.
+%% --------------------------------------
+
+send_request(Config) when is_list(Config) ->
+    OldFl = process_flag(trap_exit, true),
+
+    {ok, Pid} = gen_server:start_link({local, my_test_name},
+                                      gen_server_SUITE, [], []),
+
+    Async = fun(Process, Req) ->
+                    try
+                        Promise = gen_server:send_request(Process, Req),
+                        gen_server:wait_response(Promise, infinity)
+                    catch _:Reason:ST ->
+                            {'did_exit', Reason, ST}
+                    end
+            end,
+    {reply,ok} = Async(my_test_name, started_p),
+
+    {reply,delayed} = Async(Pid, {delayed_answer,1}),
+
+    %% two requests within a specified time.
+    Promise1 = gen_server:send_request(my_test_name, {call_within, 1000}),
+    Promise2 = gen_server:send_request(my_test_name, next_call),
+    {reply, ok} = gen_server:wait_response(Promise1, infinity),
+    {reply, ok} = gen_server:wait_response(Promise2, infinity),
+
+    Promise3 = gen_server:send_request(my_test_name, {call_within, 1000}),
+    no_reply = gen_server:check_response({foo, bar}, Promise3),
+    receive {{'$gen_request_id',Ref},_} = Msg when is_reference(Ref) ->
+            {reply, ok} = gen_server:check_response(Msg, Promise3)
+    after 1000 ->
+            %% Format not yet doumented so it might be ok
+            %% This test is just to make you aware that you have changed it
+            exit(message_format_changed)
+    end,
+    timer:sleep(1500),
+
+    {reply, false} = Async(my_test_name, next_call),
+
+    %% timeout
+    Promise5 = gen_server:send_request(my_test_name, {delayed_answer,50}),
+    timeout = gen_server:wait_response(Promise5, 0),
+    {reply, delayed} = gen_server:wait_response(Promise5, infinity),
+
+    %% bad return value in the gen_server loop from handle_call.
+    {error,{{bad_return_value, badreturn},_}} = Async(my_test_name, badreturn),
+
+    %% Test other error cases
+    {error, {noproc,_}} = Async(Pid, started_p),
+    {error, {noproc,_}} = Async(my_test_name, started_p),
+    {error, {noconnection, _}} = Async({my_test_name, foo@node}, started_p),
+
+    {error, {noproc,_}} = Async({global, non_existing}, started_p),
+    catch exit(whereis(dummy_via), foo),
+    {'EXIT', {badarg,_}} =
+        (catch gen_server:send_request({via, dummy_via, non_existing}, started_p)),
+
+    %% Remote nodes
+    Via = dummy_via:reset(),
+    Remote = proplists:get_value(node,Config),
+    {ok, RPid} = rpc:call(Remote, gen_server, start, [{global, remote}, ?MODULE, [], []]),
+    dummy_via:register_name(remote, RPid),
+    {reply, ok} = Async(RPid, started_p),
+    {reply, ok} = Async({global, remote}, started_p),
+    {reply, ok} = Async({via, dummy_via, remote}, started_p),
+    {error, {shutdown, _}} = Async({global, remote}, stop_shutdown),
+    {error, {noproc, _}} = Async({global, remote}, started_p),
+    {error, {noproc, _}} = Async({via, dummy_via, remote}, started_p),
+    {error, {noproc, _}} = Async({via, dummy_via, non_existing}, started_p),
+
+    {ok, _} = rpc:call(Remote, gen_server, start, [{local, remote}, ?MODULE, [], []]),
+    {reply, ok} = Async({remote, Remote}, started_p),
+    {error, {shutdown, _}} = Async({remote, Remote}, stop_shutdown),
+    {error, {noproc, _}} = Async({remote, Remote}, started_p),
+
+    %% Cleanup
+    catch exit(Via, foo2),
+    receive {'EXIT', Via, foo2} -> ok end,
+    process_flag(trap_exit, OldFl),
+    ok.
+
+
+%% --------------------------------------
+%% Test handle_continue.
+%% --------------------------------------
+
+continue(Config) when is_list(Config) ->
+    {ok, Pid} = gen_server:start_link(gen_server_SUITE, {continue, self()}, []),
+    [{Pid, continue}, {Pid, after_continue}] = read_replies(Pid),
+
+    gen_server:call(Pid, {continue_reply, self()}),
+    [{Pid, continue}, {Pid, after_continue}] = read_replies(Pid),
+
+    gen_server:call(Pid, {continue_noreply, self()}),
+    [{Pid, continue}, {Pid, after_continue}] = read_replies(Pid),
+
+    gen_server:cast(Pid, {continue_noreply, self()}),
+    [{Pid, continue}, {Pid, after_continue}] = read_replies(Pid),
+
+    Pid ! {continue_noreply, self()},
+    [{Pid, continue}, {Pid, after_continue}] = read_replies(Pid),
+
+    Pid ! {continue_continue, self()},
+    [{Pid, before_continue}, {Pid, continue}, {Pid, after_continue}] = read_replies(Pid),
+
+    Ref = monitor(process, Pid),
+    Pid ! continue_stop,
+    verify_down_reason(Ref, Pid, normal).
+
+read_replies(Pid) ->
+    receive
+	{Pid, ack} -> read_replies()
+    after
+	1000 -> ct:fail({continue, ack})
+    end.
+
+read_replies() ->
+    receive
+	Msg -> [Msg | read_replies()]
+    after
+	0 -> []
+    end.
+
+%% --------------------------------------
 %% Test call to nonexisting processes on remote nodes
 %% --------------------------------------
 
 start_node(Name) ->
-    ?line Pa = filename:dirname(code:which(?MODULE)),
-    ?line N = test_server:start_node(Name, slave, [{args, " -pa " ++ Pa}]),
+    Pa = filename:dirname(code:which(?MODULE)),
+    N = test_server:start_node(Name, slave, [{args, " -pa " ++ Pa}]),
     %% After starting a slave, it takes a little while until global knows
     %% about it, even if nodes() includes it, so we make sure that global
     %% knows about it before registering something on all nodes.
-    global:sync(),
+    ok = global:sync(),
     N.
 
-call_remote1(suite) -> [];
 call_remote1(Config) when is_list(Config) ->
     N = hubba,
-    ?line Node = proplists:get_value(node,Config),
-    ?line {ok, Pid} = rpc:call(Node, gen_server, start,
-			       [{global, N}, ?MODULE, [], []]),    
-    ?line ok = (catch gen_server:call({global, N}, started_p, infinity)),
-    ?line exit(Pid, boom),
-    ?line {'EXIT', {Reason, _}} = (catch gen_server:call({global, N},
-							 started_p, infinity)),
-    ?line true = (Reason == noproc) orelse (Reason == boom),
+    Node = proplists:get_value(node,Config),
+    {ok, Pid} = rpc:call(Node, gen_server, start,
+			 [{global, N}, ?MODULE, [], []]),
+    ok = (catch gen_server:call({global, N}, started_p, infinity)),
+    exit(Pid, boom),
+    {'EXIT', {Reason, _}} = (catch gen_server:call({global, N},
+						   started_p, infinity)),
+    true = (Reason == noproc) orelse (Reason == boom),
     ok.
 
-call_remote2(suite) -> [];
 call_remote2(Config) when is_list(Config) ->
-    ?line N = hubba,
-    ?line Node = proplists:get_value(node,Config),
+    N = hubba,
+    Node = proplists:get_value(node,Config),
 
-    ?line {ok, Pid} = rpc:call(Node, gen_server, start,
-			       [{global, N}, ?MODULE, [], []]),
-    ?line ok = (catch gen_server:call(Pid, started_p, infinity)),
-    ?line exit(Pid, boom),
-    ?line {'EXIT', {Reason, _}} = (catch gen_server:call(Pid,
-							 started_p, infinity)),
-    ?line true = (Reason == noproc) orelse (Reason == boom),
+    {ok, Pid} = rpc:call(Node, gen_server, start,
+			 [{global, N}, ?MODULE, [], []]),
+    ok = (catch gen_server:call(Pid, started_p, infinity)),
+    exit(Pid, boom),
+    {'EXIT', {Reason, _}} = (catch gen_server:call(Pid,
+						   started_p, infinity)),
+    true = (Reason == noproc) orelse (Reason == boom),
     ok.
 
-call_remote3(suite) -> [];
 call_remote3(Config) when is_list(Config) ->
-    ?line Node = proplists:get_value(node,Config),
+    Node = proplists:get_value(node,Config),
 
-    ?line {ok, Pid} = rpc:call(Node, gen_server, start,
-			       [{local, piller}, ?MODULE, [], []]),
-    ?line ok = (catch gen_server:call({piller, Node}, started_p, infinity)),
-    ?line exit(Pid, boom),
-    ?line {'EXIT', {Reason, _}} = (catch gen_server:call({piller, Node},
-							 started_p, infinity)),
-    ?line true = (Reason == noproc) orelse (Reason == boom),
+    {ok, Pid} = rpc:call(Node, gen_server, start,
+			 [{local, piller}, ?MODULE, [], []]),
+    ok = (catch gen_server:call({piller, Node}, started_p, infinity)),
+    exit(Pid, boom),
+    {'EXIT', {Reason, _}} = (catch gen_server:call({piller, Node},
+						   started_p, infinity)),
+    true = (Reason == noproc) orelse (Reason == boom),
     ok.
 
 %% --------------------------------------
 %% Test call to nonexisting node
 %% --------------------------------------
 
-call_remote_n1(suite) -> [];
 call_remote_n1(Config) when is_list(Config) ->
-    ?line N = hubba,
-    ?line Node = proplists:get_value(node,Config),    
-    ?line {ok, _Pid} = rpc:call(Node, gen_server, start,
-			       [{global, N}, ?MODULE, [], []]),
-    ?line _ = test_server:stop_node(Node),
-    ?line {'EXIT', {noproc, _}} =
+    N = hubba,
+    Node = proplists:get_value(node,Config),
+    {ok, _Pid} = rpc:call(Node, gen_server, start,
+			  [{global, N}, ?MODULE, [], []]),
+    _ = test_server:stop_node(Node),
+    {'EXIT', {noproc, _}} =
 	(catch gen_server:call({global, N}, started_p, infinity)),
 
     ok.
 
-call_remote_n2(suite) -> [];
 call_remote_n2(Config) when is_list(Config) ->
-    ?line N = hubba,
-    ?line Node = proplists:get_value(node,Config),
+    N = hubba,
+    Node = proplists:get_value(node,Config),
 
-    ?line {ok, Pid} = rpc:call(Node, gen_server, start,
-			       [{global, N}, ?MODULE, [], []]),
-    ?line _ = test_server:stop_node(Node),
-    ?line {'EXIT', {{nodedown, Node}, _}} = (catch gen_server:call(Pid,
-							 started_p, infinity)),
+    {ok, Pid} = rpc:call(Node, gen_server, start,
+			 [{global, N}, ?MODULE, [], []]),
+    _ = test_server:stop_node(Node),
+    {'EXIT', {{nodedown, Node}, _}} = (catch gen_server:call(Pid,
+							     started_p, infinity)),
 
     ok.
 
-call_remote_n3(suite) -> [];
 call_remote_n3(Config) when is_list(Config) ->
-    ?line Node = proplists:get_value(node,Config),
+    Node = proplists:get_value(node,Config),
 
-    ?line {ok, _Pid} = rpc:call(Node, gen_server, start,
-			       [{local, piller}, ?MODULE, [], []]),
-    ?line _ = test_server:stop_node(Node),
-    ?line {'EXIT', {{nodedown, Node}, _}} = (catch gen_server:call({piller, Node},
-							 started_p, infinity)),
+    {ok, _Pid} = rpc:call(Node, gen_server, start,
+			  [{local, piller}, ?MODULE, [], []]),
+    _ = test_server:stop_node(Node),
+    {'EXIT', {{nodedown, Node}, _}} = (catch gen_server:call({piller, Node},
+							     started_p, infinity)),
 
     ok.
 
@@ -543,63 +725,61 @@ call_remote_n3(Config) when is_list(Config) ->
 %% handle_cast.
 %% --------------------------------------
 
-cast(suite) -> [];
 cast(Config) when is_list(Config) ->
-    ?line {ok, Pid} =
+    {ok, Pid} =
 	gen_server:start({local, my_test_name},
 			 gen_server_SUITE, [], []),
 
-    ?line ok = gen_server:call(my_test_name, started_p),
+    ok = gen_server:call(my_test_name, started_p),
 
-    ?line ok = gen_server:cast(my_test_name, {self(),handle_cast}),
-    ?line receive
-	      {Pid, handled_cast} ->
-		  ok
-	  after 1000 ->
-		  test_server:fail(handle_cast)
-	  end,
-    
-    ?line ok = gen_server:cast(my_test_name, {self(),delayed_cast,1}),
-    ?line receive
-	      {Pid, delayed} ->
-		  ok
-	  after 1000 ->
-		  test_server:fail(delayed_cast)
-	  end,
-    
-    ?line ok = gen_server:cast(my_test_name, {self(),stop}),
-    ?line receive
-	      {Pid, stopped} ->
-		  ok
-	  after 1000 ->
-		  test_server:fail(stop)
-	  end,
+    ok = gen_server:cast(my_test_name, {self(),handle_cast}),
+    receive
+	{Pid, handled_cast} ->
+	    ok
+    after 1000 ->
+	    ct:fail(handle_cast)
+    end,
+
+    ok = gen_server:cast(my_test_name, {self(),delayed_cast,1}),
+    receive
+	{Pid, delayed} ->
+	    ok
+    after 1000 ->
+	    ct:fail(delayed_cast)
+    end,
+
+    ok = gen_server:cast(my_test_name, {self(),stop}),
+    receive
+	{Pid, stopped} ->
+	    ok
+    after 1000 ->
+	    ct:fail(stop)
+    end,
     ok.
 
-cast_fast(suite) -> [];
-cast_fast(doc) -> ["Test that cast really return immediately"];
+%% Test that cast really return immediately.
 cast_fast(Config) when is_list(Config) ->
-    ?line {ok,Node} = start_node(hubba),
-    ?line {_,"@"++Host} = lists:splitwith(fun ($@) -> false; (_) -> true end,
-					   atom_to_list(Node)),
-    ?line FalseNode = list_to_atom("hopp@"++Host),
-    ?line true = rpc:cast(Node, ?MODULE, cast_fast_messup, []),
-%    ?line io:format("Nodes ~p~n", [rpc:call(N, ?MODULE, cast_fast_messup, [])]),
-    ?line test_server:sleep(1000),
-    ?line [Node] = nodes(),
-    ?line {Time,ok} = test_server:timecall(gen_server, cast, 
-					   [{hopp,FalseNode},hopp]),
-    ?line true = test_server:stop_node(Node),
-    ?line if Time > 1.0 -> % Default listen timeout is about 7.0 s
-		  test_server:fail(hanging_cast);
-	     true -> 
-		  ok
-	  end.
+    {ok,Node} = start_node(hubba),
+    {_,"@"++Host} = lists:splitwith(fun ($@) -> false; (_) -> true end,
+				    atom_to_list(Node)),
+    FalseNode = list_to_atom("hopp@"++Host),
+    true = rpc:cast(Node, ?MODULE, cast_fast_messup, []),
+    ct:sleep(1000),
+    [Node] = nodes(),
+    {Time,ok} = timer:tc(fun() ->
+				 gen_server:cast({hopp,FalseNode}, hopp)
+			 end),
+    true = test_server:stop_node(Node),
+    if Time > 1000000 ->       % Default listen timeout is about 7.0 s
+	    ct:fail(hanging_cast);
+       true ->
+	    ok
+    end.
 
 cast_fast_messup() ->
     %% Register a false node: hopp@hostname
     unregister(erl_epmd),
-    erl_epmd:start_link(),
+    {ok, _} = erl_epmd:start_link(),
     {ok,S} = gen_tcp:listen(0, []),
     {ok,P} = inet:port(S),
     {ok,_Creation} = erl_epmd:register_node(hopp, P),
@@ -609,37 +789,36 @@ cast_fast_messup() ->
 %% Test handle_info.
 %% --------------------------------------
 
-info(suite) -> [];
 info(Config) when is_list(Config) ->
-    ?line {ok, Pid} =
+    {ok, Pid} =
 	gen_server:start({local, my_test_name},
 			 gen_server_SUITE, [], []),
 
-    ?line ok = gen_server:call(my_test_name, started_p),
+    ok = gen_server:call(my_test_name, started_p),
 
-    ?line Pid ! {self(),handle_info},
-    ?line receive
-	      {Pid, handled_info} ->
-		  ok
-	  after 1000 ->
-		  test_server:fail(handle_info)
-	  end,
-    
-    ?line Pid ! {self(),delayed_info,1},
-    ?line receive
-	      {Pid, delayed_info} ->
-		  ok
-	  after 1000 ->
-		  test_server:fail(delayed_info)
-	  end,
-    
-    ?line Pid ! {self(),stop},
-    ?line receive
-	      {Pid, stopped_info} ->
-		  ok
-	  after 1000 ->
-		  test_server:fail(stop_info)
-	  end,
+    Pid ! {self(),handle_info},
+    receive
+	{Pid, handled_info} ->
+	    ok
+    after 1000 ->
+	    ct:fail(handle_info)
+    end,
+
+    Pid ! {self(),delayed_info,1},
+    receive
+	{Pid, delayed_info} ->
+	    ok
+    after 1000 ->
+	    ct:fail(delayed_info)
+    end,
+
+    Pid ! {self(),stop},
+    receive
+	{Pid, stopped_info} ->
+	    ok
+    after 1000 ->
+	    ct:fail(stop_info)
+    end,
     ok.
 
 hibernate(Config) when is_list(Config) ->
@@ -653,7 +832,7 @@ hibernate(Config) when is_list(Config) ->
 	{'EXIT', Pid0, stopped} ->
  	    ok
     after 5000 ->
-	    test_server:fail(gen_server_did_not_die)
+	    ct:fail(gen_server_did_not_die)
     end,
 
     {ok, Pid} =
@@ -720,7 +899,59 @@ hibernate(Config) when is_list(Config) ->
 	{'EXIT', Pid, stopped} ->
  	    ok
     after 5000 ->
-	    test_server:fail(gen_server_did_not_die)
+	    ct:fail(gen_server_did_not_die)
+    end,
+    process_flag(trap_exit, OldFl),
+    ok.
+
+auto_hibernate(Config) when is_list(Config) ->
+    OldFl = process_flag(trap_exit, true),
+    HibernateAfterTimeout = 100,
+    State = {auto_hibernate_state},
+    {ok, Pid} =
+        gen_server:start_link({local, my_test_name_auto_hibernate},
+            gen_server_SUITE, {state,State}, [{hibernate_after, HibernateAfterTimeout}]),
+    %% After init test
+    is_not_in_erlang_hibernate(Pid),
+    timer:sleep(HibernateAfterTimeout),
+    is_in_erlang_hibernate(Pid),
+    %% Get state test
+    State = sys:get_state(my_test_name_auto_hibernate),
+    is_in_erlang_hibernate(Pid),
+    %% Call test
+    ok = gen_server:call(my_test_name_auto_hibernate, started_p),
+    is_not_in_erlang_hibernate(Pid),
+    timer:sleep(HibernateAfterTimeout),
+    is_in_erlang_hibernate(Pid),
+    %% Cast test
+    ok = gen_server:cast(my_test_name_auto_hibernate, {self(),handle_cast}),
+    receive
+        {Pid, handled_cast} ->
+            ok
+    after 1000 ->
+        ct:fail(cast)
+    end,
+    is_not_in_erlang_hibernate(Pid),
+    timer:sleep(HibernateAfterTimeout),
+    is_in_erlang_hibernate(Pid),
+    %% Info test
+    Pid ! {self(),handle_info},
+    receive
+        {Pid, handled_info} ->
+            ok
+    after 1000 ->
+        ct:fail(info)
+    end,
+    is_not_in_erlang_hibernate(Pid),
+    timer:sleep(HibernateAfterTimeout),
+    is_in_erlang_hibernate(Pid),
+
+    ok = gen_server:call(my_test_name_auto_hibernate, stop),
+    receive
+        {'EXIT', Pid, stopped} ->
+            ok
+    after 5000 ->
+        ct:fail(gen_server_did_not_die)
     end,
     process_flag(trap_exit, OldFl),
     ok.
@@ -731,7 +962,7 @@ is_in_erlang_hibernate(Pid) ->
 
 is_in_erlang_hibernate_1(0, Pid) ->
     io:format("~p\n", [erlang:process_info(Pid, current_function)]),
-    ?t:fail(not_in_erlang_hibernate_3);
+    ct:fail(not_in_erlang_hibernate_3);
 is_in_erlang_hibernate_1(N, Pid) ->
     {current_function,MFA} = erlang:process_info(Pid, current_function),
     case MFA of
@@ -742,44 +973,60 @@ is_in_erlang_hibernate_1(N, Pid) ->
 	    is_in_erlang_hibernate_1(N-1, Pid)
     end.
 
+is_not_in_erlang_hibernate(Pid) ->
+    receive after 1 -> ok end,
+    is_not_in_erlang_hibernate_1(200, Pid).
+
+is_not_in_erlang_hibernate_1(0, Pid) ->
+    io:format("~p\n", [erlang:process_info(Pid, current_function)]),
+    ct:fail(not_in_erlang_hibernate_3);
+is_not_in_erlang_hibernate_1(N, Pid) ->
+    {current_function,MFA} = erlang:process_info(Pid, current_function),
+    case MFA of
+        {erlang,hibernate,3} ->
+            receive after 10 -> ok end,
+            is_not_in_erlang_hibernate_1(N-1, Pid);
+        _ ->
+            ok
+    end.
+
 %% --------------------------------------
 %% Test gen_server:abcast and handle_cast.
 %% Test all different return values from
 %% handle_cast.
 %% --------------------------------------
 
-abcast(suite) -> [];
 abcast(Config) when is_list(Config) ->
-    ?line {ok, Pid} =
+    {ok, Pid} =
 	gen_server:start({local, my_test_name},
 			 gen_server_SUITE, [], []),
 
-    ?line ok = gen_server:call(my_test_name, started_p),
+    ok = gen_server:call(my_test_name, started_p),
 
-    ?line abcast = gen_server:abcast(my_test_name, {self(),handle_cast}),
-    ?line receive
-	      {Pid, handled_cast} ->
-		  ok
-	  after 1000 ->
-		  test_server:fail(abcast)
-	  end,
-    
-    ?line abcast = gen_server:abcast([node()], my_test_name,
-				     {self(),delayed_cast,1}),
-    ?line receive
-	      {Pid, delayed} ->
-		  ok
-	  after 1000 ->
-		  test_server:fail(delayed_abcast)
-	  end,
-    
-    ?line abcast = gen_server:abcast(my_test_name, {self(),stop}),
-    ?line receive
-	      {Pid, stopped} ->
-		  ok
-	  after 1000 ->
-		  test_server:fail(abcast_stop)
-	  end,
+    abcast = gen_server:abcast(my_test_name, {self(),handle_cast}),
+    receive
+	{Pid, handled_cast} ->
+	    ok
+    after 1000 ->
+	    ct:fail(abcast)
+    end,
+
+    abcast = gen_server:abcast([node()], my_test_name,
+			       {self(),delayed_cast,1}),
+    receive
+	{Pid, delayed} ->
+	    ok
+    after 1000 ->
+	    ct:fail(delayed_abcast)
+    end,
+
+    abcast = gen_server:abcast(my_test_name, {self(),stop}),
+    receive
+	{Pid, stopped} ->
+	    ok
+    after 1000 ->
+	    ct:fail(abcast_stop)
+    end,
     ok.
 
 %% --------------------------------------
@@ -788,58 +1035,56 @@ abcast(Config) when is_list(Config) ->
 %% handle_call.
 %% --------------------------------------
 
-multicall(suite) -> [];
 multicall(Config) when is_list(Config) ->
     OldFl = process_flag(trap_exit, true),
 
-    ?line {ok, Pid} =
+    {ok, Pid} =
 	gen_server:start_link({local, my_test_name},
 			      gen_server_SUITE, [], []),
 
-    ?line ok = gen_server:call(my_test_name, started_p),
+    ok = gen_server:call(my_test_name, started_p),
     Nodes = nodes(),
     Node = node(),
-    ?line {[{Node,delayed}],Nodes} =
-	   gen_server:multi_call(my_test_name, {delayed_answer,1}),
+    {[{Node,delayed}],Nodes} =
+	gen_server:multi_call(my_test_name, {delayed_answer,1}),
 
     %% two requests within a specified time.
-    ?line {[{Node,ok}],[]} =
-	   gen_server:multi_call([Node], my_test_name, {call_within, 1000}),
-    test_server:sleep(500),
-    ?line {[{Node,ok}],[]} =
-	   gen_server:multi_call([Node], my_test_name, next_call),
-    ?line  {[{Node,ok}],[]} =
-	    gen_server:multi_call([Node], my_test_name, {call_within, 1000}),
-    test_server:sleep(1500),
-    ?line {[{Node,false}],[]} =
-	   gen_server:multi_call([Node],my_test_name, next_call),
+    {[{Node,ok}],[]} =
+	gen_server:multi_call([Node], my_test_name, {call_within, 1000}),
+    timer:sleep(500),
+    {[{Node,ok}],[]} =
+	gen_server:multi_call([Node], my_test_name, next_call),
+    {[{Node,ok}],[]} =
+	gen_server:multi_call([Node], my_test_name, {call_within, 1000}),
+    timer:sleep(1500),
+    {[{Node,false}],[]} =
+	gen_server:multi_call([Node],my_test_name, next_call),
 
     %% Stop the server.
-    ?line {[{Node,ok}],[]} =
-	   gen_server:multi_call([Node],my_test_name, stop),
+    {[{Node,ok}],[]} =
+	gen_server:multi_call([Node],my_test_name, stop),
     receive
 	{'EXIT', Pid, stopped} -> ok
     after 1000 ->
-	    test_server:fail(multicall_stop)
+	    ct:fail(multicall_stop)
     end,
-    
+
     process_flag(trap_exit, OldFl),
 
     ok.
 
 %% OTP-3587
-multicall_down(suite) -> [];
 multicall_down(Config) when is_list(Config) ->
     %% We need a named host which is inaccessible.
-    ?line Name = node@test01,
+    Name = node@test01,
 
     %% We use 'global' as a gen_server to call.
-    ?line {Good, Bad} = gen_server:multi_call([Name, node()],
-					      global_name_server,
-					      info,
-					      3000),
+    {Good, Bad} = gen_server:multi_call([Name, node()],
+					global_name_server,
+					info,
+					3000),
     io:format("good = ~p, bad = ~p~n", [Good, Bad]),
-    ?line [Name] = Bad,
+    [Name] = Bad,
     ok.
 
 busy_wait_for_process(Pid,N) ->
@@ -854,82 +1099,79 @@ busy_wait_for_process(Pid,N) ->
 	    ok
     end.
 %%--------------------------------------------------------------
-spec_init(doc) ->
-    ["Test gen_server:enter_loop/[3,4,5]. Used when you want to write " 
-     "your own special init-phase."];
-spec_init(suite) ->
-    [];
+%% Test gen_server:enter_loop/[3,4,5]. Used when you want to write
+%% your own special init-phase.
 spec_init(Config) when is_list(Config) ->
-    
+
     OldFlag = process_flag(trap_exit, true),
 
-    ?line {ok, Pid0} = start_link(spec_init_local, [{ok, my_server}, []]),
-    ?line ok = gen_server:call(Pid0, started_p),
-    ?line ok = gen_server:call(Pid0, stop),
+    {ok, Pid0} = start_link(spec_init_local, [{ok, my_server}, []]),
+    ok = gen_server:call(Pid0, started_p),
+    ok = gen_server:call(Pid0, stop),
     receive 
 	{'EXIT', Pid0, stopped} ->
  	    ok
     after 5000 ->
-	    test_server:fail(gen_server_did_not_die)
+	    ct:fail(gen_server_did_not_die)
     end,
-    
-    ?line {ok, Pid01} = start_link(spec_init_local, [{not_ok, my_server}, []]),
+
+    {ok, Pid01} = start_link(spec_init_local, [{not_ok, my_server}, []]),
     receive 
  	{'EXIT', Pid01, process_not_registered} ->
  	    ok
     after 5000 ->
-	    test_server:fail(gen_server_did_not_die)
+	    ct:fail(gen_server_did_not_die)
     end,
-    
-    ?line {ok, Pid1} = start_link(spec_init_global, [{ok, my_server}, []]),
-    ?line ok = gen_server:call(Pid1, started_p),
-    ?line ok = gen_server:call(Pid1, stop),
+
+    {ok, Pid1} = start_link(spec_init_global, [{ok, my_server}, []]),
+    ok = gen_server:call(Pid1, started_p),
+    ok = gen_server:call(Pid1, stop),
     receive 
 	{'EXIT', Pid1, stopped} ->
  	    ok
     after 5000 ->
-	    test_server:fail(gen_server_did_not_die)
+	    ct:fail(gen_server_did_not_die)
     end,
-    
-    ?line {ok, Pid11} = 
+
+    {ok, Pid11} =
 	start_link(spec_init_global, [{not_ok, my_server}, []]),
 
     receive 
 	{'EXIT', Pid11, process_not_registered_globally} ->
  	    ok
     after 5000 ->
-	    test_server:fail(gen_server_did_not_die)
+	    ct:fail(gen_server_did_not_die)
     end,
-    
-    ?line {ok, Pid2} = start_link(spec_init_anonymous, [[]]),
-    ?line ok = gen_server:call(Pid2, started_p),
-    ?line ok = gen_server:call(Pid2, stop),
+
+    {ok, Pid2} = start_link(spec_init_anonymous, [[]]),
+    ok = gen_server:call(Pid2, started_p),
+    ok = gen_server:call(Pid2, stop),
     receive 
 	{'EXIT', Pid2, stopped} ->
  	    ok
     after 5000 ->
-	    test_server:fail(gen_server_did_not_die)
+	    ct:fail(gen_server_did_not_die)
     end,
-    
-    ?line {ok, Pid3} = start_link(spec_init_anonymous_default_timeout, [[]]),
-    ?line ok = gen_server:call(Pid3, started_p),
-    ?line ok = gen_server:call(Pid3, stop),
+
+    {ok, Pid3} = start_link(spec_init_anonymous_default_timeout, [[]]),
+    ok = gen_server:call(Pid3, started_p),
+    ok = gen_server:call(Pid3, stop),
     receive 
 	{'EXIT', Pid3, stopped} ->
  	    ok
     after 5000 ->
-	    test_server:fail(gen_server_did_not_die)
+	    ct:fail(gen_server_did_not_die)
     end,
-    
-    ?line {ok, Pid4} = 
+
+    {ok, Pid4} =
 	start_link(spec_init_default_timeout, [{ok, my_server}, []]),
-    ?line ok = gen_server:call(Pid4, started_p),
-    ?line ok = gen_server:call(Pid4, stop),
+    ok = gen_server:call(Pid4, started_p),
+    ok = gen_server:call(Pid4, stop),
     receive 
 	{'EXIT', Pid4, stopped} ->
  	    ok
     after 5000 ->
-	    test_server:fail(gen_server_did_not_die)
+	    ct:fail(gen_server_did_not_die)
     end,
 
     %% Before the OTP-10130 fix this failed because a timeout message
@@ -939,83 +1181,79 @@ spec_init(Config) when is_list(Config) ->
 	start_link(spec_init_global_default_timeout, [{ok, hurra}, []]),
     timer:sleep(1000),
     ok = gen_server:call(_PidHurra, started_p),
-    
-    ?line Pid5 = 
+
+    Pid5 =
 	erlang:spawn_link(?MODULE, spec_init_not_proc_lib, [[]]),
     receive 
 	{'EXIT', Pid5, process_was_not_started_by_proc_lib} ->
  	    ok
     after 5000 ->
-	    test_server:fail(gen_server_did_not_die)
+	    ct:fail(gen_server_did_not_die)
     end,
     process_flag(trap_exit, OldFlag),
     ok.
 
 %%--------------------------------------------------------------
-spec_init_local_registered_parent(doc) ->
-    ["Test that terminate is run when the parent is a locally registered "
-     "process OTP-4820"];
-spec_init_local_registered_parent(suite) -> [];
+%% OTP-4820. Test that terminate is run when the parent is a locally
+%% registered process.
 spec_init_local_registered_parent(Config) when is_list(Config) ->
 
     register(foobar, self()),
     process_flag(trap_exit, true),
-    
-    ?line {ok, Pid} = start_link(spec_init_local, [{ok, my_server}, []]),
-    
-    ?line ok = gen_server:cast(my_server, {self(),stop}),
-    ?line receive
-	      {Pid, stopped} ->
-		  ok
-	  after 1000 ->
-		  test_server:fail(stop)
-	  end,
+
+    {ok, Pid} = start_link(spec_init_local, [{ok, my_server}, []]),
+
+    ok = gen_server:cast(my_server, {self(),stop}),
+    receive
+	{Pid, stopped} ->
+	    ok
+    after 1000 ->
+	    ct:fail(stop)
+    end,
     unregister(foobar),
     ok.
+
 %%--------------------------------------------------------------
-spec_init_global_registered_parent(doc) ->
-    ["Test that terminate is run when the parent is a global registered "
-     "process OTP-4820"];
-spec_init_global_registered_parent(suite) -> [];
+%% OTP-4820. Test that terminate is run when the parent is a global registered
+%% process.
 spec_init_global_registered_parent(Config) when is_list(Config) ->
 
     global:register_name(foobar, self()),
     process_flag(trap_exit, true),
-    
-    ?line {ok, Pid} = start_link(spec_init_global, [{ok, my_server}, []]),
-    
-    ?line ok = gen_server:call(Pid, started_p),
-    ?line ok = gen_server:cast(Pid, {self(),stop}),  
 
-    ?line receive
-	      {Pid, stopped} ->
-		  ok
-	  after 1000 ->
-		  test_server:fail(stop)
-	  end,
+    {ok, Pid} = start_link(spec_init_global, [{ok, my_server}, []]),
+
+    ok = gen_server:call(Pid, started_p),
+    ok = gen_server:cast(Pid, {self(),stop}),
+
+    receive
+	{Pid, stopped} ->
+	    ok
+    after 1000 ->
+	    ct:fail(stop)
+    end,
     global:unregister_name(foobar),
     ok.
+
 %%--------------------------------------------------------------
-otp_5854(suite) ->
-    [];
-otp_5854(doc) ->
-    ["Test check for registered name in enter_loop/3,4,5"];
+
+%% Test check for registered name in enter_loop/3,4,5.
 otp_5854(Config) when is_list(Config) ->
     OldFlag = process_flag(trap_exit, true),
 
-    ?line dummy_via:reset(),
+    dummy_via:reset(),
 
     %% Make sure gen_server:enter_loop does not accept {local,Name}
     %% when it's another process than the calling one which is
     %% registered under that name
     register(armitage, self()),
-    ?line {ok, Pid1} =
+    {ok, Pid1} =
 	start_link(spec_init_local, [{not_ok, armitage}, []]),
     receive
 	{'EXIT', Pid1, process_not_registered} ->
 	    ok
     after 1000 ->
-	    ?line test_server:fail(gen_server_started)
+	    ct:fail(gen_server_started)
     end,
     unregister(armitage),
 
@@ -1023,25 +1261,25 @@ otp_5854(Config) when is_list(Config) ->
     %% when it's another process than the calling one which is
     %% registered under that name
     global:register_name(armitage, self()),
-    ?line {ok, Pid2} =
+    {ok, Pid2} =
 	start_link(spec_init_global, [{not_ok, armitage}, []]),
     receive
 	{'EXIT', Pid2, process_not_registered_globally} ->
 	    ok
     after 1000 ->
-	    ?line test_server:fail(gen_server_started)
+	    ct:fail(gen_server_started)
     end,
     global:unregister_name(armitage),
 
     %% (same for {via, Mod, Name})
     dummy_via:register_name(armitage, self()),
-    ?line {ok, Pid3} =
+    {ok, Pid3} =
 	start_link(spec_init_via, [{not_ok, armitage}, []]),
     receive
 	{'EXIT', Pid3, {process_not_registered_via, dummy_via}} ->
 	    ok
     after 1000 ->
-	    ?line test_server:fail(gen_server_started)
+	    ct:fail(gen_server_started)
     end,
     dummy_via:unregister_name(armitage),
 
@@ -1053,105 +1291,102 @@ otp_5854(Config) when is_list(Config) ->
 %% returns.
 
 otp_7669(Config) when is_list(Config) ->
-    ?line ?t:do_times(100, fun do_otp_7669_local_ignore/0),
-    ?line ?t:do_times(100, fun do_otp_7669_global_ignore/0),
-    ?line ?t:do_times(10, fun do_otp_7669_stop/0),
+    do_times(100, fun do_otp_7669_local_ignore/0),
+    do_times(100, fun do_otp_7669_global_ignore/0),
+    do_times(10, fun do_otp_7669_stop/0),
     ok.    
+
+do_times(0, _) ->
+    ok;
+do_times(N, Fun) ->
+    Fun(),
+    do_times(N-1, Fun).
 
 do_otp_7669_local_ignore() ->
     %% The name should never be registered after the return
     %% from gen_server:start/3.
-    ?line ignore = gen_server:start({local,?MODULE}, ?MODULE, ignore, []),
-    ?line undefined = whereis(?MODULE),
-    ?line ignore = gen_server:start({local,?MODULE}, ?MODULE, ignore, []),
-    ?line undefined = whereis(?MODULE),
-    ?line ignore = gen_server:start_link({local,?MODULE}, ?MODULE, ignore, []),
-    ?line undefined = whereis(?MODULE).
+    ignore = gen_server:start({local,?MODULE}, ?MODULE, ignore, []),
+    undefined = whereis(?MODULE),
+    ignore = gen_server:start({local,?MODULE}, ?MODULE, ignore, []),
+    undefined = whereis(?MODULE),
+    ignore = gen_server:start_link({local,?MODULE}, ?MODULE, ignore, []),
+    undefined = whereis(?MODULE).
 
 do_otp_7669_global_ignore() ->
-    ?line ignore = gen_server:start({global,?MODULE}, ?MODULE, ignore, []),
-    ?line undefined = global:whereis_name(?MODULE),
-    ?line ignore = gen_server:start_link({global,?MODULE}, ?MODULE, ignore, []),
-    ?line undefined = global:whereis_name(?MODULE).
+    ignore = gen_server:start({global,?MODULE}, ?MODULE, ignore, []),
+    undefined = global:whereis_name(?MODULE),
+    ignore = gen_server:start_link({global,?MODULE}, ?MODULE, ignore, []),
+    undefined = global:whereis_name(?MODULE).
 
 do_otp_7669_stop() ->
     %% The name should never be registered after the return
     %% from gen_server:start/3.
-    ?line {error,stopped} = gen_server:start({local,?MODULE},
-					     ?MODULE, stop, []),
-    ?line undefined = whereis(?MODULE),
+    {error,stopped} = gen_server:start({local,?MODULE},
+				       ?MODULE, stop, []),
+    undefined = whereis(?MODULE),
 
-    ?line {error,stopped} = gen_server:start({global,?MODULE},
-					     ?MODULE, stop, []),
-    ?line undefined = global:whereis_name(?MODULE).
+    {error,stopped} = gen_server:start({global,?MODULE},
+				       ?MODULE, stop, []),
+    undefined = global:whereis_name(?MODULE).
 
-%% Verify that sys:get_status correctly calls our format_status/2 fun
-%%
-call_format_status(suite) ->
-    [];
-call_format_status(doc) ->
-    ["Test that sys:get_status/1,2 calls format_status/2"];
+%% Verify that sys:get_status correctly calls our format_status/2 fun.
 call_format_status(Config) when is_list(Config) ->
-    ?line {ok, Pid} = gen_server:start_link({local, call_format_status},
-					    ?MODULE, [], []),
-    ?line Status1 = sys:get_status(call_format_status),
-    ?line {status, Pid, _Mod, [_PDict, running, _Parent, _, Data1]} = Status1,
-    ?line [format_status_called | _] = lists:reverse(Data1),
-    ?line Status2 = sys:get_status(call_format_status, 5000),
-    ?line {status, Pid, _Mod, [_PDict, running, _Parent, _, Data2]} = Status2,
-    ?line [format_status_called | _] = lists:reverse(Data2),
+    {ok, Pid} = gen_server:start_link({local, call_format_status},
+				      ?MODULE, [], []),
+    Status1 = sys:get_status(call_format_status),
+    {status, Pid, _Mod, [_PDict, running, _Parent, _, Data1]} = Status1,
+    [format_status_called | _] = lists:reverse(Data1),
+    Status2 = sys:get_status(call_format_status, 5000),
+    {status, Pid, _Mod, [_PDict, running, _Parent, _, Data2]} = Status2,
+    [format_status_called | _] = lists:reverse(Data2),
 
     %% check that format_status can handle a name being a pid (atom is
     %% already checked by the previous test)
-    ?line {ok, Pid3} = gen_server:start_link(gen_server_SUITE, [], []),
-    ?line Status3 = sys:get_status(Pid3),
-    ?line {status, Pid3, _Mod, [_PDict3, running, _Parent, _, Data3]} = Status3,
-    ?line [format_status_called | _] = lists:reverse(Data3),
+    {ok, Pid3} = gen_server:start_link(gen_server_SUITE, [], []),
+    Status3 = sys:get_status(Pid3),
+    {status, Pid3, _Mod, [_PDict3, running, _Parent, _, Data3]} = Status3,
+    [format_status_called | _] = lists:reverse(Data3),
 
     %% check that format_status can handle a name being a term other than a
     %% pid or atom
     GlobalName1 = {global, "CallFormatStatus"},
-    ?line {ok, Pid4} = gen_server:start_link(GlobalName1,
-					     gen_server_SUITE, [], []),
-    ?line Status4 = sys:get_status(Pid4),
-    ?line {status, Pid4, _Mod, [_PDict4, running, _Parent, _, Data4]} = Status4,
-    ?line [format_status_called | _] = lists:reverse(Data4),
+    {ok, Pid4} = gen_server:start_link(GlobalName1,
+				       gen_server_SUITE, [], []),
+    Status4 = sys:get_status(Pid4),
+    {status, Pid4, _Mod, [_PDict4, running, _Parent, _, Data4]} = Status4,
+    [format_status_called | _] = lists:reverse(Data4),
     GlobalName2 = {global, {name, "term"}},
-    ?line {ok, Pid5} = gen_server:start_link(GlobalName2,
-					     gen_server_SUITE, [], []),
-    ?line Status5 = sys:get_status(GlobalName2),
-    ?line {status, Pid5, _Mod, [_PDict5, running, _Parent, _, Data5]} = Status5,
-    ?line [format_status_called | _] = lists:reverse(Data5),
+    {ok, Pid5} = gen_server:start_link(GlobalName2,
+				       gen_server_SUITE, [], []),
+    Status5 = sys:get_status(GlobalName2),
+    {status, Pid5, _Mod, [_PDict5, running, _Parent, _, Data5]} = Status5,
+    [format_status_called | _] = lists:reverse(Data5),
     ok.
 
-%% Verify that error termination correctly calls our format_status/2 fun
-%%
-error_format_status(suite) ->
-    [];
-error_format_status(doc) ->
-    ["Test that an error termination calls format_status/2"];
+%% Verify that error termination correctly calls our format_status/2 fun.
 error_format_status(Config) when is_list(Config) ->
-    ?line error_logger_forwarder:register(),
+    error_logger_forwarder:register(),
     OldFl = process_flag(trap_exit, true),
     State = "called format_status",
-    ?line {ok, Pid} = gen_server:start_link(?MODULE, {state, State}, []),
-    ?line {'EXIT',{crashed,_}} = (catch gen_server:call(Pid, crash)),
+    {ok, Pid} = gen_server:start_link(?MODULE, {state, State}, []),
+    {'EXIT',{crashed,_}} = (catch gen_server:call(Pid, crash)),
     receive
 	{'EXIT', Pid, crashed} ->
 	    ok
     end,
+    ClientPid = self(),
     receive
 	{error,_GroupLeader,{Pid,
 			     "** Generic server"++_,
 			     [Pid,crash,{formatted, State},
 			      {crashed,[{?MODULE,handle_call,3,_}
-					|_Stacktrace]}]}} ->
+					|_Stacktrace]},
+			       ClientPid, [_|_] = _ClientStack]}} ->
 	    ok;
 	Other ->
-	    ?line io:format("Unexpected: ~p", [Other]),
-	    ?line ?t:fail()
+	    io:format("Unexpected: ~p", [Other]),
+	    ct:fail(failed)
     end,
-    ?t:messages_get(),
     process_flag(trap_exit, OldFl),
     ok.
 
@@ -1164,34 +1399,30 @@ terminate_crash_format(Config) when is_list(Config) ->
     {ok, Pid} = gen_server:start_link(?MODULE, {state, State}, []),
     gen_server:call(Pid, stop),
     receive {'EXIT', Pid, {crash, terminate}} -> ok end,
+    ClientPid = self(),
     receive
 	{error,_GroupLeader,{Pid,
 			     "** Generic server"++_,
 			     [Pid,stop, {formatted, State},
-			      {{crash, terminate},[{?MODULE,terminate,2,_}
-						  |_Stacktrace]}]}} ->
+			      {{crash, terminate},
+			       [{?MODULE,terminate,2,_}|_Stacktrace]},
+			       ClientPid, [_|_] = _ClientStack]}} ->
 	    ok;
 	Other ->
 	    io:format("Unexpected: ~p", [Other]),
-	    ?t:fail()
+	    ct:fail(failed)
     after 5000 ->
 	    io:format("Timeout: expected error logger msg", []),
-	    ?t:fail()
+	    ct:fail(failed)
     end,
-    ?t:messages_get(),
     process_flag(trap_exit, OldFl),
     ok.
 
 %% Verify that sys:get_state correctly returns gen_server state
-%%
-get_state(suite) ->
-    [];
-get_state(doc) ->
-    ["Test that sys:get_state/1,2 return the gen_server state"];
 get_state(Config) when is_list(Config) ->
     State = self(),
     {ok, _Pid} = gen_server:start_link({local, get_state},
-                                             ?MODULE, {state,State}, []),
+				       ?MODULE, {state,State}, []),
     State = sys:get_state(get_state),
     State = sys:get_state(get_state, 5000),
     {ok, Pid} = gen_server:start_link(?MODULE, {state,State}, []),
@@ -1203,15 +1434,10 @@ get_state(Config) when is_list(Config) ->
     ok.
 
 %% Verify that sys:replace_state correctly replaces gen_server state
-%%
-replace_state(suite) ->
-    [];
-replace_state(doc) ->
-    ["Test that sys:replace_state/1,2 replace the gen_server state"];
 replace_state(Config) when is_list(Config) ->
     State = self(),
     {ok, _Pid} = gen_server:start_link({local, replace_state},
-                                             ?MODULE, {state,State}, []),
+				       ?MODULE, {state,State}, []),
     State = sys:get_state(replace_state),
     NState1 = "replaced",
     Replace1 = fun(_) -> NState1 end,
@@ -1250,16 +1476,16 @@ call_with_huge_message_queue(Config) when is_list(Config) ->
 	     "is not implemented"};
 	false ->
 	    do_call_with_huge_message_queue()
-		end.
+    end.
 
 do_call_with_huge_message_queue() ->
-    ?line Pid = spawn_link(fun echo_loop/0),
+    Pid = spawn_link(fun echo_loop/0),
 
-    ?line {Time,ok} = tc(fun() -> calls(10000, Pid) end),
+    {Time,ok} = tc(fun() -> calls(10000, Pid) end),
 
-    ?line [self() ! {msg,N} || N <- lists:seq(1, 500000)],
+    _ = [self() ! {msg,N} || N <- lists:seq(1, 500000)],
     erlang:garbage_collect(),
-    ?line {NewTime,ok} = tc(fun() -> calls(10000, Pid) end),
+    {NewTime,ok} = tc(fun() -> calls(10000, Pid) end),
     io:format("Time for empty message queue: ~p", [Time]),
     io:format("Time for huge message queue: ~p", [NewTime]),
 
@@ -1269,7 +1495,7 @@ do_call_with_huge_message_queue() ->
 	    ok;
 	Q ->
 	    io:format("Q = ~p", [Q]),
-	    ?line ?t:fail()
+	    ct:fail(failed)
     end,
     ok.
 
@@ -1290,6 +1516,351 @@ echo_loop() ->
 	    Pid ! {Ref,Msg},
 	    echo_loop()
     end.
+
+%% Test the default implementation of terminate if the callback module
+%% does not export it
+undef_terminate1(Config) when is_list(Config) ->
+    {ok, Server} = oc_server:start(),
+    MRef = monitor(process, Server),
+    ok = gen_server:stop(Server),
+    ok = verify_down_reason(MRef, Server, normal).
+
+%% Test the default implementation of terminate if the callback module
+%% does not export it
+undef_terminate2(Config) when is_list(Config) ->
+    {ok, Server} = oc_server:start(),
+    MRef = monitor(process, Server),
+    ok = gen_server:stop(Server, {error, test}, infinity),
+    ok = verify_down_reason(MRef, Server, {error, test}).
+
+%% Start should return an undef error if init isn't implemented
+undef_init(_Config) ->
+    {error, {undef, [{oc_init_server, init, [_], _}|_]}} =
+        gen_server:start(oc_init_server, [], []),
+    process_flag(trap_exit, true),
+    {error, {undef, [{oc_init_server, init, [_], _}|_]}} =
+        (catch gen_server:start_link(oc_init_server, [], [])),
+    receive
+        {'EXIT', Server,
+         {undef, [{oc_init_server, init, [_], _}|_]}} when is_pid(Server) ->
+            ok
+    after 1000 ->
+        ct:fail(expected_exit_msg)
+    end.
+
+%% The upgrade should fail if code_change is expected in the callback module
+%% but not exported, but the server should continue with the old code
+undef_code_change(Config) when is_list(Config) ->
+    {ok, Server} = oc_server:start(),
+    {error, {'EXIT', {undef, [{oc_server, code_change, [_, _, _], _}|_]}}}
+        = fake_upgrade(Server, ?MODULE),
+    true = is_process_alive(Server).
+
+%% The server should crash if the handle_call callback is
+%% not exported in the callback module
+undef_handle_call(_Config) ->
+    {ok, Server} = oc_server:start(),
+    try
+        gen_server:call(Server, call_msg),
+        ct:fail(should_crash)
+    catch exit:{{undef, [{oc_server, handle_call, _, _}|_]},
+                {gen_server, call, _}} ->
+        ok
+    end.
+
+%% The server should crash if the handle_cast callback is
+%% not exported in the callback module
+undef_handle_cast(_Config) ->
+    {ok, Server} = oc_server:start(),
+    MRef = monitor(process, Server),
+    gen_server:cast(Server, cast_msg),
+    verify_undef_down(MRef, Server, oc_server, handle_cast),
+    ok.
+
+%% The server should crash if the handle_continue callback is
+%% not exported in the callback module
+undef_handle_continue(_Config) ->
+    {ok, Server} = oc_server:start(continue),
+    MRef = monitor(process, Server),
+    verify_undef_down(MRef, Server, oc_server, handle_continue),
+    ok.
+
+%% The server should log but not crash if the handle_info callback is
+%% calling an undefined function
+undef_handle_info(Config) when is_list(Config) ->
+    error_logger_forwarder:register(),
+    {ok, Server} = oc_server:start(),
+    Server ! hej,
+    wait_until_processed(Server, hej, 10),
+    true = is_process_alive(Server),
+    receive
+        {warning_msg, _GroupLeader,
+         {Server, "** Undefined handle_info in " ++ _, [oc_server, hej]}} ->
+            ok;
+        Other ->
+            io:format("Unexpected: ~p", [Other]),
+            ct:fail(failed)
+    end.
+
+%% Test that the default implementation of terminate isn't catching the
+%% wrong undef error
+undef_in_terminate(Config) when is_list(Config) ->
+    State = {undef_in_terminate, {oc_server, terminate}},
+    {ok, Server} = gen_server:start(?MODULE, {state, State}, []),
+    try
+        ok = gen_server:stop(Server),
+        ct:fail(failed)
+    catch
+        exit:{undef, [{oc_server, terminate, [], _}|_]} ->
+            ok
+    end.
+
+%% Test that the default implementation of handle_info isn't catching the
+%% wrong undef error
+undef_in_handle_info(Config) when is_list(Config) ->
+     {ok, Server} = gen_server:start(?MODULE, [], []),
+     MRef = monitor(process, Server),
+     Server ! {call_undef_fun, ?MODULE, handle_info},
+     verify_undef_down(MRef, Server, ?MODULE, handle_info),
+     ok.
+
+verify_down_reason(MRef, Server, Reason) ->
+    receive
+        {'DOWN', MRef, process, Server, Reason} ->
+            ok
+    after 5000 ->
+        ct:fail(failed)
+    end.
+
+verify_undef_down(MRef, Pid, Mod, Fun) ->
+    ok = receive
+        {'DOWN', MRef, process, Pid,
+         {undef, [{Mod, Fun, _, _}|_]}} ->
+            ok
+    after 5000 ->
+        ct:fail(should_crash)
+    end.
+
+fake_upgrade(Pid, Mod) ->
+    sys:suspend(Pid),
+    sys:replace_state(Pid, fun(State) -> {new, State} end),
+    Ret = sys:change_code(Pid, Mod, old_vsn, []),
+    ok = sys:resume(Pid),
+    Ret.
+
+wait_until_processed(_Pid, _Message, 0) ->
+    ct:fail(not_processed);
+wait_until_processed(Pid, Message, N) ->
+    {messages, Messages} = erlang:process_info(Pid, messages),
+    case lists:member(Message, Messages) of
+        true ->
+            timer:sleep(100),
+            wait_until_processed(Pid, Message, N-1);
+        false ->
+            ok
+    end.
+
+%% Test report callback for Logger handler error_logger
+format_log_1(_Config) ->
+    FD = application:get_env(kernel,error_logger_format_depth),
+    application:unset_env(kernel,error_logger_format_depth),
+    Term = lists:seq(1,15),
+    Name = self(),
+    Report = #{label=>{gen_server,terminate},
+               name=>Name,
+               last_message=>Term,
+               state=>Term,
+               log=>[],
+               reason=>Term,
+               client_info=>{self(),{clientname,[]}}},
+    {F1,A1} = gen_server:format_log(Report),
+    FExpected1 = "** Generic server ~tp terminating \n"
+        "** Last message in was ~tp~n"
+        "** When Server state == ~tp~n"
+        "** Reason for termination ==~n** ~tp~n"
+        "** Client ~tp stacktrace~n"
+        "** ~tp~n",
+    ct:log("F1: ~ts~nA1: ~tp",[F1,A1]),
+    FExpected1=F1,
+    [Name,Term,Term,Term,clientname,[]] = A1,
+
+    Warning = #{label=>{gen_server,no_handle_info},
+                module=>?MODULE,
+                message=>Term},
+    {WF1,WA1} = gen_server:format_log(Warning),
+    WFExpected1 = "** Undefined handle_info in ~p~n"
+        "** Unhandled message: ~tp~n",
+    ct:log("WF1: ~ts~nWA1: ~tp",[WF1,WA1]),
+    WFExpected1=WF1,
+    [?MODULE,Term] = WA1,
+
+    Depth = 10,
+    ok = application:set_env(kernel,error_logger_format_depth,Depth),
+    Limited = [1,2,3,4,5,6,7,8,9,'...'],
+    {F2,A2} = gen_server:format_log(#{label=>{gen_server,terminate},
+                                      name=>Name,
+                                      last_message=>Term,
+                                      state=>Term,
+                                      log=>[],
+                                      reason=>Term,
+                                      client_info=>{self(),{clientname,[]}}}),
+    FExpected2 = "** Generic server ~tP terminating \n"
+        "** Last message in was ~tP~n"
+        "** When Server state == ~tP~n"
+        "** Reason for termination ==~n** ~tP~n"
+        "** Client ~tP stacktrace~n"
+        "** ~tP~n",
+    ct:log("F2: ~ts~nA2: ~tp",[F2,A2]),
+    FExpected2=F2,
+    [Name,Depth,Limited,Depth,Limited,Depth,Limited,Depth,
+     clientname,Depth,[],Depth] = A2,
+
+    {WF2,WA2} = gen_server:format_log(Warning),
+    WFExpected2 = "** Undefined handle_info in ~p~n"
+        "** Unhandled message: ~tP~n",
+    ct:log("WF2: ~ts~nWA2: ~tp",[WF2,WA2]),
+    WFExpected2=WF2,
+    [?MODULE,Limited,Depth] = WA2,
+
+    case FD of
+        undefined ->
+            application:unset_env(kernel,error_logger_format_depth);
+        _ ->
+            application:set_env(kernel,error_logger_format_depth,FD)
+    end,
+    ok.
+
+%% Test report callback for any Logger handler
+format_log_2(_Config) ->
+    Term = lists:seq(1,15),
+    Name = self(),
+    NameStr = pid_to_list(Name),
+    Report = #{label=>{gen_server,terminate},
+               name=>Name,
+               last_message=>Term,
+               state=>Term,
+               log=>[],
+               reason=>Term,
+               client_info=>{self(),{clientname,[]}}},
+    FormatOpts1 = #{},
+    Str1 = flatten_format_log(Report,FormatOpts1),
+    L1 = length(Str1),
+    Expected1 = "** Generic server "++NameStr++" terminating \n"
+        "** Last message in was ",
+    ct:log("Str1: ~ts",[Str1]),
+    ct:log("length(Str1): ~p",[L1]),
+    true = lists:prefix(Expected1,Str1),
+
+    Warning = #{label=>{gen_server,no_handle_info},
+                module=>?MODULE,
+                message=>Term},
+    WStr1 = flatten_format_log(Warning,FormatOpts1),
+    WL1 = length(WStr1),
+    WExpected1 = "** Undefined handle_info in gen_server_SUITE\n"
+        "** Unhandled message: ",
+    ct:log("WStr1: ~ts",[WStr1]),
+    ct:log("length(WStr1): ~p",[WL1]),
+    true = lists:prefix(WExpected1,WStr1),
+
+    Depth = 10,
+    FormatOpts2 = #{depth=>Depth},
+    Str2 = flatten_format_log(Report,FormatOpts2),
+    L2 = length(Str2),
+    Expected2 = "** Generic server "++NameStr++" terminating \n"
+        "** Last message in was ",
+    ct:log("Str2: ~ts",[Str2]),
+    ct:log("length(Str2): ~p",[L2]),
+    true = lists:prefix(Expected2,Str2),
+    true = L2<L1,
+
+    WStr2 = flatten_format_log(Warning,FormatOpts2),
+    WL2 = length(WStr2),
+    WExpected2 = "** Undefined handle_info in gen_server_SUITE\n"
+        "** Unhandled message: ",
+    ct:log("WStr2: ~ts",[WStr2]),
+    ct:log("length(WStr2): ~p",[WL2]),
+    true = lists:prefix(WExpected2,WStr2),
+    true = WL2<WL1,
+
+    FormatOpts3 = #{chars_limit=>200},
+    Str3 = flatten_format_log(Report,FormatOpts3),
+    L3 = length(Str3),
+    Expected3 = "** Generic server "++NameStr++" terminating \n"
+        "** Last message in was ",
+    ct:log("Str3: ~ts",[Str3]),
+    ct:log("length(Str3): ~p",[L3]),
+    true = lists:prefix(Expected3,Str3),
+    true = L3<L1,
+
+    WFormatOpts3 = #{chars_limit=>80},
+    WStr3 = flatten_format_log(Warning,WFormatOpts3),
+    WL3 = length(WStr3),
+    WExpected3 = "** Undefined handle_info in gen_server_SUITE\n"
+        "** Unhandled message: ",
+    ct:log("WStr3: ~ts",[WStr3]),
+    ct:log("length(WStr3): ~p",[WL3]),
+    true = lists:prefix(WExpected3,WStr3),
+    true = WL3<WL1,
+
+    FormatOpts4 = #{single_line=>true},
+    Str4 = flatten_format_log(Report,FormatOpts4),
+    L4 = length(Str4),
+    Expected4 = "Generic server "++NameStr++" terminating. Reason: ",
+    ct:log("Str4: ~ts",[Str4]),
+    ct:log("length(Str4): ~p",[L4]),
+    true = lists:prefix(Expected4,Str4),
+    true = L4<L1,
+
+    WStr4 = flatten_format_log(Warning,FormatOpts4),
+    WL4 = length(WStr4),
+    WExpected4 = "Undefined handle_info in gen_server_SUITE. "
+        "Unhandled message: ",
+    ct:log("WStr4: ~ts",[WStr4]),
+    ct:log("length(WStr4): ~p",[WL4]),
+    true = lists:prefix(WExpected4,WStr4),
+    true = WL4<WL1,
+
+    FormatOpts5 = #{single_line=>true, depth=>Depth},
+    Str5 = flatten_format_log(Report,FormatOpts5),
+    L5 = length(Str5),
+    Expected5 = "Generic server "++NameStr++" terminating. Reason: ",
+    ct:log("Str5: ~ts",[Str5]),
+    ct:log("length(Str5): ~p",[L5]),
+    true = lists:prefix(Expected5,Str5),
+    true = L5<L4,
+
+    WStr5 = flatten_format_log(Warning,FormatOpts5),
+    WL5 = length(WStr5),
+    WExpected5 = "Undefined handle_info in gen_server_SUITE. "
+        "Unhandled message: ",
+    ct:log("WStr5: ~ts",[WStr5]),
+    ct:log("length(WStr5): ~p",[WL5]),
+    true = lists:prefix(WExpected5,WStr5),
+    true = WL5<WL4,
+
+    FormatOpts6 = #{single_line=>true, chars_limit=>200},
+    Str6 = flatten_format_log(Report,FormatOpts6),
+    L6 = length(Str6),
+    Expected6 = "Generic server "++NameStr++" terminating. Reason: ",
+    ct:log("Str6: ~ts",[Str6]),
+    ct:log("length(Str6): ~p",[L6]),
+    true = lists:prefix(Expected6,Str6),
+    true = L6<L4,
+
+    WFormatOpts6 = #{single_line=>true, chars_limit=>80},
+    WStr6 = flatten_format_log(Warning,WFormatOpts6),
+    WL6 = length(WStr6),
+    WExpected6 = "Undefined handle_info in gen_server_SUITE. "
+        "Unhandled message: ",
+    ct:log("WStr6: ~ts",[WStr6]),
+    ct:log("length(WStr6): ~p",[WL6]),
+    true = lists:prefix(WExpected6,WStr6),
+    true = WL6<WL4,
+
+    ok.
+
+flatten_format_log(Report, Format) ->
+    lists:flatten(gen_server:format_log(Report, Format)).
 
 %%--------------------------------------------------------------
 %% Help functions to spec_init_*
@@ -1381,10 +1952,13 @@ init(stop) ->
 init(hibernate) ->
     {ok,[],hibernate};
 init(sleep) ->
-    test_server:sleep(1000),
+    ct:sleep(1000),
     {ok, []};
+init({continue, Pid}) ->
+    self() ! {after_continue, Pid},
+    {ok, [], {continue, {message, Pid}}};
 init({state,State}) ->
-    {ok, State}.
+    {ok,State}.
 
 handle_call(started_p, _From, State) ->
     io:format("FROZ"),
@@ -1414,6 +1988,15 @@ handle_call(stop_shutdown, _From, State) ->
     {stop,shutdown,State};
 handle_call(shutdown_reason, _From, _State) ->
     exit({shutdown,reason});
+handle_call({call_undef_fun, Mod, Fun}, _From, State) ->
+    Mod:Fun(),
+    {reply, ok, State};
+handle_call({continue_reply, Pid}, _From, State) ->
+    self() ! {after_continue, Pid},
+    {reply, ok, State, {continue, {message, Pid}}};
+handle_call({continue_noreply, Pid}, From, State) ->
+    self() ! {after_continue, Pid},
+    {noreply, State, {continue, {message, Pid, From}}};
 handle_call(stop_shutdown_reason, _From, State) ->
     {stop,{shutdown,stop_reason},State}.
 
@@ -1425,8 +2008,14 @@ handle_cast({From,delayed_cast,T}, _State) ->
 handle_cast(hibernate_now, _State) ->
     {noreply, [], hibernate};
 handle_cast(hibernate_later, _State) ->
-    timer:send_after(1000,self(),hibernate_now),
+    {ok, _} = timer:send_after(1000,self(),hibernate_now),
     {noreply, []};
+handle_cast({call_undef_fun, Mod, Fun}, State) ->
+    Mod:Fun(),
+    {noreply, State};
+handle_cast({continue_noreply, Pid}, State) ->
+    self() ! {after_continue, Pid},
+    {noreply, State, {continue, {message, Pid}}};
 handle_cast({From, stop}, State) ->
     io:format("BAZ"),
     {stop, {From,stopped}, State}.
@@ -1435,11 +2024,11 @@ handle_info(timeout, {reply_to, From}) ->
     gen_server:reply(From, delayed),
     {noreply, []};
 handle_info(timeout, hibernate_me) -> % Arrive here from 
-				      % handle_info(hibernate_later,...)
+						% handle_info(hibernate_later,...)
     {noreply, [], hibernate};
 handle_info(hibernate_now, _State) ->  % Arrive here from 
-				       % handle_cast({_,hibernate_later},...)
-				       % and by direct ! from testcase
+						% handle_cast({_,hibernate_later},...)
+						% and by direct ! from testcase
     {noreply, [], hibernate};
 handle_info(hibernate_later, _State) ->
     {noreply, hibernate_me, 1000};
@@ -1451,6 +2040,9 @@ handle_info(timeout, {delayed_cast, From}) ->
 handle_info(timeout, {delayed_info, From}) ->
     From ! {self(), delayed_info},
     {noreply, []};
+handle_info({call_undef_fun, Mod, Fun}, State) ->
+    Mod:Fun(),
+    {noreply, State};
 handle_info({From, handle_info}, _State) ->
     From ! {self(), handled_info},
     {noreply, []};
@@ -1461,8 +2053,39 @@ handle_info(continue, From) ->
     {noreply, []};
 handle_info({From, stop}, State) ->
     {stop, {From,stopped_info}, State};
+handle_info({after_continue, Pid}, State) ->
+    Pid ! {self(), after_continue},
+    Pid ! {self(), ack},
+    {noreply, State};
+handle_info({continue_noreply, Pid}, State) ->
+    self() ! {after_continue, Pid},
+    {noreply, State, {continue, {message, Pid}}};
+handle_info({continue_continue, Pid}, State) ->
+    {noreply, State, {continue, {continue, Pid}}};
+handle_info(continue_stop, State) ->
+    {noreply, State, {continue, stop}};
 handle_info(_Info, State) ->
     {noreply, State}.
+
+handle_continue({continue, Pid}, State) ->
+    Pid ! {self(), before_continue},
+    self() ! {after_continue, Pid},
+    {noreply, State, {continue, {message, Pid}}};
+handle_continue(stop, State) ->
+    {stop, normal, State};
+handle_continue({message, Pid}, State) ->
+    Pid ! {self(), continue},
+    {noreply, State};
+handle_continue({message, Pid, From}, State) ->
+    Pid ! {self(), continue},
+    gen_server:reply(From, ok),
+    {noreply, State}.
+
+code_change(_OldVsn,
+            {new, {undef_in_code_change, {Mod, Fun}}} = State,
+            _Extra) ->
+    Mod:Fun(),
+    {ok, State}.
 
 terminate({From, stopped}, _State) ->
     io:format("FOOBAR"),
@@ -1473,6 +2096,9 @@ terminate({From, stopped_info}, _State) ->
     ok;
 terminate(_, crash_terminate) ->
     exit({crash, terminate});
+terminate(_, {undef_in_terminate, {Mod, Fun}}) ->
+    Mod:Fun(),
+    ok;
 terminate(_Reason, _State) ->
     ok.
 

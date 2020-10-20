@@ -13,7 +13,7 @@ finalize(CompiledCode, Closures, Exports) ->
   Code = [{MFA, [], ConstTab}
 	  || {MFA, _, _ , ConstTab, _, _} <- CompiledCode1],
   {ConstAlign, ConstSize, ConstMap, RefsFromConsts} =
-    hipe_pack_constants:pack_constants(Code, ?ARCH_REGISTERS:alignment()),
+    hipe_pack_constants:pack_constants(Code),
   %% Compute total code size separately as a sanity check for alignment
   CodeSize = compute_code_size(CompiledCode1, 0),
   %% io:format("Code Size (pre-computed): ~w~n", [CodeSize]),
@@ -27,7 +27,7 @@ finalize(CompiledCode, Closures, Exports) ->
   DataRelocs = hipe_pack_constants:mk_data_relocs(RefsFromConsts, LabelMap),
   SSE = hipe_pack_constants:slim_sorted_exportmap(ExportMap, Closures, Exports),
   SlimRefs = hipe_pack_constants:slim_refs(AccRefs),
-  term_to_binary([{?VERSION_STRING(),?HIPE_SYSTEM_CRC},
+  term_to_binary([{?VERSION_STRING(),?HIPE_ERTS_CHECKSUM},
 		  ConstAlign, ConstSize,
 		  SC,  % ConstMap
 		  DataRelocs, % LabelMap

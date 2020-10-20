@@ -40,6 +40,10 @@ RELSYSDIR = $(RELEASE_PATH)/lib/$(APPLICATION)-$(VSN)
 # ----------------------------------------------------
 # Target Specs
 # ----------------------------------------------------
+
+BEHAVIOUR_MODULES= \
+        httpd_custom_api
+
 MODULES = \
 	httpd \
 	httpd_acceptor \
@@ -53,6 +57,7 @@ MODULES = \
 	httpd_file\
 	httpd_instance_sup \
 	httpd_log \
+	httpd_logger \
 	httpd_manager \
 	httpd_misc_sup \
 	httpd_request \
@@ -69,14 +74,12 @@ MODULES = \
 	mod_auth_dets \
 	mod_auth_mnesia \
 	mod_auth_server \
-	mod_browser \
 	mod_cgi \
 	mod_dir \
 	mod_disk_log \
 	mod_esi \
 	mod_get \
 	mod_head \
-	mod_htaccess \
 	mod_log \
 	mod_range \
 	mod_responsecontrol \
@@ -86,9 +89,12 @@ MODULES = \
 
 HRL_FILES = httpd.hrl httpd_internal.hrl mod_auth.hrl
 
-ERL_FILES = $(MODULES:%=%.erl)
+ERL_FILES = $(MODULES:%=%.erl)\
+	    $(BEHAVIOUR_MODULES:%=%.erl)
 
 TARGET_FILES= $(MODULES:%=$(EBIN)/%.$(EMULATOR)) 
+
+BEHAVIOUR_TARGET_FILES= $(BEHAVIOUR_MODULES:%=$(EBIN)/%.$(EMULATOR))
 
 INETS_FLAGS = -D'SERVER_SOFTWARE="$(APPLICATION)/$(VSN)"'
 
@@ -109,11 +115,12 @@ ERL_COMPILE_FLAGS += \
 # ----------------------------------------------------
 # Targets
 # ----------------------------------------------------
+$(TARGET_FILES): $(BEHAVIOUR_TARGET_FILES)
 
 debug opt: $(TARGET_FILES)
 
 clean:
-	rm -f $(TARGET_FILES)
+	rm -f $(TARGET_FILES) $(BEHAVIOUR_TARGET_FILES)
 	rm -f core
 
 docs:
@@ -129,7 +136,7 @@ release_spec: opt
 	$(INSTALL_DIR)  "$(RELSYSDIR)/src/http_server"
 	$(INSTALL_DATA) $(HRL_FILES) $(ERL_FILES) "$(RELSYSDIR)/src/http_server"
 	$(INSTALL_DIR)  "$(RELSYSDIR)/ebin"
-	$(INSTALL_DATA) $(TARGET_FILES) "$(RELSYSDIR)/ebin"
+	$(INSTALL_DATA) $(TARGET_FILES) $(BEHAVIOUR_TARGET_FILES) "$(RELSYSDIR)/ebin"
 
 release_docs_spec:
 

@@ -1,7 +1,7 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 1997-2012. All Rights Reserved.
+%% Copyright Ericsson AB 1997-2018. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -29,7 +29,7 @@
 
 %% gen_server callbacks
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2,
-	 terminate/2, code_change/3]).
+	 terminate/2]).
 
 %% Internal protocol with the port program
 -define(nprocs,"n").
@@ -68,7 +68,7 @@
 
 -type util_cpus() :: 'all' | integer() | [integer()].
 -type util_state() :: 'user' | 'nice_user' | 'kernel' | 'wait' | 'idle'.
--type util_value() :: {util_state(), float()} | float().
+-type util_value() :: [{util_state(), number()}] | number().
 -type util_desc() :: {util_cpus(), util_value(), util_value(), []}.
 
 %%----------------------------------------------------------------------
@@ -122,7 +122,7 @@ util(Args) when is_list (Args) ->
 util(_) ->
     erlang:error(badarg).
 
--spec util() -> float() | {'error', any()}.
+-spec util() -> number() | {'error', any()}.
 
 util() ->
     case util([]) of
@@ -162,7 +162,8 @@ handle_call({?util, D, PC}, {Client, _Tag},
 	#state{os_type = {unix, Flavor}} = State) 
 	when Flavor == sunos;
 	     Flavor == linux;
-	     Flavor == freebsd ->
+	     Flavor == freebsd;
+	     Flavor == darwin ->
     case measurement_server_call(State#state.server, {?util, D, PC, Client}) of
 	{error, Reason} -> 
 	    {	reply, 
@@ -198,38 +199,25 @@ handle_info(_Info, State) ->
 terminate(_Reason, State) ->
     exit(State#state.server, normal).
 
-%% os_mon-2.0
-%% For live downgrade to/upgrade from os_mon-1.8[.1]
-code_change(Vsn, PrevState, "1.8") ->
-    case Vsn of
-
-	%% Downgrade from this version
-	{down, _Vsn} ->
-	    process_flag(trap_exit, false);
-
-	%% Upgrade to this version
-	_Vsn ->
-	    process_flag(trap_exit, true)
-    end,
-    {ok, PrevState};
-code_change(_OldVsn, State, _Extra) ->
-    {ok, State}.
-
 %%----------------------------------------------------------------------
 %% internal functions 
 %%----------------------------------------------------------------------
 
-get_uint32_measurement(Request, #internal{os_type = {unix, linux}}) ->
-    {ok,F} = file:open("/proc/loadavg",[read,raw]),
-    {ok,D} = file:read_line(F),
-    ok = file:close(F),
-    {ok,[Load1,Load5,Load15,_PRun,PTotal],_} = io_lib:fread("~f ~f ~f ~d/~d", D),
-    case Request of
-	?avg1  -> sunify(Load1);
-	?avg5  -> sunify(Load5);
-	?avg15 -> sunify(Load15);
-	?ping -> 4711;
-	?nprocs -> PTotal
+get_uint32_measurement(Request, #internal{port = P, os_type = {unix, linux}}) ->
+    case file:open("/proc/loadavg",[read,raw]) of
+        {ok,F} ->
+            {ok,D} = file:read_line(F),
+            ok = file:close(F),
+            {ok,[Load1,Load5,Load15,_PRun,PTotal],_} = io_lib:fread("~f ~f ~f ~d/~d", D),
+            case Request of
+                ?avg1  -> sunify(Load1);
+                ?avg5  -> sunify(Load5);
+                ?avg15 -> sunify(Load15);
+                ?ping -> 4711;
+                ?nprocs -> PTotal
+            end;
+        {error,_} ->
+            port_server_call(P, Request)
     end;
 get_uint32_measurement(Request, #internal{port = P, os_type = {unix, Sys}}) when
 								Sys == sunos;
@@ -243,7 +231,7 @@ get_uint32_measurement(Request, #internal{os_type = {unix, Sys}}) when Sys == ir
     %% Get the load average using uptime.
     %% "8:01pm  up 2 days, 22:12,  4 users,  load average: 0.70, 0.58, 0.43"
     D = os:cmd("uptime") -- "\n",
-    Avg = lists:reverse(hd(string:tokens(lists:reverse(D), ":"))),
+    Avg = lists:reverse(hd(string:lexemes(lists:reverse(D), ":"))),
     {ok, [L1, L5, L15], _} = io_lib:fread("~f, ~f, ~f", Avg),
     case Request of
 	?avg1  -> sunify(L1);
@@ -531,11 +519,11 @@ measurement_server_loop(State) ->
 		    measurement_server_loop(State)
 	    end;
 	{Pid, Request} ->
-	    try get_uint32_measurement(Request, State) of
-		Result -> Pid ! {data, Result}
-	    catch
-		Error -> Pid ! {error, Error}
-	    end,
+            _ = try get_uint32_measurement(Request, State) of
+                    Result -> Pid ! {data, Result}
+                catch
+                    Error -> Pid ! {error, Error}
+                end,
 	    measurement_server_loop(State);
         {'EXIT', OldPid, _n} when State#internal.port == OldPid ->
 	    {ok, NewPid} = port_server_start_link(),

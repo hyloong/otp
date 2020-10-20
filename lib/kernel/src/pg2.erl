@@ -1,7 +1,7 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 1997-2013. All Rights Reserved.
+%% Copyright Ericsson AB 1997-2017. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -24,6 +24,8 @@
 -export([get_closest_pid/1, which_groups/0]).
 -export([start/0,start_link/0,init/1,handle_call/3,handle_cast/2,handle_info/2,
          terminate/2]).
+
+-deprecated([{'_','_',"use 'pg' instead"}]).
 
 %%% As of R13B03 monitors are used instead of links.
 
@@ -199,7 +201,7 @@ handle_call({delete, Name}, _From, S) ->
     {reply, ok, S};
 handle_call(Request, From, S) ->
     error_logger:warning_msg("The pg2 server received an unexpected message:\n"
-                             "handle_call(~p, ~p, _)\n", 
+                             "handle_call(~tp, ~tp, _)\n",
                              [Request, From]),
     {noreply, S}.
 

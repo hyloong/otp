@@ -1,7 +1,7 @@
 #
 # %CopyrightBegin%
 #
-# Copyright Ericsson AB 1997-2013. All Rights Reserved.
+# Copyright Ericsson AB 1997-2020. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -43,6 +43,7 @@ MODULES= \
 	testChoTypeRefSet \
 	testConstraints \
 	testDef \
+	testExtensionDefault \
 	testOpt \
 	testSeqDefault \
 	testSeqExtension \
@@ -59,6 +60,7 @@ MODULES= \
 	testSeqOf \
 	testSeqOfIndefinite \
 	testSeqOfCho \
+	testSeqOfChoExt \
 	testSeqOfExternal \
 	testSeqOfTag \
 	testSetDefault \
@@ -71,6 +73,7 @@ MODULES= \
 	testSetTypeRefPrim \
 	testSetTypeRefSeq \
 	testSetTypeRefSet \
+	testDefaultOctetString \
 	testChoiceIndefinite \
 	testSetOf \
 	testSetOfCho \
@@ -82,6 +85,7 @@ MODULES= \
 	testInfObjExtract \
 	testParameterizedInfObj \
 	testFragmented \
+	testMaps \
 	testMergeCompile \
 	testMultipleLevels \
 	testDeepTConstr \
@@ -114,8 +118,7 @@ MODULES= \
 	testImporting \
 	testExtensibilityImplied \
 	asn1_test_lib \
-	asn1_app_test \
-	asn1_appup_test \
+	asn1_app_SUITE \
 	asn1_SUITE \
 	error_SUITE \
 	syntax_SUITE
@@ -134,7 +137,7 @@ RELSYSDIR = $(RELEASE_PATH)/asn1_test
 # ----------------------------------------------------
 # FLAGS
 # ----------------------------------------------------
-ERL_COMPILE_FLAGS += +warnings_as_errors
+ERL_COMPILE_FLAGS += +warnings_as_errors +nowarn_export_all
 EBIN = .
 
 # ----------------------------------------------------

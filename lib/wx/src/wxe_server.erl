@@ -1,7 +1,7 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2008-2014. All Rights Reserved.
+%% Copyright Ericsson AB 2008-2018. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -272,7 +272,7 @@ invoke_callback(Pid, Ev, Ref) ->
 		 wx:set_env(Env),
 		 wxe_util:cast(?WXE_CB_START, <<>>),
 		 try
-		     case get_wx_object_state(Pid) of
+		     case get_wx_object_state(Pid, 5) of
 			 ignore ->
 			     %% Ignore early events
 			     wxEvent:skip(Ref);
@@ -283,10 +283,10 @@ invoke_callback(Pid, Ev, Ref) ->
 				 Return -> exit({bad_return, Return})
 			     end
 		     end
-		 catch _:Reason ->
+		 catch _:Reason:Stacktrace ->
 			 wxEvent:skip(Ref),
 			 ?log("Callback fun crashed with {'EXIT, ~p, ~p}~n",
-			      [Reason, erlang:get_stacktrace()])
+			      [Reason, Stacktrace])
 		 end,
 		 wxe_util:cast(?WXE_CB_RETURN, <<>>)
 	 end,
@@ -299,24 +299,32 @@ invoke_callback_fun(Fun) ->
 	      Return = Fun(),
 	      true = is_binary(Return),
 	      Return
-	  catch _:Reason ->
+	  catch _:Reason:Stacktrace ->
 		  ?log("Callback fun crashed with {'EXIT, ~p, ~p}~n",
-		       [Reason, erlang:get_stacktrace()]),
+		       [Reason, Stacktrace]),
 		  <<>>
 	  end,
     wxe_util:cast(?WXE_CB_RETURN, Res).
 
 
-get_wx_object_state(Pid) ->
+get_wx_object_state(Pid, N) when N > 0 ->
     case process_info(Pid, dictionary) of
 	{dictionary, Dict} ->
 	    case lists:keysearch('_wx_object_',1,Dict) of
-		{value, {'_wx_object_', {_Mod, '_wx_init_'}}} -> ignore;
-		{value, {'_wx_object_', Value}} -> Value;
-		_ -> ignore
+		{value, {'_wx_object_', {_Mod, '_wx_init_'}}} ->
+		    timer:sleep(50),
+		    get_wx_object_state(Pid, N-1);
+		{value, {'_wx_object_', Value}} ->
+		    Value;
+		_ ->
+		    ignore
 	    end;
-	_ -> ignore
-    end.
+	_ ->
+	    ignore
+    end;
+get_wx_object_state(_, _) ->
+    ignore.
+
 
 attach_fun(Fun, S = #state{cb=CB,cb_cnt=Next}) ->
     case gb_trees:lookup(Fun,CB) of
@@ -352,25 +360,8 @@ handle_disconnect(Object, Evh = #evh{cb=Fun}, From,
 		  State0 = #state{users=Users0, cb=Callbacks}) ->
     #user{events=Evs0} = gb_trees:get(From, Users0),
     FunId = gb_trees:lookup(Fun, Callbacks),
-    case find_handler(Evs0, Object, Evh#evh{cb=FunId}) of
-	[] -> 
-	    {reply, false, State0};
-	Handlers ->
-	    case disconnect(Object,Handlers) of
-		#evh{} -> {reply, true, State0};
-		Result -> {reply, Result, State0}
-	    end
-    end.
-
-disconnect(Object,[Ev|Evs]) ->
-    try wxEvtHandler:disconnect_impl(Object,Ev) of
-	true ->  Ev;
-	false -> disconnect(Object, Evs);
-	Error -> Error
-    catch _:_ ->
-	    false
-    end;
-disconnect(_, []) -> false.
+    Handlers = find_handler(Evs0, Object, Evh#evh{cb=FunId}),
+    {reply, {try_in_order, Handlers}, State0}.
 
 find_handler([{Object,Evh}|Evs], Object, Match) ->
     case match_handler(Match, Evh) of

@@ -1,18 +1,23 @@
 %% =====================================================================
-%% This library is free software; you can redistribute it and/or modify
-%% it under the terms of the GNU Lesser General Public License as
-%% published by the Free Software Foundation; either version 2 of the
-%% License, or (at your option) any later version.
+%% Licensed under the Apache License, Version 2.0 (the "License"); you may
+%% not use this file except in compliance with the License. You may obtain
+%% a copy of the License at <http://www.apache.org/licenses/LICENSE-2.0>
 %%
-%% This library is distributed in the hope that it will be useful, but
-%% WITHOUT ANY WARRANTY; without even the implied warranty of
-%% MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
-%% Lesser General Public License for more details.
+%% Unless required by applicable law or agreed to in writing, software
+%% distributed under the License is distributed on an "AS IS" BASIS,
+%% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+%% See the License for the specific language governing permissions and
+%% limitations under the License.
 %%
-%% You should have received a copy of the GNU Lesser General Public
-%% License along with this library; if not, write to the Free Software
-%% Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307
-%% USA
+%% Alternatively, you may use this file under the terms of the GNU Lesser
+%% General Public License (the "LGPL") as published by the Free Software
+%% Foundation; either version 2.1, or (at your option) any later version.
+%% If you wish to allow use of your version of this file only under the
+%% terms of the LGPL, you should delete the provisions above and replace
+%% them with the notice and other provisions required by the LGPL; see
+%% <http://www.gnu.org/licenses/>. If you do not delete the provisions
+%% above, a recipient may use your version of this file under the terms of
+%% either the Apache License or the LGPL.
 %%
 %% @copyright 2001-2003 Richard Carlsson
 %% @author Richard Carlsson <carlsson.richard@gmail.com>
@@ -32,9 +37,9 @@
 %% %% @headerfile "edoc.hrl" (disabled until it can be made private)
 -include("edoc.hrl").
 
-%% @type filename() = file:filename().
-%% @type proplist() = proplists:property().
-%% @type syntaxTree() = erl_syntax:syntaxTree().
+%% @type filename() = //kernel/file:filename().
+%% @type proplist() = //stdlib/proplists:property().
+%% @type syntaxTree() = //syntax_tools/erl_syntax:syntaxTree().
 
 %% @spec source(File::filename(), Env::edoc_env(), Options::proplist())
 %%             -> {ModuleName, edoc:edoc_module()}
@@ -355,6 +360,8 @@ preprocess_forms_2(F, Fs) ->
 	    [F | preprocess_forms_1(Fs)];
   	text ->
   	    [F | preprocess_forms_1(Fs)];
+        {attribute, {record, _}} ->
+            [F | preprocess_forms_1(Fs)];
         {attribute, {N, _}} ->
             case edoc_specs:is_tag(N) of
                 true ->
@@ -373,49 +380,61 @@ preprocess_forms_2(F, Fs) ->
 %% in the list.
 
 collect(Fs, Mod) ->
-    collect(Fs, [], [], [], [], undefined, Mod).
+    collect(Fs, [], [], [], [], [], undefined, Mod).
 
-collect([F | Fs], Cs, Ss, Ts, As, Header, Mod) ->
+collect([F | Fs], Cs, Ss, Ts, Rs, As, Header, Mod) ->
     case erl_syntax_lib:analyze_form(F) of
 	comment ->
-	    collect(Fs, [F | Cs], Ss, Ts, As, Header, Mod);
+	    collect(Fs, [F | Cs], Ss, Ts, Rs, As, Header, Mod);
 	{function, Name} ->
 	    L = erl_syntax:get_pos(F),
 	    Export = ordsets:is_element(Name, Mod#module.exports),
 	    Args = parameters(erl_syntax:function_clauses(F)),
-	    collect(Fs, [], [], [],
+	    collect(Fs, [], [], [], [],
                     [#entry{name = Name, args = Args, line = L,
                             export = Export,
-                            data = {comment_text(Cs),Ss,Ts}} | As],
+                            data = {comment_text(Cs),Ss,Ts,Rs}} | As],
 		    Header, Mod);
 	{attribute, {module, _}} when Header =:= undefined ->
 	    L = erl_syntax:get_pos(F),
-	    collect(Fs, [], [], [], As,
+	    collect(Fs, [], [], [], [], As,
                     #entry{name = module, line = L,
-                           data = {comment_text(Cs),Ss,Ts}},
+                           data = {comment_text(Cs),Ss,Ts,Rs}},
 		    Mod);
+        {attribute, {record, {_Name, Fields}}} ->
+            case is_typed_record(Fields) of
+                true ->
+                    collect(Fs, Cs, Ss, Ts, [F | Rs], As, Header, Mod);
+                false ->
+                    collect(Fs, Cs, Ss, Ts, Rs, As, Header, Mod)
+            end;
         {attribute, {N, _}} ->
             case edoc_specs:tag(N) of
                 spec ->
-                    collect(Fs, Cs, [F | Ss], Ts, As, Header, Mod);
+                    collect(Fs, Cs, [F | Ss], Ts, Rs, As, Header, Mod);
                 type ->
-                    collect(Fs, Cs, Ss, [F | Ts], As, Header, Mod);
+                    collect(Fs, Cs, Ss, [F | Ts], Rs, As, Header, Mod);
                 unknown ->
                     %% Drop current seen comments.
-                    collect(Fs, [], [], [], As, Header, Mod)
+                    collect(Fs, [], [], [], Rs, As, Header, Mod)
             end;
 	_ ->
 	    %% Drop current seen comments.
-	    collect(Fs, [], [], [], As, Header, Mod)
+	    collect(Fs, [], [], [], [], As, Header, Mod)
     end;
-collect([], Cs, Ss, Ts, As, Header, _Mod) ->
-    Footer = #entry{name = footer, data = {comment_text(Cs),Ss,Ts}},
+collect([], Cs, Ss, Ts, Rs, As, Header, _Mod) ->
+    Footer = #entry{name = footer, data = {comment_text(Cs),Ss,Ts,Rs}},
     As1 = lists:reverse(As),
     if Header =:= undefined ->
-	    {#entry{name = module, data = {[],[],[]}}, Footer, As1};
+	    {#entry{name = module, data = {[],[],[],[]}}, Footer, As1};
        true ->
 	    {Header, Footer, As1}
     end.
+
+is_typed_record([]) ->
+    false;
+is_typed_record([{_, {_, Type}} | Fs]) ->
+    Type =/= none orelse is_typed_record(Fs).
 
 %% Returns a list of simplified comment information (position and text)
 %% for a list of abstract comments. The order of elements is reversed.
@@ -469,8 +488,15 @@ find_names([P | Ps], Ns) ->
 	    find_names([P1 | Ps], Ns);
 	record_expr ->
 	    A = erl_syntax:record_expr_type(P),
-	    N = list_to_atom(capitalize(erl_syntax:atom_name(A))),
-	    find_names(Ps, [N | Ns]);
+            AtomName = erl_syntax:atom_name(A),
+            Atom = list_to_atom(AtomName),
+            case AtomName =:= lists:flatten(io_lib:write_atom(Atom)) of
+                true ->
+                    N = list_to_atom(capitalize(AtomName)),
+                    find_names(Ps, [N | Ns]);
+                false ->
+                    find_names(Ps, Ns)
+            end;
 	infix_expr ->
 	    %% this can only be a '++' operation
 	    P1 = erl_syntax:infix_expr_right(P),
@@ -521,6 +547,7 @@ tidy_name_1(Cs) -> [$_ | Cs].
 %% Change initial character from lowercase to uppercase.
 
 capitalize([C | Cs]) when C >= $a, C =< $z -> [C - 32 | Cs];
+capitalize([C | Cs]) when C >= $\340, C =< $\376, C /= $\367 -> [C - 32 | Cs];
 capitalize(Cs) -> Cs.
 
 %% Collects the tags belonging to each entry, checks them, expands
@@ -549,8 +576,8 @@ get_tags(Es, Env, File, TypeDocs) ->
     How = dict:from_list(edoc_tags:tag_parsers()),
     get_tags(Es, Tags, Env, How, File, TypeDocs).
 
-get_tags([#entry{name = Name, data = {Cs,Specs,Types}} = E | Es], Tags, Env,
-	 How, File, TypeDocs) ->
+get_tags([#entry{name = Name, data = {Cs,Specs,Types,Records}} = E | Es],
+         Tags, Env, How, File, TypeDocs) ->
     Where = {File, Name},
     Ts0 = scan_tags(Cs),
     {Ts1,Specs1} = select_spec(Ts0, Where, Specs),
@@ -558,7 +585,7 @@ get_tags([#entry{name = Name, data = {Cs,Specs,Types}} = E | Es], Tags, Env,
     Ts3 = edoc_macros:expand_tags(Ts2, Env, Where),
     Ts4 = edoc_tags:parse_tags(Ts3, How, Env, Where),
     Ts = selected_specs(Specs1, Ts4),
-    ETypes = [edoc_specs:type(Type, TypeDocs) || Type <- Types],
+    ETypes = [edoc_specs:type(Type, TypeDocs) || Type <- Types ++ Records],
     [E#entry{data = Ts++ETypes} | get_tags(Es, Tags, Env, How, File, TypeDocs)];
 get_tags([], _, _, _, _, _) ->
     [].
@@ -607,7 +634,7 @@ select_spec(Ts, _Where, _Specs) ->
 selected_specs([], Ts) ->
     Ts;
 selected_specs([F], [_ | Ts]) ->
-    [edoc_specs:spec(F, _Clause=1) | Ts].
+    [edoc_specs:spec(F) | Ts].
 
 %% Macros for modules
 
@@ -625,11 +652,11 @@ file_macros(_Context, Env) ->
 %%
 %% The idea is to mimic how the @type tag works.
 %% Using @type:
-%%   @type t() = t1(). Some docs of t/0;
-%%   Further docs of t/0.
+%%```@type t() = t1(). Some docs of t/0;
+%%   Further docs of t/0.'''
 %% The same thing using -type:
-%%   -type t() :: t1(). % Some docs of t/0;
-%%   Further docs of t/0.
+%%```-type t() :: t1(). % Some docs of t/0;
+%%   Further docs of t/0.'''
 find_type_docs(Forms0, Comments, Env, File) ->
     Tree = erl_recomment:recomment_forms(Forms0, Comments),
     Forms = preprocess_forms(Tree),

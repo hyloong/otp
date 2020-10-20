@@ -1,7 +1,7 @@
 /*
  * %CopyrightBegin%
  * 
- * Copyright Ericsson AB 2002-2011. All Rights Reserved.
+ * Copyright Ericsson AB 2002-2016. All Rights Reserved.
  * 
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -143,13 +143,6 @@ int ei_big_comp(erlang_big *x, erlang_big *y)
 /*
  * Handling of floating point exceptions.
  */
-
-#if defined(VXWORKS) && CPU == PPC860
-#undef NO_FPE_SIGNALS
-#define NO_FPE_SIGNALS 1
-#undef INLINED_FP_CONVERSION
-#define INLINED_FP_CONVERSION 1
-#endif
 
 #ifdef NO_FPE_SIGNALS
 #  define ERTS_FP_CHECK_INIT() do {} while (0)

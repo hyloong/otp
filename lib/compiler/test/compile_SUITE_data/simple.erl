@@ -1,7 +1,7 @@
 %%
 %% %CopyrightBegin%
 %% 
-%% Copyright Ericsson AB 1997-2011. All Rights Reserved.
+%% Copyright Ericsson AB 1997-2016. All Rights Reserved.
 %% 
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -19,7 +19,7 @@
 %%
 -module(simple).
 
--export([test/0]).
+-export([test/0,unicode/0]).
 
 -ifdef(need_foo).
 -export([foo/0]).
@@ -27,6 +27,9 @@
 
 test() ->
     passed.
+
+unicode() ->
+    {"это",'спутник'}.
 
 %% Conditional inclusion.
 %% Compile with [{d, need_foo}, {d, foo_value, 42}].

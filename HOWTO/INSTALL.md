@@ -18,9 +18,6 @@ Required Utilities
 
 These are the tools you need in order to unpack and build Erlang/OTP.
 
-> *WARNING*: Please have a look at the [Known platform issues][] chapter
-> before you start.
-
 ### Unpacking ###
 
 *   GNU unzip, or a modern uncompress.
@@ -68,20 +65,18 @@ also find the utilities needed for building the documentation.
     Required for building the application `crypto`.
     Further, `ssl` and `ssh` require a working crypto application and
     will also be skipped if OpenSSL is missing. The `public_key`
-    application will available without `crypto`, but the functionality
+    application is available without `crypto`, but the functionality
     will be very limited.
 
     The development package of OpenSSL including the header files are needed as well
     as the binary command program `openssl`. At least version 0.9.8 of OpenSSL is required.
     Read more and download from <http://www.openssl.org>.
 *   Oracle Java SE JDK -- The Java Development Kit (Standard Edition).
-    Required for building the application `jinterface` and parts of `ic` and `orber`.
-    At least version 1.5.0 of the JDK is required.
+    Required for building the application `jinterface`.
+    At least version 1.6.0 of the JDK is required.
 
     Download from <http://www.oracle.com/technetwork/java/javase/downloads>.
-    We have also tested with IBM's JDK 1.5.0.
-*   X Windows -- Development headers and libraries are needed
-    to build the Erlang/OTP application `gs` on Unix/Linux.
+    We have also tested with IBM's JDK 1.6.0.
 *   `flex` -- Headers and libraries are needed to build the flex
     scanner for the `megaco` application on Unix/Linux.
 *   wxWidgets -- Toolkit for GUI applications.
@@ -210,9 +205,23 @@ the `$PATH`.
 
     $ export PATH=$ERL_TOP/bin:$PATH     # Assuming bash/sh
 
+For the FOP print formatter, two steps must be taken:
+
+*   Adding the location of your installation of `fop` in `$FOP_HOME`.
+
+        $ export FOP_HOME=/path/to/fop/dir # Assuming bash/sh
+
+*   Adding the `fop` script (in `$FOP_HOME`) to your `$PATH`, either by adding `$FOP_HOME` to `$PATH`, or by copying the `fop` script to a directory already in your `$PATH`.
+
 Build the documentation.
 
     $ make docs
+
+It is possible to limit which types of documentation is build by passing the `DOC_TARGETS`
+environment variable to `make docs`. The currently available types are: `html`, `pdf`, `man` and
+`chunks`. Example:
+
+    $ make docs DOC_TARGETS=chunks
 
 #### Build Issues ####
 
@@ -244,6 +253,8 @@ or using the `release_docs` target.
 
         $ make release_docs RELEASE_ROOT=<release dir>
 
+It is possible to limit which types of documentation is released using the same `DOC_TARGETS`
+environment variable as when building documentation.
 
 ### Accessing the Documentation ###
 
@@ -258,6 +269,8 @@ After installation you can access the documentation by
 *   Browsing the html pages by loading the page `/usr/local/lib/erlang/doc/erlang/index.html`
     or `<BaseDir>/lib/erlang/doc/erlang/index.html` if the prefix option has been used.
 
+*   Read the embedded documentation by using the built-in shell functions `h/1,2,3` or
+    `ht/1,2,3`.
 
 ### How to Install the Pre-formatted Documentation ###
 
@@ -335,10 +348,8 @@ use the `--prefix` argument like this: `./configure --prefix=<Dir>`.
 Some of the available `configure` options are:
 
 *   `--prefix=PATH` - Specify installation prefix.
-
-*   `--{enable,disable}-threads` - Thread support. This is enabled by default if possible.
-*   `--{enable,disable}-smp-support` - SMP support (enabled by default if
-    a usable POSIX thread library or native Windows threads is found)
+*   `--disable-parallel-configure` - Disable parallel execution of
+    `configure` scripts (parallel execution is enabled by default)
 *   `--{enable,disable}-kernel-poll` - Kernel poll support (enabled by
     default if possible)
 *   `--{enable,disable}-hipe` - HiPE support (enabled by default on supported
@@ -348,12 +359,11 @@ Some of the available `configure` options are:
     depending on operating system and hardware platform. Note that by
     enabling this you might get a seemingly working system that sometimes
     fail on floating point operations.
-*   `--enable-darwin-universal` - Build universal binaries on darwin i386.
-*   `--enable-darwin-64bit` - Build 64-bit binaries on darwin
 *   `--enable-m64-build` - Build 64-bit binaries using the `-m64` flag to
     `(g)cc`
 *   `--enable-m32-build` - Build 32-bit binaries using the `-m32` flag to
     `(g)cc`
+*   `--{enable,disable}-pie` - Build position independent executable binaries.
 *   `--with-assumed-cache-line-size=SIZE` - Set assumed cache-line size in
     bytes. Default is 64. Valid values are powers of two between and
     including 16 and 8192. The runtime system use this value in order to
@@ -366,9 +376,15 @@ Some of the available `configure` options are:
     `jinterface` application won't be built)
 *   `--{enable,disable}-dynamic-ssl-lib` - Dynamic OpenSSL libraries
 *   `--{enable,disable}-builtin-zlib` - Use the built-in source for zlib.
-*   `--with-ssl=PATH` - Specify location of OpenSSL include and lib
 *   `--{with,without}-ssl` - OpenSSL (without implies that the `crypto`,
     `ssh`, and `ssl` won't be built)
+*   `--with-ssl=PATH` - Specify location of OpenSSL include and lib
+*   `--with-ssl-incl=PATH` - Location of OpenSSL `include` directory,
+    if different than specified by `--with-ssl=PATH`
+*   `--with-ssl-rpath=yes|no|PATHS` - Runtime library path for OpenSSL.
+    Default is `yes`, which equates to a number of standard locations. If
+    `no`, then no runtime library paths will be used. Anything else should be
+    a comma separated list of paths.
 *   `--with-libatomic_ops=PATH` - Use the `libatomic_ops` library for atomic
     memory accesses. If `configure` should inform you about no native atomic
     implementation available, you typically want to try using the
@@ -392,7 +408,7 @@ Some of the available `configure` options are:
     that has to be the same as the filename. You also have to define
     `STATIC_ERLANG_{NIF,DRIVER}` when compiling the .o files for the nif/driver.
     If your nif/driver depends on some other dynamic library, you now have to link
-    that to the Erlang VM binary. This is easily achived by passing `LIBS=-llibname`
+    that to the Erlang VM binary. This is easily achieved by passing `LIBS=-llibname`
     to configure.
 *   `--without-$app` - By default all applications in Erlang/OTP will be included
 	in a release. If this is not wanted it is possible to specify that Erlang/OTP
@@ -406,11 +422,12 @@ Some of the available `configure` options are:
     time source with elapsed time during suspend.
 *   `--disable-prefer-elapsed-monotonic-time-during-suspend` - Do not prefer an OS
     monotonic time source with elapsed time during suspend.
-*   `--enable-dirty-schedulers` - Enable the **experimental** dirty schedulers
-    functionality. Note that the dirty schedulers functionality is experimental,
-    and **not supported**. This functionality **will** be subject to backward
-    incompatible changes. Note that you should **not** enable the dirty scheduler
-    functionality on production systems. It is only provided for testing.
+*   `--with-clock-resolution=high|low` - Try to find clock sources for OS system
+    time, and OS monotonic time with higher or lower resolution than chosen by
+    default. Note that both alternatives may have a negative impact on the performance
+    and scalability compared to the default clock sources chosen.
+*   `--disable-saved-compile-time` - Disable saving of compile date and time
+    in the emulator binary.
 
 If you or your system has special requirements please read the `Makefile` for
 additional configuration information.
@@ -500,12 +517,26 @@ If you have Xcode 4.3, or later, you will also need to download
 #### Building with wxErlang ####
 
 If you want to build the `wx` application, you will need to get wxWidgets-3.0
-(`wxWidgets-3.0.0.tar.bz2` from <http://sourceforge.net/projects/wxwindows/files/3.0.0/>) or get it from github with bug fixes:
+(`wxWidgets-3.0.3.tar.bz2` from <https://github.com/wxWidgets/wxWidgets/releases/download/v3.0.3/wxWidgets-3.0.3.tar.bz2>) or get it from github with bug fixes:
 
-    $ git clone --branch WX_3_0_branch git@github.com:wxWidgets/wxWidgets.git
+    $ git clone --branch WX_3_0_BRANCH git@github.com:wxWidgets/wxWidgets.git
 
-Be aware that the wxWidgets-3.0 is a new release of wxWidgets, it is not as
-mature as the old releases and the OS X port still lags behind the other ports.
+The wxWidgets-3.1 version should also work if 2.8 compatibility is enabled,
+add `--enable-compat28` to configure commands below.
+
+Configure and build wxWidgets (shared library on linux):
+
+    $ ./configure --prefix=/usr/local
+    $ make && sudo make install
+    $ export PATH=/usr/local/bin:$PATH
+
+Configure and build wxWidgets (static library on linux):
+
+    $ export CFLAGS=-fPIC
+    $ export CXXFLAGS=-fPIC
+    $ ./configure --prefix=/usr/local --disable-shared
+    $ make && sudo make install
+    $ export PATH=/usr/local/bin:$PATH
 
 Configure and build wxWidgets (on Mavericks - 10.9):
 
@@ -546,21 +577,21 @@ as before, but the build process will take a much longer time.
 > automatically when `make` is invoked from `$ERL_TOP` with either the
 > `clean` target, or the default target. It is also automatically invoked
 > if `./otp_build remove_prebuilt_files` is invoked.
+>
+> If you need to verify the bootstrap beam files match the provided
+> source files, use `./otp_build update_primary` to create a new commit that
+> contains differences, if any exist.
 
 #### How to Build a Debug Enabled Erlang RunTime System ####
 
 After completing all the normal building steps described above a debug
 enabled runtime system can be built. To do this you have to change
-directory to `$ERL_TOP/erts/emulator`.
+directory to `$ERL_TOP/erts/emulator` and execute:
 
-In this directory execute:
+    $ (cd $ERL_TOP/erts/emulator && make debug)
 
-    $ make debug FLAVOR=$FLAVOR
-
-where `$FLAVOR` is either `plain` or `smp`. The flavor options will
-produce a beam.debug and beam.smp.debug executable respectively. The
-files are installed along side with the normal (opt) versions `beam.smp`
-and `beam`.
+This will produce a  beam.smp.debug executable. The
+file are installed along side with the normal (opt) version `beam.smp`.
 
 To start the debug enabled runtime system execute:
 
@@ -574,7 +605,7 @@ using appropriate configure options.
 There are other types of runtime systems that can be built as well
 using the similar steps just described.
 
-    $ make $TYPE FLAVOR=$FLAVOR
+    $ (cd $ERL_TOP/erts/emulator && make $TYPE)
 
 where `$TYPE` is `opt`, `gcov`, `gprof`, `debug`, `valgrind`, or `lcnt`.
 These different beam types are useful for debugging and profiling
@@ -756,133 +787,6 @@ Use `hipe:help_options/0` to print out the available options.
 
     1> hipe:help_options().
 
-#### Running with GS ####
-
-The `gs` application requires the GUI toolkit Tcl/Tk to run. At least
-version 8.4 is required.
-
-Known platform issues
----------------------
-
-*   Suse linux 9.1 is shipped with a patched GCC version 3.3.3, having the
-    rpm named `gcc-3.3.3-41`. That version has a serious optimization bug
-    that makes it unusable for building the Erlang emulator. Please
-    upgrade GCC to a newer version before building on Suse 9.1. Suse Linux
-    Enterprise edition 9 (SLES9) has `gcc-3.3.3-43` and is not affected.
-
-*   `gcc-4.3.0` has a serious optimizer bug. It produces an Erlang emulator
-    that will crash immediately. The bug is supposed to be fixed in
-    `gcc-4.3.1`.
-
-*   FreeBSD had a bug which caused `kqueue`/`poll`/`select` to fail to detect
-    that a `writev()` on a pipe has been made. This bug should have been fixed
-    in FreeBSD 6.3 and FreeBSD 7.0. NetBSD and DragonFlyBSD probably have or
-    have had the same bug. More information can be found at:
-
-    *   <http://www.freebsd.org/cgi/cvsweb.cgi/src/sys/kern/sys_pipe.c>
-    *   <http://lists.freebsd.org/pipermail/freebsd-arch/2007-September/006790.html>
-
-*   `getcwd()` on Solaris 9 can cause an emulator crash. If you have
-    async-threads enabled you can increase the stack size of the
-    async-threads as a temporary workaround. See the `+a` command-line
-    argument in the documentation of `erl(1)`. Without async-threads the
-    emulator is not as vulnerable to this bug, but if you hit it without
-    async-threads the only workaround available is to enable async-threads
-    and increase the stack size of the async-threads. Oracle has however
-    released patches that fixes the issue:
-
-    > Problem Description: 6448300 large mnttab can cause stack overrun
-    > during Solaris 9 getcwd
-
-    More information can be found at:
-    *   <https://getupdates.oracle.com/readme/112874-40>
-    *   <https://getupdates.oracle.com/readme/114432-29>
-
-*  `sed` on Solaris seem to have some problems. For example on
-   Solaris 8, the BSD `sed` and XPG4 `sed` should be avoided.
-   Make sure `/bin/sed` or `/usr/bin/sed` is used on the Solaris
-   platform.
-
-
-Daily Build and Test
---------------------
-At Ericsson we have a "Daily Build and Test" that runs on:
-
-*   Solaris 8, 9
-    *   Sparc32
-    *   Sparc64
-*   Solaris 10
-    *   Sparc32
-    *   Sparc64
-    *   x86
-*   SuSE Linux/GNU 9.4, 10.1
-    *   x86
-*   SuSE Linux/GNU 10.0, 10.1, 11.0
-    *   x86
-    *   x86\_64
-*   openSuSE 11.4 (Celadon)
-    *   x86\_64 (valgrind)
-*   Fedora 7
-    *   PowerPC
-*   Fedora 16
-    * x86\_64
-*   Gentoo Linux/GNU 1.12.11.1
-    *   x86
-*   Ubuntu Linux/GNU 7.04, 10.04, 10.10, 11.04, 12.04
-    *   x86\_64
-*   MontaVista Linux/GNU 4.0.1
-    *   PowerPC
-*   FreeBSD 10.0
-    *   x86
-*   OpenBSD 5.4
-    *   x86\_64
-*   OS X 10.5.8 (Leopard), 10.7.5 (Lion), 10.9.1 (Mavericks)
-    *   x86
-*   Windows XP SP3, 2003, Vista, 7
-    *   x86
-*   Windows 7
-    *   x86\_64
-
-We also have the following "Daily Cross Builds":
-
-*   SuSE Linux/GNU 10.1 x86 -> SuSE Linux/GNU 10.1 x86\_64
-*   SuSE Linux/GNU 10.1 x86\_64 -> Linux/GNU TILEPro64
-
-and the following "Daily Cross Build Tests":
-
-*   SuSE Linux/GNU 10.1 x86\_64
-
-
-Authors
--------
-
-Authors are mostly listed in the application's `AUTHORS` files,
-that is `$ERL_TOP/lib/*/AUTHORS` and `$ERL_TOP/erts/AUTHORS`,
-not in the individual source files.
-
-
-Copyright and License
----------------------
-
-%CopyrightBegin%
-
-Copyright Ericsson AB 1998-2015. All Rights Reserved.
-
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
- 
-    http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
-
-%CopyrightEnd%
-
-
 
 
 
@@ -896,8 +800,7 @@ limitations under the License.
    [html documentation]: http://www.erlang.org/download/otp_doc_html_%OTP-VSN%.tar.gz
    [man pages]: http://www.erlang.org/download/otp_doc_man_%OTP-VSN%.tar.gz
    [the released source tar ball]: http://www.erlang.org/download/otp_src_%OTP-VSN%.tar.gz
-   [System Principles]: ../system_principles/system_principles
-   [Known platform issues]: #Known-platform-issues
+   [System Principles]: system/system_principles:system_principles
    [native build]: #How-to-Build-and-Install-ErlangOTP
    [cross build]: INSTALL-CROSS.md
    [Required Utilities]: #Required-Utilities

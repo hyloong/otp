@@ -1,17 +1,22 @@
-%% This library is free software; you can redistribute it and/or modify
-%% it under the terms of the GNU Lesser General Public License as
-%% published by the Free Software Foundation; either version 2 of the
-%% License, or (at your option) any later version.
+%% Licensed under the Apache License, Version 2.0 (the "License"); you may
+%% not use this file except in compliance with the License. You may obtain
+%% a copy of the License at <http://www.apache.org/licenses/LICENSE-2.0>
 %%
-%% This library is distributed in the hope that it will be useful, but
-%% WITHOUT ANY WARRANTY; without even the implied warranty of
-%% MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
-%% Lesser General Public License for more details.
+%% Unless required by applicable law or agreed to in writing, software
+%% distributed under the License is distributed on an "AS IS" BASIS,
+%% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+%% See the License for the specific language governing permissions and
+%% limitations under the License.
 %%
-%% You should have received a copy of the GNU Lesser General Public
-%% License along with this library; if not, write to the Free Software
-%% Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307
-%% USA
+%% Alternatively, you may use this file under the terms of the GNU Lesser
+%% General Public License (the "LGPL") as published by the Free Software
+%% Foundation; either version 2.1, or (at your option) any later version.
+%% If you wish to allow use of your version of this file only under the
+%% terms of the LGPL, you should delete the provisions above and replace
+%% them with the notice and other provisions required by the LGPL; see
+%% <http://www.gnu.org/licenses/>. If you do not delete the provisions
+%% above, a recipient may use your version of this file under the terms of
+%% either the Apache License or the LGPL.
 %%
 %% @author Mickaël Rémond <mickael.remond@process-one.net>
 %% @copyright 2009 Mickaël Rémond, Paul Guyot
@@ -56,7 +61,11 @@
 	{
 	  name :: chars(),
 	  description :: chars(),
-	  result :: ok | {failed, tuple()} | {aborted, tuple()} | {skipped, term()},
+	  result :: ok
+                  | {failed, tuple()}
+                  | {aborted, tuple()}
+                  | {skipped, term()}
+                  | undefined,
 	  time :: integer(),
 	  output :: binary()
 	 }).
@@ -415,6 +424,7 @@ escape_suitename(String) ->
 escape_suitename([], Acc) -> lists:reverse(Acc);
 escape_suitename([$  | Tail], Acc) -> escape_suitename(Tail, [$_ | Acc]);
 escape_suitename([$' | Tail], Acc) -> escape_suitename(Tail, Acc);
+escape_suitename([$" | Tail], Acc) -> escape_suitename(Tail, Acc);
 escape_suitename([$/ | Tail], Acc) -> escape_suitename(Tail, [$: | Acc]);
 escape_suitename([$\\ | Tail], Acc) -> escape_suitename(Tail, [$: | Acc]);
 escape_suitename([Char | Tail], Acc) when Char < $! -> escape_suitename(Tail, Acc);
@@ -441,6 +451,11 @@ escape_xml([$< | Tail], Acc, ForAttr) -> escape_xml(Tail, [$;, $t, $l, $& | Acc]
 escape_xml([$> | Tail], Acc, ForAttr) -> escape_xml(Tail, [$;, $t, $g, $& | Acc], ForAttr);
 escape_xml([$& | Tail], Acc, ForAttr) -> escape_xml(Tail, [$;, $p, $m, $a, $& | Acc], ForAttr);
 escape_xml([$" | Tail], Acc, true) -> escape_xml(Tail, [$;, $t, $o, $u, $q, $& | Acc], true); % "
+escape_xml([Char | Tail], Acc, ForAttr) when
+	  Char == $\n; Char == $\r; Char == $\t -> escape_xml(Tail, [Char | Acc], ForAttr);
+%% Strip C0 control codes which are not allowed in XML 1.0
+escape_xml([Char | Tail], Acc, ForAttr) when
+	  0 =< Char, Char =< 31 -> escape_xml(Tail, Acc, ForAttr);
 escape_xml([Char | Tail], Acc, ForAttr) when is_integer(Char) -> escape_xml(Tail, [Char | Acc], ForAttr).
 
 %% the input may be utf8 or latin1; the resulting list is unicode

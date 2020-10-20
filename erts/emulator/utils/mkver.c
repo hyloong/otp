@@ -1,7 +1,7 @@
 /*
  * %CopyrightBegin%
  * 
- * Copyright Ericsson AB 1996-2009. All Rights Reserved.
+ * Copyright Ericsson AB 1996-2016. All Rights Reserved.
  * 
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -35,8 +35,10 @@ int argc;
 char** argv;
 {
     FILE *file;
+#if ERTS_SAVED_COMPILE_TIME
     time_t now;
-    char *cnow;
+#endif
+    char *cnow = "";
 
     if (argc != 2) {
 	fprintf(stderr, "usage: mkver version\n");
@@ -48,9 +50,11 @@ char** argv;
 	exit(1);
     }
 
+#if ERTS_SAVED_COMPILE_TIME
     time(&now);
     cnow = ctime(&now);
     cnow[24] = '\0';		/* tidelipom */
+#endif
     fprintf(file, "/* This file was created by mkver -- don't modify.*/\n");
     fprintf(file, "#define ERLANG_VERSION \"%s\"\n", argv[1]);
     fprintf(file, "#define ERLANG_COMPILE_DATE \"%s\"\n", cnow);

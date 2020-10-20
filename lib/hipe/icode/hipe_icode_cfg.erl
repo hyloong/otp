@@ -1,10 +1,5 @@
 %% -*- erlang-indent-level: 2 -*-
-%%======================================================================
 %%
-%% %CopyrightBegin%
-%% 
-%% Copyright Ericsson AB 2001-2014. All Rights Reserved.
-%% 
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
 %% You may obtain a copy of the License at
@@ -16,9 +11,6 @@
 %% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 %% See the License for the specific language governing permissions and
 %% limitations under the License.
-%% 
-%% %CopyrightEnd%
-%%
 
 -module(hipe_icode_cfg).
 
@@ -54,6 +46,9 @@
 -spec labels(cfg()) -> [icode_lbl()].
 -spec postorder(cfg()) -> [icode_lbl()].
 -spec reverse_postorder(cfg()) -> [icode_lbl()].
+
+-spec params(cfg()) -> hipe_icode:params().
+-spec params_update(cfg(), hipe_icode:params()) -> cfg().
 
 -spec is_visited(icode_lbl(), gb_sets:set()) -> boolean().
 -spec visit(icode_lbl(), gb_sets:set()) -> gb_sets:set().
