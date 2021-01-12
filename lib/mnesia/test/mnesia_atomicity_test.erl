@@ -1,7 +1,7 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 1997-2011. All Rights Reserved.
+%% Copyright Ericsson AB 1997-2018. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -22,8 +22,36 @@
 -module(mnesia_atomicity_test).
 -author('hakan@erix.ericsson.se').
 -author('rossi@erix.ericsson.se').
--compile([export_all]).
 -include("mnesia_test_lib.hrl").
+
+-export([init_per_testcase/2, end_per_testcase/2,
+         init_per_group/2, end_per_group/2,
+         all/0, groups/0]).
+-export([explicit_abort_in_middle_of_trans/1,
+         runtime_error_in_middle_of_trans/1,
+         mnesia_down_during_infinite_trans/1,
+         kill_self_in_middle_of_trans/1, throw_in_middle_of_trans/1,
+         lock_waiter_sw_r/1, lock_waiter_sw_rt/1, lock_waiter_sw_wt/1,
+         lock_waiter_wr_r/1, lock_waiter_srw_r/1, lock_waiter_sw_sw/1,
+         lock_waiter_sw_w/1, lock_waiter_sw_wr/1, lock_waiter_sw_srw/1,
+         lock_waiter_wr_wt/1, lock_waiter_srw_wt/1,
+         lock_waiter_wr_sw/1, lock_waiter_srw_sw/1, lock_waiter_wr_w/1,
+         lock_waiter_srw_w/1, lock_waiter_r_sw/1, lock_waiter_r_w/1,
+         lock_waiter_r_wt/1, lock_waiter_rt_sw/1, lock_waiter_rt_w/1,
+         lock_waiter_rt_wt/1, lock_waiter_wr_wr/1,
+         lock_waiter_srw_srw/1, lock_waiter_wt_r/1, lock_waiter_wt_w/1,
+         lock_waiter_wt_rt/1, lock_waiter_wt_wt/1, lock_waiter_wt_wr/1,
+         lock_waiter_wt_srw/1, lock_waiter_wt_sw/1, lock_waiter_w_wr/1,
+         lock_waiter_w_srw/1, lock_waiter_w_sw/1, lock_waiter_w_r/1,
+         lock_waiter_w_w/1, lock_waiter_w_rt/1, lock_waiter_w_wt/1,
+         restart_r_one/1, restart_w_one/1, restart_rt_one/1,
+         restart_wt_one/1, restart_wr_one/1, restart_sw_one/1,
+         restart_r_two/1, restart_w_two/1, restart_rt_two/1,
+         restart_wt_two/1, restart_wr_two/1, restart_sw_two/1
+        ]
+       ).
+
+-export([perform_restarted_transaction/1, sync_tid_release/0]).
 
 init_per_testcase(Func, Conf) ->
     mnesia_test_lib:init_per_testcase(Func, Conf).
@@ -700,11 +728,19 @@ start_restart_check(RestartOp, ReplicaNeed, Config) ->
 
     %% mnesia shall be killed at that node, where A is reading
     %% the information from
-    kill_where_to_read(TabName, N1, [N2, N3]),
+    Read = kill_where_to_read(TabName, N1, [N2, N3]),
 
     %% wait some time to let mnesia go down and spread those news around
     %% fun A shall be able to finish its job before being restarted
-    wait(500),
+    Wait = fun(Loop) ->
+		   wait(300),
+		   sys:get_status(mnesia_monitor),
+		   case lists:member(Read, mnesia_lib:val({current, db_nodes})) of
+		       true -> Loop(Loop);
+		       false -> ok
+		   end
+	   end,
+    Wait(Wait),
     A ! go_ahead,
 
     %% the sticky write doesnt work on remote nodes !!!
@@ -772,10 +808,12 @@ kill_where_to_read(TabName, N1, Nodes) ->
     Read = rpc:call(N1,mnesia,table_info, [TabName, where_to_read]),
     case lists:member(Read, Nodes) of
 	true ->
-	    mnesia_test_lib:kill_mnesia([Read]);
+	    mnesia_test_lib:kill_mnesia([Read]),
+	    Read;
 	false ->
 	    ?error("Fault while killing Mnesia: ~p~n", [Read]),
-	    mnesia_test_lib:kill_mnesia(Nodes)
+	    mnesia_test_lib:kill_mnesia(Nodes),
+	    Read
     end.
 
 sync_tid_release() ->

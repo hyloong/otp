@@ -1,7 +1,7 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 1997-2014. All Rights Reserved.
+%% Copyright Ericsson AB 1997-2018. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -19,6 +19,9 @@
 %%
 -module(filename).
 
+-removed([{find_src,'_',"use filelib:find_source/1,3 instead"}]).
+-deprecated([{safe_relative_path,1,"use filelib:safe_relative_path/2 instead"}]).
+
 %% Purpose: Provides generic manipulation of filenames.
 %%
 %% Generally, these functions accept filenames in the native format
@@ -31,11 +34,45 @@
 %% we flatten the arguments immediately on function entry as that makes
 %% it easier to ensure that the code works.
 
+%%
+%% *** Requirements on Raw Filename Format ***
+%%
+%% These requirements are due to the 'filename' module
+%% in stdlib. This since it is documented that it
+%% should be able to operate on raw filenames as well
+%% as ordinary filenames.
+%%
+%% A raw filename *must* be a byte sequence where:
+%% 1. Codepoints 0-127 (7-bit ascii) *must* be encoded
+%%    as a byte with the corresponding value. That is,
+%%    the most significant bit in the byte encoding the
+%%    codepoint is never set.
+%% 2. Codepoints greater than 127 *must* be encoded
+%%    with the most significant bit set in *every* byte
+%%    encoding it.
+%%
+%% Latin1 and UTF-8 meet these requirements while
+%% UTF-16 and UTF-32 don't.
+%%
+%% On Windows filenames are natively stored as malformed
+%% UTF-16LE (lonely surrogates may appear). A more correct
+%% description than UTF-16 would be an array of 16-bit
+%% words... In order to meet the requirements of the
+%% raw file format we convert the malformed UTF-16LE to
+%% malformed UTF-8 which meet the requirements.
+%%
+%% Note that these requirements are today only OTP
+%% internal (erts-stdlib internal) requirements that
+%% could be changed.
+%%
+
 -export([absname/1, absname/2, absname_join/2, 
 	 basename/1, basename/2, dirname/1,
 	 extension/1, join/1, join/2, pathtype/1,
-	 rootname/1, rootname/2, split/1, nativename/1]).
--export([find_src/1, find_src/2, flatten/1]).
+         rootname/1, rootname/2, split/1, flatten/1, nativename/1,
+         safe_relative_path/1]).
+-export([basedir/2, basedir/3]).
+-export([validate/1]).
 
 %% Undocumented and unsupported exports.
 -export([append/2]).
@@ -139,6 +176,7 @@ absname_join(AbsBase, Name) ->
 
 -spec basename(Filename) -> file:filename_all() when
       Filename :: file:name_all().
+
 basename(Name) when is_binary(Name) ->
     case os:type() of
 	{win32,_} ->
@@ -359,22 +397,31 @@ extension(Name) when is_binary(Name) ->
 	[] ->
 	    <<>>;
 	List ->
-	    {Pos,_} = lists:last(List),
-	    <<_:Pos/binary,Part/binary>> = Name,
-	    case binary:match(Part,[<<"/">>|SList]) of
-		nomatch ->
-		    Part;
-		_ ->
-		    <<>>
+	    case lists:last(List) of
+		{0,_} ->
+		    <<>>;
+		{Pos, _} ->
+		    <<_:(Pos-1)/binary,Part/binary>> = Name,
+		    case binary:match(Part,[<<"/">>|SList]) of
+			nomatch ->
+			    <<_:Pos/binary,Result/binary>> = Name,
+			    Result;
+			_ ->
+			    <<>>
+		    end
 	    end
     end;
 
 extension(Name0) ->
     Name = flatten(Name0),
-    extension(Name, [], major_os_type()).
+    extension([$/ | Name], [], major_os_type()).
 
 extension([$.|Rest]=Result, _Result, OsType) ->
     extension(Rest, Result, OsType);
+extension([$/,$.|Rest], _Result, OsType) ->
+    extension(Rest, [], OsType);
+extension([$\\,$.|Rest], _Result, win32) ->
+    extension(Rest, [], win32);
 extension([Char|Rest], [], OsType) when is_integer(Char) ->
     extension(Rest, [], OsType);
 extension([$/|Rest], _Result, OsType) ->
@@ -433,6 +480,10 @@ join(Name1, Name2) when is_atom(Name2) ->
 join1([UcLetter, $:|Rest], RelativeName, [], win32)
 when is_integer(UcLetter), UcLetter >= $A, UcLetter =< $Z ->
     join1(Rest, RelativeName, [$:, UcLetter+$a-$A], win32);
+join1([$\\,$\\|Rest], RelativeName, [], win32) ->
+    join1([$/,$/|Rest], RelativeName, [], win32);
+join1([$/,$/|Rest], RelativeName, [], win32) ->
+    join1(Rest, RelativeName, [$/,$/], win32);
 join1([$\\|Rest], RelativeName, Result, win32) ->
     join1([$/|Rest], RelativeName, Result, win32);
 join1([$/|Rest], RelativeName, [$., $/|Result], OsType) ->
@@ -461,6 +512,10 @@ join1([Atom|Rest], RelativeName, Result, OsType) when is_atom(Atom) ->
 join1b(<<UcLetter, $:, Rest/binary>>, RelativeName, [], win32)
 when is_integer(UcLetter), UcLetter >= $A, UcLetter =< $Z ->
     join1b(Rest, RelativeName, [$:, UcLetter+$a-$A], win32);
+join1b(<<$\\,$\\,Rest/binary>>, RelativeName, [], win32) ->
+    join1b(<<$/,$/,Rest/binary>>, RelativeName, [], win32);
+join1b(<<$/,$/,Rest/binary>>, RelativeName, [], win32) ->
+    join1b(Rest, RelativeName, [$/,$/], win32);
 join1b(<<$\\,Rest/binary>>, RelativeName, Result, win32) ->
     join1b(<<$/,Rest/binary>>, RelativeName, Result, win32);
 join1b(<<$/,Rest/binary>>, RelativeName, [$., $/|Result], OsType) ->
@@ -471,6 +526,8 @@ join1b(<<>>, <<>>, Result, OsType) ->
     list_to_binary(maybe_remove_dirsep(Result, OsType));
 join1b(<<>>, RelativeName, [$:|Rest], win32) ->
     join1b(RelativeName, <<>>, [$:|Rest], win32);
+join1b(<<>>, RelativeName, [$/,$/|Result], win32) ->
+    join1b(RelativeName, <<>>, [$/,$/|Result], win32);
 join1b(<<>>, RelativeName, [$/|Result], OsType) ->
     join1b(RelativeName, <<>>, [$/|Result], OsType);
 join1b(<<>>, RelativeName, [$., $/|Result], OsType) ->
@@ -484,6 +541,8 @@ maybe_remove_dirsep([$/, $:, Letter], win32) ->
     [Letter, $:, $/];
 maybe_remove_dirsep([$/], _) ->
     [$/];
+maybe_remove_dirsep([$/,$/], win32) ->
+    [$/,$/];
 maybe_remove_dirsep([$/|Name], _) ->
     lists:reverse(Name);
 maybe_remove_dirsep(Name, _) ->
@@ -583,8 +642,8 @@ rootname([$/|Rest], Root, Ext, OsType) ->
     rootname(Rest, [$/]++Ext++Root, [], OsType);
 rootname([$\\|Rest], Root, Ext, win32) ->
     rootname(Rest, [$/]++Ext++Root, [], win32);
-rootname([$.|Rest], Root, [], OsType) ->
-    rootname(Rest, Root, ".", OsType);
+rootname([$.|Rest], [$/|_]=Root, [], OsType) ->
+    rootname(Rest, [$.|Root], [], OsType);
 rootname([$.|Rest], Root, Ext, OsType) ->
     rootname(Rest, Ext++Root, ".", OsType);
 rootname([Char|Rest], Root, [], OsType) when is_integer(Char) ->
@@ -613,14 +672,18 @@ rootname(Name, Ext) when is_binary(Ext) ->
 rootname(Name0, Ext0) ->
     Name = flatten(Name0),
     Ext = flatten(Ext0),
-    rootname2(Name, Ext, []).
+    rootname2(Name, Ext, [], major_os_type()).
 
-rootname2(Ext, Ext, Result) ->
+rootname2(Ext, Ext, [$/|_]=Result, _OsType) ->
+    lists:reverse(Result, Ext);
+rootname2(Ext, Ext, [$\\|_]=Result, win32) ->
+    lists:reverse(Result, Ext);
+rootname2(Ext, Ext, Result, _OsType) ->
     lists:reverse(Result);
-rootname2([], _Ext, Result) ->
+rootname2([], _Ext, Result, _OsType) ->
     lists:reverse(Result);
-rootname2([Char|Rest], Ext, Result) when is_integer(Char) ->
-    rootname2(Rest, Ext, [Char|Result]).
+rootname2([Char|Rest], Ext, Result, OsType) when is_integer(Char) ->
+    rootname2(Rest, Ext, [Char|Result], OsType).
 
 %% Returns a list whose elements are the path components in the filename.
 %%
@@ -673,6 +736,9 @@ win32_splitb(<<Letter0,$:,Rest/binary>>) when ?IS_DRIVELETTER(Letter0) ->
     Letter = fix_driveletter(Letter0),
     L = binary:split(Rest,[<<"/">>,<<"\\">>],[global]),
     [<<Letter,$:>> | [ X || X <- L, X =/= <<>> ]];
+win32_splitb(<<Slash,Slash,Rest/binary>>) when ((Slash =:= $\\) orelse (Slash =:= $/)) ->
+    L = binary:split(Rest,[<<"/">>,<<"\\">>],[global]),
+    [<<"//">> | [ X || X <- L, X =/= <<>> ]];
 win32_splitb(<<Slash,Rest/binary>>) when ((Slash =:= $\\) orelse (Slash =:= $/)) ->
     L = binary:split(Rest,[<<"/">>,<<"\\">>],[global]),
     [<<$/>> | [ X || X <- L, X =/= <<>> ]];
@@ -684,6 +750,8 @@ win32_splitb(Name) ->
 unix_split(Name) ->
     split(Name, [], unix).
 
+win32_split([Slash,Slash|Rest]) when ((Slash =:= $\\) orelse (Slash =:= $/)) ->
+    split(Rest, [[$/,$/]], win32);
 win32_split([$\\|Rest]) ->
     win32_split([$/|Rest]);
 win32_split([X, $\\|Rest]) when is_integer(X) ->
@@ -748,178 +816,38 @@ separators() ->
 	_ -> {false, false}
     end.
 
+-spec safe_relative_path(Filename) -> 'unsafe' | SafeFilename when
+      Filename :: file:name_all(),
+      SafeFilename :: file:name_all().
 
-
-%% find_src(Module) --
-%% find_src(Module, Rules) --
-%%
-%% Finds the source file name and compilation options for a compiled
-%% module.  The result can be fed to compile:file/2 to compile the
-%% file again.
-%%
-%% The Module argument (which can be a string or an atom) specifies 
-%% either the module name or the path to the source code, with or 
-%% without the ".erl" extension.  In either case the module must be
-%% known by the code manager, i.e. code:which/1 should succeed.
-%%
-%% Rules describes how the source directory should be found given
-%% the directory for the object code.  Each rule is on the form
-%% {BinSuffix, SourceSuffix}, and is interpreted like this:
-%% If the end of directory name where the object is located matches
-%% BinSuffix, then the suffix will be replaced with SourceSuffix
-%% in the directory name.  If the source file in the resulting
-%% directory, the next rule will be tried.
-%%
-%% Returns: {SourceFile, Options}
-%%
-%% SourceFile is the absolute path to the source file (but without the ".erl"
-%% extension) and Options are the necessary options to compile the file
-%% with compile:file/2, but doesn't include options like 'report' or
-%% 'verbose' that doesn't change the way code is generated.
-%% The paths in the {outdir, Path} and {i, Path} options are guaranteed
-%% to be absolute.
-
--spec find_src(Beam) -> {SourceFile, Options}
-                      | {error, {ErrorReason, Module}} when
-      Beam :: Module | Filename,
-      Filename :: atom() | string(),
-      Module :: module(),
-      SourceFile :: string(),
-      Options :: [Option],
-      Option :: {'i', Path :: string()}
-              | {'outdir', Path :: string()}
-              | {'d', atom()},
-      ErrorReason :: 'non_existing' | 'preloaded' | 'interpreted'.
-find_src(Mod) ->
-    Default = [{"", ""}, {"ebin", "src"}, {"ebin", "esrc"}],
-    Rules = 
-	case application:get_env(kernel, source_search_rules) of
-	    undefined -> Default;
-	    {ok, []} -> Default;
-	    {ok, R} when is_list(R) -> R
-	end,
-    find_src(Mod, Rules).
-
--spec find_src(Beam, Rules) -> {SourceFile, Options}
-                             | {error, {ErrorReason, Module}} when
-      Beam :: Module | Filename,
-      Filename :: atom() | string(),
-      Rules :: [{BinSuffix :: string(), SourceSuffix :: string()}],
-      Module :: module(),
-      SourceFile :: string(),
-      Options :: [Option],
-      Option :: {'i', Path :: string()}
-              | {'outdir', Path :: string()}
-              | {'d', atom()},
-      ErrorReason :: 'non_existing' | 'preloaded' | 'interpreted'.
-find_src(Mod, Rules) when is_atom(Mod) ->
-    find_src(atom_to_list(Mod), Rules);
-find_src(File0, Rules) when is_list(File0) ->
-    Mod = list_to_atom(basename(File0, ".erl")),
-    File = rootname(File0, ".erl"),
-    case readable_file(File++".erl") of
-	true  ->
-	    try_file(File, Mod, Rules);
-	false ->
-	    try_file(undefined, Mod, Rules)
+safe_relative_path(Path) ->
+    case pathtype(Path) of
+        relative ->
+            Cs0 = split(Path),
+            safe_relative_path_1(Cs0, []);
+        _ ->
+            unsafe
     end.
 
-try_file(File, Mod, Rules) ->
-    case code:which(Mod) of
-	Possibly_Rel_Path when is_list(Possibly_Rel_Path) ->
-	    {ok, Cwd} = file:get_cwd(),
-	    Path = join(Cwd, Possibly_Rel_Path),
-	    try_file(File, Path, Mod, Rules);
-	Ecode when is_atom(Ecode) -> % Ecode :: ecode()
-	    {error, {Ecode, Mod}}
-    end.
+safe_relative_path_1(["."|T], Acc) ->
+    safe_relative_path_1(T, Acc);
+safe_relative_path_1([<<".">>|T], Acc) ->
+    safe_relative_path_1(T, Acc);
+safe_relative_path_1([".."|T], Acc) ->
+    climb(T, Acc);
+safe_relative_path_1([<<"..">>|T], Acc) ->
+    climb(T, Acc);
+safe_relative_path_1([H|T], Acc) ->
+    safe_relative_path_1(T, [H|Acc]);
+safe_relative_path_1([], []) ->
+    [];
+safe_relative_path_1([], Acc) ->
+    join(lists:reverse(Acc)).
 
-%% At this point, the Mod is known to be valid.
-%% If the source name is not known, find it.
-%% Then get the compilation options.
-%% Returns: {SrcFile, Options}
-
-try_file(undefined, ObjFilename, Mod, Rules) ->
-    case get_source_file(ObjFilename, Mod, Rules) of
-	{ok, File} -> try_file(File, ObjFilename, Mod, Rules);
-	Error -> Error
-    end;
-try_file(Src, _ObjFilename, Mod, _Rules) ->
-    List = case Mod:module_info(compile) of
-	       none -> [];
-	       List0 -> List0
-	   end,
-    Options = proplists:get_value(options, List, []),
-    {ok, Cwd} = file:get_cwd(),
-    AbsPath = make_abs_path(Cwd, Src),
-    {AbsPath, filter_options(dirname(AbsPath), Options, [])}.
-
-%% Filters the options.
-%%
-%% 1) Only keep options that have any effect on code generation.
-%%
-%% 2) The paths found in {i, Path} and {outdir, Path} are converted
-%%    to absolute paths.  When doing this, it is assumed that relatives
-%%    paths are relative to directory where the source code is located.
-%%    This is not necessarily true.  It would be safer if the compiler
-%%    would emit absolute paths in the first place.
-
-filter_options(Base, [{outdir, Path}|Rest], Result) ->
-    filter_options(Base, Rest, [{outdir, make_abs_path(Base, Path)}|Result]);
-filter_options(Base, [{i, Path}|Rest], Result) ->
-    filter_options(Base, Rest, [{i, make_abs_path(Base, Path)}|Result]);
-filter_options(Base, [Option|Rest], Result) when Option =:= export_all ->
-    filter_options(Base, Rest, [Option|Result]);
-filter_options(Base, [Option|Rest], Result) when Option =:= binary ->
-    filter_options(Base, Rest, [Option|Result]);
-filter_options(Base, [Tuple|Rest], Result) when element(1, Tuple) =:= d ->
-    filter_options(Base, Rest, [Tuple|Result]);
-filter_options(Base, [Tuple|Rest], Result)
-when element(1, Tuple) =:= parse_transform ->
-    filter_options(Base, Rest, [Tuple|Result]);
-filter_options(Base, [_|Rest], Result) ->
-    filter_options(Base, Rest, Result);
-filter_options(_Base, [], Result) ->
-    Result.
-
-%% Gets the source file given path of object code and module name.
-
-get_source_file(Obj, Mod, Rules) ->
-    source_by_rules(dirname(Obj), atom_to_list(Mod), Rules).
-
-source_by_rules(Dir, Base, [{From, To}|Rest]) ->
-    case try_rule(Dir, Base, From, To) of
-	{ok, File} -> {ok, File};
-	error      -> source_by_rules(Dir, Base, Rest)
-    end;
-source_by_rules(_Dir, _Base, []) ->
-    {error, source_file_not_found}.
-
-try_rule(Dir, Base, From, To) ->
-    case lists:suffix(From, Dir) of
-	true -> 
-	    NewDir = lists:sublist(Dir, 1, length(Dir)-length(From))++To,
-	    Src = join(NewDir, Base),
-	    case readable_file(Src++".erl") of
-		true -> {ok, Src};
-		false -> error
-	    end;
-	false ->
-	    error
-    end.
-
-readable_file(File) ->
-    case file:read_file_info(File) of
-	{ok, #file_info{type=regular, access=read}} ->
-	    true;
-	{ok, #file_info{type=regular, access=read_write}} ->
-	    true;
-	_Other ->
-	    false
-    end.
-
-make_abs_path(BasePath, Path) ->
-    join(BasePath, Path).
+climb(_, []) ->
+    unsafe;
+climb(T, [_|Acc]) ->
+    safe_relative_path_1(T, Acc).
 
 major_os_type() ->
     {OsT, _} = os:type(),
@@ -954,3 +882,258 @@ filename_string_to_binary(List) ->
 	    Bin
     end.
 
+%% Application Base Directories
+%% basedir
+%% http://standards.freedesktop.org/basedir-spec/basedir-spec-latest.html
+
+-type basedir_path_type() :: 'user_cache' | 'user_config' | 'user_data'
+                           | 'user_log'.
+-type basedir_paths_type() :: 'site_config' | 'site_data'.
+
+-type basedir_opts() :: #{author => string() | binary(),
+                          os => 'windows' | 'darwin' | 'linux',
+                          version => string() | binary()}.
+
+-spec basedir(PathType,Application) -> file:filename_all() when
+      PathType :: basedir_path_type(),
+      Application :: string() | binary();
+             (PathsType,Application) -> [file:filename_all()] when
+      PathsType :: basedir_paths_type(),
+      Application :: string() | binary().
+
+basedir(Type,Application) when is_atom(Type), is_list(Application) orelse
+                                              is_binary(Application) ->
+    basedir(Type, Application, #{}).
+
+-spec basedir(PathType,Application,Opts) -> file:filename_all() when
+      PathType :: basedir_path_type(),
+      Application :: string() | binary(),
+      Opts :: basedir_opts();
+             (PathsType,Application,Opts) -> [file:filename_all()] when
+      PathsType :: basedir_paths_type(),
+      Application :: string() | binary(),
+      Opts :: basedir_opts().
+
+basedir(Type,Application,Opts) when is_atom(Type), is_map(Opts),
+                                    is_list(Application) orelse
+                                    is_binary(Application) ->
+    Os   = basedir_os_from_opts(Opts),
+    Name = basedir_name_from_opts(Os,Application,Opts),
+    Base = basedir_from_os(Type,Os),
+    case {Type,Os} of
+        {user_log,linux} ->
+            filename:join([Base,Name,"log"]);
+        {user_log,windows} ->
+            filename:join([Base,Name,"Logs"]);
+        {user_cache,windows} ->
+            filename:join([Base,Name,"Cache"]);
+        {Type,_} when Type =:= site_config orelse Type =:= site_data ->
+            [filename:join([B,Name]) || B <- Base];
+        _ ->
+            filename:join([Base,Name])
+    end.
+
+basedir_os_from_opts(#{os := linux}) -> linux;
+basedir_os_from_opts(#{os := windows}) -> windows;
+basedir_os_from_opts(#{os := darwin}) -> darwin;
+basedir_os_from_opts(#{}) -> basedir_os_type().
+
+basedir_name_from_opts(windows,App,#{author:=Author,version:=Vsn}) ->
+    filename:join([Author,App,Vsn]);
+basedir_name_from_opts(windows,App,#{author:=Author}) ->
+    filename:join([Author,App]);
+basedir_name_from_opts(_,App,#{version:=Vsn}) ->
+    filename:join([App,Vsn]);
+basedir_name_from_opts(_,App,_) ->
+    App.
+
+basedir_from_os(Type,Os) ->
+    case Os of
+        linux   -> basedir_linux(Type);
+        darwin  -> basedir_darwin(Type);
+        windows -> basedir_windows(Type)
+    end.
+
+-define(basedir_linux_user_data,   ".local/share").
+-define(basedir_linux_user_config, ".config").
+-define(basedir_linux_user_cache,  ".cache").
+-define(basedir_linux_user_log,    ".cache"). %% .cache/App/log
+-define(basedir_linux_site_data,   "/usr/local/share/:/usr/share/").
+-define(basedir_linux_site_config, "/etc/xdg").
+
+basedir_linux(Type) ->
+    case Type of
+        user_data   -> getenv("XDG_DATA_HOME",  ?basedir_linux_user_data,  true);
+        user_config -> getenv("XDG_CONFIG_HOME",?basedir_linux_user_config,true);
+        user_cache  -> getenv("XDG_CACHE_HOME", ?basedir_linux_user_cache, true);
+        user_log    -> getenv("XDG_CACHE_HOME", ?basedir_linux_user_log,   true);
+        site_data   ->
+            Base = getenv("XDG_DATA_DIRS",?basedir_linux_site_data,false),
+            string:lexemes(Base, ":");
+        site_config ->
+            Base = getenv("XDG_CONFIG_DIRS",?basedir_linux_site_config,false),
+            string:lexemes(Base, ":")
+    end.
+
+-define(basedir_darwin_user_data,   "Library/Application Support").
+-define(basedir_darwin_user_config, "Library/Application Support").
+-define(basedir_darwin_user_cache,  "Library/Caches").
+-define(basedir_darwin_user_log,    "Library/Logs").
+-define(basedir_darwin_site_data,   "/Library/Application Support").
+-define(basedir_darwin_site_config, "/Library/Application Support").
+
+basedir_darwin(Type) ->
+    case Type of
+        user_data   -> basedir_join_home(?basedir_darwin_user_data);
+        user_config -> basedir_join_home(?basedir_darwin_user_config);
+        user_cache  -> basedir_join_home(?basedir_darwin_user_cache);
+        user_log    -> basedir_join_home(?basedir_darwin_user_log);
+        site_data   -> [?basedir_darwin_site_data];
+        site_config -> [?basedir_darwin_site_config]
+    end.
+
+%% On Windows:
+%% ex. C:\Users\egil\AppData\Local\Ericsson\Erlang
+%% %LOCALAPPDATA% is defined on Windows 7 and onwards
+%% %APPDATA% is used instead of %LOCALAPPDATA% if it's not defined.
+%% %APPDATA% is used for roaming, i.e. for user_config on Windows 7 and beyond.
+%%
+%% user_data    %LOCALAPPDATA%[/$author]/$appname[/$version]
+%% user_config  %APPDATA%[/$author]/$appname[/$version]
+%% user_cache   %LOCALAPPDATA%[/$author]/$appname[/$version]/Cache
+%% user_log     %LOCALAPPDATA%[/$author]/$appname[/$version]/Logs
+
+-define(basedir_windows_user_data,   "Local").
+-define(basedir_windows_user_config, "Roaming").
+-define(basedir_windows_user_cache,  "Local").    %% Cache is added later
+-define(basedir_windows_user_log,    "Local").    %% Logs is added later
+
+basedir_windows(Type) ->
+    %% If LOCALAPPDATA is not defined we are likely on an
+    %% XP machine. Use APPDATA instead.
+    case basedir_windows_appdata() of
+        noappdata ->
+            %% No AppData is set
+            %% Probably running MSYS
+            case Type of
+                user_data   -> basedir_join_home(?basedir_windows_user_data);
+                user_config -> basedir_join_home(?basedir_windows_user_config);
+                user_cache  -> basedir_join_home(?basedir_windows_user_cache);
+                user_log    -> basedir_join_home(?basedir_windows_user_log);
+                site_data   -> [];
+                site_config -> []
+            end;
+        {ok, AppData} ->
+            case Type of
+                user_data   -> getenv("LOCALAPPDATA", AppData);
+                user_config -> AppData;
+                user_cache  -> getenv("LOCALAPPDATA", AppData);
+                user_log    -> getenv("LOCALAPPDATA", AppData);
+                site_data   -> [];
+                site_config -> []
+            end
+    end.
+
+basedir_windows_appdata() ->
+    case os:getenv("APPDATA") of
+        Invalid when Invalid =:= false orelse Invalid =:= [] ->
+            noappdata;
+        Val ->
+            {ok, Val}
+    end.
+
+%% basedir aux
+
+getenv(K,Def,false) -> getenv(K,Def);
+getenv(K,Def,true)  -> getenv(K,basedir_join_home(Def)).
+
+getenv(K,Def) ->
+    case os:getenv(K) of
+        []    -> Def;
+        false -> Def;
+        Val   -> Val
+    end.
+
+basedir_join_home(Dir) ->
+    case os:getenv("HOME") of
+        false ->
+            {ok,[[Home]]} = init:get_argument(home),
+            filename:join(Home,Dir);
+        Home  -> filename:join(Home,Dir)
+    end.
+
+basedir_os_type() ->
+    case os:type() of
+        {unix,darwin} -> darwin;
+        {win32,_}     -> windows;
+        _             -> linux
+    end.
+
+%%
+%% validate/1
+%%
+
+-spec validate(FileName) -> boolean() when
+      FileName :: file:name_all().
+
+validate(FileName) when is_binary(FileName) ->
+    %% Raw filename...
+    validate_bin(FileName);
+validate(FileName) when is_list(FileName);
+                        is_atom(FileName) ->
+    validate_list(FileName,
+                  file:native_name_encoding(),
+                  os:type()).
+
+validate_list(FileName, Enc, Os) ->
+    try
+        true = validate_list(FileName, Enc, Os, 0) > 0
+    catch
+        _ : _ -> false
+    end.
+
+validate_list([], _Enc, _Os, Chars) ->
+    Chars;
+validate_list(C, Enc, Os, Chars) when is_integer(C) ->
+    validate_char(C, Enc, Os),
+    Chars+1;
+validate_list(A, Enc, Os, Chars) when is_atom(A) ->
+    validate_list(atom_to_list(A), Enc, Os, Chars);
+validate_list([H|T], Enc, Os, Chars) ->
+    NewChars = validate_list(H, Enc, Os, Chars),
+    validate_list(T, Enc, Os, NewChars).
+
+%% C is always an integer...
+% validate_char(C, _, _) when not is_integer(C) ->
+%     throw(invalid);
+validate_char(C, _, _) when C < 1 ->
+    throw(invalid); %% No negative or null characters...
+validate_char(C, latin1, _) when C > 255 ->
+    throw(invalid);
+validate_char(C, utf8, _) when C >= 16#110000 ->
+    throw(invalid);
+validate_char(C, utf8, {win32, _}) when C > 16#ffff ->
+    throw(invalid); %% invalid win wchar...
+validate_char(_C, utf8, {win32, _}) ->
+    ok; %% Range below is accepted on windows...
+validate_char(C, utf8, _) when 16#D800 =< C, C =< 16#DFFF ->
+    throw(invalid); %% invalid unicode range...
+validate_char(_, _, _) ->
+    ok.
+
+validate_bin(Bin) ->
+    %% Raw filename. That is, we do not interpret
+    %% the encoding, but we still do not accept
+    %% null characters...
+    try
+        true = validate_bin(Bin, 0) > 0
+    catch
+        _ : _ -> false
+    end.
+
+validate_bin(<<>>, Bs) ->
+    Bs;
+validate_bin(<<0, _Rest/binary>>, _Bs) ->
+    throw(invalid); %% No null characters allowed...
+validate_bin(<<_B, Rest/binary>>, Bs) ->
+    validate_bin(Rest, Bs+1).

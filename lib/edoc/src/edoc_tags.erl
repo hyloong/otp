@@ -1,18 +1,23 @@
 %% =====================================================================
-%% This library is free software; you can redistribute it and/or modify
-%% it under the terms of the GNU Lesser General Public License as
-%% published by the Free Software Foundation; either version 2 of the
-%% License, or (at your option) any later version.
+%% Licensed under the Apache License, Version 2.0 (the "License"); you may
+%% not use this file except in compliance with the License. You may obtain
+%% a copy of the License at <http://www.apache.org/licenses/LICENSE-2.0>
 %%
-%% This library is distributed in the hope that it will be useful, but
-%% WITHOUT ANY WARRANTY; without even the implied warranty of
-%% MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
-%% Lesser General Public License for more details.
+%% Unless required by applicable law or agreed to in writing, software
+%% distributed under the License is distributed on an "AS IS" BASIS,
+%% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+%% See the License for the specific language governing permissions and
+%% limitations under the License.
 %%
-%% You should have received a copy of the GNU Lesser General Public
-%% License along with this library; if not, write to the Free Software
-%% Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307
-%% USA
+%% Alternatively, you may use this file under the terms of the GNU Lesser
+%% General Public License (the "LGPL") as published by the Free Software
+%% Foundation; either version 2.1, or (at your option) any later version.
+%% If you wish to allow use of your version of this file only under the
+%% terms of the LGPL, you should delete the provisions above and replace
+%% them with the notice and other provisions required by the LGPL; see
+%% <http://www.gnu.org/licenses/>. If you do not delete the provisions
+%% above, a recipient may use your version of this file under the terms of
+%% either the Apache License or the LGPL.
 %%
 %% @private
 %% @copyright 2001-2003 Richard Carlsson
@@ -30,9 +35,9 @@
 
 -export([tags/0, tags/1, tag_names/0, tag_parsers/0, scan_lines/2,
 	 filter_tags/2, filter_tags/3, check_tags/4, parse_tags/4,
-         check_types/3]).
+	 check_types/3]).
 
--import(edoc_report, [report/4, warning/4, error/3]).
+-export_type([tag_flag/0]).
 
 -include("edoc.hrl").
 -include("edoc_types.hrl").
@@ -56,6 +61,13 @@
 %% - @history (never properly updated; use version control etc.)
 %% - @category (useless; superseded by keywords or free text search)
 
+-type tag() :: author | copyright | deprecated | doc | docfile | 'end' | equiv | headerfile
+	     | hidden | param | private | reference | returns | see | since | spec | throws
+	     | title | 'TODO' | todo | type | version.
+-type parser() :: text | xml | fun().
+-type tag_flag() :: module | footer | function | overview | single.
+
+-spec tags() -> [{tag(), parser(), [tag_flag()]}].
 tags() ->
     All = [module,footer,function,overview],
     [{author, fun parse_contact/4, [module,overview]},
@@ -213,14 +225,16 @@ filter_tags([#tag{name = N, line = L} = T | Ts], Tags, Where, Ts1) ->
 	true ->
 	    filter_tags(Ts, Tags, Where, [T | Ts1]);
 	false ->
-	    [warning(L, Where, "tag @~s not recognized.", [N]) ||
-                Where =/= no],
+	    case Where of
+		no -> ok;
+		_ -> edoc_report:warning(L, Where, "tag @~s not recognized.", [N])
+	    end,
 	    filter_tags(Ts, Tags, Where, Ts1)
     end;
 filter_tags([], _, _, Ts) ->
     lists:reverse(Ts).
 
-%% Check occurrances of tags.
+%% Check occurrences of tags.
 
 check_tags(Ts, Allow, Single, Where) ->
     check_tags(Ts, Allow, Single, Where, false, sets:new()).
@@ -232,7 +246,7 @@ check_tags([#tag{name = T, line = L} | Ts], Allow, Single, Where, Error, Seen) -
 		false ->
 		    check_tags(Ts, Allow, Single, Where, Error, Seen);
 		true ->
-		    report(L, Where, "multiple @~s tag.", [T]),
+		    edoc_report:report(L, Where, "multiple @~s tag.", [T]),
 		    check_tags(Ts, Allow, Single, Where, true, Seen)
 	    end;
 	false ->
@@ -241,7 +255,7 @@ check_tags([#tag{name = T, line = L} | Ts], Allow, Single, Where, Error, Seen) -
 		true ->
 		    check_tags(Ts, Allow, Single, Where, Error, Seen1);
 		false ->
-		    report(L, Where, "tag @~s not allowed here.", [T]),
+		    edoc_report:report(L, Where, "tag @~s not allowed here.", [T]),
 		    check_tags(Ts, Allow, Single, Where, true, Seen1)
 	    end
     end;
@@ -275,7 +289,7 @@ parse_tag(T, F, Env, Where) ->
 	{expand, Ts} ->
 	    Ts;
 	{error, L, Error} ->
-	    error(L, Where, Error),
+	    edoc_report:error(L, Where, Error),
 	    exit(error);
 	{'EXIT', R} -> exit(R);
 	Other -> throw(Other)
@@ -334,8 +348,8 @@ parse_typedef(Data, Line, _Env, Where) ->
                     throw_error(Line, {"redefining built-in type '~w'.",
                                        [T]});
                 true ->
-                    warning(Line, Where, "redefining built-in type '~w'.",
-                            [T]),
+		    edoc_report:warning(Line, Where, "redefining built-in type '~w'.",
+					[T]),
                     Def
             end;
 	false ->
@@ -344,7 +358,7 @@ parse_typedef(Data, Line, _Env, Where) ->
 
 -type line() :: erl_anno:line().
 
--spec parse_file(_, line(), _, _) -> no_return().
+-spec parse_file(_, line(), edoc:env(), _) -> no_return().
 
 parse_file(Data, Line, Env, _Where) ->
     case edoc_lib:parse_expr(Data, Line) of
@@ -360,7 +374,7 @@ parse_file(Data, Line, Env, _Where) ->
 	    throw_error(Line, file_not_string)
     end.
 
--spec parse_header(_, line(), _, _) -> no_return().
+-spec parse_header(_, line(), edoc:env(), _) -> no_return().
 
 parse_header(Data, Line, Env, {Where, _}) ->
     parse_header(Data, Line, Env, Where);
@@ -383,6 +397,7 @@ parse_header(Data, Line, Env, Where) when is_list(Where) ->
 -type err() :: 'file_not_string'
              | {'file_not_found', file:filename()}
              | {'read_file', file:filename(), term()}
+             | {string(), [term()]}
              | string().
 
 -spec throw_error(line(), err()) -> no_return().
@@ -451,7 +466,7 @@ check_type(#tag{line = L, data = Data}, P0, Ls, Ts) ->
 check_type(#t_def{type = Type}, P, Ls, Ts) ->
     check_type(Type, P, Ls, Ts);
 check_type(#t_type{name = Name, args = Args}, P, Ls, Ts) ->
-    _ = check_used_type(Name, Args, P, Ls),
+    check_used_type(Name, Args, P, Ls),
     check_types3(Args++Ts, P, Ls);
 check_type(#t_var{}, P, Ls, Ts) ->
     check_types3(Ts, P, Ls);
@@ -503,9 +518,10 @@ check_used_type(#t_name{name = N, module = Mod}=Name, Args, P, LocalTypes) ->
         false ->
             #parms{warn = W, line = L, file = File} = P,
             %% true = ets:insert(DT, TypeName),
-            [type_warning(L, File, "missing type", N, NArgs) || W]
+            _ = [type_warning(L, File, "missing type", N, NArgs) || W],
+	    ok
     end.
 
 type_warning(Line, File, S, N, NArgs) ->
     AS = ["/"++integer_to_list(NArgs) || NArgs > 0],
-    warning(Line, File, S++" ~w~s", [N, AS]).
+    edoc_report:warning(Line, File, S++" ~w~s", [N, AS]).

@@ -1,7 +1,7 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2004-2015. All Rights Reserved.
+%% Copyright Ericsson AB 2004-2019. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -25,7 +25,7 @@
 -define(QLC, qlc).
 -define(QLCs, "qlc").
 
-%-define(debug, true).
+%%-define(debug, true).
 
 %% There are often many tests per testcase. Most tests are copied to a
 %% module, a file. The file is compiled and the test run. Should the
@@ -43,10 +43,10 @@
 -define(testcase, current_testcase). % don't know
 -define(t, test_server).
 -else.
--include_lib("test_server/include/test_server.hrl").
--define(datadir, ?config(data_dir, Config)).
--define(privdir, ?config(priv_dir, Config)).
--define(testcase, ?config(?TESTCASE, Config)).
+-include_lib("common_test/include/ct.hrl").
+-define(datadir, proplists:get_value(data_dir, Config)).
+-define(privdir, proplists:get_value(priv_dir, Config)).
+-define(testcase, proplists:get_value(?TESTCASE, Config)).
 -endif.
 
 -include_lib("stdlib/include/ms_transform.hrl").
@@ -58,7 +58,7 @@
 -export([ 
 	  badarg/1, nested_qlc/1, unused_var/1, lc/1, fun_clauses/1,
 	  filter_var/1, single/1, exported_var/1, generator_vars/1,
-	  nomatch/1, errors/1, pattern/1, 
+	  nomatch/1, errors/1, pattern/1, overridden_bif/1,
 
 	  eval/1, cursor/1, fold/1, eval_unique/1, eval_cache/1, append/1, 
 	  evaluator/1, string_to_handle/1, table/1, process_dies/1, 
@@ -80,7 +80,7 @@
 
 	  backward/1, forward/1,
 
-         eep37/1]).
+	  eep37/1]).
 
 %% Internal exports.
 -export([bad_table_throw/1, bad_table_exit/1, default_table/1, bad_table/1,
@@ -107,19 +107,15 @@
 	 handle_event/2, handle_call/2, handle_info/2,
 	 terminate/2]).
 
-% Default timetrap timeout (set in init_per_testcase).
--define(default_timeout, ?t:minutes(5)).
-
 init_per_testcase(Case, Config) ->
-    ?line Dog = ?t:timetrap(?default_timeout),
-    [{?TESTCASE, Case}, {watchdog, Dog} | Config].
+    [{?TESTCASE, Case} | Config].
 
 end_per_testcase(_Case, _Config) ->
-    Dog = ?config(watchdog, _Config),
-    test_server:timetrap_cancel(Dog),
     ok.
 
-suite() -> [{ct_hooks,[ts_install_cth]}].
+suite() ->
+    [{ct_hooks,[ts_install_cth]},
+     {timetrap,{minutes,5}}].
 
 all() -> 
     [{group, parse_transform}, {group, evaluation},
@@ -130,7 +126,7 @@ groups() ->
     [{parse_transform, [],
       [badarg, nested_qlc, unused_var, lc, fun_clauses,
        filter_var, single, exported_var, generator_vars,
-       nomatch, errors, pattern]},
+       nomatch, errors, pattern, overridden_bif]},
      {evaluation, [],
       [eval, cursor, fold, eval_unique, eval_cache, append,
        evaluator, string_to_handle, table, process_dies, sort,
@@ -159,35 +155,30 @@ init_per_group(_GroupName, Config) ->
 end_per_group(_GroupName, Config) ->
     Config.
 
-badarg(doc) ->
-    "Badarg.";
-badarg(suite) -> [];
 badarg(Config) when is_list(Config) ->
     Ts =
-      [{badarg,
-       <<"-import(qlc, [q/1, q/2]).
+	[{badarg,
+	  <<"-import(qlc, [q/1, q/2]).
           q(_, _, _) -> ok.
 
-          badarg() ->
-              qlc:q(foo),
-              qlc:q(foo, cache_all),
-              qlc:q(foo, cache_all, extra),
-              q(bar),
-              q(bar, cache_all),
-              q(bar, cache_all, extra).
-       ">>,
+badarg() ->
+    qlc:q(foo),
+    qlc:q(foo, cache_all),
+    qlc:q(foo, cache_all, extra),
+    q(bar),
+    q(bar, cache_all),
+    q(bar, cache_all, extra).
+">>,
        [],
-       {errors,[{5,?QLC,not_a_query_list_comprehension},
-                {6,?QLC,not_a_query_list_comprehension},
-                {8,?QLC,not_a_query_list_comprehension},
-                {9,?QLC,not_a_query_list_comprehension}],
-        []}}],
-    ?line [] = compile(Config, Ts),
+{errors,[{5,?QLC,not_a_query_list_comprehension},
+	 {6,?QLC,not_a_query_list_comprehension},
+	 {8,?QLC,not_a_query_list_comprehension},
+	 {9,?QLC,not_a_query_list_comprehension}],
+ []}}],
+    [] = compile(Config, Ts),
     ok.
 
-nested_qlc(doc) ->
-    "Nested qlc expressions.";
-nested_qlc(suite) -> [];
+%% Nested qlc expressions.
 nested_qlc(Config) when is_list(Config) ->
     %% Nested QLC expressions. X is bound before the first one; Z and X
     %% before the second one.
@@ -227,12 +218,10 @@ nested_qlc(Config) when is_list(Config) ->
        [warn_unused_vars],
        {warnings,[{{6,39},erl_lint,{shadowed_var,'X',generate}}]}}
     ],
-    ?line [] = compile(Config, Ts),
+    [] = compile(Config, Ts),
     ok.
 
-unused_var(doc) ->
-    "Unused variable with a name that should not be introduced.";
-unused_var(suite) -> [];
+%% Unused variable with a name that should not be introduced.
 unused_var(Config) when is_list(Config) ->
     Ts = 
      [{unused_var,
@@ -244,12 +233,10 @@ unused_var(Config) when is_list(Config) ->
        ">>,
        [warn_unused_vars],
        {warnings,[{{2,33},erl_lint,{unused_var,'Y1'}}]}}],
-    ?line [] = compile(Config, Ts),
+    [] = compile(Config, Ts),
     ok.
 
-lc(doc) ->
-    "Ordinary LC expression.";
-lc(suite) -> [];
+%% Ordinary LC expression.
 lc(Config) when is_list(Config) ->
     Ts = 
      [{lc,
@@ -258,12 +245,10 @@ lc(Config) when is_list(Config) ->
         ">>,
        [],
        {warnings,[{{2,30},erl_lint,{shadowed_var,'X',generate}}]}}],
-    ?line [] = compile(Config, Ts),
+    [] = compile(Config, Ts),
     ok.
            
-fun_clauses(doc) ->
-    "Fun with several clauses.";
-fun_clauses(suite) -> [];
+%% Fun with several clauses.
 fun_clauses(Config) when is_list(Config) ->
     Ts = 
      [{fun_clauses,
@@ -279,12 +264,10 @@ fun_clauses(Config) when is_list(Config) ->
                   {{3,41},erl_lint,{shadowed_var,'X',generate}},
                   {{4,22},erl_lint,{shadowed_var,'X','fun'}},
                   {{4,41},erl_lint,{shadowed_var,'X',generate}}]}}],
-    ?line [] = compile(Config, Ts),
+    [] = compile(Config, Ts),
     ok.
 
-filter_var(doc) ->
-    "Variable introduced in filter.";
-filter_var(suite) -> [];
+%% Variable introduced in filter.
 filter_var(Config) when is_list(Config) ->
     Ts = 
      [{filter_var,
@@ -309,13 +292,11 @@ filter_var(Config) when is_list(Config) ->
         ">>,
        [],
        {errors,[{{2,25},erl_lint,{unsafe_var,'V',{'case',{3,19}}}}],[]}}],
-    ?line [] = compile(Config, Ts),
+    [] = compile(Config, Ts),
     ok.
 
 
-single(doc) ->
-    "Unused pattern variable.";
-single(suite) -> [];
+%% Unused pattern variable.
 single(Config) when is_list(Config) ->
     Ts = 
      [{single,
@@ -325,12 +306,10 @@ single(Config) when is_list(Config) ->
         ">>,
        [warn_unused_vars],
        {warnings,[{{2,30},erl_lint,{unused_var,'Y'}}]}}],
-    ?line [] = compile(Config, Ts),
+    [] = compile(Config, Ts),
     ok.
 
-exported_var(doc) ->
-    "Exported variable in list expression (rhs of generator).";
-exported_var(suite) -> [];
+%% Exported variable in list expression (rhs of generator).
 exported_var(Config) when is_list(Config) ->
     Ts = 
      [{exported_var,
@@ -347,12 +326,10 @@ exported_var(Config) when is_list(Config) ->
        [warn_export_vars],
        {warnings,[{{7,37},erl_lint,{exported_var,'Z',{'case',{3,36}}}},
                   {{7,44},erl_lint,{exported_var,'Z',{'case',{3,36}}}}]}}],
-    ?line [] = compile(Config, Ts),
+    [] = compile(Config, Ts),
     ok.
 
-generator_vars(doc) ->
-    "Errors for generator variable used in list expression.";
-generator_vars(suite) -> [];
+%% Errors for generator variable used in list expression.
 generator_vars(Config) when is_list(Config) ->
     Ts = 
       [{generator_vars,
@@ -374,12 +351,10 @@ generator_vars(Config) when is_list(Config) ->
                  {{9,33},?QLC,{used_generator_variable,'Z'}},
                  {{9,40},?QLC,{used_generator_variable,'Z'}}],
          []}}],
-    ?line [] = compile(Config, Ts),
+    [] = compile(Config, Ts),
     ok.
 
-nomatch(doc) ->
-    "Unreachable clauses also found when compiling.";
-nomatch(suite) -> [];
+%% Unreachable clauses also found when compiling.
 nomatch(Config) when is_list(Config) ->
     Ts =
       [{unreachable1,
@@ -451,13 +426,11 @@ nomatch(Config) when is_list(Config) ->
         {warnings,[{3,v3_core,nomatch}]}}
 
       ],
-    ?line [] = compile(Config, Ts),
+    [] = compile(Config, Ts),
     ok.
     
 
-errors(doc) ->
-    "Errors within qlc expressions also found when compiling.";
-errors(suite) -> [];
+%% Errors within qlc expressions also found when compiling.
 errors(Config) when is_list(Config) ->
     Ts =
       [{errors1,
@@ -466,12 +439,10 @@ errors(Config) when is_list(Config) ->
         ">>,
         [],
         {errors,[{{2,33},erl_lint,{unbound_var,'A'}}],[]}}],
-    ?line [] = compile(Config, Ts),
+    [] = compile(Config, Ts),
     ok.
 
-pattern(doc) ->
-    "Patterns.";
-pattern(suite) -> [];
+%% Patterns.
 pattern(Config) when is_list(Config) ->
     Ts = [
       <<"%% Records in patterns. No lookup.
@@ -493,14 +464,29 @@ pattern(Config) when is_list(Config) ->
          end, [{<<\"hej\">>}])">>
 
        ],
-    ?line run(Config, <<"-record(a, {k,v}).
+    run(Config, <<"-record(a, {k,v}).
                          -record(k, {t,v}).\n">>, Ts),
     ok.
 
+%% Override a guard BIF with an imported or local function.
+overridden_bif(Config) ->
+    Ts = [
+	  <<"[2] = qlc:e(qlc:q([P || P <- [1,2,3], port(P)])),
+             [10] = qlc:e(qlc:q([P || P <- [0,9,10,11,12],
+                                      (is_reference(P) andalso P > 5)])),
+             Empty = gb_sets:empty(), Single = gb_sets:singleton(42),
+             GbSets = [Empty,Single],
+             [Single] = qlc:e(qlc:q([S || S <- GbSets, size(S) =/= 0]))
+            ">>
+	 ],
+    run(Config, "-import(gb_sets, [size/1]).
+                 -compile({no_auto_import, [size/1, is_reference/1]}).
+                 port(N) -> N rem 2 =:= 0.
+                 is_reference(N) -> N rem 10 =:= 0.\n", Ts),
+    ok.
 
-eval(doc) ->
-    "eval/2";
-eval(suite) -> [];
+
+%% eval/2
 eval(Config) when is_list(Config) ->
     ScratchDir = filename:join([?privdir, "scratch","."]),
 
@@ -616,12 +602,10 @@ eval(Config) when is_list(Config) ->
 
           ],
     
-    ?line run(Config, Ts),
+    run(Config, Ts),
     ok.
 
-cursor(doc) ->
-    "cursor/2";
-cursor(suite) -> [];
+%% cursor/2
 cursor(Config) when is_list(Config) ->
     ScratchDir = filename:join([?privdir, "scratch","."]),
     Ts = [<<"{'EXIT',{badarg,_}} = 
@@ -730,12 +714,10 @@ cursor(Config) when is_list(Config) ->
              ok = qlc:delete_cursor(C2)">>
 
          ],
-    ?line run(Config, Ts),
+    run(Config, Ts),
     ok.
 
-fold(doc) ->
-    "fold/4";
-fold(suite) -> [];
+%% fold/4
 fold(Config) when is_list(Config) ->
     ScratchDir = filename:join([?privdir, "scratch","."]),
     Ts = [<<"Q = qlc:q([X || X <- [1,2,1,2,1]]),
@@ -825,12 +807,10 @@ fold(Config) when is_list(Config) ->
                (catch qlc:fold(F, [], Q, [{unique_all,false}]))
             ">>
          ],
-    ?line run(Config, Ts),
+    run(Config, Ts),
     ok.
 
-eval_unique(doc) ->
-    "Test the unique_all option of eval.";
-eval_unique(suite) -> [];
+%% Test the unique_all option of eval.
 eval_unique(Config) when is_list(Config) ->
     Ts = [<<"QLC1 = qlc:q([X || X <- qlc:append([[1,1,2], [1,2,3,2,3]])]),
              [1,2,3] = qlc:eval(QLC1, {unique_all,true}),
@@ -906,11 +886,12 @@ eval_unique(Config) when is_list(Config) ->
              [a] = qlc:e(Q2, {unique_all, true})
             ">>,
 
-          <<"Q = qlc:q([SQV || SQV <- qlc:q([X || X <- [1,2,1]],unique)],
+          <<"Q = qlc:q([SQV || SQV <- qlc:q([X || X <- [1,2,1,#{a => 1}]],
+                                             unique)],
                        unique),
              {call,_,_,[{lc,_,{var,_,'X'},[{generate,_,{var,_,'X'},_}]},_]} =
                  qlc:info(Q, [{format,abstract_code},unique_all]),
-             [1,2] = qlc:e(Q)">>,
+             [1,2,#{a := 1}] = qlc:e(Q)">>,
 
           <<"Q = qlc:q([X || X <- [1,2,1]]),
              {call,_,_,[{lc,_,{var,_,'X'},[{generate,_,{var,_,'X'},_}]},_]} =
@@ -922,12 +903,10 @@ eval_unique(Config) when is_list(Config) ->
              {sort,{sort,{list,_},[{unique,true}]},[]} = i(Q)">>
 
          ],
-    ?line run(Config, Ts),
+    run(Config, Ts),
     ok.
 
-eval_cache(doc) ->
-    "Test the cache_all and unique_all options of eval.";
-eval_cache(suite) -> [];
+%% Test the cache_all and unique_all options of eval.
 eval_cache(Config) when is_list(Config) ->
     Ts = [
        <<"E = ets:new(apa, [ordered_set]),
@@ -1056,12 +1035,10 @@ eval_cache(Config) when is_list(Config) ->
           [1] = qlc:e(H, unique_all)">>
 
          ],
-    ?line run(Config, Ts),
+    run(Config, Ts),
     ok.
 
-append(doc) ->
-    "Test the append function.";
-append(suite) -> [];
+%% Test the append function.
 append(Config) when is_list(Config) ->
     Ts = [<<"C = qlc:cursor(qlc:q([X || X <- [0,1,2,3], begin 10/X > 0.0 end])),
              R = (catch qlc:next_answers(C)),
@@ -1121,12 +1098,12 @@ append(Config) when is_list(Config) ->
              foo() -> bar">>,
 
           %% Used to work up to R11B.
-          % <<"apa = qlc:e(qlc:q([X || X <- qlc:append([[1,2,3], ugly()])])),
-          %   ok.
-          %
-          %   ugly() ->
-          %       [a | apa].
-          %   foo() -> bar">>,
+          %% <<"apa = qlc:e(qlc:q([X || X <- qlc:append([[1,2,3], ugly()])])),
+          %%   ok.
+          %%
+          %%   ugly() ->
+          %%       [a | apa].
+          %%   foo() -> bar">>,
 
           
           %% Maybe this one should fail.
@@ -1179,99 +1156,104 @@ append(Config) when is_list(Config) ->
              [a,b,1,2,1,2] = qlc:e(Q)">>
 
           ],
-    ?line run(Config, Ts),
+    run(Config, Ts),
     ok.
 
-evaluator(doc) ->
-    "Simple call from evaluator.";
-evaluator(suite) -> [];
+%% Simple call from evaluator.
 evaluator(Config) when is_list(Config) ->
-    ?line true = is_alive(),
+    true = is_alive(),
     evaluator_2(Config, []),
-    ?line {ok, Node} = start_node(qlc_SUITE_evaluator),
-    ?line ok = rpc:call(Node, ?MODULE, evaluator_2, [Config, [compiler]]),
-    ?line ?t:stop_node(Node),
+    {ok, Node} = start_node(qlc_SUITE_evaluator),
+    ok = rpc:call(Node, ?MODULE, evaluator_2, [Config, [compiler]]),
+    test_server:stop_node(Node),
     ok.
 
 evaluator_2(Config, Apps) ->
-    ?line lists:foreach(fun(App) -> true = code:del_path(App) end, Apps),
+    lists:foreach(fun(App) -> true = code:del_path(App) end, Apps),
     FileName = filename:join(?privdir, "eval"),
-    ?line ok = file:write_file(FileName, 
+    ok = file:write_file(FileName,
                          <<"H = qlc:q([X || X <- L]),
                             [1,2,3] = qlc:e(H).">>),
-    ?line Bs = erl_eval:add_binding('L', [1,2,3], erl_eval:new_bindings()),
-    ?line ok = file:eval(FileName, Bs),
+    Bs = erl_eval:add_binding('L', [1,2,3], erl_eval:new_bindings()),
+    ok = file:eval(FileName, Bs),
 
     %% The error message is "handled" a bit too much... 
     %% (no trace of erl_lint left)
-    ?line ok = file:write_file(FileName, 
+    ok = file:write_file(FileName,
              <<"H = qlc:q([X || X <- L]), qlc:e(H).">>),
-    ?line {error,_} = file:eval(FileName),
+    {error,_} = file:eval(FileName),
 
     %% Ugly error message; badarg is caught by file.erl.
-    ?line ok = file:write_file(FileName, 
+    ok = file:write_file(FileName,
              <<"H = qlc:q([Z || {X,Y} <- [{a,2}], Z <- [Y]]), qlc:e(H).">>),
-    ?line {error,_} = file:eval(FileName),
+    {error,_} = file:eval(FileName),
 
     _ = file:delete(FileName),
     ok.
 
 start_node(Name) ->
-    ?line PA = filename:dirname(code:which(?MODULE)),
-    ?t:start_node(Name, slave, [{args, "-pa " ++ PA}]).
+    PA = filename:dirname(code:which(?MODULE)),
+    test_server:start_node(Name, slave, [{args, "-pa " ++ PA}]).
 
-string_to_handle(doc) ->
-    "string_to_handle/1,2.";
-string_to_handle(suite) -> [];
+%% string_to_handle/1,2.
 string_to_handle(Config) when is_list(Config) ->
-    ?line {'EXIT',{badarg,_}} = (catch qlc:string_to_handle(14)),
-    ?line {'EXIT',{badarg,_}} = 
+    {'EXIT',{badarg,_}} = (catch qlc:string_to_handle(14)),
+    {'EXIT',{badarg,_}} =
         (catch qlc:string_to_handle("[X || X <- [a].", unique_all)),
-    ?line R1 = {error, _, {_,erl_scan,_}} = qlc:string_to_handle("'"),
-    ?line "1: unterminated " ++ _ = lists:flatten(qlc:format_error(R1)),
-    ?line {error, _, {_,erl_parse,_}} = qlc:string_to_handle("foo"),
-    ?line {'EXIT',{badarg,_}} = (catch qlc:string_to_handle("foo, bar.")),
-    ?line R3 = {error, _, {_,?QLC,not_a_query_list_comprehension}} = 
+    R1 = {error, _, {_,erl_scan,_}} = qlc:string_to_handle("'"),
+    "1: unterminated " ++ _ = lists:flatten(qlc:format_error(R1)),
+    {error, _, {_,erl_parse,_}} = qlc:string_to_handle("foo"),
+    {'EXIT',{badarg,_}} = (catch qlc:string_to_handle("foo, bar.")),
+    R3 = {error, _, {_,?QLC,not_a_query_list_comprehension}} =
         qlc:string_to_handle("bad."),
-    ?line "1: argument is not" ++ _ = lists:flatten(qlc:format_error(R3)),
-    ?line R4 = {error, _, {_,?QLC,{used_generator_variable,'Y'}}} = 
+    "1: argument is not" ++ _ = lists:flatten(qlc:format_error(R3)),
+    R4 = {error, _, {_,?QLC,{used_generator_variable,'Y'}}} =
         qlc:string_to_handle("[X || begin Y = [1,2], true end, X <- Y]."),
-    ?line "1: generated variable 'Y'" ++ _ = 
+    "1: generated variable 'Y'" ++ _ =
         lists:flatten(qlc:format_error(R4)),
-    ?line {error, _, {_,erl_lint,_}} = qlc:string_to_handle("[X || X <- A]."),
-    ?line H1 = qlc:string_to_handle("[X || X <- [1,2]]."),
-    ?line [1,2] = qlc:e(H1),
-    ?line H2 = qlc:string_to_handle("[X || X <- qlc:append([a,b],"
+    {error, _, {_,erl_lint,_}} = qlc:string_to_handle("[X || X <- A]."),
+    H1 = qlc:string_to_handle("[X || X <- [1,2]]."),
+    [1,2] = qlc:e(H1),
+    H2 = qlc:string_to_handle("[X || X <- qlc:append([a,b],"
                                     "qlc:e(qlc:q([X || X <- [c,d,e]])))]."),
-    ?line [a,b,c,d,e] = qlc:e(H2),
+    [a,b,c,d,e] = qlc:e(H2),
     %% The generated fun has many arguments (erl_eval has a maximum of 20).
-    ?line H3 = qlc:string_to_handle(
+    H3 = qlc:string_to_handle(
            "[{A,B,C,D,E,F,G,H,I,J,K,L,M,N,O,P,Q,R,S,T,U,V,W} ||"
            " {A,B,C,D,E,F,G,H,I,J,K,L,M,N,O,P,Q,R,S,T,U,V,W} <- []]."),
-    ?line [] = qlc:e(H3),
-    ?line Bs1 = erl_eval:add_binding('L', [1,2,3], erl_eval:new_bindings()),
-    ?line H4 = qlc:string_to_handle("[X || X <- L].", [], Bs1),
-    ?line [1,2,3] = qlc:e(H4),
-    ?line H5 = qlc:string_to_handle("[X || X <- [1,2,1,2]].", [unique, cache]),
-    ?line [1,2] = qlc:e(H5),
+    [] = qlc:e(H3),
+    Bs1 = erl_eval:add_binding('L', [1,2,3], erl_eval:new_bindings()),
+    H4 = qlc:string_to_handle("[X || X <- L].", [], Bs1),
+    [1,2,3] = qlc:e(H4),
+    H5 = qlc:string_to_handle("[X || X <- [1,2,1,2]].", [unique, cache]),
+    [1,2] = qlc:e(H5),
 
-    ?line Ets = ets:new(test, []),
-    ?line true = ets:insert(Ets, [{1}]),
-    ?line Bs2 = erl_eval:add_binding('E', Ets, erl_eval:new_bindings()),
-    ?line Q = "[X || {X} <- ets:table(E)].",
-    ?line [1] = qlc:e(qlc:string_to_handle(Q, [], Bs2)),
-    ?line [1] = qlc:e(qlc:string_to_handle(Q, {max_lookup,1000}, Bs2)),
-    ?line [1] = qlc:e(qlc:string_to_handle(Q, {max_lookup,infinity}, Bs2)),
-    ?line {'EXIT',{badarg,_}} = 
+    Ets = ets:new(test, []),
+    true = ets:insert(Ets, [{1}]),
+    Bs2 = erl_eval:add_binding('E', Ets, erl_eval:new_bindings()),
+    Q = "[X || {X} <- ets:table(E)].",
+    [1] = qlc:e(qlc:string_to_handle(Q, [], Bs2)),
+    [1] = qlc:e(qlc:string_to_handle(Q, {max_lookup,1000}, Bs2)),
+    [1] = qlc:e(qlc:string_to_handle(Q, {max_lookup,infinity}, Bs2)),
+    {'EXIT',{badarg,_}} =
         (catch qlc:string_to_handle(Q, {max_lookup,-1}, Bs2)),
-    ?line {'EXIT', {no_lookup_to_carry_out, _}} = 
+    {'EXIT', {no_lookup_to_carry_out, _}} =
         (catch qlc:e(qlc:string_to_handle(Q, {lookup,true}, Bs2))),
-    ?line ets:delete(Ets),
+    ets:delete(Ets),
+
+    %% References can be scanned and parsed.
+    E2 = ets:new(test, [bag]),
+    Ref = make_ref(),
+    true = ets:insert(E2, [{Ref,Ref}]),
+    S2 = "[{Val1} || {Ref1, Val1} <- ets:table("++io_lib:write(E2)++"),"
+         "Ref1 =:= Ref].",
+    Bs = erl_eval:add_binding('Ref', Ref, erl_eval:new_bindings()),
+    [{Ref}] = qlc:e(qlc:string_to_handle(S2, [], Bs)),
+    ets:delete(E2),
+
     ok.
 
-table(doc) ->
-    "table";
-table(suite) -> [];
+%% table
 table(Config) when is_list(Config) ->
     dets:start(),
     Ts = [
@@ -1353,11 +1335,11 @@ table(Config) when is_list(Config) ->
           ets:delete(E)">>,
 
        %% The info tag num_of_objects is currently not used.
-%        <<"E = ets:new(test, [ordered_set]),
-%           true = ets:insert(E, [{1,a},{2,b},{3,c}]),
-%           H = qlc:q([X || X <- qlc_SUITE:bad_table_info_fun_n_objects(E)]),
-%           {'EXIT', finito} = (catch {any_term,qlc:e(H)}),
-%           ets:delete(E)">>,
+%%        <<"E = ets:new(test, [ordered_set]),
+%%           true = ets:insert(E, [{1,a},{2,b},{3,c}]),
+%%           H = qlc:q([X || X <- qlc_SUITE:bad_table_info_fun_n_objects(E)]),
+%%           {'EXIT', finito} = (catch {any_term,qlc:e(H)}),
+%%           ets:delete(E)">>,
 
        <<"E = ets:new(test, [ordered_set]),
           true = ets:insert(E, [{1,a},{2,b},{3,c}]),
@@ -1473,7 +1455,7 @@ table(Config) when is_list(Config) ->
               [1,2] = lookup_keys(Q)
            end, [{1,1},{2,2}])">>
        ],
-    ?line run(Config, Ts),
+    run(Config, Ts),
 
     Ts2 = [
        %% [T || P <- Table, F] turned into a match spec. Records needed.
@@ -1484,13 +1466,11 @@ table(Config) when is_list(Config) ->
           [{a,1,2},{a,3,4}] = lists:sort(qlc:eval(QH)),
           ets:delete(E)">>
        ],
-    ?line run(Config, <<"-record(a, {b,c}).\n">>, Ts2),
+    run(Config, <<"-record(a, {b,c}).\n">>, Ts2),
 
     ok.
 
-process_dies(doc) ->
-    "Caller or cursor process dies.";
-process_dies(suite) -> [];
+%% Caller or cursor process dies.
 process_dies(Config) when is_list(Config) ->
     Ts = [
        <<"E = ets:new(test, []),
@@ -1629,12 +1609,10 @@ process_dies(Config) when is_list(Config) ->
           true = ets:delete(E), ok">>
 
         ],
-    ?line run(Config, Ts),
+    run(Config, Ts),
     ok.
 
-sort(doc) ->
-    "The sort option.";
-sort(suite) -> [];
+%% The sort option.
 sort(Config) when is_list(Config) ->
     Ts = [
        <<"H = qlc:q([X || X <- qlc:sort([1,2,3,2], {unique,true})]),
@@ -1717,36 +1695,13 @@ sort(Config) when is_list(Config) ->
           [true || I <- lists:seq(1, 50000), not ets:insert(E, {I, I})],
           H = qlc:q([{X,Y} || X <- [a,b], Y <- qlc:sort(ets:table(E))]),
           100000 = length(qlc:e(H)),
-          ets:delete(E)">>,
-
-       begin
-       TmpDir = ?privdir,
-       [<<"TE = process_flag(trap_exit, true),
-           E = ets:new(foo, []),
-           [true || I <- lists:seq(1, 50000), not ets:insert(E, {I, I})],
-           Ports = erlang:ports(),
-           H = qlc:q([{X,Y} || X <- [a,b], 
-                               begin
-                                   [P] = erlang:ports() -- Ports,
-                                   exit(P, port_exit),
-                                   true
-                               end,
-                               Y <- qlc:sort(ets:table(E),
-                                             [{tmpdir,\"">>, 
-                                               TmpDir, <<"\"}])]),
-           {error, qlc, {file_error, _, _}} = (catch qlc:e(H)),
-           receive {'EXIT', _, port_exit} -> ok end,
-           ets:delete(E),
-           process_flag(trap_exit, TE)">>]
-       end
+          ets:delete(E)">>
 
         ],
-    ?line run(Config, Ts),
+    run(Config, Ts),
     ok.
 
-keysort(doc) ->
-    "The sort option.";
-keysort(suite) -> [];
+%% The sort option.
 keysort(Config) when is_list(Config) ->
 
     Ts = [
@@ -1865,13 +1820,11 @@ keysort(Config) when is_list(Config) ->
           100003 = length(R)">>
 
         ],
-    ?line run(Config, Ts),
+    run(Config, Ts),
 
     ok.
 
-filesort(doc) ->
-    "keysort/1,2, using a file.";
-filesort(suite) -> [];
+%% keysort/1,2, using a file.
 filesort(Config) when is_list(Config) ->
     Ts = [
        <<"Q = qlc:q([X || X <- [{3},{1},{2}]]),
@@ -1879,13 +1832,11 @@ filesort(Config) when is_list(Config) ->
           Q2 = qlc:q([{X,Y} || Y <- [1,2], X <- qlc:keysort([1],Q,Opts)]),
           [{{1},1},{{2},1},{{3},1},{{1},2},{{2},2},{{3},2}] = qlc:e(Q2)">>
         ],
-    ?line run(Config, Ts),
+    run(Config, Ts),
     ok.
 
 
-cache(doc) ->
-    "The cache option.";
-cache(suite) -> [];
+%% The cache option.
 cache(Config) when is_list(Config) ->
     Ts = [
        <<"{'EXIT', {badarg, _}} = (catch qlc:q([X || X <- [1,2]], badarg))">>,
@@ -2043,12 +1994,10 @@ cache(Config) when is_list(Config) ->
            []} = i(H, cache_all)">>
        
        ],
-    ?line run(Config, Ts),
+    run(Config, Ts),
     ok.
 
-cache_list(doc) ->
-    "OTP-6038. The {cache,list} option.";
-cache_list(suite) -> [];
+%% OTP-6038. The {cache,list} option.
 cache_list(Config) when is_list(Config) ->
     Ts = [
        begin
@@ -2334,12 +2283,10 @@ cache_list(Config) when is_list(Config) ->
           {'EXIT', {badarg, _}} = (catch qlc:e(Q, {max_list_size, foo}))">>
 
        ],
-    ?line run(Config, Ts),
+    run(Config, Ts),
     ok.
 
-filter(doc) ->
-    "Filters and match specs.";
-filter(suite) -> [];
+%% Filters and match specs.
 filter(Config) when is_list(Config) ->
     Ts = [
        <<"L = [1,2,3,4,5],
@@ -2461,12 +2408,10 @@ filter(Config) when is_list(Config) ->
           [{2,b},{2,c},{3,b},{3,c}] = qlc:e(H)">>
 
        ],
-    ?line run(Config, Ts),
+    run(Config, Ts),
     ok.
 
-info(doc) ->
-    "info/2.";
-info(suite) -> [];
+%% info/2.
 info(Config) when is_list(Config) ->
     Ts = [
        <<"{list, [1,2]} = i(qlc:q([X || X <- [1,2]])),
@@ -2491,7 +2436,7 @@ info(Config) when is_list(Config) ->
        <<"{'EXIT', {badarg, _}} = 
                (catch qlc:info([X || {X} <- []], {n_elements, 0})),
           L = lists:seq(1, 1000),
-          \"[1,2,3,4,5,6,7,8,9,10|'...']\" = qlc:info(L, {n_elements, 10}),
+          \"[1, 2, 3, 4, 5, 6, 7, 8, 9, 10 | '...']\" = qlc:info(L, {n_elements, 10}),
           {cons,A1,{integer,A2,1},{atom,A3,'...'}} =
             qlc:info(L, [{n_elements, 1},{format,abstract_code}]),
           1 = erl_anno:line(A1),
@@ -2502,8 +2447,8 @@ info(Config) when is_list(Config) ->
                                                             {atom,_,'...'}}}},
                      {call,_,_,_}]} = 
           qlc:info(Q, [{n_elements, 3},{format,abstract_code}]),
-          \"ets:match_spec_run([a,b,c,d,e,f],\n\"
-          \"                   ets:match_spec_compile([{'$1',[true],\"
+          \"ets:match_spec_run([a, b, c, d, e, f],\n\"
+          \"                   ets:match_spec_compile([{'$1', [true], \"
           \"[{{'$1'}}]}]))\" = 
              qlc:info(Q, [{n_elements, infinity}])">>,
 
@@ -2683,15 +2628,22 @@ info(Config) when is_list(Config) ->
                                       {cons, _, _, _}]},
                               {nil,_}}]}]} = i(QH, {format, abstract_code}),
           [{5},{6}] = qlc:e(QH),
-          [{4},{5},{6}] = qlc:e(F(3))">>
+          [{4},{5},{6}] = qlc:e(F(3))">>,
+
+          <<"Fun = fun ?MODULE:i/2,
+             L = [{#{k => #{v => Fun}}, Fun}],
+             H = qlc:q([Q || Q <- L, Q =:= {#{k => #{v => Fun}}, Fun}]),
+             L = qlc:e(H),
+             {call,_,_,[{lc,_,{var,_,'Q'},
+                         [{generate,_,_,_},
+                          {op,_,_,_,_}]}]} =
+                qlc:info(H, [{format,abstract_code}])">>
 
        ],
-    ?line run(Config, Ts),
+    run(Config, Ts),
     ok.
 
-nested_info(doc) ->
-    "Nested QLC expressions. QLC expressions in filter and template.";
-nested_info(suite) -> [];
+%% Nested QLC expressions. QLC expressions in filter and template.
 nested_info(Config) when is_list(Config) ->
     Ts = [
        <<"L = [{1,a},{2,b},{3,c}],
@@ -2792,13 +2744,11 @@ nested_info(Config) when is_list(Config) ->
           [{1,1},{1,1},{1,2},{1,2},{2,1},{2,1},{2,2},{2,2}] = qlc:e(Q)">>
 
        ],
-    ?line run(Config, Ts),
+    run(Config, Ts),
     ok.
 
 
-lookup1(doc) ->
-    "Lookup keys. Mostly test of patterns.";
-lookup1(suite) -> [];
+%% Lookup keys. Mostly test of patterns.
 lookup1(Config) when is_list(Config) ->
     Ts = [
        <<"etsc(fun(E) ->
@@ -3003,12 +2953,10 @@ lookup1(Config) when is_list(Config) ->
         []}
 
        ],
-    ?line run(Config, Ts),
+    run(Config, Ts),
     ok.
 
-lookup2(doc) ->
-    "Lookup keys. Mostly test of filters.";
-lookup2(suite) -> [];
+%% Lookup keys. Mostly test of filters.
 lookup2(Config) when is_list(Config) ->
     Ts = [
        <<"%% Only guards are inspected. No lookup.
@@ -3215,19 +3163,13 @@ lookup2(Config) when is_list(Config) ->
                 [a] = lookup_keys(Q)
         end, [{a},{b},{c}])">>,
 
-       {cres,
-        <<"etsc(fun(E) ->
+       <<"etsc(fun(E) ->
                  Q = qlc:q([X || {X}=Y <- ets:table(E), 
                                  element(2, Y) == b, 
                                  X =:= 1]),
                  [] = qlc:e(Q),
                  false = lookup_keys(Q)
-         end, [{1,b},{2,3}])">>,
-        %% {warnings,[{2,sys_core_fold,nomatch_guard},
-	%% 	   {3,qlc,nomatch_filter},
-	%% 	   {3,sys_core_fold,{eval_failure,badarg}}]}},
-        {warnings,[{2,sys_core_fold,nomatch_guard},
-		   {3,sys_core_fold,{eval_failure,badarg}}]}},
+        end, [{1,b},{2,3}])">>,
 
        <<"etsc(fun(E) ->
                 Q = qlc:q([X || {X} <- ets:table(E), element(1,{X}) =:= 1]),
@@ -3708,9 +3650,7 @@ lookup2(Config) when is_list(Config) ->
 
     ok.
 
-lookup_rec(doc) ->
-    "Lookup keys. With records.";
-lookup_rec(suite) -> [];
+%% Lookup keys. With records.
 lookup_rec(Config) when is_list(Config) ->
     Ts = [
        <<"etsc(fun(E) ->
@@ -3778,12 +3718,10 @@ lookup_rec(Config) when is_list(Config) ->
                 [_] = lookup_keys(Q)
         end, [{keypos,2}], [#r{a=foo}])">>
        ],
-    ?line run(Config, <<"-record(r, {a}).\n">>, Ts),
+    run(Config, <<"-record(r, {a}).\n">>, Ts),
     ok.
 
-indices(doc) ->
-    "Using indices for lookup.";
-indices(suite) -> [];
+%% Using indices for lookup.
 indices(Config) when is_list(Config) ->
     Ts = [
        <<"L = [{1,a},{2,b},{3,c}],
@@ -3845,12 +3783,10 @@ indices(Config) when is_list(Config) ->
           [{c,3,z,w}] = qlc:eval(QH)">>
 
        ],
-    ?line run(Config, <<"-record(r, {a}).\n">>, Ts),
+    run(Config, <<"-record(r, {a}).\n">>, Ts),
     ok.
 
-pre_fun(doc) ->
-    "Test the table/2 callback functions parent_fun and stop_fun.";
-pre_fun(suite) -> [];
+%% Test the table/2 callback functions parent_fun and stop_fun.
 pre_fun(Config) when is_list(Config) ->
     Ts = [
        <<"PF = process_flag(trap_exit, true),
@@ -3926,12 +3862,10 @@ pre_fun(Config) when is_list(Config) ->
 
        ],
     
-    ?line run(Config, Ts),
+    run(Config, Ts),
     ok.
 
-skip_filters(doc) ->
-    "Lookup keys. With records.";
-skip_filters(suite) -> [];
+%% Lookup keys. With records.
 skip_filters(Config) when is_list(Config) ->
     %% Skipped filters
     TsS = [
@@ -4051,7 +3985,7 @@ skip_filters(Config) when is_list(Config) ->
           end, [{0},{1},{2},{3},{4}])">>
 
            ],
-    ?line run(Config, TsS),
+    run(Config, TsS),
 
     Ts = [
        <<"etsc(fun(E) ->
@@ -4329,14 +4263,12 @@ skip_filters(Config) when is_list(Config) ->
               end, [{1},{2},{3}])">>
 
           ],
-    ?line run(Config, Ts),
+    run(Config, Ts),
 
     ok.
 
 
-ets(doc) ->
-    "ets:table/1,2.";
-ets(suite) -> [];
+%% ets:table/1,2.
 ets(Config) when is_list(Config) ->
     Ts = [
        <<"E = ets:new(t, [ordered_set]),
@@ -4373,16 +4305,25 @@ ets(Config) when is_list(Config) ->
            R = qlc:e(Q),
            ets:delete(E),
            [] = R">>]
-       end
+       end,
+
+       <<"E2 = ets:new(test, [bag]),
+          Ref = make_ref(),
+          true = ets:insert(E2, [{Ref,Ref}]),
+          Q2 = qlc:q([{Val1} ||
+                         {Ref1, Val1} <- ets:table(E2),
+                         Ref1 =:= Ref]),
+          S = qlc:info(Q2),
+          true = is_list(S),
+          [{Ref}] = qlc:e(Q2),
+          ets:delete(E2)">>
 
        ],
     
-    ?line run(Config, Ts),
+    run(Config, Ts),
     ok.
 
-dets(doc) ->
-    "dets:table/1,2.";
-dets(suite) -> [];
+%% dets:table/1,2.
 dets(Config) when is_list(Config) ->
     dets:start(),
     T = t,
@@ -4475,14 +4416,12 @@ dets(Config) when is_list(Config) ->
 
        ],
     
-    ?line run(Config, Ts),
+    run(Config, Ts),
     _ = file:delete(Fname),
     ok.
 
 
-join_option(doc) ->
-    "The 'join' option (any, lookup, merge, nested_loop). Also cache/unique.";
-join_option(suite) -> [];
+%% The 'join' option (any, lookup, merge, nested_loop). Also cache/unique.
 join_option(Config) when is_list(Config) ->
     Ts = [
        <<"Q1 = qlc:q([X || X <- [1,2,3]],{join,merge}),
@@ -4607,7 +4546,7 @@ join_option(Config) when is_list(Config) ->
           ets:delete(E1)">>
 
        ],
-    ?line run(Config, Ts),
+    run(Config, Ts),
 
     %% The 'cache' and 'unique' options of qlc/2 affects join.
     CUTs = [
@@ -4655,13 +4594,11 @@ join_option(Config) when is_list(Config) ->
                   _],[{unique,true}]} = i(Q, Options),
           [{1,1,1},{2,2,1},{1,1,2},{2,2,2}] = qlc:e(Q, Options)">>
        ],
-    ?line run(Config, CUTs),
+    run(Config, CUTs),
 
     ok.
 
-join_filter(doc) ->
-    "Various aspects of filters and join.";
-join_filter(suite) -> [];
+%% Various aspects of filters and join.
 join_filter(Config) when is_list(Config) ->
     Ts = [
       <<"E1 = create_ets(1, 10),
@@ -4698,12 +4635,10 @@ join_filter(Config) when is_list(Config) ->
               end, [{a},{b},{c}])">>
 
     ],
-    ?line run(Config, Ts),
+    run(Config, Ts),
     ok.
 
-join_lookup(doc) ->
-    "Lookup join.";
-join_lookup(suite) -> [];
+%% Lookup join.
 join_lookup(Config) when is_list(Config) ->
     Ts = [
        <<"E1 = create_ets(1, 10),
@@ -4793,12 +4728,10 @@ join_lookup(Config) when is_list(Config) ->
           ets:delete(E)">>
 
           ],
-    ?line run(Config, Ts),
+    run(Config, Ts),
     ok.
 
-join_merge(doc) ->
-    "Merge join.";
-join_merge(suite) -> [];
+%% Merge join.
 join_merge(Config) when is_list(Config) ->
     Ts = [
        <<"Q = qlc:q([{X,Y} || {X} <- [], {Y} <- [{1}], X =:= Y], 
@@ -5070,7 +5003,7 @@ join_merge(Config) when is_list(Config) ->
           [{2,a}] = qlc:e(Q)">>
 
           ],
-    ?line run(Config, Ts),
+    run(Config, Ts),
 
     %% Small examples. Returning an error term.
     ETs = [
@@ -5249,7 +5182,7 @@ join_merge(Config) when is_list(Config) ->
           err = qlc:e(Q)">>
 
           ],
-    ?line run(Config, ETs),
+    run(Config, ETs),
 
     %% Mostly examples where temporary files are needed while merging.
     FTs = [
@@ -5408,13 +5341,11 @@ join_merge(Config) when is_list(Config) ->
 
 
           ],
-    ?line run(Config, FTs),
+    run(Config, FTs),
     
     ok.
 
-join_sort(doc) ->
-    "Merge join optimizations (avoid unnecessary sorting).";
-join_sort(suite) -> [];
+%% Merge join optimizations (avoid unnecessary sorting).
 join_sort(Config) when is_list(Config) ->
     Ts = [
        <<"H1_1 = qlc:keysort(1, [{1,2,3},{4,5,6}]),
@@ -5694,12 +5625,10 @@ join_sort(Config) when is_list(Config) ->
                end, [{1,2},{3,4}])">>
 
          ],
-    ?line run(Config, Ts),
+    run(Config, Ts),
     ok.
 
-join_complex(doc) ->
-    "Join of more than two columns.";
-join_complex(suite) -> [];
+%% Join of more than two columns.
 join_complex(Config) when is_list(Config) ->
     Ts = [{three,
            <<"three() ->
@@ -5727,7 +5656,7 @@ join_complex(Config) when is_list(Config) ->
            {warnings,[{2,qlc,too_many_joins}]}}
        ],
 
-    ?line compile(Config, Ts),
+    compile(Config, Ts),
 
     Ts2 = [{three,
             <<"three() ->
@@ -5756,14 +5685,12 @@ join_complex(Config) when is_list(Config) ->
            {[],["cannot handle more than one join efficiently"]}}
        ],
 
-    ?line compile_format(Config, Ts2),
+    compile_format(Config, Ts2),
 
     ok.
 
 
-otp_5644(doc) ->
-    "OTP-5644. Handle the new language element M:F/A.";
-otp_5644(suite) -> [];
+%% OTP-5644. Handle the new language element M:F/A.
 otp_5644(Config) when is_list(Config) ->
     Ts = [
        <<"Q = qlc:q([fun modul:mfa/0 || _ <- [1,2], 
@@ -5771,12 +5698,10 @@ otp_5644(Config) when is_list(Config) ->
           [_,_] = qlc:eval(Q)">>
        ],
     
-    ?line run(Config, Ts),
+    run(Config, Ts),
     ok.
 
-otp_5195(doc) ->
-    "OTP-5195. Allow traverse functions returning terms.";
-otp_5195(suite) -> [];
+%% OTP-5195. Allow traverse functions returning terms.
 otp_5195(Config) when is_list(Config) ->
     %% Several minor improvements have been implemented in OTP-5195.
     %% The test cases are spread all over... except these.
@@ -5854,7 +5779,7 @@ otp_5195(Config) when is_list(Config) ->
 
        ],
     
-    ?line run(Config, Ts),
+    run(Config, Ts),
 
     Ts2 = [<<"Q = qlc:q([{X,Y} || {X} <- [{1},{2},{3}],
                                   begin
@@ -5863,13 +5788,11 @@ otp_5195(Config) when is_list(Config) ->
                                   end,
                                   X =:= Y]),
               [{3,3}] = qlc:e(Q)">>],
-    ?line run(Config, Ts2),
+    run(Config, Ts2),
 
     ok.
 
-otp_6038_bug(doc) ->
-    "OTP-6038. Bug fixes: unique and keysort; cache.";
-otp_6038_bug(suite) -> [];
+%% OTP-6038. Bug fixes: unique and keysort; cache.
 otp_6038_bug(Config) when is_list(Config) ->
     %% The 'unique' option can no longer be merged with the keysort options.
     %% This used to return [{1,a},{1,c},{2,b},{2,d}], but since 
@@ -5879,7 +5802,7 @@ otp_6038_bug(Config) when is_list(Config) ->
              H2 = qlc:keysort(1, H1, [{unique,true}]),
              [{1,a},{2,b}] = qlc:e(H2)">>],
 
-    ?line run(Config, Ts),
+    run(Config, Ts),
     
     %% Sometimes the cache options did not empty the correct tables.
     CTs = [
@@ -5908,13 +5831,11 @@ otp_6038_bug(Config) when is_list(Config) ->
           L = [{X,Y} || X <- [1,2], Y <- L4],
           true = R =:= L">>
        ],
-    ?line run(Config, CTs),    
+    run(Config, CTs),
 
     ok.
 
-otp_6359(doc) ->
-    "OTP-6359. dets:select() never returns the empty list.";
-otp_6359(suite) -> [];
+%% OTP-6359. dets:select() never returns the empty list.
 otp_6359(Config) when is_list(Config) ->
     dets:start(),
     T = luna,
@@ -5933,12 +5854,10 @@ otp_6359(Config) when is_list(Config) ->
            ok">>]
     ],
 
-    ?line run(Config, Ts),
+    run(Config, Ts),
     ok.
 
-otp_6562(doc) ->
-    "OTP-6562. compressed = false (should be []) when sorting before join.";
-otp_6562(suite) -> [];
+%% OTP-6562. compressed = false (should be []) when sorting before join.
 otp_6562(Config) when is_list(Config) ->
     Bug = [
       %% This example uses a file to sort E2 on the second column. It is
@@ -5957,7 +5876,7 @@ otp_6562(Config) when is_list(Config) ->
          ets:delete(E1),
          ets:delete(E2)">>
     ],
-    ?line run(Config, Bug),
+    run(Config, Bug),
 
     Bits = [
        {otp_6562_1,
@@ -5969,18 +5888,16 @@ otp_6562(Config) when is_list(Config) ->
         {errors,[{2,qlc,binary_generator}],
          []}}
        ],
-    ?line [] = compile(Config, Bits),
+    [] = compile(Config, Bits),
 
-    ?line R1 = {error,qlc,{1,qlc,binary_generator}}
+    R1 = {error,qlc,{1,qlc,binary_generator}}
              = qlc:string_to_handle("[X || <<X:8>> <= <<\"hej\">>]."),
-    ?line "1: cannot handle binary generators\n" = 
+    "1: cannot handle binary generators\n" =
              lists:flatten(qlc:format_error(R1)),
 
     ok.
 
-otp_6590(doc) ->
-    "OTP-6590. Bug fix (join info).";
-otp_6590(suite) -> [];
+%% OTP-6590. Bug fix (join info).
 otp_6590(Config) when is_list(Config) ->
     Ts = [<<"fun(Tab1Value) -> 
                     Q = qlc:q([T1#tab1.id || T1 <- [#tab1{id = id1,
@@ -5992,13 +5909,11 @@ otp_6590(Config) when is_list(Config) ->
                     [id1] = qlc:e(Q)
             end(v)">>],
 
-    ?line run(Config, <<"-record(tab1, {id, tab2_id, value}).
+    run(Config, <<"-record(tab1, {id, tab2_id, value}).
                          -record(tab2, {id, value}).\n">>, Ts),
     ok.
 
-otp_6673(doc) ->
-    "OTP-6673. Optimizations and fixes.";
-otp_6673(suite) -> [];
+%% OTP-6673. Optimizations and fixes.
 otp_6673(Config) when is_list(Config) ->
     Ts_PT = 
         [<<"etsc(fun(E1) ->
@@ -6054,7 +5969,7 @@ otp_6673(Config) when is_list(Config) ->
                  end, 
                  [{1,x},{2,y},{3,z}])">>],
 
-    ?line run(Config, Ts_PT),
+    run(Config, Ts_PT),
 
     MS = ets:fun2ms(fun({X,_Y}=T) when X > 1 -> T end),
     Ts_RT = [
@@ -6091,13 +6006,11 @@ otp_6673(Config) when is_list(Config) ->
                  end, [{x,1},{y,2},{z,3}])">>
 
     ],
-    ?line run(Config, Ts_RT),
+    run(Config, Ts_RT),
 
     ok.
 
-otp_6964(doc) ->
-    "OTP-6964. New option 'tmpdir_usage'.";
-otp_6964(suite) -> [];
+%% OTP-6964. New option 'tmpdir_usage'.
 otp_6964(Config) when is_list(Config) ->
     T1 = [
        <<"Q1 = qlc:q([{X} || X <- [1,2]]),
@@ -6131,7 +6044,7 @@ otp_6964(Config) when is_list(Config) ->
           _ = erlang:system_flag(backtrace_depth, D)
       end,
           qlc_SUITE:uninstall_error_logger()">>],
-    ?line run(Config, T1),
+    run(Config, T1),
 
     T2 = [
        <<"%% File sorter.
@@ -6164,7 +6077,7 @@ otp_6964(Config) when is_list(Config) ->
           {info, caching} = qlc_SUITE:read_error_logger(),
           qlc_SUITE:uninstall_error_logger()">>],
 
-    ?line run(Config, T2),
+    run(Config, T2),
 
     T3 = [
        <<"%% sort/keysort
@@ -6194,7 +6107,7 @@ otp_6964(Config) when is_list(Config) ->
           qlc_SUITE:uninstall_error_logger(),
           ets:delete(E1),
           ets:delete(E2)">>],
-    ?line run(Config, T3),
+    run(Config, T3),
 
     T4 = [
        <<"%% cache list
@@ -6225,18 +6138,16 @@ otp_6964(Config) when is_list(Config) ->
                            lists:flatten(qlc:format_error(ErrReply))
                end, [{keypos,1}], [{I,a,lists:duplicate(100000,1)} || 
                                        I <- lists:seq(1, 10)])">>],
-    ?line run(Config, T4),
+    run(Config, T4),
     ok.
 
-otp_7238(doc) ->
-    "OTP-7238. info-option 'depth', &c.";
-otp_7238(suite) -> [];
+%% OTP-7238. info-option 'depth', &c.
 otp_7238(Config) when is_list(Config) ->
     dets:start(),
     T = otp_7238, 
     Fname = filename(T, Config),
 
-    ?line ok = compile_gb_table(Config),
+    ok = compile_gb_table(Config),
 
     %% A few more warnings.
     T1 = [
@@ -6365,7 +6276,7 @@ otp_7238(Config) when is_list(Config) ->
         [],
         {warnings,[{2,sys_core_fold,no_clause_match}]}}
          ],
-    ?line [] = compile(Config, T1),
+    [] = compile(Config, T1),
 
     %% 'depth' is a new option used by info()
     T2 = [
@@ -6591,7 +6502,7 @@ otp_7238(Config) when is_list(Config) ->
           qlc:info(Q, [{format,abstract_code},{depth, 2}])">>
 
          ],
-    ?line run(Config, T2),
+    run(Config, T2),
 
     T3 = [
 %%        {nomatch_6,
@@ -6607,7 +6518,7 @@ otp_7238(Config) when is_list(Config) ->
 %%         [],
 %%         {[],["pattern cannot possibly match"]}}
        ],
-    ?line compile_format(Config, T3),
+    compile_format(Config, T3),
 
     %% *Very* simple test - just check that it doesn't crash.
     Type = [{cres,
@@ -6615,13 +6526,11 @@ otp_7238(Config) when is_list(Config) ->
                 {'EXIT',{{badfun,_},_}} = (catch qlc:e(Q))">>,
              [type_checker],
              []}],
-    ?line run(Config, Type),
+    run(Config, Type),
 
     ok.
     
-otp_7114(doc) ->
-    "OTP-7114. Match spec, table and duplicated objects..";
-otp_7114(suite) -> [];
+%% OTP-7114. Match spec, table and duplicated objects...
 otp_7114(Config) when is_list(Config) ->
     Ts = [<<"T = ets:new(t, [bag]),
              [ets:insert(T, {t, I, I div 2}) || I <- lists:seq(1,10)],
@@ -6632,15 +6541,13 @@ otp_7114(Config) when is_list(Config) ->
              [0,1,2,3,4,5] = qlc:e(qlc:sort(qlc:e(Q1)), unique_all),
              ets:delete(T),
              ok">>],
-    ?line run(Config, Ts).
+    run(Config, Ts).
 
-otp_7232(doc) ->
-    "OTP-7232. qlc:info() bug (pids, ports, refs, funs).";
-otp_7232(suite) -> [];
+%% OTP-7232. qlc:info() bug (pids, ports, refs, funs).
 otp_7232(Config) when is_list(Config) ->
     Ts = [<<"L = [fun math:sqrt/1, list_to_pid(\"<0.4.1>\"),
                   erlang:make_ref()],
-             \"[fun math:sqrt/1,<0.4.1>,#Ref<\" ++ _  = qlc:info(L),
+             \"[fun math:sqrt/1, <0.4.1>, #Ref<\" ++ _  = qlc:info(L),
              {call,_,
                {remote,_,{atom,_,qlc},{atom,_,sort}},
                [{cons,_,
@@ -6656,7 +6563,7 @@ otp_7232(Config) when is_list(Config) ->
              \"qlc:sort([55296,56296],[{order,fun'-function/0-fun-2-'/2}])\" =
                 format_info(Q, true),
              AC = qlc:info(Q, {format, abstract_code}),
-             \"qlc:sort([55296,56296], [{order,fun '-function/0-fun-2-'/2}])\" =
+             \"qlc:sort([55296, 56296], [{order, fun '-function/0-fun-2-'/2}])\" =
                 binary_to_list(iolist_to_binary(erl_pp:expr(AC)))">>,
 
          %% OTP-7234. erl_parse:abstract() handles bit strings
@@ -6664,11 +6571,9 @@ otp_7232(Config) when is_list(Config) ->
              \"[<<8,1:1>>]\" = qlc:info(Q)">>
 
          ],
-    ?line run(Config, Ts).
+    run(Config, Ts).
 
-otp_7552(doc) ->
-    "OTP-7552. Merge join bug.";
-otp_7552(suite) -> [];
+%% OTP-7552. Merge join bug.
 otp_7552(Config) when is_list(Config) ->
     %% The poor performance cannot be observed unless the 
     %% (redundant) join filter is skipped. 
@@ -6691,11 +6596,9 @@ otp_7552(Config) when is_list(Config) ->
                    Qn = F(nested_loop),
                    true = lists:sort(qlc:e(Qm, {max_list_size,20})) =:= 
                           lists:sort(qlc:e(Qn))">>],
-    ?line run(Config, Ts).
+    run(Config, Ts).
 
-otp_7714(doc) ->
-    "OTP-7714. Merge join bug.";
-otp_7714(suite) -> [];
+%% OTP-7714. Merge join bug.
 otp_7714(Config) when is_list(Config) ->
     %% The original example uses Mnesia. This one does not.
     Ts = [<<"E1 = ets:new(set,[]),
@@ -6710,11 +6613,9 @@ otp_7714(Config) when is_list(Config) ->
              [{a,1},{a,2},{a,3}] = lists:sort(qlc:e(Q)),
              ets:delete(E1),
              ets:delete(E2)">>],
-    ?line run(Config, Ts).
+    run(Config, Ts).
 
-otp_11758(doc) ->
-    "OTP-11758. Bug.";
-otp_11758(suite) -> [];
+%% OTP-11758. Bug.
 otp_11758(Config) when is_list(Config) ->
     Ts = [<<"T = ets:new(r, [{keypos, 2}]),
              L = [{rrr, xxx, aaa}, {rrr, yyy, bbb}],
@@ -6725,12 +6626,10 @@ otp_11758(Config) when is_list(Config) ->
              ets:delete(T)">>],
     run(Config, Ts).
 
-otp_6674(doc) ->
-    "OTP-6674. match/comparison.";
-otp_6674(suite) -> [];
+%% OTP-6674. match/comparison.
 otp_6674(Config) when is_list(Config) ->
 
-    ?line ok = compile_gb_table(Config),
+    ok = compile_gb_table(Config),
 
     Ts = [%% lookup join
           <<"E = ets:new(join, [ordered_set]),
@@ -7153,11 +7052,9 @@ otp_6674(Config) when is_list(Config) ->
 
     ],
 
-    ?line run(Config, Ts).
+    run(Config, Ts).
 
-otp_12946(doc) ->
-    ["Syntax error."];
-otp_12946(suite) -> [];
+%% Syntax error.
 otp_12946(Config) when is_list(Config) ->
     Text =
         <<"-export([init/0]).
@@ -7167,12 +7064,10 @@ otp_12946(Config) when is_list(Config) ->
     {errors,[{4,erl_parse,_}],[]} = compile_file(Config, Text, []),
     ok.
 
-manpage(doc) ->
-    "Examples from qlc(3).";
-manpage(suite) -> [];
+%% Examples from qlc(3).
 manpage(Config) when is_list(Config) ->
-
-    ?line ok = compile_gb_table(Config),
+    dets:start(),
+    ok = compile_gb_table(Config),
 
     Ts = [
        <<"QH = qlc:q([{X,Y} || X <- [a,b], Y <- [1,2]]),
@@ -7193,21 +7088,21 @@ manpage(Config) when is_list(Config) ->
               \"    V1 =\n\"
               \"        qlc:q([ \n\"
               \"               SQV ||\n\"
-              \"                   SQV <- [x,y]\n\"
+              \"                   SQV <- [x, y]\n\"
               \"              ],\n\"
-              \"              [{unique,true}]),\n\"
+              \"              [{unique, true}]),\n\"
               \"    V2 =\n\"
               \"        qlc:q([ \n\"
               \"               SQV ||\n\"
-              \"                   SQV <- [a,b]\n\"
+              \"                   SQV <- [a, b]\n\"
               \"              ],\n\"
-              \"              [{unique,true}]),\n\"
+              \"              [{unique, true}]),\n\"
               \"    qlc:q([ \n\"
-              \"           {X,Y} ||\n\"
+              \"           {X, Y} ||\n\"
               \"               X <- V1,\n\"
               \"               Y <- V2\n\"
               \"          ],\n\"
-              \"          [{unique,true}])\n\"
+              \"          [{unique, true}])\n\"
               \"end\",
           true = B =:= qlc:info(QH, unique_all)">>,
 
@@ -7223,26 +7118,29 @@ manpage(Config) when is_list(Config) ->
               \"    V1 =\n\"
               \"        qlc:q([ \n\"
               \"               P0 ||\n\"
-              \"                   P0 = {W,Y} <- ets:table(_)\n\"
+              \"                   P0 = {W, Y} <- ets:table(_)\n\"
               \"              ]),\n\"
               \"    V2 =\n\"
               \"        qlc:q([ \n\"
-              \"               [G1|G2] ||\n\"
+              \"               [G1 | G2] ||\n\"
               \"                   G2 <- V1,\n\"
               \"                   G1 <- ets:table(_),\n\"
               \"                   element(2, G1) =:= element(1, G2)\n\"
               \"              ],\n\"
-              \"              [{join,lookup}]),\n\"
+              \"              [{join, lookup}]),\n\"
               \"    qlc:q([ \n\"
-              \"           {X,Z,W} ||\n\"
-              \"               [{X,Z}|{W,Y}] <- V2\n\"
+              \"           {X, Z, W} ||\n\"
+              \"               [{X, Z} | {W, Y}] <- V2\n\"
               \"          ])\n\"
               \"end\",
-          Info =
+          Info1 =
              re:replace(qlc:info(Q), 
-                        \"table\\\\(-*[0-9]*\",
+                        \"table\\\\(#Ref<[\\.0-9]*>\",
                         \"table(_\", [{return,list},global]),
-          L = Info,
+          F = fun(C) -> C =/= $\n andalso C =/= $\s end,
+          Info = lists:filter(F, Info1),
+          L1 = lists:filter(F, L),
+          L1 = Info,
           ets:delete(E1),
           ets:delete(E2)">>,
 
@@ -7257,25 +7155,28 @@ manpage(Config) when is_list(Config) ->
        \"    V1 =\n\"
        \"        qlc:q([ \n\"
        \"               P0 ||\n\"
-       \"                   P0 = {X,Z} <- qlc:keysort(1, [{a,1},{b,4},{c,6}], [])\n\"
+       \"                   P0 = {X, Z} <-\n\"
+       \"                       qlc:keysort(1, [{a, 1}, {b, 4}, {c, 6}], [])\n\"
        \"              ]),\n\"
        \"    V2 =\n\"
        \"        qlc:q([ \n\"
        \"               P0 ||\n\"
-       \"                   P0 = {W,Y} <- qlc:keysort(2, [{2,a},{3,b},{4,c}], [])\n\"
+       \"                   P0 = {W, Y} <-\n\"
+       \"                       qlc:keysort(2, [{2, a}, {3, b}, {4, c}], [])\n\"
+
        \"              ]),\n\"
        \"    V3 =\n\"
        \"        qlc:q([ \n\"
-       \"               [G1|G2] ||\n\"
+       \"               [G1 | G2] ||\n\"
        \"                   G1 <- V1,\n\"
        \"                   G2 <- V2,\n\"
        \"                   element(1, G1) == element(2, G2)\n\"
        \"              ],\n\"
-       \"              [{join,merge},{cache,list}]),\n\"
+       \"              [{join, merge}, {cache, list}]),\n\"
        \"    qlc:q([ \n\"
-       \"           {A,X,Z,W} ||\n\"
-       \"               A <- [a,b,c],\n\"
-       \"               [{X,Z}|{W,Y}] <- V3,\n\"
+       \"           {A, X, Z, W} ||\n\"
+       \"               A <- [a, b, c],\n\"
+       \"               [{X, Z} | {W, Y}] <- V3,\n\"
        \"               X =:= Y\n\"
        \"          ])\n\"
        \"end\",
@@ -7317,17 +7218,24 @@ manpage(Config) when is_list(Config) ->
                                             gb_trees:lookup(K,
                                                             gb_trees:from_orddict([]))
                                         of
-                                            {value,V} ->
-                                                [{K,V}];
+                                            {value, V} ->
+                                                [{K, V}];
                                             none ->
                                                 []
                                         end
                                  end,
-                                 [{1,a},{1,b},{1,c},{2,a},{2,b},{2,c}]),
-                   ets:match_spec_compile([{{{'$1','$2'},'_'},[],['$1']}]))\",
+                                 [{1, a},
+                                  {1, b},
+                                  {1, c},
+                                  {2, a},
+                                  {2, b},
+                                  {2, c}]),
+                   ets:match_spec_compile([{{{'$1', '$2'}, '_'},
+                                            [],
+                                            ['$1']}]))\",
           L = qlc:info(QH)">>
       ],
-    ?line run(Config, Ts),
+    run(Config, Ts),
 
     L = [1,2,3],
     Bs = erl_eval:add_binding('L', L, erl_eval:new_bindings()),
@@ -7345,7 +7253,7 @@ manpage(Config) when is_list(Config) ->
 
             true = qlc:info(QH1) =:= qlc:info(QH2),
             true = ets:delete(Tab)">>]],
-    ?line run(Config, ETs),
+    run(Config, ETs),
 
     %% dets(3)
     DTs = [
@@ -7358,16 +7266,16 @@ manpage(Config) when is_list(Config) ->
 
             true = qlc:info(QH1) =:= qlc:info(QH2),
             ok = dets:close(T)">>]],
-    ?line run(Config, DTs),
+    run(Config, DTs),
 
     ok.
 
 compile_gb_table(Config) ->
     GB_table_file = filename("gb_table.erl", Config),
-    ?line ok = file:write_file(GB_table_file, gb_table()),
-    ?line {ok, gb_table} = compile:file(GB_table_file, [{outdir,?privdir}]),
-    ?line code:purge(gb_table),
-    ?line {module, gb_table} = 
+    ok = file:write_file(GB_table_file, gb_table()),
+    {ok, gb_table} = compile:file(GB_table_file, [{outdir,?privdir}]),
+    code:purge(gb_table),
+    {module, gb_table} =
         code:load_abs(filename:rootname(GB_table_file)),
     ok.
 
@@ -7433,9 +7341,7 @@ gb_iter(I0, N, EFun) ->
     ">>.
 
 
-backward(doc) ->
-    "OTP-6674. Join info and extra constants.";
-backward(suite) -> [];
+%% OTP-6674. Join info and extra constants.
 backward(Config) when is_list(Config) ->
     try_old_join_info(Config),
     ok.
@@ -7470,9 +7376,6 @@ try_old_join_info(Config) ->
         qlc:info(H2, {format,debug}),
     [{1,1},{2,2}] = qlc:e(H2).
 
-forward(doc) ->
-    "";
-forward(suite) -> [];
 forward(Config) when is_list(Config) ->
     Ts = [
       %% LC_fun() returns something unknown.
@@ -7481,12 +7384,12 @@ forward(Config) when is_list(Config) ->
          {'EXIT', {{unsupported_qlc_handle,_},_}} = (catch qlc:e(FakeH))">>,
 
 %% 'f1' should be used for new stuff that does not interfer with old behavior
-%       %% The unused element 'f1' of #qlc_table seems to be used.
-%       <<"DF = fun() -> foo end,
-%          FakeH = {qlc_handle,{qlc_table,DF,
-%                        true,DF,DF,DF,DF,DF,
-%                        undefined,not_undefined,undefined,no_match_spec}},
-%          {'EXIT', {{unsupported_qlc_handle,_},_}} = (catch qlc:e(FakeH))">>,
+%%       %% The unused element 'f1' of #qlc_table seems to be used.
+%%       <<"DF = fun() -> foo end,
+%%          FakeH = {qlc_handle,{qlc_table,DF,
+%%                        true,DF,DF,DF,DF,DF,
+%%                        undefined,not_undefined,undefined,no_match_spec}},
+%%          {'EXIT', {{unsupported_qlc_handle,_},_}} = (catch qlc:e(FakeH))">>,
 
       %% #qlc_opt has changed.
       <<"H = qlc:q([X || X <- []]),
@@ -7495,7 +7398,7 @@ forward(Config) when is_list(Config) ->
          {'EXIT', {{unsupported_qlc_handle,_},_}} = (catch qlc:e(FakeH))">>
 
      ],
-    ?line run(Config, Ts),
+    run(Config, Ts),
     ok.
 
 eep37(Config) when is_list(Config) ->
@@ -7550,10 +7453,10 @@ etsc(F, Opts, Objs) ->
     V.
 
 join_info(H) ->
-    {qlc, S, Options} = strip_qlc_call(H),
+    {{qlc, S, Options}, Bs} = strip_qlc_call2(H),
     %% "Hide" the call to qlc_pt from the test in run_test().
     LoadedPT = code:is_loaded(qlc_pt),
-    QH = qlc:string_to_handle(S, Options),
+    QH = qlc:string_to_handle(S, Options, Bs),
     _ = [unload_pt() || false <- [LoadedPT]], % doesn't take long...
     case {join_info_count(H), join_info_count(QH)} of
         {N, N} -> 
@@ -7563,30 +7466,34 @@ join_info(H) ->
     end.
 
 strip_qlc_call(H) ->
+    {Expr, _Bs} = strip_qlc_call2(H),
+    Expr.
+
+strip_qlc_call2(H) ->
     S = qlc:info(H, {flat, false}),
-    {ok, Tokens, _EndLine} = erl_scan:string(S++"."),
-    {ok, [Expr]} = erl_parse:parse_exprs(Tokens),
-    case Expr of
-        {call,_,{remote,_,{atom,_,qlc},{atom,_,q}},[LC]} ->
-            {qlc, lists:flatten([erl_pp:expr(LC), "."]), []};
-        {call,_,{remote,_,{atom,_,qlc},{atom,_,q}},[LC, Opts]} ->
-            {qlc, lists:flatten([erl_pp:expr(LC), "."]), 
-             erl_parse:normalise(Opts)};
-        {call,_,{remote,_,{atom,_,ets},{atom,_,match_spec_run}},_} ->
-            {match_spec, Expr};
-        {call,_,{remote,_,{atom,_,M},{atom,_,table}},_} ->
-            {table, M, Expr};
-        _ -> 
-            []
-    end.
+    {ok, Tokens, _EndLine} = erl_scan:string(S++".", 1, [text]),
+    {ok, [Expr], Bs} = erl_eval:extended_parse_exprs(Tokens),
+    {case Expr of
+         {call,_,{remote,_,{atom,_,qlc},{atom,_,q}},[LC]} ->
+             {qlc, lists:flatten([erl_pp:expr(LC), "."]), []};
+         {call,_,{remote,_,{atom,_,qlc},{atom,_,q}},[LC, Opts]} ->
+             {qlc, lists:flatten([erl_pp:expr(LC), "."]),
+              erl_parse:normalise(Opts)};
+         {call,_,{remote,_,{atom,_,ets},{atom,_,match_spec_run}},_} ->
+             {match_spec, Expr};
+         {call,_,{remote,_,{atom,_,M},{atom,_,table}},_} ->
+             {table, M, Expr};
+         _ ->
+             []
+     end, Bs}.
 
 -record(ji, {nmerge = 0, nlookup = 0, nnested_loop = 0, nkeysort = 0}).
 
 %% Counts join options and (all) calls to qlc:keysort().
 join_info_count(H) ->
     S = qlc:info(H, {flat, false}),    
-    {ok, Tokens, _EndLine} = erl_scan:string(S++"."),
-    {ok, [Expr]} = erl_parse:parse_exprs(Tokens),
+    {ok, Tokens, _EndLine} = erl_scan:string(S++".", 1, [text]),
+    {ok, [Expr], _Bs} = erl_eval:extended_parse_exprs(Tokens),
     #ji{nmerge = Nmerge, nlookup = Nlookup, 
         nkeysort = NKeysort, nnested_loop = Nnested_loop} = 
         ji(Expr, #ji{}),
@@ -7629,8 +7536,8 @@ lookup_keys({list,Q,_}, L) ->
 lookup_keys({generate,_,Q}, L) ->
     lookup_keys(Q, L);
 lookup_keys({table,Chars}, L) when is_list(Chars) ->
-    {ok, Tokens, _} = erl_scan:string(lists:flatten(Chars++".")),
-    {ok, [Expr]} = erl_parse:parse_exprs(Tokens),
+    {ok, Tokens, _} = erl_scan:string(lists:flatten(Chars++"."), 1, [text]),
+    {ok, [Expr], _Bs} = erl_eval:extended_parse_exprs(Tokens),
     case Expr of
         {call,_,_,[_fun,AKs]} ->
             case erl_parse:normalise(AKs) of
@@ -7947,7 +7854,7 @@ run_test(Config, Extra, {cres, Body, Opts, ExpectedCompileReturn}) ->
     {module, _} = code:load_abs(AbsFile, Mod),
 
     Ms0 = erlang:process_info(self(),messages),
-    Before = {{get(), ets:all(), Ms0}, pps()},
+    Before = {{lget(), lists:sort(ets:all()), Ms0}, pps()},
 
     %% Prepare the check that the qlc module does not call qlc_pt.
     _ = [unload_pt() || {file, Name} <- [code:is_loaded(qlc_pt)], 
@@ -7955,7 +7862,7 @@ run_test(Config, Extra, {cres, Body, Opts, ExpectedCompileReturn}) ->
 
     R = case catch Mod:function() of
             {'EXIT', _Reason} = Error ->
-                ?t:format("failed, got ~p~n", [Error]),
+                io:format("failed, got ~p~n", [Error]),
                 fail(SourceFile);
             Reply ->
                 Reply
@@ -7966,7 +7873,7 @@ run_test(Config, Extra, {cres, Body, Opts, ExpectedCompileReturn}) ->
         {file, cover_compiled} ->
             ok;
         {file, _} ->
-            ?t:format("qlc_pt was loaded in runtime~n", []),
+            io:format("qlc_pt was loaded in runtime~n", []),
             fail(SourceFile);
         false ->
             ok
@@ -7979,7 +7886,7 @@ run_test(Config, Extra, Body) ->
 
 wait_for_expected(R, {Strict0,PPS0}=Before, SourceFile, Wait) ->
     Ms = erlang:process_info(self(),messages),
-    After = {_,PPS1} = {{get(), ets:all(), Ms}, pps()},
+    After = {_,PPS1} = {{lget(), lists:sort(ets:all()), Ms}, pps()},
     case {R, After} of
         {ok, Before} ->
             ok;
@@ -8006,6 +7913,18 @@ wait_for_expected(R, {Strict0,PPS0}=Before, SourceFile, Wait) ->
         _ ->
             expected({ok,Before}, {R,After}, SourceFile)
     end.
+
+%% The qlc modules uses the process dictionary for storing names of files.
+lget() ->
+    lists:sort([T || {K, _} = T <- get(), is_qlc_key(K)]).
+
+%% Copied from the qlc module.
+-define(LCACHE_FILE(Ref), {Ref, '$_qlc_cache_tmpfiles_'}).
+-define(MERGE_JOIN_FILE, '$_qlc_merge_join_tmpfiles_').
+
+is_qlc_key(?LCACHE_FILE(_)) -> true;
+is_qlc_key(?MERGE_JOIN_FILE) -> true;
+is_qlc_key(_) -> false.
 
 unload_pt() ->
     erlang:garbage_collect(), % get rid of references to qlc_pt...
@@ -8051,7 +7970,6 @@ compile(Config, Tests, Fun) ->
 compile_file(Config, Test0, Opts0) ->
     {File, Mod} = compile_file_mod(Config),
     Test = list_to_binary(["-module(", atom_to_list(Mod), "). "
-                           "-compile(export_all). "
                            "-import(qlc_SUITE, [i/1,i/2,format_info/2]). "
                            "-import(qlc_SUITE, [etsc/2, etsc/3]). "
                            "-import(qlc_SUITE, [create_ets/2]). "
@@ -8061,7 +7979,7 @@ compile_file(Config, Test0, Opts0) ->
                            "-import(qlc_SUITE, [lookup_keys/1]). "
                            "-include_lib(\"stdlib/include/qlc.hrl\"). ",
                            Test0]),
-    Opts = [export_all,return,nowarn_unused_record,{outdir,?privdir}|Opts0],
+    Opts = [export_all,nowarn_export_all,return,nowarn_unused_record,{outdir,?privdir}|Opts0],
     ok = file:write_file(File, Test),
     case compile:file(File, Opts) of
         {ok, _M, Ws} -> warnings(File, Ws);
@@ -8167,16 +8085,15 @@ warnings(File, Ws) ->
     end.
 
 expected(Test, Expected, Got, File) ->
-    ?t:format("~nTest ~p failed. ", [Test]),
+    io:format("~nTest ~p failed. ", [Test]),
     expected(Expected, Got, File).
 
 expected(Expected, Got, File) ->
-    ?t:format("Expected~n  ~p~n, but got~n  ~p~n", [Expected, Got]),
+    io:format("Expected~n  ~p~n, but got~n  ~p~n", [Expected, Got]),
     fail(File).
 
 fail(Source) ->
-    io:format("failed~n"),
-    ?t:fail({failed,testcase,on,Source}).
+    ct:fail({failed,testcase,on,Source}).
 
 %% Copied from global_SUITE.erl.
 
@@ -8197,8 +8114,8 @@ read_error_logger() ->
         {error, Pid, Tuple} ->
             {error, Pid, Tuple}
     after 1000 ->
-	    ?line io:format("No reply after 1 s\n", []),
-	    ?line ?t:fail()
+	    io:format("No reply after 1 s\n", []),
+	    ct:fail(failed)
     end.
 
 %%-----------------------------------------------------------------

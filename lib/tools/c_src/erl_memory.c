@@ -1,7 +1,7 @@
 /*
  * %CopyrightBegin%
  *
- * Copyright Ericsson AB 2003-2013. All Rights Reserved.
+ * Copyright Ericsson AB 2003-2016. All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -1859,7 +1859,7 @@ error_string(int error)
     error_str = unknown_error;
 
     if (error > 0) {
-	char *str = strerror(error);
+	const char *str = strerror(error);
 	if (str)
 	    error_str = str;
     }
@@ -2789,15 +2789,6 @@ main(int argc, char *argv[])
 
 #ifdef DEBUG
     print_string(state, "> [debug]\n");
-#endif
-#ifdef PURIFY
-    print_string(state, "> [purify]\n");
-#endif
-#ifdef QUANTIFY
-    print_string(state, "> [quantify]\n");
-#endif
-#ifdef PURECOV
-    print_string(state, "> [purecov]\n");
 #endif
 
     res = init_connection(state);

@@ -1,18 +1,23 @@
 %% =====================================================================
-%% This library is free software; you can redistribute it and/or modify
-%% it under the terms of the GNU Lesser General Public License as
-%% published by the Free Software Foundation; either version 2 of the
-%% License, or (at your option) any later version.
+%% Licensed under the Apache License, Version 2.0 (the "License"); you may
+%% not use this file except in compliance with the License. You may obtain
+%% a copy of the License at <http://www.apache.org/licenses/LICENSE-2.0>
 %%
-%% This library is distributed in the hope that it will be useful, but
-%% WITHOUT ANY WARRANTY; without even the implied warranty of
-%% MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
-%% Lesser General Public License for more details.
+%% Unless required by applicable law or agreed to in writing, software
+%% distributed under the License is distributed on an "AS IS" BASIS,
+%% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+%% See the License for the specific language governing permissions and
+%% limitations under the License.
 %%
-%% You should have received a copy of the GNU Lesser General Public
-%% License along with this library; if not, write to the Free Software
-%% Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307
-%% USA
+%% Alternatively, you may use this file under the terms of the GNU Lesser
+%% General Public License (the "LGPL") as published by the Free Software
+%% Foundation; either version 2.1, or (at your option) any later version.
+%% If you wish to allow use of your version of this file only under the
+%% terms of the LGPL, you should delete the provisions above and replace
+%% them with the notice and other provisions required by the LGPL; see
+%% <http://www.gnu.org/licenses/>. If you do not delete the provisions
+%% above, a recipient may use your version of this file under the terms of
+%% either the Apache License or the LGPL.
 %%
 %% @copyright 2001-2003 Richard Carlsson
 %% @author Richard Carlsson <carlsson.richard@gmail.com>
@@ -32,15 +37,9 @@
 %% %% @headerfile "edoc.hrl" (disabled until it can be made private)
 -include("edoc.hrl").
 
-%% @type filename() = file:filename().
-%% @type proplist() = proplists:property().
-%% @type syntaxTree() = erl_syntax:syntaxTree().
+-type filename() :: file:filename().
+-type proplist() :: proplists:proplist().
 
-%% @spec source(File::filename(), Env::edoc_env(), Options::proplist())
-%%             -> {ModuleName, edoc:edoc_module()}
-%%    ModuleName = atom()
-%%    proplist() = [term()]
-%%
 %% @doc Like {@link source/5}, but reads the syntax tree and the
 %% comments from the specified file.
 %%
@@ -48,18 +47,16 @@
 %% @see edoc:read_source/2
 %% @see source/4
 
+-spec source(File, Env, Opts) -> R when
+      File :: filename(),
+      Env :: edoc:env(),
+      Opts :: proplist(),
+      R :: {module(), edoc:edoc_module()}.
 source(File, Env, Opts) ->
     Forms = edoc:read_source(File, Opts),
     Comments = edoc:read_comments(File, Opts),
     source(Forms, Comments, File, Env, Opts).
 
-%% @spec source(Forms, Comments::[edoc:comment()], File::filename(),
-%%              Env::edoc_env(), Options::proplist()) ->
-%%           {ModuleName, edoc:edoc_module()}
-%%
-%%    Forms = syntaxTree() | [syntaxTree()]
-%%    ModuleName = atom()
-%%
 %% @doc Like {@link source/4}, but first inserts the given comments in
 %% the syntax trees. The syntax trees must contain valid position
 %% information. (Cf. {@link edoc:read_comments/2}.)
@@ -70,6 +67,13 @@ source(File, Env, Opts) ->
 %% @see source/4
 %% @see //syntax_tools/erl_recomment
 
+-spec source(Forms, Comments, File, Env, Opts) -> R when
+      Forms :: erl_syntax:forms(),
+      Comments :: [edoc:comment()],
+      File :: filename(),
+      Env :: edoc:env(),
+      Opts :: proplist(),
+      R :: {module(), edoc:edoc_module()}.
 source(Forms, Comments, File, Env, Opts) when is_list(Forms) ->
     Forms1 = erl_syntax:form_list(Forms),
     source(Forms1, Comments, File, Env, Opts);
@@ -78,14 +82,6 @@ source(Forms, Comments, File, Env, Opts) ->
     TypeDocs = find_type_docs(Forms, Comments, Env, File),
     source1(Tree, File, Env, Opts, TypeDocs).
 
-%% @spec source(Forms, File::filename(), Env::edoc_env(),
-%%              Options::proplist()) ->
-%%           {ModuleName, edoc:edoc_module()}
-%%
-%%	    Forms = syntaxTree() | [syntaxTree()]
-%%	    ModuleName = atom()
-%% @type edoc_env() = edoc_lib:edoc_env()
-%%
 %% @doc Extracts EDoc documentation from commented source code syntax
 %% trees. The given `Forms' must be a single syntax tree of
 %% type `form_list', or a list of syntax trees representing
@@ -108,6 +104,12 @@ source(Forms, Comments, File, Env, Opts) ->
 %% INHERIT-OPTIONS: add_macro_defs/3
 %% INHERIT-OPTIONS: edoc_data:module/4
 
+-spec source(Forms, File, Env, Opts) -> R when
+      Forms :: erl_syntax:forms(),
+      File :: filename(),
+      Env :: edoc:env(),
+      Opts :: proplist(),
+      R :: {module(), edoc:edoc_module()}.
 source(Forms, File, Env, Opts) when is_list(Forms) ->
     source(erl_syntax:form_list(Forms), File, Env, Opts);
 source(Tree, File0, Env, Opts) ->
@@ -125,16 +127,11 @@ source1(Tree, File0, Env, Opts, TypeDocs) ->
 		   root = ""},
     Env2 = add_macro_defs(module_macros(Env1), Opts, Env1),
     Entries1 = get_tags([Header, Footer | Entries], Env2, File, TypeDocs),
-    Entries2 = edoc_specs:add_data(Entries1, Opts, File, Module),
+    Entries2 = edoc_specs:add_type_data(Entries1, Opts, File, Module),
     edoc_tags:check_types(Entries2, Opts, File),
     Data = edoc_data:module(Module, Entries2, Env2, Opts),
     {Name, Data}.
 
-%% @spec header(File::filename(), Env::edoc_env(), Options::proplist())
-%%             -> {ok, Tags} | {error, Reason}
-%%   Tags = [term()]
-%%   Reason = term()
-%%
 %% @doc Similar to {@link header/5}, but reads the syntax tree and the
 %% comments from the specified file.
 %%
@@ -142,18 +139,15 @@ source1(Tree, File0, Env, Opts, TypeDocs) ->
 %% @see edoc:read_source/2
 %% @see header/4
 
+-spec header(File, Env, Opts) -> edoc:entry_data() when
+      File :: filename(),
+      Env :: edoc:env(),
+      Opts :: proplist().
 header(File, Env, Opts) ->
     Forms = edoc:read_source(File),
     Comments = edoc:read_comments(File),
     header(Forms, Comments, File, Env, Opts).
 
-%% @spec header(Forms, Comments::[edoc:comment()], File::filename(),
-%%              Env::edoc_env(), Options::proplist()) ->
-%%       {ok, Tags} | {error, Reason}
-%%   Forms = syntaxTree() | [syntaxTree()]
-%%   Tags = [term()]
-%%   Reason = term()
-%%
 %% @doc Similar to {@link header/4}, but first inserts the given
 %% comments in the syntax trees. The syntax trees must contain valid
 %% position information. (Cf. {@link edoc:read_comments/2}.)
@@ -162,6 +156,12 @@ header(File, Env, Opts) ->
 %% @see header/4
 %% @see //syntax_tools/erl_recomment
 
+-spec header(Forms, Comments, File, Env, Opts) -> edoc:entry_data() when
+      Forms :: erl_syntax:forms(),
+      Comments :: [edoc:comment()],
+      File :: filename(),
+      Env :: edoc:env(),
+      Opts :: proplist().
 header(Forms, Comments, File, Env, Opts) when is_list(Forms) ->
     Forms1 = erl_syntax:form_list(Forms),
     header(Forms1, Comments, File, Env, Opts);
@@ -169,13 +169,6 @@ header(Forms, Comments, File, Env, Opts) ->
     Tree = erl_recomment:quick_recomment_forms(Forms, Comments),
     header(Tree, File, Env, Opts).
 
-%% @spec header(Forms, File::filename(), Env::edoc_env(),
-%%              Options::proplist()) ->
-%%       {ok, Tags} | {error, Reason}
-%%   Forms = syntaxTree() | [syntaxTree()]
-%%   Tags = [term()]
-%%   Reason = term()
-%%
 %% @doc Extracts EDoc documentation from commented header file syntax
 %% trees. Similar to {@link source/5}, but ignores any documentation
 %% that occurs before a module declaration or a function definition.
@@ -185,6 +178,11 @@ header(Forms, Comments, File, Env, Opts) ->
 %% @see header/5
 %% @see //syntax_tools/erl_recomment
 
+-spec header(Forms, File, Env, Opts) -> edoc:entry_data() when
+      Forms :: erl_syntax:forms(),
+      File :: filename(),
+      Env :: edoc:env(),
+      Opts :: proplist().
 header(Forms, File, Env, Opts) when is_list(Forms) ->
     header(erl_syntax:form_list(Forms), File, Env, Opts);
 header(Tree, File0, Env, _Opts) ->
@@ -214,12 +212,6 @@ add_macro_defs(Defs0, Opts, Env) ->
     edoc_macros:check_defs(Defs),
     Env#env{macros = Defs ++ Defs0 ++ Env#env.macros}.
 
-%% @spec file(File::filename(), Context, Env::edoc_env(),
-%%            Options::proplist()) -> {ok, Tags} | {error, Reason}
-%%   Context = overview
-%%   Tags = [term()]
-%%   Reason = term()
-%%
 %% @doc Reads a text file and returns the list of tags in the file. Any
 %% lines of text before the first tag are ignored. `Env' is an
 %% environment created by {@link edoc_lib:get_doc_env/3}. Upon error,
@@ -230,6 +222,13 @@ add_macro_defs(Defs0, Opts, Env) ->
 
 %% INHERIT-OPTIONS: text/4
 
+-spec file(File, Context, Env, Opts) -> {ok, Tags} | {error, Reason} when
+      File :: filename(),
+      Context :: edoc_tags:tag_flag(),
+      Env :: edoc:env(),
+      Opts :: proplist(),
+      Tags :: [term()],
+      Reason :: term().
 file(File, Context, Env, Opts) ->
     case file:read_file(File) of
 	{ok, Bin} ->
@@ -245,11 +244,6 @@ file(File, Context, Env, Opts) ->
     end.
 
 
-%% @spec (Text::string(), Context, Env::edoc_env(),
-%%        Options::proplist()) -> Tags
-%%     Context = overview
-%%     Tags = [term()]
-%%
 %% @doc Returns the list of tags in the text. Any lines of text before
 %% the first tag are ignored. `Env' is an environment created by {@link
 %% edoc_lib:get_doc_env/3}.
@@ -259,6 +253,12 @@ file(File, Context, Env, Opts) ->
 %% INHERIT-OPTIONS: add_macro_defs/3
 %% DEFER-OPTIONS: source/4
 
+-spec text(Text, Context, Env, Opts) -> Tags when
+      Text :: string(),
+      Context :: overview,
+      Env :: edoc:env(),
+      Opts :: proplist(),
+      Tags :: [term()].
 text(Text, Context, Env, Opts) ->
     text(Text, Context, Env, Opts, "").
 
@@ -280,11 +280,13 @@ text(Text, Context, Env, Opts, Where) ->
     end.
 
 
-%% @spec (Forms::[syntaxTree()], File::filename()) -> module()
 %% @doc Initialises a module-info record with data about the module
 %% represented by the list of forms. Exports are guaranteed to exist in
 %% the set of defined names.
 
+-spec get_module_info(Forms, File) -> edoc:module_meta() when
+      Forms :: erl_syntax:forms(),
+      File :: filename().
 get_module_info(Forms, File) ->
     L = case catch {ok, erl_syntax_lib:analyze_forms(Forms)} of
 	    {ok, L1} ->
@@ -327,10 +329,11 @@ get_list_keyval(Key, L) ->
 	    []
     end.
 
-%% @spec (Forms::[syntaxTree()]) -> [syntaxTree()]
 %% @doc Preprocessing: copies any precomments on forms to standalone
 %% comments, and removes "invisible" forms from the list.
 
+-spec preprocess_forms(Forms) -> Forms when
+      Forms :: erl_syntax:forms().
 preprocess_forms(Tree) ->
     preprocess_forms_1(erl_syntax:form_list_elements(
 			 erl_syntax:flatten_form_list(Tree))).
@@ -355,6 +358,8 @@ preprocess_forms_2(F, Fs) ->
 	    [F | preprocess_forms_1(Fs)];
   	text ->
   	    [F | preprocess_forms_1(Fs)];
+        {attribute, {record, _}} ->
+            [F | preprocess_forms_1(Fs)];
         {attribute, {N, _}} ->
             case edoc_specs:is_tag(N) of
                 true ->
@@ -373,49 +378,61 @@ preprocess_forms_2(F, Fs) ->
 %% in the list.
 
 collect(Fs, Mod) ->
-    collect(Fs, [], [], [], [], undefined, Mod).
+    collect(Fs, [], [], [], [], [], undefined, Mod).
 
-collect([F | Fs], Cs, Ss, Ts, As, Header, Mod) ->
+collect([F | Fs], Cs, Ss, Ts, Rs, As, Header, Mod) ->
     case erl_syntax_lib:analyze_form(F) of
 	comment ->
-	    collect(Fs, [F | Cs], Ss, Ts, As, Header, Mod);
+	    collect(Fs, [F | Cs], Ss, Ts, Rs, As, Header, Mod);
 	{function, Name} ->
 	    L = erl_syntax:get_pos(F),
 	    Export = ordsets:is_element(Name, Mod#module.exports),
 	    Args = parameters(erl_syntax:function_clauses(F)),
-	    collect(Fs, [], [], [],
+	    collect(Fs, [], [], [], [],
                     [#entry{name = Name, args = Args, line = L,
                             export = Export,
-                            data = {comment_text(Cs),Ss,Ts}} | As],
+                            data = {comment_text(Cs),Ss,Ts,Rs}} | As],
 		    Header, Mod);
 	{attribute, {module, _}} when Header =:= undefined ->
 	    L = erl_syntax:get_pos(F),
-	    collect(Fs, [], [], [], As,
+	    collect(Fs, [], [], [], [], As,
                     #entry{name = module, line = L,
-                           data = {comment_text(Cs),Ss,Ts}},
+                           data = {comment_text(Cs),Ss,Ts,Rs}},
 		    Mod);
+        {attribute, {record, {_Name, Fields}}} ->
+            case is_typed_record(Fields) of
+                true ->
+                    collect(Fs, Cs, Ss, Ts, [F | Rs], As, Header, Mod);
+                false ->
+                    collect(Fs, Cs, Ss, Ts, Rs, As, Header, Mod)
+            end;
         {attribute, {N, _}} ->
             case edoc_specs:tag(N) of
                 spec ->
-                    collect(Fs, Cs, [F | Ss], Ts, As, Header, Mod);
+                    collect(Fs, Cs, [F | Ss], Ts, Rs, As, Header, Mod);
                 type ->
-                    collect(Fs, Cs, Ss, [F | Ts], As, Header, Mod);
+                    collect(Fs, Cs, Ss, [F | Ts], Rs, As, Header, Mod);
                 unknown ->
                     %% Drop current seen comments.
-                    collect(Fs, [], [], [], As, Header, Mod)
+                    collect(Fs, [], [], [], Rs, As, Header, Mod)
             end;
 	_ ->
 	    %% Drop current seen comments.
-	    collect(Fs, [], [], [], As, Header, Mod)
+	    collect(Fs, [], [], [], [], As, Header, Mod)
     end;
-collect([], Cs, Ss, Ts, As, Header, _Mod) ->
-    Footer = #entry{name = footer, data = {comment_text(Cs),Ss,Ts}},
+collect([], Cs, Ss, Ts, Rs, As, Header, _Mod) ->
+    Footer = #entry{name = footer, data = {comment_text(Cs),Ss,Ts,Rs}},
     As1 = lists:reverse(As),
     if Header =:= undefined ->
-	    {#entry{name = module, data = {[],[],[]}}, Footer, As1};
+	    {#entry{name = module, data = {[],[],[],[]}}, Footer, As1};
        true ->
 	    {Header, Footer, As1}
     end.
+
+is_typed_record([]) ->
+    false;
+is_typed_record([{_, {_, Type}} | Fs]) ->
+    Type =/= none orelse is_typed_record(Fs).
 
 %% Returns a list of simplified comment information (position and text)
 %% for a list of abstract comments. The order of elements is reversed.
@@ -432,12 +449,11 @@ comment_text([C | Cs], Ss) ->
 comment_text([], Ss) ->
     Ss.
 
-%% @spec (string()) -> string()
-%%
 %% @doc Replaces leading `%' characters by spaces. For example, `"%%%
 %% foo" -> "\s\s\s foo"', but `"% % foo" -> "\s % foo"', since the
 %% second `%' is preceded by whitespace.
 
+-spec remove_percent_chars(string()) -> string().
 remove_percent_chars([$% | Cs]) -> [$\s | remove_percent_chars(Cs)];
 remove_percent_chars(Cs) -> Cs.
 
@@ -469,8 +485,15 @@ find_names([P | Ps], Ns) ->
 	    find_names([P1 | Ps], Ns);
 	record_expr ->
 	    A = erl_syntax:record_expr_type(P),
-	    N = list_to_atom(capitalize(erl_syntax:atom_name(A))),
-	    find_names(Ps, [N | Ns]);
+            AtomName = erl_syntax:atom_name(A),
+            Atom = list_to_atom(AtomName),
+            case AtomName =:= lists:flatten(io_lib:write_atom(Atom)) of
+                true ->
+                    N = list_to_atom(capitalize(AtomName)),
+                    find_names(Ps, [N | Ns]);
+                false ->
+                    find_names(Ps, Ns)
+            end;
 	infix_expr ->
 	    %% this can only be a '++' operation
 	    P1 = erl_syntax:infix_expr_right(P),
@@ -521,20 +544,18 @@ tidy_name_1(Cs) -> [$_ | Cs].
 %% Change initial character from lowercase to uppercase.
 
 capitalize([C | Cs]) when C >= $a, C =< $z -> [C - 32 | Cs];
+capitalize([C | Cs]) when C >= $\340, C =< $\376, C /= $\367 -> [C - 32 | Cs];
 capitalize(Cs) -> Cs.
 
 %% Collects the tags belonging to each entry, checks them, expands
 %% macros and parses the content.
 
-%% %This is commented out until it can be made private
-%% %@type tags() = #tags{names = set(atom()),
-%% %                     single = set(atom()),
-%% %                     module = set(atom()),
-%% %                     footer = set(atom()),
-%% %                     function = set(atom())}
-%% %  set(T) = sets:set(T)
-
 -record(tags, {names,single,module,function,footer}).
+%-type tags() :: #tags{names :: sets:set(atom()),
+%                      single :: sets:set(atom()),
+%                      module :: sets:set(atom()),
+%                      footer :: sets:set(atom()),
+%                      function :: sets:set(atom())}.
 
 get_tags(Es, Env, File) ->
     get_tags(Es, Env, File, dict:new()).
@@ -549,8 +570,8 @@ get_tags(Es, Env, File, TypeDocs) ->
     How = dict:from_list(edoc_tags:tag_parsers()),
     get_tags(Es, Tags, Env, How, File, TypeDocs).
 
-get_tags([#entry{name = Name, data = {Cs,Specs,Types}} = E | Es], Tags, Env,
-	 How, File, TypeDocs) ->
+get_tags([#entry{name = Name, data = {Cs,Specs,Types,Records}} = E | Es],
+         Tags, Env, How, File, TypeDocs) ->
     Where = {File, Name},
     Ts0 = scan_tags(Cs),
     {Ts1,Specs1} = select_spec(Ts0, Where, Specs),
@@ -558,7 +579,7 @@ get_tags([#entry{name = Name, data = {Cs,Specs,Types}} = E | Es], Tags, Env,
     Ts3 = edoc_macros:expand_tags(Ts2, Env, Where),
     Ts4 = edoc_tags:parse_tags(Ts3, How, Env, Where),
     Ts = selected_specs(Specs1, Ts4),
-    ETypes = [edoc_specs:type(Type, TypeDocs) || Type <- Types],
+    ETypes = [edoc_specs:type(Type, TypeDocs) || Type <- Types ++ Records],
     [E#entry{data = Ts++ETypes} | get_tags(Es, Tags, Env, How, File, TypeDocs)];
 get_tags([], _, _, _, _, _) ->
     [].
@@ -607,7 +628,7 @@ select_spec(Ts, _Where, _Specs) ->
 selected_specs([], Ts) ->
     Ts;
 selected_specs([F], [_ | Ts]) ->
-    [edoc_specs:spec(F, _Clause=1) | Ts].
+    [edoc_specs:spec(F) | Ts].
 
 %% Macros for modules
 
@@ -625,11 +646,11 @@ file_macros(_Context, Env) ->
 %%
 %% The idea is to mimic how the @type tag works.
 %% Using @type:
-%%   @type t() = t1(). Some docs of t/0;
-%%   Further docs of t/0.
+%%```@type t() = t1(). Some docs of t/0;
+%%   Further docs of t/0.'''
 %% The same thing using -type:
-%%   -type t() :: t1(). % Some docs of t/0;
-%%   Further docs of t/0.
+%%```-type t() :: t1(). % Some docs of t/0;
+%%   Further docs of t/0.'''
 find_type_docs(Forms0, Comments, Env, File) ->
     Tree = erl_recomment:recomment_forms(Forms0, Comments),
     Forms = preprocess_forms(Tree),

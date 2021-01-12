@@ -1,7 +1,7 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2009-2013. All Rights Reserved.
+%% Copyright Ericsson AB 2009-2018. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -107,8 +107,8 @@ init(Parent, WxEnv, Xref, RelPid, C, ModName) ->
     try
 	do_init(Parent, WxEnv, Xref, RelPid, C, ModName)
     catch
-	error:Reason ->
-	    exit({Reason, erlang:get_stacktrace()})
+	error:Reason:Stacktrace ->
+	    exit({Reason, Stacktrace})
     end.
 
 do_init(Parent, WxEnv, Xref, RelPid, C, ModName) ->
@@ -171,7 +171,7 @@ loop(#state{xref_pid = Xref, common = C, mod = Mod} = S) ->
 		    S2 = handle_event(S, Wx),
 		    ?MODULE:loop(S2);
 		_ ->
-		    error_logger:format("~w~w got unexpected message:\n\t~p\n",
+		    error_logger:format("~w~w got unexpected message:\n\t~tp\n",
 					[?MODULE, self(), Msg]),
 		    ?MODULE:loop(S)
 	    end
@@ -471,7 +471,7 @@ handle_event(#state{xref_pid = Xref} = S, Wx) ->
 	#wx{id = ?GOTO_ENTRY,
             event = #wxCommand{type = command_text_enter, cmdString = Str}} ->
 	    goto_line(S, Str);
-        #wx{event = #wxNotebook{type = command_notebook_page_changed}} ->
+        #wx{event = #wxBookCtrl{type = command_notebook_page_changed}} ->
 	    case wxNotebook:getSelection(S#state.book) of
 		0 -> % Deps page
 		    S;
@@ -487,7 +487,7 @@ handle_event(#state{xref_pid = Xref} = S, Wx) ->
 	    S;
 	_ ->
             error_logger:format("~w~w got unexpected mod event from "
-				"wx:\n\t~p\n",
+				"wx:\n\t~tp\n",
                                 [?MODULE, self(), Wx]),
             S
     end.
@@ -667,7 +667,7 @@ goto_function(S, Editor) ->
 	    wxStyledTextCtrl:setSelection(Editor, Left2, Right2),
 	    Text = wxStyledTextCtrl:getSelectedText(Editor),
 	    S2 = add_pos_to_history(S, CurrentPos),
-	    do_goto_function(S2, string:tokens(Text, ":"));
+	    do_goto_function(S2, string:lexemes(Text, ":"));
 	_ ->
 	    %% No function call
 	    wxStyledTextCtrl:hideSelection(Editor, false),
@@ -746,7 +746,6 @@ create_editor(Parent) ->
 	       {?wxSTC_ERLANG_CHARACTER,{236,155,172}},
 	       {?wxSTC_ERLANG_MACRO,    {40,144,170}},
 	       {?wxSTC_ERLANG_RECORD,   {40,100,20}},
-	       {?wxSTC_ERLANG_SEPARATOR,{0,0,0}},
 	       {?wxSTC_ERLANG_NODE_NAME,{0,0,0}}],
     SetStyle = fun({Style, Color}) ->
 		       wxStyledTextCtrl:styleSetFont(Ed, Style, FixedFont),
@@ -833,7 +832,7 @@ load_code(Ed, Code) when is_binary(Code) ->
 
 keyWords() ->
     L = ["after","begin","case","try","cond","catch","andalso","orelse",
-	 "end","fun","if","let","of","query","receive","when","bnot","not",
+	 "end","fun","if","let","of","receive","when","bnot","not",
 	 "div","rem","band","and","bor","bxor","bsl","bsr","or","xor"],
     lists:flatten([K ++ " " || K <- L] ++ [0]).
 

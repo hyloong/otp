@@ -1,7 +1,7 @@
 /*
  * %CopyrightBegin%
  * 
- * Copyright Ericsson AB 1998-2013. All Rights Reserved.
+ * Copyright Ericsson AB 1998-2020. All Rights Reserved.
  * 
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -31,17 +31,30 @@ int ei_encode_port(char *buf, int *index, const erlang_port *p)
 			    ERLANG_LATIN1|ERLANG_UTF8) < 0) {
       return -1;
   }
-  if (buf) {
-    put8(s,ERL_PORT_EXT);
+  if (p->id > 0x0fffffff /* 28 bits */) {
+      if (buf) {
+          put8(s, ERL_V4_PORT_EXT);
 
-    s = buf + *index;
+          s = buf + *index;
 
-    /* now the integers */
-    put32be(s,p->id & 0x0fffffff /* 28 bits */);
-    put8(s,(p->creation & 0x03));
+          /* now the integers */
+          put64be(s,p->id);
+          put32be(s, p->creation);
+      }
+      *index += 8 + 4;
   }
-  
-  *index += 4 + 1;
+  else {
+      if (buf) {
+          put8(s, ERL_NEW_PORT_EXT);
+
+          s = buf + *index;
+
+          /* now the integers */
+          put32be(s,p->id);
+          put32be(s, p->creation);
+      }
+      *index += 4 + 4;
+  }
   return 0;
 }
 

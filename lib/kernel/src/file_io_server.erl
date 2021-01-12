@@ -1,7 +1,7 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2000-2013. All Rights Reserved.
+%% Copyright Ericsson AB 2000-2017. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -28,7 +28,8 @@
 
 -record(state, {handle,owner,mref,buf,read_mode,unic}).
 
--define(PRIM_FILE, prim_file).
+-include("file_int.hrl").
+
 -define(READ_SIZE_LIST, 128).
 -define(READ_SIZE_BINARY, (8*1024)).
 
@@ -67,8 +68,9 @@ do_start(Spawn, Owner, FileName, ModeList) ->
 		  erlang:dt_restore_tag(Utag),
 		  %% process_flag(trap_exit, true),
 		  case parse_options(ModeList) of
-		      {ReadMode, UnicodeMode, Opts} ->
-			  case ?PRIM_FILE:open(FileName, Opts) of
+                      {ReadMode, UnicodeMode, Opts0} ->
+                          Opts = maybe_add_read_ahead(ReadMode, Opts0),
+			  case raw_file_io:open(FileName, [raw | Opts]) of
 			      {error, Reason} = Error ->
 				  Self ! {Ref, Error},
 				  exit(Reason);
@@ -157,6 +159,24 @@ valid_enc({utf32,little}) ->
 valid_enc(_Other) ->
     {error,badarg}.
 
+%% Add a small read_ahead buffer if the file is opened for reading
+%% only in list mode and no read_ahead is already given.
+maybe_add_read_ahead(binary, Opts) ->
+    Opts;
+maybe_add_read_ahead(list, Opts) ->
+    P = fun(read_ahead) -> true;
+           ({read_ahead,_}) -> true;
+           (append) -> true;
+           (exclusive) -> true;
+           (write) -> true;
+           (_) -> false
+        end,
+    case lists:any(P, Opts) of
+        false ->
+            [{read_ahead, 4096}|Opts];
+        true ->
+            Opts
+    end.
 
 server_loop(#state{mref = Mref} = State) ->
     receive
@@ -205,72 +225,109 @@ io_reply(From, ReplyAs, Reply) ->
 
 file_request({advise,Offset,Length,Advise},
          #state{handle=Handle}=State) ->
-    case ?PRIM_FILE:advise(Handle, Offset, Length, Advise) of
-    {error,_}=Reply ->
-        {stop,normal,Reply,State};
+    case ?CALL_FD(Handle, advise, [Offset, Length, Advise]) of
+    {error,Reason}=Reply ->
+        {stop,Reason,Reply,State};
     Reply ->
         {reply,Reply,State}
     end;
 file_request({allocate, Offset, Length},
          #state{handle = Handle} = State) ->
-    Reply = ?PRIM_FILE:allocate(Handle, Offset, Length),
+    Reply = ?CALL_FD(Handle, allocate, [Offset, Length]),
     {reply, Reply, State};
-file_request({pread,At,Sz}, 
-	     #state{handle=Handle,buf=Buf,read_mode=ReadMode}=State) ->
-    case position(Handle, At, Buf) of
-	{ok,_Offs} ->
-	    case ?PRIM_FILE:read(Handle, Sz) of
-		{ok,Bin} when ReadMode =:= list ->
-		    std_reply({ok,binary_to_list(Bin)}, State);
-		Reply ->
-		    std_reply(Reply, State)
-	    end;
-	Reply ->
-	    std_reply(Reply, State)
+file_request({pread,At,Sz}, State)
+  when At =:= cur;
+       At =:= {cur,0} ->
+    case get_chars(Sz, latin1, State) of
+	{reply,Reply,NewState}
+	  when is_list(Reply);
+	       is_binary(Reply) ->
+	    {reply,{ok,Reply},NewState};
+	Other ->
+	    Other
     end;
+file_request({pread,At,Sz}, 
+	     #state{handle=Handle,buf=Buf}=State) ->
+    case position(Handle, At, Buf) of
+	{error,_} = Reply ->
+	    {error,Reply,State};
+	_ ->
+	    case get_chars(Sz, latin1, State#state{buf= <<>>}) of
+		{reply,Reply,NewState}
+		  when is_list(Reply);
+		       is_binary(Reply) ->
+		    {reply,{ok,Reply},NewState};
+		Other ->
+		    Other
+	    end
+    end;
+file_request({pwrite,At,Data},
+	     #state{buf= <<>>}=State)
+  when At =:= cur;
+       At =:= {cur,0} ->
+    put_chars(Data, latin1, State);
 file_request({pwrite,At,Data}, 
 	     #state{handle=Handle,buf=Buf}=State) ->
     case position(Handle, At, Buf) of
-	{ok,_Offs} ->
-	    std_reply(?PRIM_FILE:write(Handle, Data), State);
-	Reply ->
-	    std_reply(Reply, State)
+	{error,_} = Reply ->
+	    {error,Reply,State};
+	_ ->
+	    put_chars(Data, latin1, State)
     end;
 file_request(datasync,
 	     #state{handle=Handle}=State) ->
-    case ?PRIM_FILE:datasync(Handle) of
-	{error,_}=Reply ->
-	    {stop,normal,Reply,State};
+    case ?CALL_FD(Handle, datasync, []) of
+	{error,Reason}=Reply ->
+	    {stop,Reason,Reply,State};
 	Reply ->
 	    {reply,Reply,State}
     end;
 file_request(sync, 
 	     #state{handle=Handle}=State) ->
-    case ?PRIM_FILE:sync(Handle) of
-	{error,_}=Reply ->
-	    {stop,normal,Reply,State};
+    case ?CALL_FD(Handle, sync, []) of
+	{error,Reason}=Reply ->
+	    {stop,Reason,Reply,State};
 	Reply ->
 	    {reply,Reply,State}
     end;
 file_request(close, 
 	     #state{handle=Handle}=State) ->
-    {stop,normal,?PRIM_FILE:close(Handle),State#state{buf= <<>>}};
+    case ?CALL_FD(Handle, close, []) of
+	{error,Reason}=Reply ->
+	    {stop,Reason,Reply,State#state{buf= <<>>}};
+	Reply ->
+	    {stop,normal,Reply,State#state{buf= <<>>}}
+    end;
 file_request({position,At}, 
 	     #state{handle=Handle,buf=Buf}=State) ->
-    std_reply(position(Handle, At, Buf), State);
+    case position(Handle, At, Buf) of
+	{error,_} = Reply ->
+	    {error,Reply,State};
+	Reply ->
+	    std_reply(Reply, State)
+    end;
 file_request(truncate, 
 	     #state{handle=Handle}=State) ->
-    case ?PRIM_FILE:truncate(Handle) of
-	{error,_Reason}=Reply ->
-	    {stop,normal,Reply,State#state{buf= <<>>}};
+    case ?CALL_FD(Handle, truncate, []) of
+	{error,Reason}=Reply ->
+	    {stop,Reason,Reply,State#state{buf= <<>>}};
 	Reply ->
-	    {reply,Reply,State}
+	    std_reply(Reply, State)
+    end;
+file_request({read_handle_info, Opts},
+             #state{handle=Handle}=State) ->
+    case ?CALL_FD(Handle, read_handle_info, [Opts]) of
+        {error,Reason}=Reply ->
+            {stop,Reason,Reply,State};
+        Reply ->
+            {reply,Reply,State}
     end;
 file_request(Unknown, 
 	     #state{}=State) ->
     Reason = {request, Unknown},
     {error,{error,Reason},State}.
 
+%% Standard reply and clear buffer
 std_reply({error,_}=Reply, State) ->
     {error,Reply,State#state{buf= <<>>}};
 std_reply(Reply, State) ->
@@ -286,8 +343,8 @@ io_request({put_chars, Enc, Chars},
 io_request({put_chars, Enc, Chars}, 
 	   #state{handle=Handle,buf=Buf}=State) ->
     case position(Handle, cur, Buf) of
-	{error,_}=Reply ->
-	    {stop,normal,Reply,State#state{buf= <<>>}};
+	{error,Reason}=Reply ->
+	    {stop,Reason,Reply,State};
 	_ ->
 	    put_chars(Chars, Enc, State#state{buf= <<>>})
     end;
@@ -368,28 +425,32 @@ io_request_loop([Request|Tail],
 %% I/O request put_chars
 %%
 put_chars(Chars, latin1, #state{handle=Handle, unic=latin1}=State) ->
-    case ?PRIM_FILE:write(Handle, Chars) of
-	{error,_}=Reply ->
-	    {stop,normal,Reply,State};
+    NewState = State#state{buf = <<>>},
+    case ?CALL_FD(Handle, write, [Chars]) of
+	{error,Reason}=Reply ->
+	    {stop,Reason,Reply,NewState};
 	Reply ->
-	    {reply,Reply,State}
+	    {reply,Reply,NewState}
     end;
 put_chars(Chars, InEncoding, #state{handle=Handle, unic=OutEncoding}=State) ->
+    NewState = State#state{buf = <<>>},
     case unicode:characters_to_binary(Chars,InEncoding,OutEncoding) of
 	Bin when is_binary(Bin) ->
-	    case ?PRIM_FILE:write(Handle, Bin) of
-		{error,_}=Reply ->
-		    {stop,normal,Reply,State};
+	    case ?CALL_FD(Handle, write, [Bin]) of
+		{error,Reason}=Reply ->
+		    {stop,Reason,Reply,NewState};
 		Reply ->
-		    {reply,Reply,State}
+		    {reply,Reply,NewState}
 	    end;
 	{error,_,_} ->
-	    {stop,normal,{error,{no_translation, InEncoding, OutEncoding}},State}
+	    {stop,no_translation,
+	     {error,{no_translation, InEncoding, OutEncoding}},
+	     NewState}
     end.
 
 get_line(S, {<<>>, Cont}, OutEnc,
 	 #state{handle=Handle, read_mode=Mode, unic=InEnc}=State) ->
-    case ?PRIM_FILE:read(Handle, read_size(Mode)) of
+    case ?CALL_FD(Handle, read, [read_size(Mode)]) of
 	{ok,Bin} ->
 	    get_line(S, convert_enc([Cont, Bin], InEnc, OutEnc), OutEnc, State);
 	eof ->
@@ -439,7 +500,7 @@ get_chars(N, OutEnc,#state{handle=Handle,buf=Buf,read_mode=ReadMode,unic=latin1}
     BufSize = byte_size(Buf),
     NeedSize = N-BufSize,
     Size = erlang:max(NeedSize, ?READ_SIZE_BINARY),
-    case ?PRIM_FILE:read(Handle, Size) of
+    case ?CALL_FD(Handle, read, [Size]) of
 	{ok, B} ->
 	    if BufSize+byte_size(B) < N ->
 		    std_reply(cat(Buf, B, ReadMode,latin1,OutEnc), State);
@@ -471,7 +532,7 @@ get_chars(N, OutEnc,#state{handle=Handle,buf=Buf,read_mode=ReadMode,unic=InEncod
 		%% Need more, Try to read 4*needed in bytes...
 		NeedSize = (N - BufCount) * 4,
 		Size = erlang:max(NeedSize, ?READ_SIZE_BINARY),
-		case ?PRIM_FILE:read(Handle, Size) of
+		case ?CALL_FD(Handle, read, [Size]) of
 		    {ok, B} ->
 			NewBuf = list_to_binary([Buf,B]),
 			{NewCount,NewSplit} = count_and_find(NewBuf,N,InEncoding),
@@ -511,7 +572,7 @@ get_chars(Mod, Func, XtraArg, OutEnc, #state{buf=Buf}=State) ->
 
 get_chars_empty(Mod, Func, XtraArg, S, latin1,
 		#state{handle=Handle,read_mode=ReadMode, unic=latin1}=State) ->
-    case ?PRIM_FILE:read(Handle, read_size(ReadMode)) of
+    case ?CALL_FD(Handle, read, [read_size(ReadMode)]) of
 	{ok,Bin} ->
 	    get_chars_apply(Mod, Func, XtraArg, S, latin1, State, Bin);
 	eof ->
@@ -521,7 +582,7 @@ get_chars_empty(Mod, Func, XtraArg, S, latin1,
     end;
 get_chars_empty(Mod, Func, XtraArg, S, OutEnc,
 		#state{handle=Handle,read_mode=ReadMode}=State) ->
-    case ?PRIM_FILE:read(Handle, read_size(ReadMode)) of
+    case ?CALL_FD(Handle, read, [read_size(ReadMode)]) of
 	{ok,Bin} ->
 	    get_chars_apply(Mod, Func, XtraArg, S, OutEnc, State, Bin);
 	eof ->
@@ -531,7 +592,7 @@ get_chars_empty(Mod, Func, XtraArg, S, OutEnc,
     end.
 get_chars_notempty(Mod, Func, XtraArg, S, OutEnc,
 		   #state{handle=Handle,read_mode=ReadMode,buf = B}=State) ->
-    case ?PRIM_FILE:read(Handle, read_size(ReadMode)) of
+    case ?CALL_FD(Handle, read, [read_size(ReadMode)]) of
 	{ok,Bin} ->
 	    get_chars_apply(Mod, Func, XtraArg, S, OutEnc, State, list_to_binary([B,Bin]));
 	eof ->
@@ -884,11 +945,11 @@ cbv({utf32,little},_) ->
 
 %% Compensates ?PRIM_FILE:position/2 for the number of bytes 
 %% we have buffered
-
-position(Handle, cur, Buf) ->
-    position(Handle, {cur, 0}, Buf);
-position(Handle, {cur, Offs}, Buf) when is_binary(Buf) ->
-    ?PRIM_FILE:position(Handle, {cur, Offs-byte_size(Buf)});
-position(Handle, At, _Buf) ->
-    ?PRIM_FILE:position(Handle, At).
-
+position(Handle, At, Buf) ->
+    SeekTo =
+        case At of
+            {cur, Offs} -> {cur, Offs-byte_size(Buf)};
+            cur -> {cur, -byte_size(Buf)};
+            _ -> At
+        end,
+    ?CALL_FD(Handle, position, [SeekTo]).

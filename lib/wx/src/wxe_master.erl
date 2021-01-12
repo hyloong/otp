@@ -1,7 +1,7 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2008-2012. All Rights Reserved.
+%% Copyright Ericsson AB 2008-2018. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -19,7 +19,7 @@
 %%%-------------------------------------------------------------------
 %%% File    : wxe_server.erl
 %%% Author  : Dan Gudmundsson <dgud@erix.ericsson.se>
-%%% Description : 
+%%% Description :
 %%%
 %%% Created : 17 Jan 2007 by Dan Gudmundsson <dgud@erix.ericsson.se>
 %%%-------------------------------------------------------------------
@@ -29,7 +29,7 @@
 -behaviour(gen_server).
 
 %% API
--export([start/1, init_port/1, init_opengl/0, fetch_msgs/0]).
+-export([start/1, init_env/1, init_opengl/0, fetch_msgs/0]).
 
 %% gen_server callbacks
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2,
@@ -42,7 +42,6 @@
 	       }).
 
 -include("wxe.hrl").
--include("gen/wxe_debug.hrl").
 
 -define(DRIVER, "wxe_driver").
 
@@ -60,7 +59,7 @@ start(SilentStart) ->
 %% Function: init_port(SilentStart) -> {UserPort,CallBackPort} | error(Error)
 %% Description: Creates the port
 %%--------------------------------------------------------------------
-init_port(SilentStart) ->
+init_env(SilentStart) ->
     case whereis(?MODULE) of
 	undefined ->
 	    case start(SilentStart) of
@@ -72,18 +71,20 @@ init_port(SilentStart) ->
 	Pid ->
 	    Pid
     end,
-    {Driver, CBport} = gen_server:call(?MODULE, init_port, infinity),
-    Port = open_port({spawn,Driver},[binary]),
-    receive wx_port_initiated -> ok end,
-    {Port, CBport}.
+    gen_server:call(?MODULE, init_env, infinity),  %% sync
+    wxe_util:make_env().
 
 
 %%--------------------------------------------------------------------
 %% Initalizes the opengl library
 %%--------------------------------------------------------------------
 init_opengl() ->
-    GLLib = wxe_util:wxgl_dl(),
-    wxe_util:call(?WXE_INIT_OPENGL, <<(list_to_binary(GLLib))/binary, 0:8>>).
+    case get(wx_init_opengl) of
+        true -> {ok, "already  initialized"};
+        _ ->
+            Opaque = gl:lookup_func(),
+            {ok, wxe_util:init_opengl(Opaque)}
+    end.
 
 %%--------------------------------------------------------------------
 %% Fetch early messages, hack to get start up args on mac
@@ -103,51 +104,29 @@ fetch_msgs() ->
 %% Description: Initiates the server
 %%--------------------------------------------------------------------
 init([SilentStart]) ->
-    DriverName = ?DRIVER,
-    PrivDir = wxe_util:priv_dir(?DRIVER, SilentStart),
     erlang:group_leader(whereis(init), self()),
     case catch erlang:system_info(smp_support) of
 	true -> ok;
-	_ -> 
-	    wxe_util:opt_error_log(SilentStart,
-                                   "WX ERROR: SMP emulator required"
-                                   " (start with erl -smp)",
-                                   []),
-	    erlang:error(not_smp)
-    end,
-
-    case os:type() of
-        {win32,_} ->  %% Needed for mingwm10.dll
-            Path = os:getenv("PATH"),
-            os:putenv("PATH", PrivDir ++ ";" ++ Path);
-        _ -> ok
-    end,
-
-    case erl_ddll:load_driver(PrivDir,DriverName) of
-	ok -> ok;
-	{error, What} -> 
-	    wxe_util:opt_error_log(SilentStart,
-                                   "WX Failed loading ~p@~p ~n",
-                                   [DriverName,PrivDir]),
-	    Str = erl_ddll:format_error(What),
-	    erlang:error({load_driver,Str})
+	_ ->
+	    wxe_util:opt_error_log(SilentStart, "WX ERROR: SMP emulator required", []),
+	    erlang:error({error, not_smp})
     end,
     process_flag(trap_exit, true),
-    DriverWithArgs = DriverName ++ " " ++ code:priv_dir(wx) ++ [0],
-    
+    case wxe_util:init_nif(SilentStart) of
+        ok -> ok;
+        {error, {Reason, String}} = Err ->
+            wxe_util:opt_error_log(SilentStart,
+                                   "WX ERROR: Could not load library: ~p~n~s",
+                                   [Reason, String]),
+            erlang:error(Err)
+    end,
     try
-	Port = open_port({spawn, DriverWithArgs},[binary]),
-	wx_debug_info = ets:new(wx_debug_info, [named_table]),
-	wx_non_consts = ets:new(wx_non_consts, [named_table]),
-	true = ets:insert(wx_debug_info, wxdebug_table()),
-	spawn_link(fun() -> debug_ping(Port) end),
-	receive
-	    {wx_consts, List} ->
-		true = ets:insert(wx_non_consts, List)
-	end,
-	{ok, #state{cb_port=Port, driver=DriverName, users=gb_sets:empty()}}
-    catch _:Err ->
-	    error({Err, "Could not initiate graphics"})
+	spawn_link(fun() -> debug_ping() end),
+        wxe_util:setup_consts(),
+	{ok, #state{}}
+    catch _:Error:ST ->
+            io:format("Error: ~p @ ~p~n",[Error, ST]),
+	    error({error, {Error, "Could not initiate graphics"}})
     end.
 
 %%--------------------------------------------------------------------
@@ -159,8 +138,8 @@ init([SilentStart]) ->
 %%                                      {stop, Reason, State}
 %% Description: Handling call messages
 %%--------------------------------------------------------------------
-handle_call(init_port, From, State=#state{driver=Driver,cb_port=CBPort, users=Users}) ->
-    {reply, {Driver,CBPort}, State#state{users=gb_sets:add(From,Users)}};
+handle_call(init_env, _From, State) ->
+    {reply, ok, State};
 handle_call(fetch_msgs, _From, State=#state{msgs=Msgs}) ->
     {reply, lists:reverse(Msgs), State#state{msgs=[]}};
 handle_call(_Request, _From, State) ->
@@ -185,10 +164,10 @@ handle_cast(_Msg, State) ->
 %% Description: Handling all non call/cast messages
 %%--------------------------------------------------------------------
 handle_info({wxe_driver, error, Msg}, State) ->
-    error_logger:format("WX ERROR: ~s~n", [Msg]),
+    error_logger:error_report([{wx, error}, {message, lists:flatten(Msg)}]),
     {noreply, State};
 handle_info({wxe_driver, internal_error, Msg}, State) ->
-    error_logger:format("WX INTERNAL ERROR: ~s~n", [Msg]),
+    error_logger:error_report([{wx, internal_error}, {message, lists:flatten(Msg)}]),
     {noreply, State};
 handle_info({wxe_driver, debug, Msg}, State) ->
     io:format("WX DBG: ~s~n", [Msg]),
@@ -223,8 +202,7 @@ code_change(_OldVsn, State, _Extra) ->
 
 %%%%%%%%%%%% INTERNAL %%%%%%%%%%%%%%%%%%%%%%%%
 
-debug_ping(Port) ->
-    timer:sleep(1*333),    
-    _R = (catch erlang:port_call(Port, 0, [])),
-%%    io:format("Erlang ping ~p ~n", [_R]),
-    debug_ping(Port).
+debug_ping() ->
+    timer:sleep(1*333),
+    wxe_util:debug_ping(),
+    debug_ping().

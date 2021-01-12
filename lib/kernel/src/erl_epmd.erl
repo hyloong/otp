@@ -1,7 +1,7 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 1998-2013. All Rights Reserved.
+%% Copyright Ericsson AB 1998-2020. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -29,10 +29,23 @@
 -define(port_please_failure2(Term), noop).
 -endif.
 
+-include("dist.hrl").
+
+-ifndef(erlang_daemon_port).
+-define(erlang_daemon_port, 4369).
+-endif.
+-ifndef(epmd_dist_high).
+-define(epmd_dist_high, ?ERL_DIST_VER_HIGH).
+-endif.
+-ifndef(epmd_dist_low).
+-define(epmd_dist_low, ?ERL_DIST_VER_LOW).
+-endif.
+
 %% External exports
--export([start/0, start_link/0, stop/0, port_please/2, 
-	 port_please/3, names/0, names/1,
-	 register_node/2, open/0, open/1, open/2]).
+-export([start/0, start_link/0, stop/0,
+         port_please/2, port_please/3, listen_port_please/2,
+         names/0, names/1,
+	 register_node/2, register_node/3, address_please/3, open/0, open/1, open/2]).
 
 %% gen_server callbacks
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, 
@@ -45,7 +58,7 @@
 
 -include("inet_int.hrl").
 -include("erl_epmd.hrl").
-
+-include_lib("kernel/include/inet.hrl").
 
 %%%----------------------------------------------------------------------
 %%% API
@@ -53,7 +66,7 @@
 start() ->
     gen_server:start({local, erl_epmd}, ?MODULE, [], []).
 
-
+-spec start_link() -> {ok, pid()} | ignore | {error,term()}.
 start_link() ->
     gen_server:start_link({local, erl_epmd}, ?MODULE, [], []).
 
@@ -66,43 +79,131 @@ stop() ->
 %% return {port, P, Version} | noport
 %%
 
+-spec port_please(Name, Host) -> {port, Port, Version} | noport | closed | {error, term()} when
+	  Name :: atom() | string(),
+	  Host :: atom() | string() | inet:ip_address(),
+	  Port :: non_neg_integer(),
+	  Version :: non_neg_integer().
+
 port_please(Node, Host) ->
   port_please(Node, Host, infinity).
 
-port_please(Node,HostName, Timeout) when is_atom(HostName) ->
-  port_please1(Node,atom_to_list(HostName), Timeout);
-port_please(Node,HostName, Timeout) when is_list(HostName) ->
-  port_please1(Node,HostName, Timeout);
-port_please(Node, EpmdAddr, Timeout) ->
-  get_port(Node, EpmdAddr, Timeout).
+-spec port_please(Name, Host, Timeout) -> {port, Port, Version} | noport | closed | {error, term()} when
+	  Name :: atom() | string(),
+	  Host :: atom() | string() | inet:ip_address(),
+	  Timeout :: non_neg_integer() | infinity,
+	  Port :: non_neg_integer(),
+	  Version :: non_neg_integer().
 
+port_please(Node, HostName, Timeout) ->
+    case listen_port_please(Node, HostName) of
+        {ok, 0} ->
+            case getepmdbyname(HostName, Timeout) of
+                {ok, EpmdAddr} ->
+                    get_port(Node, EpmdAddr, Timeout);
+                _Error ->
+                    ?port_please_failure2(_Error),
+                    noport
+            end;
+        {ok, Prt} ->
+            %% We don't know which dist version the other node is running
+            %% so return the low version so that we can talk to older nodes
+            {port, Prt, ?epmd_dist_low}
+    end.
 
+getepmdbyname(HostName, Timeout) when is_atom(HostName) ->
+    getepmdbyname(atom_to_list(HostName), Timeout);
+getepmdbyname(HostName, Timeout) when is_list(HostName) ->
+    Family = case inet_db:res_option(inet6) of
+                 true ->
+                     inet6;
+                 false ->
+                     inet
+             end,
+    case inet:gethostbyname(HostName, Family, Timeout) of
+        {ok,#hostent{ h_addr_list = [EpmdAddr | _]}} ->
+            {ok, EpmdAddr};
+        Else ->
+            Else
+    end;
+getepmdbyname(HostName, _Timeout) ->
+    {ok, HostName}.
 
-port_please1(Node,HostName, Timeout) ->
-  case inet:gethostbyname(HostName, inet, Timeout) of
-    {ok,{hostent, _Name, _ , _Af, _Size, [EpmdAddr | _]}} ->
-      get_port(Node, EpmdAddr, Timeout);
-    Else ->
-      Else
-  end.
+-spec listen_port_please(Name, Host) -> {ok, Port} when
+      Name :: atom() | string(),
+      Host :: atom() | string() | inet:ip_address(),
+      Port :: non_neg_integer().
+listen_port_please(_Name, _Host) ->
+    try
+        %% Should come up with a new name for this as ERL_EPMD_PORT describes what
+        %% port epmd runs on which could easily be confused with this.
+        {ok, [[StringPort]]} = init:get_argument(erl_epmd_port),
+        Port = list_to_integer(StringPort),
+        {ok, Port}
+    catch error:_ ->
+            {ok, 0}
+    end.
+
+-spec names() -> {ok, [{Name, Port}]} | {error, Reason} when
+	  Name :: string(),
+	  Port :: non_neg_integer(),
+	  Reason :: address | file:posix().
 
 names() ->
     {ok, H} = inet:gethostname(),
     names(H).
 
-names(HostName) when is_atom(HostName); is_list(HostName) ->
-  case inet:gethostbyname(HostName) of
-    {ok,{hostent, _Name, _ , _Af, _Size, [EpmdAddr | _]}} ->
-      get_names(EpmdAddr);
-    Else ->
-      Else
-  end;
-names(EpmdAddr) ->
-  get_names(EpmdAddr).
+-spec names(Host) -> {ok, [{Name, Port}]} | {error, Reason} when
+      Host :: atom() | string() | inet:ip_address(),
+      Name :: string(),
+      Port :: non_neg_integer(),
+      Reason :: address | file:posix().
 
+names(HostName) ->
+    case getepmdbyname(HostName, infinity) of
+        {ok,EpmdAddr} ->
+            get_names(EpmdAddr);
+        Else ->
+            Else
+    end.
+
+-spec register_node(Name, Port) -> Result when
+	  Name :: string(),
+	  Port :: non_neg_integer(),
+	  Creation :: non_neg_integer(),
+	  Result :: {ok, Creation} | {error, already_registered} | term().
 
 register_node(Name, PortNo) ->
-    gen_server:call(erl_epmd, {register, Name, PortNo}, infinity).
+	register_node(Name, PortNo, inet).
+
+-spec register_node(Name, Port, Driver) -> Result when
+	  Name :: string(),
+	  Port :: non_neg_integer(),
+	  Driver :: inet_tcp | inet6_tcp | inet | inet6,
+	  Creation :: non_neg_integer() | -1,
+	  Result :: {ok, Creation} | {error, already_registered} | term().
+
+register_node(Name, PortNo, inet_tcp) ->
+    register_node(Name, PortNo, inet);
+register_node(Name, PortNo, inet6_tcp) ->
+    register_node(Name, PortNo, inet6);
+register_node(Name, PortNo, Family) ->
+    gen_server:call(erl_epmd, {register, Name, PortNo, Family}, infinity).
+
+-spec address_please(Name, Host, AddressFamily) -> Success | {error, term()} when
+	  Name :: string(),
+	  Host :: string() | inet:ip_address(),
+	  AddressFamily :: inet | inet6,
+	  Port :: non_neg_integer(),
+	  Version :: non_neg_integer(),
+	  Success :: {ok, inet:ip_address()} |
+                     %% This is not returned here, but is in the spec for
+                     %% the documentation to show that it is possible to
+                     %% return when using a custom erl_epmd
+                     {ok, inet:ip_address(), Port, Version}.
+
+address_please(_Name, Host, AddressFamily) ->
+    inet:getaddr(Host, AddressFamily).
 
 %%%----------------------------------------------------------------------
 %%% Callback functions from gen_server
@@ -120,17 +221,24 @@ init(_) ->
 -spec handle_call(calls(), term(), state()) ->
         {'reply', term(), state()} | {'stop', 'shutdown', 'ok', state()}.
 
-handle_call({register, Name, PortNo}, _From, State) ->
+handle_call({register, Name, PortNo, Family}, _From, State) ->
     case State#state.socket of
 	P when P < 0 ->
-	    case do_register_node(Name, PortNo) of
+	    case do_register_node(Name, PortNo, Family) of
 		{alive, Socket, Creation} ->
 		    S = State#state{socket = Socket,
 				    port_no = PortNo,
 				    name = Name},
 		    {reply, {ok, Creation}, S};
-		Error ->
-		    {reply, Error, State}
+                Error ->
+                    case init:get_argument(erl_epmd_port) of
+                        {ok, _} ->
+                            {reply, {ok, -1}, State#state{ socket = -1,
+                                                           port_no = PortNo,
+                                                           name = Name} };
+                        error ->
+                            {reply, Error, State}
+                    end
 	    end;
 	_ ->
 	    {reply, {error, already_registered}, State}
@@ -206,8 +314,12 @@ open({A,B,C,D,E,F,G,H}=EpmdAddr, Timeout) when ?ip6(A,B,C,D,E,F,G,H) ->
 close(Socket) ->
     gen_tcp:close(Socket).
 
-do_register_node(NodeName, TcpPort) ->
-    case open() of
+do_register_node(NodeName, TcpPort, Family) ->
+    Localhost = case Family of
+        inet -> open({127,0,0,1});
+        inet6 -> open({0,0,0,0,0,0,0,1})
+    end,
+    case Localhost of
 	{ok, Socket} ->
 	    Name = to_string(NodeName),
 	    Extra = "",
@@ -231,7 +343,7 @@ do_register_node(NodeName, TcpPort) ->
                     Error
             end;
 	Error ->
-	    Error
+            Error
     end.
 
 epmd_dist_high() ->
@@ -268,6 +380,13 @@ wait_for_reg_reply(Socket, SoFar) ->
     receive
 	{tcp, Socket, Data0} ->
 	    case SoFar ++ Data0 of
+		[$v, Result, A, B, C, D] ->
+		    case Result of
+			0 ->
+			    {alive, Socket, ?u32(A, B, C, D)};
+			_ ->
+			    {error, duplicate_name}
+		    end;
 		[$y, Result, A, B] ->
 		    case Result of
 			0 ->
@@ -304,9 +423,8 @@ get_port(Node, EpmdAddress, Timeout) ->
 		    ?port_please_failure2(_Error),
 		    noport
 	    end;
-	_Error -> 
-	    ?port_please_failure2(_Error),
-	    noport
+	_Error ->
+            noport
     end.
 
 
@@ -394,8 +512,6 @@ best_version(Low, High) ->
 %%% We silently assume that the low's are not greater than the high's.
 %%% We should report if the intervals don't overlap.
 select_best_version(L1, _H1, _L2, H2) when L1 > H2 ->
-    0;
-select_best_version(_L1, H1, L2, _H2) when L2 > H1 ->
     0;
 select_best_version(_L1, H1, L2, _H2) when L2 > H1 ->
     0;

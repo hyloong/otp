@@ -1,7 +1,7 @@
 #
 # %CopyrightBegin%
 # 
-# Copyright Ericsson AB 2009-2012. All Rights Reserved.
+# Copyright Ericsson AB 2009-2016. All Rights Reserved.
 # 
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -39,7 +39,8 @@ RELSYSDIR = $(RELEASE_PATH)/lib/erl_docgen-$(VSN)
 
 
 CSS_FILES = \
-	otp_doc.css
+	otp_doc.css \
+	highlight.css
 
 
 # ----------------------------------------------------
@@ -52,7 +53,9 @@ CSS_FILES = \
 # ----------------------------------------------------
 debug opt: 
 
-docs:
+DOC_TARGETS?=html
+
+docs: $(DOC_TARGETS)
 
 clean:
 	$(RM) $(TARGET_FILES)
@@ -63,15 +66,16 @@ clean:
 # ---------------------------------------------------- 
 include $(ERL_TOP)/make/otp_release_targets.mk
 
-
 release_spec: opt
 	$(INSTALL_DIR) "$(RELSYSDIR)/priv/css"
 	$(INSTALL_DATA) $(CSS_FILES) "$(RELSYSDIR)/priv/css"
 
 
-release_docs_spec:
+release_html_spec: html
 	$(INSTALL_DIR) "$(RELEASE_PATH)/doc"
 	$(INSTALL_DATA) $(CSS_FILES) ../nyi.html "$(RELEASE_PATH)/doc"
+
+release_docs_spec: $(DOC_TARGETS:%=release_%_spec)
 
 release_tests_spec:
 

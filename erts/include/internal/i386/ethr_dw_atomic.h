@@ -1,7 +1,7 @@
 /*
  * %CopyrightBegin%
  *
- * Copyright Ericsson AB 2011. All Rights Reserved.
+ * Copyright Ericsson AB 2011-2020. All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -73,7 +73,7 @@ typedef volatile ethr_native_sint128_t__ * ethr_native_dw_ptr_t;
  * runtime. We, therefore, need an extra word allocated.
  */
 #define ETHR_DW_NATMC_MEM__(VAR) \
-   (&var->c[(int) ((ethr_uint_t) &(VAR)->c[0]) & ETHR_DW_NATMC_ALIGN_MASK__])
+   (&(VAR)->c[(int) ((ethr_uint_t) &(VAR)->c[0]) & ETHR_DW_NATMC_ALIGN_MASK__])
 typedef union {
 #ifdef ETHR_NATIVE_SU_DW_SINT_T
     volatile ETHR_NATIVE_SU_DW_SINT_T dw_sint;
@@ -115,13 +115,19 @@ ethr_native_dw_atomic_addr(ethr_native_dw_atomic_t *var)
     return (ethr_sint_t *) ETHR_DW_NATMC_MEM__(var);
 }
 
-#if ETHR_SIZEOF_PTR == 4 && defined(__PIC__) && __PIC__
+#if defined(ETHR_CMPXCHG8B_PIC_NO_CLOBBER_EBX) && defined(__PIC__) && __PIC__
+#if ETHR_SIZEOF_PTR != 4
+#  error unexpected pic issue
+#endif
 /*
  * When position independent code is used in 32-bit mode, the EBX register
- * is used for storage of global offset table address, and we may not
- * use it as input or output in an asm. We need to save and restore the
- * EBX register explicitly (for some reason gcc doesn't provide this
- * service to us).
+ * is used for storage of global offset table address. When compiling with
+ * an old gcc (< vsn 5) we may not use it as input or output in an inline
+ * asm. We then need to save and restore the EBX register explicitly (for
+ * some reason old gcc compilers didn't provide this service to us).
+ * ETHR_CMPXCHG8B_PIC_NO_CLOBBER_EBX will be defined if we need to
+ * explicitly manage EBX ourselves.
+ *
  */
 #  define ETHR_NO_CLOBBER_EBX__ 1
 #else
@@ -131,7 +137,7 @@ ethr_native_dw_atomic_addr(ethr_native_dw_atomic_t *var)
 #if ETHR_NO_CLOBBER_EBX__ && !defined(ETHR_CMPXCHG8B_REGISTER_SHORTAGE)
 /* When no optimization is on, we'll run into a register shortage */
 #  if defined(ETHR_DEBUG) || defined(DEBUG) || defined(VALGRIND) \
-      || defined(GCOV) || defined(PURIFY) || defined(PURECOV)
+      || defined(GCOV)
 #    define ETHR_CMPXCHG8B_REGISTER_SHORTAGE 1
 #  else
 #    define ETHR_CMPXCHG8B_REGISTER_SHORTAGE 0
@@ -143,7 +149,7 @@ ethr_native_dw_atomic_addr(ethr_native_dw_atomic_t *var)
 
 static ETHR_INLINE int
 ethr_native_dw_atomic_cmpxchg_mb(ethr_native_dw_atomic_t *var,
-				 ethr_sint_t *new,
+				 ethr_sint_t *new_value,
 				 ethr_sint_t *xchg)
 {
     ethr_native_dw_ptr_t p = (ethr_native_dw_ptr_t) ETHR_DW_NATMC_MEM__(var);
@@ -151,35 +157,52 @@ ethr_native_dw_atomic_cmpxchg_mb(ethr_native_dw_atomic_t *var,
 
     ETHR_DW_DBG_ALIGNED__(p);
 
+#if ETHR_NO_CLOBBER_EBX__ && ETHR_CMPXCHG8B_REGISTER_SHORTAGE
+    /*
+     * gcc wont let us use ebx as input and we
+     * get a register shortage
+     */
+
     __asm__ __volatile__(
-#if ETHR_NO_CLOBBER_EBX__
 	"pushl %%ebx\n\t"
-#  if ETHR_CMPXCHG8B_REGISTER_SHORTAGE
 	"movl (%7), %%ebx\n\t"
 	"movl 4(%7), %%ecx\n\t"
-#  else
+	"lock; cmpxchg8b %0\n\t"
+	"setz %3\n\t"
+	"popl %%ebx\n\t"
+	: "=m"(*p), "=d"(xchg[1]), "=a"(xchg[0]), "=c"(xchgd)
+	: "m"(*p), "1"(xchg[1]), "2"(xchg[0]), "r"(new_value)
+	: "cc", "memory");
+
+#elif ETHR_NO_CLOBBER_EBX__
+    /*
+     * gcc wont let us use ebx as input
+     */
+
+    __asm__ __volatile__(
+	"pushl %%ebx\n\t"
 	"movl %8, %%ebx\n\t"
-#  endif
-#endif
+	"lock; cmpxchg8b %0\n\t"
+	"setz %3\n\t"
+	"popl %%ebx\n\t"
+	: "=m"(*p), "=d"(xchg[1]), "=a"(xchg[0]), "=q"(xchgd)
+	: "m"(*p), "1"(xchg[1]), "2"(xchg[0]), "c"(new_value[1]), "r"(new_value[0])
+	: "cc", "memory");
+
+#else
+    /*
+     * gcc lets us place values in the registers where
+     * we want them
+     */
+
+    __asm__ __volatile__(
 	"lock; cmpxchg" ETHR_DW_CMPXCHG_SFX__ " %0\n\t"
 	"setz %3\n\t"
-#if ETHR_NO_CLOBBER_EBX__
-	"popl %%ebx\n\t"
-#endif
-	: "=m"(*p), "=d"(xchg[1]), "=a"(xchg[0]), "=c"(xchgd)
-	: "m"(*p), "1"(xchg[1]), "2"(xchg[0]),
-#if ETHR_NO_CLOBBER_EBX__
-#  if ETHR_CMPXCHG8B_REGISTER_SHORTAGE
-	  "3"(new)
-#  else
-	  "3"(new[1]),
-	  "r"(new[0])
-#  endif
-#else
-	  "3"(new[1]),
-	  "b"(new[0])
-#endif
+	: "=m"(*p), "=d"(xchg[1]), "=a"(xchg[0]), "=q"(xchgd)
+	: "m"(*p), "1"(xchg[1]), "2"(xchg[0]), "c"(new_value[1]), "b"(new_value[0])
 	: "cc", "memory");
+
+#endif
 
     return (int) xchgd;
 }
@@ -201,10 +224,10 @@ ethr_native_su_dw_atomic_read(ethr_native_dw_atomic_t *var)
     if (ETHR_X86_RUNTIME_CONF_HAVE_SSE2__)
 	return ethr_sse2_native_su_dw_atomic_read(var);
     else {
-	ethr_sint_t new[2];
+	ethr_sint_t new_value[2];
 	ethr_dw_atomic_no_sse2_convert_t xchg;
-	new[0] = new[1] = xchg.sint[0] = xchg.sint[1] = 0x83838383;
-	(void) ethr_native_dw_atomic_cmpxchg_mb(var, new, xchg.sint);
+	new_value[0] = new_value[1] = xchg.sint[0] = xchg.sint[1] = 0x83838383;
+	(void) ethr_native_dw_atomic_cmpxchg_mb(var, new_value, xchg.sint);
 	return xchg.sint64;
     }
 }
@@ -219,9 +242,9 @@ ethr_native_su_dw_atomic_set(ethr_native_dw_atomic_t *var,
 	ethr_sse2_native_su_dw_atomic_set(var, val);
     else {
 	ethr_sint_t xchg[2] = {0, 0};
-	ethr_dw_atomic_no_sse2_convert_t new;
-	new.sint64 = val;
-	while (!ethr_native_dw_atomic_cmpxchg_mb(var, new.sint, xchg));
+	ethr_dw_atomic_no_sse2_convert_t new_value;
+	new_value.sint64 = val;
+	while (!ethr_native_dw_atomic_cmpxchg_mb(var, new_value.sint, xchg));
     }
 }
 

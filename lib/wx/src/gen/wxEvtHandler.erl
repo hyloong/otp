@@ -1,7 +1,7 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2008-2014. All Rights Reserved.
+%% Copyright Ericsson AB 2008-2019. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -53,7 +53,7 @@
 -type wxEvtHandler() :: wx:wx_object().
 
 %% @doc Equivalent to {@link connect/3. connect(This, EventType, [])}
--spec connect(This::wxEvtHandler(), EventType::wxEventType()) -> ok.
+-spec connect(This::wxEvtHandler(), EventType::wxEventType()) -> 'ok'.
 connect(This, EventType) ->
     connect(This, EventType, []).
 
@@ -75,9 +75,9 @@ connect(This, EventType) ->
 %%                          to process the event. Default not specfied i.e. a message will
 %%                          be delivered to the process calling this function.
 %%    {userData, term()}    An erlang term that will be sent with the event. Default: [].
--spec connect(This::wxEvtHandler(), EventType::wxEventType(), [Option]) -> ok when
-      Option :: {id, integer()} | {lastId, integer()} | {skip, boolean()} |
-		callback | {callback, function()} | {userData, term()}.
+-spec connect(This::wxEvtHandler(), EventType::wxEventType(), [Option]) -> 'ok' when
+      Option :: {'id', integer()} | {'lastId', integer()} | {'skip', boolean()} |
+		'callback' | {'callback', function()} | {'userData', term()}.
 connect(This=#wx_ref{type=ThisT}, EventType, Options) ->
     EvH = parse_opts(Options, #evh{et=EventType}),
     ?CLASS(ThisT,wxEvtHandler),
@@ -135,7 +135,7 @@ disconnect(This=#wx_ref{type=ThisT,ref=_ThisRef}, EventType) when is_atom(EventT
 %% EventType may be the atom 'null' to match any eventtype.
 %% Notice that the options skip and userdata is not used to match the eventhandler.
 -spec disconnect(This::wxEvtHandler(), EventType::wxEventType(), [Option]) -> boolean() when
-      Option :: {id, integer()} | {lastId, integer()} | {callback, function()}.
+      Option :: {'id', integer()} | {'lastId', integer()} | {'callback', function()}.
 disconnect(This=#wx_ref{type=ThisT,ref=_ThisRef}, EventType, Opts) ->
     ?CLASS(ThisT,wxEvtHandler),
     EvH = parse_opts(Opts, #evh{et=EventType}),
@@ -148,35 +148,18 @@ disconnect(This=#wx_ref{type=ThisT,ref=_ThisRef}, EventType, Opts) ->
 
 
 %% @hidden
-connect_impl(#wx_ref{type=ThisT,ref=ThisRef},
+connect_impl(#wx_ref{type=ThisT}=This,
 	     #evh{id=Winid, lastId=LastId, et=EventType,
-		  skip=Skip, userdata=Userdata, cb=FunID})
+		  skip=Skip, userdata=UserData, cb=FunID})
   when is_integer(FunID)->
-    EventTypeBin = list_to_binary([atom_to_list(EventType)|[0]]),
-    ThisTypeBin = list_to_binary([atom_to_list(ThisT)|[0]]),
-    UD = if Userdata =:= [] -> 0;
-	    true ->
-		 wxe_util:send_bin(term_to_binary(Userdata)),
-		 1
-	 end,
-    wxe_util:call(100, <<ThisRef:32/?UI,
-			Winid:32/?UI,LastId:32/?UI,
-			(wxe_util:from_bool(Skip)):32/?UI,
-			UD:32/?UI,
-			FunID:32/?UI,
-			(size(EventTypeBin)):32/?UI,
-			(size(ThisTypeBin)):32/?UI,
-			%% Note no alignment
-			EventTypeBin/binary,ThisTypeBin/binary>>).
+    wxe_util:queue_cmd(This, Winid, LastId, Skip, UserData,
+                       FunID, EventType, ThisT, ?get_env(), 100),
+    wxe_util:rec(100).
 
 %% @hidden
-disconnect_impl(#wx_ref{type=_ThisT,ref=ThisRef},
+disconnect_impl(#wx_ref{type=_ThisT}=This,
 		#evh{id=Winid, lastId=LastId, et=EventType,
-		     handler=#wx_ref{type=wxeEvtListener,ref=EvtList}}) ->
-    EventTypeBin = list_to_binary([atom_to_list(EventType)|[0]]),
-    wxe_util:call(101, <<EvtList:32/?UI,
-			ThisRef:32/?UI,Winid:32/?UI,LastId:32/?UI,
-			(size(EventTypeBin)):32/?UI,
-			%% Note no alignment
-			EventTypeBin/binary>>).
+		     handler=#wx_ref{type=wxeEvtListener}=EvtList}) ->
+    wxe_util:queue_cmd(EvtList, This, Winid,LastId, EventType, ?get_env(), 101),
+    wxe_util:rec(101).
 

@@ -1,7 +1,7 @@
 #
 # %CopyrightBegin%
 #
-# Copyright Ericsson AB 1996-2013. All Rights Reserved.
+# Copyright Ericsson AB 1996-2020. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -23,26 +23,29 @@
 #
 # Lines starting with '#' are ignored.
 #
-# <bif-decl> ::= "bif" <bif> <C-name>* | "ubif" <bif> <C-name>*
+# <bif-decl> ::= "bif" <bif> <C-name>* |
+#                "ubif" <bif> <C-name>* |
+#                "hbif" <bif> <C-name>*
 # <bif> ::= <module> ":" <name> "/" <arity>
 #
-# "ubif" is an unwrapped bif, i.e. a bif without a trace wrapper,
-# or rather; the trace entry point in the export entry is the same
-# as the normal entry point, and no trace wrapper is generated.
+# ubif:   Use for operators and guard BIFs.
 #
-# Important: Use "ubif" for guard BIFs and operators; use "bif" for ordinary BIFs.
+# hbif:   Use for BIFs that perform garbage collection or need up-to-date
+#         information on where they were called from. These must be called
+#         through the export entry.
+#
+# bif:    Use for all other BIFs.
 #
 # Add new BIFs to the end of the file.
 #
-# Note: Guards BIFs require special support in the compiler (to be able to actually
-# call them from within a guard).
+# Note: Guards BIFs usually require special support in the compiler.
 #
+
 
 ubif erlang:abs/1
 bif erlang:adler32/1
 bif erlang:adler32/2
 bif erlang:adler32_combine/3
-bif erlang:apply/3
 bif erlang:atom_to_list/1
 bif erlang:binary_to_list/1
 bif erlang:binary_to_list/3
@@ -57,23 +60,23 @@ bif erlang:display_string/1
 bif erlang:display_nl/0
 ubif erlang:element/2
 bif erlang:erase/0
-bif erlang:erase/1
+hbif erlang:erase/1
 bif erlang:exit/1
 bif erlang:exit/2
+bif erlang:exit_signal/2
 bif erlang:external_size/1
 bif erlang:external_size/2
 ubif erlang:float/1
 bif erlang:float_to_list/1
 bif erlang:float_to_list/2
 bif erlang:fun_info/2
-bif erlang:garbage_collect/0
+hbif erts_internal:garbage_collect/1
 bif erlang:get/0
 bif erlang:get/1
 bif erlang:get_keys/1
 bif erlang:group_leader/0
-bif erlang:group_leader/2
-bif erlang:halt/0
-bif erlang:halt/1
+bif erts_internal:group_leader/2
+bif erts_internal:group_leader/3
 bif erlang:halt/2
 bif erlang:phash/2
 bif erlang:phash2/1
@@ -88,6 +91,8 @@ bif erlang:list_to_binary/1
 bif erlang:list_to_float/1
 bif erlang:list_to_integer/1
 bif erlang:list_to_pid/1
+bif erlang:list_to_port/1
+bif erlang:list_to_ref/1
 bif erlang:list_to_tuple/1
 bif erlang:loaded/0
 bif erlang:localtime/0
@@ -115,18 +120,17 @@ bif erlang:time_offset/0
 bif erlang:time_offset/1
 bif erlang:timestamp/0
 
-bif erlang:open_port/2
+bif erts_internal:open_port/2
 
 bif erlang:pid_to_list/1
 bif erlang:ports/0
 bif erlang:pre_loaded/0
 bif erlang:process_flag/2
-bif erlang:process_flag/3
-bif erlang:process_info/1
-bif erlang:process_info/2
+bif erts_internal:process_flag/3
+hbif erlang:process_info/1
+hbif erlang:process_info/2
 bif erlang:processes/0
-bif erlang:purge_module/1
-bif erlang:put/2
+hbif erlang:put/2
 bif erlang:register/2
 bif erlang:registered/0
 ubif erlang:round/1
@@ -139,6 +143,8 @@ bif erlang:split_binary/2
 bif erlang:statistics/1
 bif erlang:term_to_binary/1
 bif erlang:term_to_binary/2
+bif erlang:term_to_iovec/1
+bif erlang:term_to_iovec/2
 bif erlang:throw/1
 bif erlang:time/0
 ubif erlang:tl/1
@@ -149,10 +155,15 @@ bif erlang:universaltime_to_localtime/1
 bif erlang:unlink/1
 bif erlang:unregister/1
 bif erlang:whereis/1
-bif erlang:spawn_opt/1
+bif erlang:spawn_opt/4
 bif erlang:setnode/2
-bif erlang:setnode/3
-bif erlang:dist_exit/3
+bif erlang:dist_get_stat/1
+bif erlang:dist_ctrl_input_handler/2
+bif erlang:dist_ctrl_put_data/2
+bif erlang:dist_ctrl_get_data/1
+bif erlang:dist_ctrl_get_data_notification/1
+bif erlang:dist_ctrl_get_opt/2
+bif erlang:dist_ctrl_set_opt/3
 
 # Static native functions in erts_internal
 bif erts_internal:port_info/1
@@ -164,33 +175,50 @@ bif erts_internal:port_close/1
 bif erts_internal:port_connect/2
 
 bif erts_internal:request_system_task/3
-bif erts_internal:check_process_code/2
+bif erts_internal:request_system_task/4
+hbif erts_internal:check_process_code/1
 
 bif erts_internal:map_to_tuple_keys/1
-bif erts_internal:map_type/1
+bif erts_internal:term_type/1
 bif erts_internal:map_hashmap_children/1
 
 bif erts_internal:time_unit/0
+bif erts_internal:perf_counter_unit/0
 
 bif erts_internal:is_system_process/1
+
+bif erts_internal:system_check/1
+
+bif erts_internal:release_literal_area_switch/0
+
+bif erts_internal:scheduler_wall_time/1
+
+bif erts_internal:dirty_process_handle_signals/1
+
+bif erts_internal:create_dist_channel/3
+
+bif erts_internal:ets_super_user/1
+
+bif erts_internal:spawn_request/4
+bif erts_internal:dist_spawn_request/4
+bif erlang:spawn_request_abandon/1
 
 # inet_db support
 bif erlang:port_set_data/2
 bif erlang:port_get_data/1
 
 # Tracing & debugging.
-bif erlang:trace_pattern/2
-bif erlang:trace_pattern/3
-bif erlang:trace/3
+bif erts_internal:trace_pattern/3
+bif erts_internal:trace/3
 bif erlang:trace_info/2
 bif erlang:trace_delivered/1
 bif erlang:seq_trace/2
 bif erlang:seq_trace_info/1
 bif erlang:seq_trace_print/1
 bif erlang:seq_trace_print/2
-bif erlang:suspend_process/2
+bif erts_internal:suspend_process/2
 bif erlang:resume_process/1
-bif erlang:process_display/2
+bif erts_internal:process_display/2
 
 bif erlang:bump_reductions/1
 
@@ -250,11 +278,11 @@ bif erlang:demonitor/1
 bif erlang:demonitor/2
 
 bif erlang:is_process_alive/1
+bif erts_internal:is_process_alive/2
 
 bif erlang:error/1		error_1
 bif erlang:error/2		error_2
 bif erlang:raise/3		raise_3
-bif erlang:get_stacktrace/0
 
 bif erlang:is_builtin/3
 
@@ -320,11 +348,10 @@ bif erlang:match_spec_test/3
 # Bifs in ets module.
 #
 
-bif ets:all/0
+bif ets:internal_request_all/0
 bif ets:new/2
 bif ets:delete/1
 bif ets:delete/2
-bif ets:delete_all_objects/1
 bif ets:delete_object/2
 bif ets:first/1
 bif ets:is_compiled_ms/1
@@ -355,7 +382,7 @@ bif ets:select_count/2
 bif ets:select_reverse/1
 bif ets:select_reverse/2
 bif ets:select_reverse/3
-bif ets:select_delete/2
+bif ets:select_replace/2
 bif ets:match_spec_compile/1
 bif ets:match_spec_run_r/3
 
@@ -363,13 +390,14 @@ bif ets:match_spec_run_r/3
 # Bifs in os module.
 #
 
-bif os:putenv/2
-bif os:getenv/0
-bif os:getenv/1
+bif os:get_env_var/1
+bif os:set_env_var/2
+bif os:unset_env_var/1
 bif os:getpid/0
 bif os:timestamp/0
 bif os:system_time/0
 bif os:system_time/1
+bif os:perf_counter/0
 
 #
 # Bifs in the erl_ddll module (the module actually does not exist)
@@ -386,10 +414,12 @@ bif erl_ddll:demonitor/1
 #
 # Bifs in the re module 
 #
+bif re:version/0
 bif re:compile/1
 bif re:compile/2
 bif re:run/2
 bif re:run/3
+bif re:internal_run/4
 
 #
 # Bifs in lists module.
@@ -414,33 +444,25 @@ bif erts_debug:set_internal_state/2
 bif erts_debug:display/1
 bif erts_debug:dist_ext_to_term/2
 bif erts_debug:instructions/0
-
-#
-# Monitor testing bif's...
-#
-bif erts_debug:dump_monitors/1
-bif erts_debug:dump_links/1
-
+bif erts_debug:interpreter_size/0
+bif erts_debug:dirty_cpu/2
+bif erts_debug:dirty_io/2
+bif erts_debug:dirty/3
 
 #
 # Lock counter bif's
 #
-bif erts_debug:lock_counters/1
+bif erts_debug:lcnt_control/2
+bif erts_debug:lcnt_control/1
+bif erts_debug:lcnt_collect/0
+bif erts_debug:lcnt_clear/0
 
-#
-# New Bifs in R8.
-#
-
-bif code:get_chunk/2
-bif code:module_md5/1
-bif code:make_stub_module/3
-bif code:is_module_native/1
 
 #
 # New Bifs in R9C.
 #
 
-bif erlang:hibernate/3
+hbif erlang:hibernate/3
 bif error_logger:warning_map/0
 
 #
@@ -449,8 +471,8 @@ bif error_logger:warning_map/0
 bif erlang:get_module_info/1
 bif erlang:get_module_info/2
 ubif erlang:is_boolean/1
-bif string:to_integer/1
-bif string:to_float/1
+bif string:list_to_integer/1
+bif string:list_to_float/1
 bif erlang:make_fun/3
 bif erlang:iolist_size/1
 bif erlang:iolist_to_binary/1
@@ -529,9 +551,6 @@ bif binary:last/1
 bif binary:at/2
 bif binary:part/2 binary_binary_part_2
 bif binary:part/3 binary_binary_part_3
-bif binary:bin_to_list/1
-bif binary:bin_to_list/2
-bif binary:bin_to_list/3
 bif binary:list_to_bin/1
 bif binary:copy/1
 bif binary:copy/2
@@ -585,7 +604,6 @@ bif erlang:dt_append_vm_tag_data/1
 #
 # New in R16B.
 #
-bif erlang:prepare_loading/2
 bif erlang:finish_loading/1
 bif erlang:insert_element/3
 bif erlang:delete_element/2
@@ -598,7 +616,6 @@ bif erlang:float_to_binary/2
 bif erlang:binary_to_float/1
 
 bif io:printable_range/0
-bif os:unsetenv/1
 
 #
 # New in 17.0
@@ -608,14 +625,12 @@ bif re:inspect/2
 
 ubif erlang:is_map/1
 ubif erlang:map_size/1
-bif maps:to_list/1
 bif maps:find/2
 bif maps:get/2
 bif maps:from_list/1
 bif maps:is_key/2
 bif maps:keys/1
 bif maps:merge/2
-bif maps:new/0
 bif maps:put/3
 bif maps:remove/2
 bif maps:update/3
@@ -639,7 +654,122 @@ bif ets:update_counter/4
 bif erts_debug:map_info/1
 
 #
-# Obsolete
+# New in 19.0
 #
 
-bif erlang:hash/2
+bif erts_internal:is_process_executing_dirty/1
+bif erts_internal:check_dirty_process_code/2
+bif erts_internal:purge_module/2
+bif binary:split/2
+bif binary:split/3
+bif erts_debug:size_shared/1
+bif erts_debug:copy_shared/1
+bif erlang:has_prepared_code_on_load/1
+
+bif maps:take/2
+
+#
+# New in 20.0
+#
+
+ubif erlang:floor/1
+ubif erlang:ceil/1
+bif math:floor/1
+bif math:ceil/1
+bif math:fmod/2
+bif os:set_signal/2
+
+#
+# New in 20.1
+#
+bif erlang:iolist_to_iovec/1
+
+#
+# New in 21.0
+#
+
+bif erts_internal:get_dflags/0
+bif erts_internal:new_connection/1
+bif erts_internal:map_next/3
+bif ets:whereis/1
+bif erts_internal:gather_alloc_histograms/1
+bif erts_internal:gather_carrier_info/1
+ubif erlang:map_get/2
+ubif erlang:is_map_key/2
+bif ets:internal_delete_all/2
+bif ets:internal_select_delete/2
+
+#
+# New in 21.2
+#
+
+bif persistent_term:put/2
+bif persistent_term:get/1
+bif persistent_term:get/0
+bif persistent_term:erase/1
+bif persistent_term:info/0
+bif erts_internal:erase_persistent_terms/0
+
+bif erts_internal:atomics_new/2
+bif atomics:get/2
+bif atomics:put/3
+bif atomics:add/3
+bif atomics:add_get/3
+bif atomics:exchange/3
+bif atomics:compare_exchange/4
+bif atomics:info/1
+
+bif erts_internal:counters_new/1
+bif erts_internal:counters_get/2
+bif erts_internal:counters_add/3
+bif erts_internal:counters_put/3
+bif erts_internal:counters_info/1
+
+#
+# New in 21.2.3
+#
+
+bif erts_internal:spawn_system_process/3
+
+#
+# New in 21.3
+#
+
+bif erlang:integer_to_list/2
+bif erlang:integer_to_binary/2
+bif persistent_term:get/2
+
+#
+# New in 22.1
+#
+
+bif erts_internal:ets_lookup_binary_info/2
+bif erts_internal:ets_raw_first/1
+bif erts_internal:ets_raw_next/2
+
+#
+# New in 22.2
+#
+
+bif erts_internal:abort_pending_connection/2
+
+
+#
+# New in 23
+#
+
+bif erts_internal:get_creation/0
+
+#
+# New in 24
+#
+
+bif erts_internal:prepare_loading/2
+bif erts_internal:beamfile_chunk/2
+bif erts_internal:beamfile_module_md5/1
+bif os:env/0
+bif erlang:alias/1
+bif erlang:unalias/1
+bif erlang:monitor/3
+bif erlang:error/3
+bif maps:from_keys/2

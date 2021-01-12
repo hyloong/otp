@@ -4,7 +4,7 @@
 <part xmlns:xi="http://www.w3.org/2001/XInclude">
   <header>
     <copyright>
-      <year>2001</year><year>2013</year>
+      <year>2001</year><year>2016</year>
       <holder>Ericsson AB. All Rights Reserved.</holder>
     </copyright>
     <legalnotice>
@@ -39,5 +39,6 @@
   <xi:include href="drivers.xml"/>
   <xi:include href="advanced.xml"/>
   <xi:include href="profiling.xml"/>
+  <xi:include href="retired_myths.xml"/>
 </part>
 

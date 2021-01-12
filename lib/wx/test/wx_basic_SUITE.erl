@@ -1,7 +1,7 @@
 %%
 %% %CopyrightBegin%
 %% 
-%% Copyright Ericsson AB 2008-2014. All Rights Reserved.
+%% Copyright Ericsson AB 2008-2017. All Rights Reserved.
 %% 
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -28,7 +28,11 @@
 	 init_per_suite/1, end_per_suite/1, 
 	 init_per_testcase/2, end_per_testcase/2]).
 
--compile(export_all).
+-export([silent_start/1, create_window/1, several_apps/1, wx_api/1, wx_misc/1,
+         data_types/1, enums/1, wx_object/1, undef_in_handle_info/1, undef_in_terminate/1,
+         undef_handle_event/1, undef_handle_call/1, undef_handle_cast/1, undef_handle_info/1,
+         undef_code_change/1, undef_terminate1/1, undef_terminate2/1
+        ]).
 
 -include("wx_test_lib.hrl").
 
@@ -45,14 +49,17 @@ end_per_testcase(Func,Config) ->
     wx_test_lib:end_per_testcase(Func,Config).
 
 %% SUITE specification
-suite() -> [{ct_hooks,[ts_install_cth]}].
+suite() -> [{ct_hooks,[ts_install_cth]}, {timetrap,{minutes,2}}].
 
 all() -> 
     [silent_start, create_window, several_apps, wx_api, wx_misc,
-     data_types, wx_object].
+     data_types, enums, wx_object, {group, undef_callbacks},
+     undef_in_handle_info, undef_in_terminate].
 
 groups() -> 
-    [].
+    [{undef_callbacks, [],
+     [undef_handle_event, undef_handle_call, undef_handle_cast, undef_handle_info,
+      undef_code_change, undef_terminate1, undef_terminate2]}].
 
 init_per_group(_GroupName, Config) ->
     Config.
@@ -152,8 +159,8 @@ wx_api(Config) ->
     Env = ?mr(wx_env, wx:get_env()),
     %% Test some error cases 
     erase(wx_env),
-    ?m({'EXIT', {{wxe,unknown_port},_}},wxWindow:show(Frame, [])),
-    ?m({'EXIT', {{wxe,unknown_port},_}},wx:debug(2)),
+    ?m({'EXIT', {{wx,unknown_env},_}},wxWindow:show(Frame, [])),
+    ?m({'EXIT', {{wx,unknown_env},_}},wx:debug(2)),
     
     ?m(ok,wx:set_env(Env)),
     ?m(ok,wx:debug(1)),
@@ -162,16 +169,18 @@ wx_api(Config) ->
     ?m(ok,wx:debug(none)),
     ?m(ok,wx:debug(verbose)),
     ?m(ok,wx:debug(trace)),
+    ?m(ok,wx:debug(driver)),
     
     Mem = ?mr(wx_mem, wx:create_memory(10)),
     ?m(true, is_binary(wx:get_memory_bin(Mem))),
     ?mt(foo, wx:typeCast(Frame, foo)),
 
-    RecBatch = fun() -> 
-		       wx:batch(fun() -> create_menus(Frame) end)
-	       end,
+    %% wx:debug(16),
+    RecBatch = fun() ->
+        	       wx:batch(fun() -> create_menus(Frame) end)
+               end,
     ?m(batch_ret, wx:batch(fun() -> RecBatch(), batch_ret end)),
-    ?m(ok, wx:foreach(fun(A) -> true = lists:member(A,[1,2,3,4,5]) end, 
+    ?m(ok, wx:foreach(fun(A) -> true = lists:member(A,[1,2,3,4,5]) end,
 		      lists:seq(1,5))),
     ?m([2,3,4,5,6], wx:map(fun(A) -> A+1 end, lists:seq(1,5))),
     ?m({5,15}, wx:foldl(fun(A,{_,Acc}) -> {A,A+Acc} end, {0,0},
@@ -192,7 +201,9 @@ wx_api(Config) ->
     ?m(ok,wxButton:setLabel(Temp, "Testing")),
     ?m(ok,wxButton:destroy(Temp)),
     ?m({'EXIT',_},wxButton:getLabel(Temp)),
-    
+    ?m(ok,wxButton:setLabel(Temp, "Testing")), %% Should generate an error report
+    ?m({'EXIT',_},wxButton:getLabel(Temp)),
+
     case wx_test_lib:user_available(Config) of
 	true -> 	    
 	    %% Hmm popup doesn't return until mouse is pressed.
@@ -305,7 +316,7 @@ data_types(_Config) ->
 	    wxGraphicsContext:setFont(GC, ?wxITALIC_FONT, {0, 0, 50}),
 	    Ws = wxGraphicsContext:getPartialTextExtents(GC, "a String With More Than 16 Characters"),
 	    _ = lists:foldl(fun(Width, {Index, Acc}) ->
-				    if Width >= Acc, Width < 500 -> {Index+1, Width};
+				    if Width >= Acc, Width < 600 -> {Index+1, Width};
 				       true -> throw({bad_float, Width, Index, Acc})
 				    end
 			    end, {0,0.0}, Ws),
@@ -329,7 +340,7 @@ data_types(_Config) ->
     
     %% wxSize
     ?m({_,_}, wxWindow:getSize(Frame)),
-
+    wx:debug(none),
     %% DateTime 
     DateTime = {Date, _Time} = calendar:now_to_datetime(os:timestamp()),
     io:format("DateTime ~p ~n",[DateTime]),
@@ -338,16 +349,36 @@ data_types(_Config) ->
     ?m(true, is_boolean(wxCalendarCtrl:setDate(Cal,DateTime))),
     ?m({Date,_}, wxCalendarCtrl:getDate(Cal)),
 
+    %% Images, test sending and reading binaries
+    Colors = << <<200:8, 199:8, 198:8 >> || _ <- lists:seq(1, 128*64) >>,
+    Alpha  = << <<255:8>> || _ <- lists:seq(1, 128*64) >>,
+    ImgRGB = ?mt(wxImage, wxImage:new(128, 64, Colors)),
+    ?m(true, wxImage:ok(ImgRGB)),
+    ?m(false, wxImage:hasAlpha(ImgRGB)),
+    ?m(ok, case wxImage:getData(ImgRGB) of Colors -> ok; Other -> Other end),
+
+    ImgRGBA = ?mt(wxImage, wxImage:new(128, 64, Colors, Alpha)),
+    ?m(true, wxImage:ok(ImgRGBA)),
+    ?m(true, wxImage:hasAlpha(ImgRGBA)),
+    ?m(ok, case wxImage:getData(ImgRGBA) of Colors -> ok; Other -> Other end),
+    ?m(ok, case wxImage:getAlpha(ImgRGBA) of Alpha -> ok; Other -> Other end),
+
     wxClientDC:destroy(CDC),
     %%wx_test_lib:wx_destroy(Frame,Config).
     wx:destroy().
+
+enums(TestInfo) when is_atom(TestInfo) -> wx_test_lib:tc_info(TestInfo);
+enums(Config) ->
+    %% Test that all needed enums are available and have not changed value
+    wx_test_enums:test().
 
 wx_object(TestInfo) when is_atom(TestInfo) -> wx_test_lib:tc_info(TestInfo);
 wx_object(Config) ->
     wx:new(),
     Me = self(),
     Init = fun() ->
-		   Frame = wxFrame:new(wx:null(), ?wxID_ANY, "Test wx_object", [{size, {500, 400}}]),
+		   Frame0 = wxFrame:new(wx:null(), ?wxID_ANY, "Test wx_object", [{size, {500, 400}}]),
+		   Frame = wx_object:set_pid(Frame0, self()),
 		   Sz = wxBoxSizer:new(?wxHORIZONTAL),
 		   Panel = wxPanel:new(Frame),
 		   wxSizer:add(Sz, Panel, [{flag, ?wxEXPAND}, {proportion, 1}]),
@@ -357,6 +388,7 @@ wx_object(Config) ->
 		   {Frame, {Frame, Panel}}
 	   end,
     Frame = ?mt(wxFrame, wx_obj_test:start([{init, Init}])),
+
     timer:sleep(500),
     ?m(ok, check_events(flush())),
 
@@ -364,20 +396,35 @@ wx_object(Config) ->
     ?m({call, foobar, {Me, _}}, wx_object:call(Frame, foobar)),
     ?m(ok, wx_object:cast(Frame, foobar2)),
     ?m([{cast, foobar2}|_], flush()),
+
+    ?m(Frame, wx_obj_test:who_are_you(Frame)),
+    {call, {Frame,Panel}, _} = wx_object:call(Frame, fun(US) -> US end),
+    ?m(false, wxWindow:getParent(Panel) =:= Frame),
+    ?m(true, wx:equal(wxWindow:getParent(Panel),Frame)),
+    flush(),
+    ReqId = wx_object:send_request(Frame, fun(_US) -> timer:sleep(10), yes1 end),
+    timeout = wx_object:wait_response(ReqId, 0),
+    {reply, {call, yes1, {Me,_}}} = wx_object:wait_response(ReqId, 1000),
+    ReqId2 = wx_object:send_request(Frame, yes2),
+    [Msg] = flush(),
+    no_reply = wx_object:check_response(Msg, ReqId),
+    {reply, {call, yes2, {Me,_}}} = wx_object:check_response(Msg, ReqId2),
+
     FramePid = wx_object:get_pid(Frame),
     io:format("wx_object pid ~p~n",[FramePid]),
     FramePid ! foo3,
-    ?m([{info, foo3}|_], flush()),
+    ?m([{info, foo3}], flush()),
 
     ?m(ok, wx_object:cast(Frame, fun(_) -> hehe end)),
     ?m([{cast, hehe}|_], flush()),
     wxWindow:refresh(Frame),
     ?m([{sync_event, #wx{event=#wxPaint{}}, _}|_], flush()),
-    ?m(ok, wx_object:cast(Frame, fun(_) -> timer:sleep(200), slept end)),
+    ?m(ok, wx_object:cast(Frame, fun(_) -> timer:sleep(500), slept end)),
     %% The sleep above should not hinder the Paint event below
     %% Which it did in my buggy handling of the sync_callback
-    wxWindow:refresh(Frame),
-    timer:sleep(500),
+    wxWindow:refresh(Panel),
+    wxWindow:update(Panel),
+    timer:sleep(700),
     ?m([{sync_event, #wx{event=#wxPaint{}}, _}, {cast, slept}|_], flush()),
 
     Monitor = erlang:monitor(process, FramePid),
@@ -402,6 +449,154 @@ wx_object(Config) ->
 	   end),
     catch wx:destroy(),
     ok.
+
+%% Test that the server crashes correctly if the handle_event callback is
+%% not exported in the callback module
+undef_handle_event(TestInfo) when is_atom(TestInfo) -> wx_test_lib:tc_info(TestInfo);
+undef_handle_event(_Config) ->
+    wx:new(),
+    {_, _, _, Pid} = wx_object:start(wx_oc_object, [], []),
+    MRef = monitor(process, Pid),
+    %% Mock a call to handle_event
+    Pid ! {wx, a, b, c, d},
+    ok = receive
+        {'DOWN', MRef, process, Pid,
+         {undef, [{wx_oc_object, handle_event, _, _}|_]}} ->
+            ok
+    after 5000 ->
+        ct:fail(should_crash)
+    end.
+
+%% Test that the server crashes correctly if the handle_call callback is
+%% not exported in the callback module
+undef_handle_call(TestInfo) when is_atom(TestInfo) -> wx_test_lib:tc_info(TestInfo);
+undef_handle_call(_Config) ->
+    wx:new(),
+    Frame = wx_object:start(wx_oc_object, [], []),
+    try
+        wx_object:call(Frame, call_msg),
+        ct:fail(should_crash)
+    catch error:{{undef, [{wx_oc_object,handle_call, _, _}|_]},
+                              {wx_object,call,_}} ->
+        ok
+    end.
+
+%% Test that the server crashes correctly if the handle_cast callback is
+%% not exported in the callback module
+undef_handle_cast(TestInfo) when is_atom(TestInfo) -> wx_test_lib:tc_info(TestInfo);
+undef_handle_cast(_Config) ->
+    wx:new(),
+    {_, _, _, Pid} = Frame = wx_object:start(wx_oc_object, [], []),
+    MRef = monitor(process, Pid),
+    wx_object:cast(Frame, cast_msg),
+    ok = receive
+        {'DOWN', MRef, process, Pid,
+         {undef, [{wx_oc_object, handle_cast, _, _}|_]}} ->
+            ok
+    after 5000 ->
+        ct:fail(should_crash)
+    end.
+
+%% Test the default implementation of handle_info if the callback module
+%% does not export it
+undef_handle_info(TestInfo) when is_atom(TestInfo) -> wx_test_lib:tc_info(TestInfo);
+undef_handle_info(_Config) ->
+    wx:new(),
+    {_, _, _, Pid} = wx_object:start(wx_oc_object, [], []),
+    MRef = monitor(process, Pid),
+    Pid ! test,
+    receive
+        {'DOWN', MRef, process, Pid, _} ->
+            ct:fail(should_not_crash)
+    after 500 ->
+        ok
+    end,
+    ok = wx_object:stop(Pid).
+
+%% Test the server crashes correctly if called and the code_change callback is
+%% not exported in the callback module
+undef_code_change(TestInfo) when is_atom(TestInfo) -> wx_test_lib:tc_info(TestInfo);
+undef_code_change(_Config) ->
+    wx:new(),
+    {_, _, _, Pid} = wx_object:start(wx_oc_object, [], []),
+    sys:suspend(Pid),
+    sys:replace_state(Pid, fun([P, S, M, T]) -> [P, {new, S}, M, T] end),
+    {error, {'EXIT', {undef, [{wx_oc_object,code_change, [_, _, _], _}|_]}}}
+         = sys:change_code(Pid, wx_oc_object, old_vsn, []),
+    ok = sys:resume(Pid),
+    ok = wx_object:stop(Pid).
+
+%% Test the default implementation of terminate if the callback module
+%% does not export it
+undef_terminate1(TestInfo) when is_atom(TestInfo) -> wx_test_lib:tc_info(TestInfo);
+undef_terminate1(_Config) ->
+    ok = terminate([], normal).
+
+%% Test the default implementation of terminate if the callback module
+%% does not export it
+undef_terminate2(TestInfo) when is_atom(TestInfo) -> wx_test_lib:tc_info(TestInfo);
+undef_terminate2(_Config) ->
+    ok = terminate([{error, test}, infinity], {error, test}).
+
+terminate(ArgsTl, Reason) ->
+    wx:new(),
+    {_, _, _, Pid} = wx_object:start(wx_oc_object, [], []),
+    MRef = monitor(process, Pid),
+    ok = apply(wx_object, stop, [Pid|ArgsTl]),
+    receive
+        {'DOWN', MRef, process, Pid, Reason} ->
+            ok
+    after 1000 ->
+        ct:fail(failed)
+    end.
+
+%% Test that the server crashes correctly if the handle_info callback is
+%% calling an undefined function
+undef_in_handle_info(TestInfo) when is_atom(TestInfo) -> wx_test_lib:tc_info(TestInfo);
+undef_in_handle_info(_Config) ->
+    wx:new(),
+    Init = ui_init_fun(),
+    {_, _, _, Pid} = wx_object:start(wx_obj_test,
+                                     [{parent, self()}, {init, Init}], []),
+    unlink(Pid),
+    MRef = monitor(process, Pid),
+    Pid ! {call_undef_fun, {wx_obj_test, handle_info}},
+    receive
+        {'DOWN', MRef, process, Pid,
+         {undef, [{wx_obj_test, handle_info, _, _}|_]}} ->
+            ok
+    after 1000 ->
+        ct:fail(failed)
+    end,
+    ok.
+
+%% Test that the server crashes correctly if the terminate callback is
+%% calling an undefined function
+undef_in_terminate(TestInfo) when is_atom(TestInfo) -> wx_test_lib:tc_info(TestInfo);
+undef_in_terminate(_Config) ->
+    wx:new(),
+    Init = ui_init_fun(),
+    Frame = wx_object:start(wx_obj_test,
+                            [{parent, self()}, {init, Init},
+                             {terminate, {wx_obj_test, terminate}}], []),
+    try
+        wx_object:stop(Frame),
+        ct:fail(should_crash)
+    catch error:{{undef, [{wx_obj_test, terminate, _, _}|_]}, _} ->
+        ok
+    end.
+
+ui_init_fun() ->
+    Init = fun() ->
+        Frame0 = wxFrame:new(wx:null(), ?wxID_ANY, "Test wx_object", [{size, {500, 400}}]),
+        Frame = wx_object:set_pid(Frame0, self()),
+        Sz = wxBoxSizer:new(?wxHORIZONTAL),
+        Panel = wxPanel:new(Frame),
+        wxSizer:add(Sz, Panel, [{flag, ?wxEXPAND}, {proportion, 1}]),
+        wxWindow:show(Frame),
+        {Frame, {Frame, Panel}}
+    end,
+    Init.
 
 check_events(Msgs) ->
     check_events(Msgs, 0,0).

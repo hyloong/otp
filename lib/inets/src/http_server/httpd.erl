@@ -1,7 +1,7 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 1997-2014. All Rights Reserved.
+%% Copyright Ericsson AB 1997-2018. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -36,25 +36,37 @@
 	]).
 
 %% API
--export([parse_query/1, reload_config/2, info/1, info/2, info/3]).
+-export([
+         parse_query/1,
+         reload_config/2,
+         info/1,
+         info/2,
+         info/3,
+         info/4
+        ]).
+
+-deprecated({parse_query, 1,
+            "use uri_string:dissect_query/1 instead"}).
 
 %%%========================================================================
 %%% API
 %%%========================================================================
 
 parse_query(String) ->
-  {ok, SplitString} = inets_regexp:split(String,"[&;]"),
-  foreach(SplitString).
+    uri_string:dissect_query(String).
 
 reload_config(Config = [Value| _], Mode) when is_tuple(Value) ->
     do_reload_config(Config, Mode);
 reload_config(ConfigFile, Mode) ->
-    case httpd_conf:load(ConfigFile) of
-	{ok, ConfigList} ->
-	    do_reload_config(ConfigList, Mode);
-	Error ->
-	    Error
+    try file:consult(ConfigFile) of
+        {ok, [PropList]} ->
+            %% Erlang terms format
+            do_reload_config(PropList, Mode)
+    catch
+        exit:_ ->
+            throw({error, {could_not_consult_proplist_file, ConfigFile}})
     end.
+
 
 info(Pid) when is_pid(Pid) ->
     info(Pid, []).
@@ -99,7 +111,14 @@ start_service(Conf) ->
 stop_service({Address, Port}) ->
     stop_service({Address, Port, ?DEFAULT_PROFILE});
 stop_service({Address, Port, Profile}) ->
-     httpd_sup:stop_child(Address, Port, Profile);
+    Name  = httpd_util:make_name("httpd_instance_sup", Address, Port, Profile),
+    Pid = whereis(Name),
+    MonitorRef = erlang:monitor(process, Pid),
+    Result = httpd_sup:stop_child(Address, Port, Profile),
+    receive
+        {'DOWN', MonitorRef, _, _, _} ->
+            Result
+    end;     
 stop_service(Pid) when is_pid(Pid) ->
     case service_info(Pid)  of
 	{ok, Info} ->	   
@@ -235,18 +254,6 @@ unblock(Addr, Port, Profile) when is_integer(Port) ->
 	_ ->
 	    {error,not_started}
     end.
-
-foreach([]) ->
-  [];
-foreach([KeyValue|Rest]) ->
-  {ok, Plus2Space, _} = inets_regexp:gsub(KeyValue,"[\+]"," "),
-  case inets_regexp:split(Plus2Space,"=") of
-    {ok,[Key|Value]} ->
-      [{http_uri:decode(Key),
-	http_uri:decode(lists:flatten(Value))}|foreach(Rest)];
-    {ok,_} ->
-      foreach(Rest)
-  end.
 
 
 make_name(Addr, Port, Profile) ->

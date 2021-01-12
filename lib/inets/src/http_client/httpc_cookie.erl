@@ -1,7 +1,7 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2004-2011. All Rights Reserved.
+%% Copyright Ericsson AB 2004-2016. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -271,7 +271,7 @@ lookup_cookies(CookieDb, Host, Path) ->
 lookup_domain_cookies(_CookieDb, [], AccCookies) ->
     lists:flatten(AccCookies);
 
-%% Top domains can not have cookies
+%% Top domains cannot have cookies
 lookup_domain_cookies(_CookieDb, [_], AccCookies) ->
     lists:flatten(AccCookies);
 

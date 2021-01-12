@@ -1,18 +1,23 @@
 %% =====================================================================
-%% This library is free software; you can redistribute it and/or modify
-%% it under the terms of the GNU Lesser General Public License as
-%% published by the Free Software Foundation; either version 2 of the
-%% License, or (at your option) any later version.
+%% Licensed under the Apache License, Version 2.0 (the "License"); you may
+%% not use this file except in compliance with the License. You may obtain
+%% a copy of the License at <http://www.apache.org/licenses/LICENSE-2.0>
 %%
-%% This library is distributed in the hope that it will be useful, but
-%% WITHOUT ANY WARRANTY; without even the implied warranty of
-%% MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
-%% Lesser General Public License for more details.
+%% Unless required by applicable law or agreed to in writing, software
+%% distributed under the License is distributed on an "AS IS" BASIS,
+%% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+%% See the License for the specific language governing permissions and
+%% limitations under the License.
 %%
-%% You should have received a copy of the GNU Lesser General Public
-%% License along with this library; if not, write to the Free Software
-%% Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307
-%% USA
+%% Alternatively, you may use this file under the terms of the GNU Lesser
+%% General Public License (the "LGPL") as published by the Free Software
+%% Foundation; either version 2.1, or (at your option) any later version.
+%% If you wish to allow use of your version of this file only under the
+%% terms of the LGPL, you should delete the provisions above and replace
+%% them with the notice and other provisions required by the LGPL; see
+%% <http://www.gnu.org/licenses/>. If you do not delete the provisions
+%% above, a recipient may use your version of this file under the terms of
+%% either the Apache License or the LGPL.
 %%
 %% @private
 %% @copyright 2001-2003 Richard Carlsson
@@ -33,6 +38,100 @@
 
 -include("edoc_types.hrl").
 -include_lib("xmerl/include/xmerl.hrl").
+
+%-type t_spec() :: #t_spec{name :: t_name(),
+%                          type :: t_type(),
+%                          defs :: [t_def()]}.
+%% Function specification.
+
+-type type() :: t_atom() | t_binary() | t_float() | t_fun() | t_integer()
+	      | t_integer_range() | t_list() | t_nil()| t_nonempty_list()
+	      | t_record() | t_tuple() | t_type() | t_union() | t_var()
+	      | t_paren().
+
+%-type t_typedef() :: #t_typedef{name :: t_name(),
+%                                args :: [type()],
+%                                type :: type() | undefined,
+%                                defs :: [t_def()]}.
+%% Type declaration/definition.
+
+%-type t_throws() :: #t_throws{type :: type(),
+%                              defs :: [t_def()]}.
+%% Exception declaration.
+
+%-type t_def() :: #t_def{name :: t_type() | t_var(),
+%            type :: type()}.
+%% Local definition `name = type'.
+
+-type t_name() :: #t_name{app :: [] | atom(),
+			  module :: [] | atom(),
+			  name :: [] | atom()}.
+
+-type t_var() :: #t_var{a :: list(),
+			name :: [] | atom()}.
+%% Type variable.
+
+-type t_type() :: #t_type{a :: list(),
+			  name :: t_name(),
+			  args :: [type()]}.
+%% Abstract type `name(...)'.
+
+-type t_union() :: #t_union{a :: list(),
+			    types :: [type()]}.
+%% Union type `t1 | ... | tN'.
+
+-type t_fun() :: #t_fun{a :: list(),
+			args :: [type()],
+			range :: type()}.
+%% Function `(t1, ..., tN) -> range'.
+
+-type t_tuple() :: #t_tuple{a :: list(),
+			    types :: [type()]}.
+%% Tuple type `{t1,...,tN}'.
+
+-type t_list() :: #t_list{a :: list(),
+			  type :: type()}.
+%% List type `[type]'.
+
+-type t_nil() :: #t_nil{a :: list()}.
+%% Empty-list constant `[]'.
+
+-type t_nonempty_list() :: #t_nonempty_list{a :: list(),
+					    type :: type()}.
+%% List type `[type, ...]'.
+
+-type t_atom() :: #t_atom{a :: list(),
+			  val :: atom()}.
+%% Atom constant.
+
+-type t_integer() :: #t_integer{a :: list(),
+				val :: integer()}.
+%% Integer constant.
+
+-type t_integer_range() :: #t_integer_range{a :: list(),
+					    from :: integer(),
+					    to :: integer()}.
+
+-type t_binary() :: #t_binary{a :: list(),
+			      base_size :: integer(),
+			      unit_size :: integer()}.
+
+-type t_float() :: #t_float{a :: list(),
+			    val :: float()}.
+%% Floating-point constant.
+
+-type t_record() :: #t_record{a :: list(),
+			      name :: t_atom(),
+			      fields :: [t_field()]}.
+%% Record "type" `#r{f1, ..., fN}'.
+
+-type t_field() :: #t_field{a :: list(),
+			    name :: type(),
+			    type :: type()}.
+%% Named field `n1 = t1'.
+
+-type t_paren() :: #t_paren{a :: list(), type :: type()}.
+%% Parentheses.
 
 is_predefined(cons, 2) -> true;
 is_predefined(deep_string, 0) -> true;
@@ -58,7 +157,18 @@ to_label(N) ->
     edoc_refs:to_label(to_ref(N)).
 
 get_uri(Name, Env) ->
-    edoc_refs:get_uri(to_ref(Name), Env).
+    NewName = infer_module_app(Name),
+    edoc_refs:get_uri(to_ref(NewName), Env).
+
+infer_module_app(#t_name{app = [], module = M} = TName) when is_atom(M) ->
+    case edoc_lib:infer_module_app(M) of
+	no_app ->
+	    TName;
+	{app, App} when is_atom(App) ->
+	    TName#t_name{app = App}
+    end;
+infer_module_app(Other) ->
+    Other.
 
 to_xml(#t_var{name = N}, _Env) ->
     {typevar, [{name, atom_to_list(N)}], []};
@@ -89,8 +199,8 @@ to_xml(#t_fun{args = As, range = T}, Env) ->
 	     wrap_utype(T, Env)]};
 to_xml(#t_map{ types = Ts}, Env) ->
     {map, map(fun to_xml/2, Ts, Env)};
-to_xml(#t_map_field{ k_type=K, v_type=V}, Env) ->
-    {map_field, [wrap_utype(K,Env), wrap_utype(V, Env)]};
+to_xml(#t_map_field{assoc_type = AT, k_type=K, v_type=V}, Env) ->
+    {map_field, [{assoc_type, AT}], [wrap_utype(K,Env), wrap_utype(V, Env)]};
 to_xml(#t_tuple{types = Ts}, Env) ->
     {tuple, map(fun wrap_utype/2, Ts, Env)};
 to_xml(#t_list{type = T}, Env) ->
@@ -102,7 +212,7 @@ to_xml(#t_paren{type = T}, Env) ->
 to_xml(#t_nonempty_list{type = T}, Env) ->
     {nonempty_list, [wrap_utype(T, Env)]};
 to_xml(#t_atom{val = V}, _Env) ->
-    {atom, [{value, io_lib:write(V)}], []};
+    {atom, [{value, atom_to_list(V)}], []};
 to_xml(#t_integer{val = V}, _Env) ->
     {integer, [{value, integer_to_list(V)}], []};
 to_xml(#t_integer_range{from = From, to = To}, _Env) ->

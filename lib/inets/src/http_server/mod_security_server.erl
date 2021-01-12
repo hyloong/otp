@@ -1,7 +1,7 @@
 %%
 %% %CopyrightBegin%
 %% 
-%% Copyright Ericsson AB 2001-2010. All Rights Reserved.
+%% Copyright Ericsson AB 2001-2016. All Rights Reserved.
 %% 
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -523,10 +523,10 @@ unblock_user(Info, User, Dir, Addr, Port, Profile, ETS, DETS, CBModule) ->
     ets:match_delete(ETS, {blocked_user, {User, Addr, Port, Profile, Dir, '_'}}).
   
 make_name(Addr,Port, Profile) ->
-    httpd_util:make_name(?MODULE,Addr,Port, Profile).
+    httpd_util:make_name(?MODULE_STRING, Addr, Port, Profile).
 
 make_name(Addr,Port, Profile, Num) ->
-    httpd_util:make_name(?MODULE,Addr,Port,
+    httpd_util:make_name(?MODULE_STRING, Addr,Port,
 			 atom_to_list(Profile) ++ "__" ++ integer_to_list(Num)).
 
 auth_fail_event(Mod,Addr,Port,Dir,User,Passwd) ->

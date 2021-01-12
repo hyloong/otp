@@ -1,7 +1,7 @@
 dnl
 dnl %CopyrightBegin%
 dnl
-dnl Copyright Ericsson AB 1998-2015. All Rights Reserved.
+dnl Copyright Ericsson AB 1998-2020. All Rights Reserved.
 dnl
 dnl Licensed under the Apache License, Version 2.0 (the "License");
 dnl you may not use this file except in compliance with the License.
@@ -116,44 +116,50 @@ dnl
 dnl LM_WINDOWS_ENVIRONMENT
 dnl
 dnl
-dnl Tries to determine thw windows build environment, i.e. 
-dnl MIXED_CYGWIN_VC or MIXED_MSYS_VC 
+dnl Tries to determine the windows build environment, i.e.
+dnl MIXED_VC or MIXED_MINGW
 dnl
 
 AC_DEFUN(LM_WINDOWS_ENVIRONMENT,
 [
+
+if test "X$windows_environment_" != "Xchecked"; then
+windows_environment_=checked
 MIXED_CYGWIN=no
 MIXED_MSYS=no
+MIXED_VSL=no
 
-AC_MSG_CHECKING(for mixed cygwin or msys and native VC++ environment)
+dnl MIXED_VC is Microsoft Visual C++ used as standard compiler
+MIXED_VC=no
+dnl MIXED_MINGW is mingw(32|64) used as standard compiler
+MIXED_MINGW=no
+
+AC_MSG_CHECKING(for mixed mingw-gcc and native VC++ environment)
 if test "X$host" = "Xwin32" -a "x$GCC" != "xyes"; then
-	if test -x /usr/bin/cygpath; then
-		CFLAGS="-O2"
-		MIXED_CYGWIN=yes
-		AC_MSG_RESULT([Cygwin and VC])
-		MIXED_CYGWIN_VC=yes
-		CPPFLAGS="$CPPFLAGS -DERTS_MIXED_CYGWIN_VC"
-	elif test -x /usr/bin/msysinfo; then
-	        CFLAGS="-O2"
+	if test -x /usr/bin/msys-?.0.dll; then
+	        CFLAGS="$CFLAGS -O2"
 		MIXED_MSYS=yes
 		AC_MSG_RESULT([MSYS and VC])
-		MIXED_MSYS_VC=yes
-		CPPFLAGS="$CPPFLAGS -DERTS_MIXED_MSYS_VC"
-	else		    
+		MIXED_VC=yes
+		CPPFLAGS="$CPPFLAGS -DERTS_MIXED_VC"
+	elif test -x /usr/bin/cygpath; then
+		CFLAGS="$CFLAGS -O2"
+		MIXED_CYGWIN=yes
+		AC_MSG_RESULT([Cygwin and VC])
+		MIXED_VC=yes
+		CPPFLAGS="$CPPFLAGS -DERTS_MIXED_VC"
+        elif test -x /bin/wslpath; then
+		CFLAGS="$CFLAGS -O2"
+		MIXED_WSL=yes
+		AC_MSG_RESULT([WSL and VC])
+		MIXED_VC=yes
+		CPPFLAGS="$CPPFLAGS -DERTS_MIXED_VC"
+	else
 		AC_MSG_RESULT([undeterminable])
-		AC_MSG_ERROR(Seems to be mixed windows but not with cygwin, cannot handle this!)
+		AC_MSG_ERROR(Seems to be mixed windows but not within any known env, cannot handle this!)
 	fi
 else
 	AC_MSG_RESULT([no])
-	MIXED_CYGWIN_VC=no
-	MIXED_MSYS_VC=no
-fi
-AC_SUBST(MIXED_CYGWIN_VC)
-AC_SUBST(MIXED_MSYS_VC)
-
-MIXED_VC=no
-if test "x$MIXED_MSYS_VC" = "xyes" -o  "x$MIXED_CYGWIN_VC" = "xyes" ; then
-   MIXED_VC=yes
 fi
 
 AC_SUBST(MIXED_VC)
@@ -162,43 +168,59 @@ if test "x$MIXED_MSYS" != "xyes"; then
    AC_MSG_CHECKING(for mixed cygwin and native MinGW environment)
    if test "X$host" = "Xwin32" -a "x$GCC" = x"yes"; then
 	if test -x /usr/bin/cygpath; then
-		CFLAGS="-O2"
-		MIXED_CYGWIN=yes
+		CFLAGS="$CFLAGS -O2"
 		AC_MSG_RESULT([yes])
-		MIXED_CYGWIN_MINGW=yes
-		CPPFLAGS="$CPPFLAGS -DERTS_MIXED_CYGWIN_MINGW"
+		MIXED_MINGW=yes
+		CPPFLAGS="$CPPFLAGS -DERTS_MIXED_MINGW"
 	else
 		AC_MSG_RESULT([undeterminable])
 		AC_MSG_ERROR(Seems to be mixed windows but not with cygwin, cannot handle this!)
 	fi
     else
 	AC_MSG_RESULT([no])
-	MIXED_CYGWIN_MINGW=no
     fi
 else
-	MIXED_CYGWIN_MINGW=no
-fi	
-AC_SUBST(MIXED_CYGWIN_MINGW)
+   AC_MSG_CHECKING(for mixed MSYS and native MinGW environment)
+   if test "x$GCC" = x"yes"; then
+    	if test -x /usr/bin/msys-=.0.dll; then
+		CFLAGS="$CFLAGS -O2"
+		AC_MSG_RESULT([yes])
+		MIXED_MINGW=yes
+		CPPFLAGS="$CPPFLAGS -DERTS_MIXED_MINGW"
+	else
+		AC_MSG_RESULT([undeterminable])
+		AC_MSG_ERROR(Seems to be mixed windows but not with msys, cannot handle this!)
+	fi
+    else
+	AC_MSG_RESULT([no])
+    fi
+fi
+AC_SUBST(MIXED_MINGW)
 
 AC_MSG_CHECKING(if we mix cygwin with any native compiler)
 if test "X$MIXED_CYGWIN" = "Xyes"; then
-	AC_MSG_RESULT([yes])	
+	AC_MSG_RESULT([yes])
 else
 	AC_MSG_RESULT([no])
 fi
 
-AC_SUBST(MIXED_CYGWIN)
-	
 AC_MSG_CHECKING(if we mix msys with another native compiler)
 if test "X$MIXED_MSYS" = "Xyes" ; then
-	AC_MSG_RESULT([yes])	
+	AC_MSG_RESULT([yes])
 else
 	AC_MSG_RESULT([no])
 fi
 
-AC_SUBST(MIXED_MSYS)
-])		
-	
+AC_MSG_CHECKING(if we mix WSL with another native compiler)
+if test "X$MIXED_WSL" = "Xyes" ; then
+	AC_MSG_RESULT([yes])
+else
+	AC_MSG_RESULT([no])
+fi
+
+fi
+])
+
 dnl ----------------------------------------------------------------------
 dnl
 dnl LM_FIND_EMU_CC
@@ -221,6 +243,7 @@ AC_TRY_COMPILE([],[
 #endif
     __label__ lbl1;
     __label__ lbl2;
+    extern int magic(void);
     int x = magic();
     static void *jtab[2];
 
@@ -266,6 +289,7 @@ if test "$ac_cv_prog_emu_cc" != no; then
 #endif
     	__label__ lbl1;
     	__label__ lbl2;
+	extern int magic(void);
     	int x = magic();
     	static void *jtab[2];
 
@@ -731,15 +755,28 @@ AC_DEFUN(ERL_MONOTONIC_CLOCK,
 	prefer_resolution_clock_gettime_monotonic="$2"
 	;;
     *)
-	check_msg=""
-	prefer_resolution_clock_gettime_monotonic=
+	check_msg="custom "
+	prefer_resolution_clock_gettime_monotonic="$2"
 	;;
   esac
 
+  clock_gettime_lib=""
+  AC_CHECK_LIB(rt, clock_gettime, [clock_gettime_lib="-lrt"])
+
+  save_LIBS="$LIBS"
+  LIBS="$LIBS $clock_gettime_lib"
+
+  if test "$LD_MAY_BE_WEAK" != "no"; then
+     trust_test="#error May not be there due to weak linking"
+  else
+     trust_test=""
+  fi
+
   AC_CACHE_CHECK([for clock_gettime(CLOCK_MONOTONIC_RAW, _)], erl_cv_clock_gettime_monotonic_raw,
   [
-       AC_TRY_COMPILE([
+       AC_TRY_LINK([
 #include <time.h>
+$trust_test
 		      ],
 		      [
     struct timespec ts;
@@ -755,8 +792,9 @@ AC_DEFUN(ERL_MONOTONIC_CLOCK,
   AC_CACHE_CHECK([for clock_gettime() with ${check_msg}monotonic clock type], erl_cv_clock_gettime_monotonic_$1,
   [
      for clock_type in $prefer_resolution_clock_gettime_monotonic $default_resolution_clock_gettime_monotonic $high_resolution_clock_gettime_monotonic $low_resolution_clock_gettime_monotonic; do
-       AC_TRY_COMPILE([
+       AC_TRY_LINK([
 #include <time.h>
+$trust_test
 		      ],
 		      [
     struct timespec ts;
@@ -771,7 +809,14 @@ AC_DEFUN(ERL_MONOTONIC_CLOCK,
      done
   ])
 
-  AC_CHECK_FUNCS([clock_getres clock_get_attributes gethrtime])
+  LIBS="$save_LIBS"
+
+  if test "$LD_MAY_BE_WEAK" != "no"; then
+    AC_CHECK_FUNCS([clock_get_attributes gethrtime])
+  else
+    AC_CHECK_FUNCS([clock_getres clock_get_attributes gethrtime])
+  fi
+
   
   AC_CACHE_CHECK([for mach clock_get_time() with monotonic clock type], erl_cv_mach_clock_get_time_monotonic,
   [
@@ -840,7 +885,7 @@ AC_DEFUN(ERL_MONOTONIC_CLOCK,
 	    break
 	  fi
       done
-      AC_CHECK_LIB(rt, clock_gettime, [erl_monotonic_clock_lib="-lrt"])
+      erl_monotonic_clock_lib=$clock_gettime_lib
       ;;
     mach_clock_get_time)
       erl_monotonic_clock_id=SYSTEM_CLOCK
@@ -879,11 +924,24 @@ AC_DEFUN(ERL_WALL_CLOCK,
 	;;
   esac
 
+  clock_gettime_lib=""
+  AC_CHECK_LIB(rt, clock_gettime, [clock_gettime_lib="-lrt"])
+
+  save_LIBS="$LIBS"
+  LIBS="$LIBS $clock_gettime_lib"
+
+  if test "$LD_MAY_BE_WEAK" != "no"; then
+     trust_test="#error May not be there due to weak linking"
+  else
+     trust_test=""
+  fi
+
   AC_CACHE_CHECK([for clock_gettime() with ${check_msg}wall clock type], erl_cv_clock_gettime_wall_$1,
   [
      for clock_type in $prefer_resolution_clock_gettime_wall $default_resolution_clock_gettime_wall $high_resolution_clock_gettime_wall $low_resolution_clock_gettime_wall; do
-       AC_TRY_COMPILE([
+       AC_TRY_LINK([
 #include <time.h>
+$trust_test
 		      ],
 		      [
     struct timespec ts;
@@ -898,7 +956,15 @@ AC_DEFUN(ERL_WALL_CLOCK,
      done
   ])
 
-  AC_CHECK_FUNCS([clock_getres clock_get_attributes gettimeofday])
+  LIBS="$save_LIBS"
+
+  if test "$LD_MAY_BE_WEAK" != "no"; then
+     check_for_clock_getres=
+  else
+     check_for_clock_getres=clock_getres
+  fi
+
+  AC_CHECK_FUNCS([$check_for_clock_getres clock_get_attributes gettimeofday])
   
   AC_CACHE_CHECK([for mach clock_get_time() with wall clock type], erl_cv_mach_clock_get_time_wall,
   [
@@ -919,19 +985,21 @@ AC_DEFUN(ERL_WALL_CLOCK,
 			erl_cv_mach_clock_get_time_wall=no)
   ])
 
+  erl_wall_clock_lib=
   erl_wall_clock_low_resolution=no
   erl_wall_clock_id=
-  case $erl_cv_clock_gettime_wall_$1-$erl_cv_mach_clock_get_time_wall-$ac_cv_func_gettimeofday-$host_os in
-    *-*-*-win32)
+  case $1-$erl_cv_clock_gettime_wall_$1-$erl_cv_mach_clock_get_time_wall-$ac_cv_func_gettimeofday-$host_os in
+    *-*-*-*-win32)
       erl_wall_clock_func=WindowsAPI
       erl_wall_clock_low_resolution=yes
       ;;
-    no-yes-*-*)
+    high_resolution-no-yes-*-*)
       erl_wall_clock_func=mach_clock_get_time
       erl_wall_clock_id=CALENDAR_CLOCK
       ;;
-    CLOCK_*-*-*-*)
+    *-CLOCK_*-*-*-*)
       erl_wall_clock_func=clock_gettime
+      erl_wall_clock_lib=$clock_gettime_lib
       erl_wall_clock_id=$erl_cv_clock_gettime_wall_$1
       for low_res_id in $low_resolution_clock_gettime_wall; do
       	  if test $erl_wall_clock_id = $low_res_id; then
@@ -940,7 +1008,7 @@ AC_DEFUN(ERL_WALL_CLOCK,
 	  fi
       done
       ;;
-    no-no-yes-*)
+    *-no-*-yes-*)
       erl_wall_clock_func=gettimeofday
       ;;
     *)
@@ -1447,7 +1515,7 @@ AC_ARG_WITH(with_sparc_memory_order,
 LM_CHECK_THR_LIB
 ERL_INTERNAL_LIBS
 
-ERL_MONOTONIC_CLOCK(high_resolution, undefined, no)
+ERL_MONOTONIC_CLOCK(try_find_pthread_compatible, CLOCK_HIGHRES CLOCK_MONOTONIC, no)
 
 case $erl_monotonic_clock_func in
   clock_gettime)
@@ -1478,6 +1546,13 @@ ETHR_LIBS=
 ETHR_LIB_NAME=
 
 ethr_modified_default_stack_size=
+
+AC_ARG_WITH(threadnames,
+AS_HELP_STRING([--with-threadnames], [use pthread_setname to set the thread names (default)])
+AS_HELP_STRING([--without-threadnames],
+               [do not set any thread names]),
+[],
+[with_threadnames=yes])
 
 dnl Name of lib where ethread implementation is located
 ethr_lib_name=ethread
@@ -1659,6 +1734,25 @@ case "$THR_LIB_NAME" in
 			AC_DEFINE(ETHR_TIME_WITH_SYS_TIME, 1, \
 [Define if you can safely include both <sys/time.h> and <time.h>.]))
 
+	AC_MSG_CHECKING([for usable PTHREAD_STACK_MIN])
+	pthread_stack_min=no
+	AC_TRY_COMPILE([
+#include <limits.h>
+#if defined(ETHR_NEED_NPTL_PTHREAD_H)
+#include <nptl/pthread.h>
+#elif defined(ETHR_HAVE_MIT_PTHREAD_H)
+#include <pthread/mit/pthread.h>
+#elif defined(ETHR_HAVE_PTHREAD_H)
+#include <pthread.h>
+#endif
+			], 
+			[return PTHREAD_STACK_MIN;],
+			[pthread_stack_min=yes])
+
+	AC_MSG_RESULT([$pthread_stack_min])
+	test $pthread_stack_min != yes || {
+	     AC_DEFINE(ETHR_HAVE_USABLE_PTHREAD_STACK_MIN, 1, [Define if you can use PTHREAD_STACK_MIN])
+	}
 
 	dnl
 	dnl Check for functions
@@ -1680,7 +1774,7 @@ case "$THR_LIB_NAME" in
 	    AC_DEFINE(ETHR_HAVE_SCHED_YIELD, 1, [Define if you have the sched_yield() function.])
 	    AC_MSG_CHECKING([whether sched_yield() returns an int])
 	    sched_yield_ret_int=no
-	    AC_TRY_COMPILE([
+	    AC_TRY_LINK([
 				#ifdef ETHR_HAVE_SCHED_H
 				#include <sched.h>
 				#endif
@@ -1699,7 +1793,7 @@ case "$THR_LIB_NAME" in
 	    AC_DEFINE(ETHR_HAVE_PTHREAD_YIELD, 1, [Define if you have the pthread_yield() function.])
 	    AC_MSG_CHECKING([whether pthread_yield() returns an int])
 	    pthread_yield_ret_int=no
-	    AC_TRY_COMPILE([
+	    AC_TRY_LINK([
 				#if defined(ETHR_NEED_NPTL_PTHREAD_H)
 				#include <nptl/pthread.h>
 				#elif defined(ETHR_HAVE_MIT_PTHREAD_H)
@@ -1850,12 +1944,12 @@ case "$THR_LIB_NAME" in
                     [pthread_setname_np("name");],
                     pthread_setname=darwin)
         AC_MSG_RESULT([$pthread_setname])
-        case $pthread_setname in
-             linux) AC_DEFINE(ETHR_HAVE_PTHREAD_SETNAME_NP_2, 1,
+        case $with_threadnames-$pthread_setname in
+             yes-linux) AC_DEFINE(ETHR_HAVE_PTHREAD_SETNAME_NP_2, 1,
                           [Define if you have linux style pthread_setname_np]);;
-             bsd) AC_DEFINE(ETHR_HAVE_PTHREAD_SET_NAME_NP_2, 1,
+             yes-bsd) AC_DEFINE(ETHR_HAVE_PTHREAD_SET_NAME_NP_2, 1,
                           [Define if you have bsd style pthread_set_name_np]);;
-             darwin) AC_DEFINE(ETHR_HAVE_PTHREAD_SETNAME_NP_1, 1,
+             yes-darwin) AC_DEFINE(ETHR_HAVE_PTHREAD_SETNAME_NP_1, 1,
                           [Define if you have darwin style pthread_setname_np]);;
              *) ;;
 	esac
@@ -2075,63 +2169,159 @@ esac
 
 case "$GCC-$host_cpu" in
   yes-i86pc | yes-i*86 | yes-x86_64 | yes-amd64)
+
+    if test $ac_cv_sizeof_void_p = 4; then
+       dw_cmpxchg="cmpxchg8b"
+    else
+       dw_cmpxchg="cmpxchg16b"
+    fi
+
     gcc_dw_cmpxchg_asm=no
-    AC_MSG_CHECKING([for gcc double word cmpxchg asm support])    
-    AC_TRY_COMPILE([],
+    gcc_pic_dw_cmpxchg_asm=no
+    gcc_cflags_pic=no
+    gcc_cmpxchg8b_pic_no_clobber_ebx=no
+    gcc_cmpxchg8b_pic_no_clobber_ebx_register_shortage=no
+
+    save_CFLAGS="$CFLAGS"
+
+    # Check if it works out of the box using passed CFLAGS
+    # and with -fPIC added to CFLAGS if the passed CFLAGS
+    # doesn't trigger position independent code
+    pic_cmpxchg=unknown
+    while true; do
+
+        case $pic_cmpxchg in
+	  yes) pic_text="pic ";;
+	  *) pic_text="";;
+	esac
+
+	AC_MSG_CHECKING([for gcc $pic_text$dw_cmpxchg plain asm support])    
+
+	plain_cmpxchg=no
+    	AC_TRY_COMPILE([],
 	[
     char xchgd;
     long new[2], xchg[2], *p;		  
     __asm__ __volatile__(
-#if ETHR_SIZEOF_PTR == 4 && defined(__PIC__) && __PIC__
-	"pushl %%ebx\n\t"
-	"movl %8, %%ebx\n\t"
-#endif
 #if ETHR_SIZEOF_PTR == 4
 	"lock; cmpxchg8b %0\n\t"
 #else
 	"lock; cmpxchg16b %0\n\t"
 #endif
 	"setz %3\n\t"
-#if ETHR_SIZEOF_PTR == 4 && defined(__PIC__) && __PIC__
-	"popl %%ebx\n\t"
-#endif
-	: "=m"(*p), "=d"(xchg[1]), "=a"(xchg[0]), "=c"(xchgd)
-	: "m"(*p), "1"(xchg[1]), "2"(xchg[0]), "3"(new[1]),
-#if ETHR_SIZEOF_PTR == 4 && defined(__PIC__) && __PIC__
-	  "r"(new[0])
-#else
-	  "b"(new[0])
-#endif
+	: "=m"(*p), "=d"(xchg[1]), "=a"(xchg[0]), "=q"(xchgd)
+	: "m"(*p), "1"(xchg[1]), "2"(xchg[0]), "c"(new[1]), "b"(new[0])
 	: "cc", "memory");
-
 	],
-	[gcc_dw_cmpxchg_asm=yes])
-    if test $gcc_dw_cmpxchg_asm = no && test $ac_cv_sizeof_void_p = 4; then
+	[plain_cmpxchg=yes])
+
+	AC_MSG_RESULT([$plain_cmpxchg])
+
+	if test $pic_cmpxchg = yes; then
+	   gcc_pic_dw_cmpxchg_asm=$plain_cmpxchg
+	   break
+	fi
+
+	gcc_dw_cmpxchg_asm=$plain_cmpxchg
+
+    	# If not already compiling to position independent
+	# code add -fPIC to CFLAGS and do it again. This
+	# since we want also want to know how to compile
+	# to position independent code since this might
+	# cause problems with the use of the EBX register
+	# as input to the asm on 32-bit x86 and old gcc
+	# compilers (gcc vsn < 5).
+
+    	AC_TRY_COMPILE([],
+	[
+#if !defined(__PIC__) || !__PIC__
+#  error no pic
+#endif
+	],
+	[pic_cmpxchg=yes
+	 gcc_cflags_pic=yes],
+	[pic_cmpxchg=no])
+
+	if test $pic_cmpxchg = yes; then
+	   gcc_pic_dw_cmpxchg_asm=$gcc_dw_cmpxchg_asm
+	   break
+	fi
+
+	CFLAGS="$save_CFLAGS -fPIC"
+	pic_cmpxchg=yes
+
+    done
+
+    if test $gcc_pic_dw_cmpxchg_asm = no && test $ac_cv_sizeof_void_p = 4; then
+
+      AC_MSG_CHECKING([for gcc pic cmpxchg8b asm support with EBX workaround])
+
+      # Check if we can work around it by managing the ebx
+      # register explicitly in the asm...
+
       AC_TRY_COMPILE([],
+	[
+    char xchgd;
+    long new[2], xchg[2], *p;		  
+    __asm__ __volatile__(
+	"pushl %%ebx\n\t"
+	"movl %8, %%ebx\n\t"
+	"lock; cmpxchg8b %0\n\t"
+	"setz %3\n\t"
+	"popl %%ebx\n\t"
+	: "=m"(*p), "=d"(xchg[1]), "=a"(xchg[0]), "=q"(xchgd)
+	: "m"(*p), "1"(xchg[1]), "2"(xchg[0]), "c"(new[1]), "r"(new[0])
+	: "cc", "memory");
+	],
+	[gcc_pic_dw_cmpxchg_asm=yes
+	 gcc_cmpxchg8b_pic_no_clobber_ebx=yes])     
+
+      AC_MSG_RESULT([$gcc_pic_dw_cmpxchg_asm])
+
+      if test $gcc_pic_dw_cmpxchg_asm = no; then
+
+      	AC_MSG_CHECKING([for gcc pic cmpxchg8b asm support with EBX and register shortage workarounds])
+        # If no optimization is enabled we sometimes get a
+	# register shortage. Check if we can work around
+	# this...
+
+      	AC_TRY_COMPILE([],
 	  [
       char xchgd;
       long new[2], xchg[2], *p;
-#if !defined(__PIC__) || !__PIC__
-#  error nope
-#endif
       __asm__ __volatile__(
-    	  "pushl %%ebx\n\t"
-	  "movl (%7), %%ebx\n\t"
-	  "movl 4(%7), %%ecx\n\t"
-	  "lock; cmpxchg8b %0\n\t"
-  	  "setz %3\n\t"
-	  "popl %%ebx\n\t"
-	  : "=m"(*p), "=d"(xchg[1]), "=a"(xchg[0]), "=c"(xchgd)
-	  : "m"(*p), "1"(xchg[1]), "2"(xchg[0]), "3"(new)
+	"pushl %%ebx\n\t"
+	"movl (%7), %%ebx\n\t"
+	"movl 4(%7), %%ecx\n\t"
+	"lock; cmpxchg8b %0\n\t"
+	"setz %3\n\t"
+	"popl %%ebx\n\t"
+	: "=m"(*p), "=d"(xchg[1]), "=a"(xchg[0]), "=c"(xchgd)
+	: "m"(*p), "1"(xchg[1]), "2"(xchg[0]), "r"(new)
 	: "cc", "memory");
 
 	],
-	[gcc_dw_cmpxchg_asm=yes])
-      if test "$gcc_dw_cmpxchg_asm" = "yes"; then
-        AC_DEFINE(ETHR_CMPXCHG8B_REGISTER_SHORTAGE, 1, [Define if you get a register shortage with cmpxchg8b and position independent code])
+	[gcc_pic_dw_cmpxchg_asm=yes
+	 gcc_cmpxchg8b_pic_no_clobber_ebx=yes
+	 gcc_cmpxchg8b_pic_no_clobber_ebx_register_shortage=yes])
+
+        AC_MSG_RESULT([$gcc_pic_dw_cmpxchg_asm])
       fi
+
+      if test $gcc_cflags_pic = yes; then
+        gcc_dw_cmpxchg_asm=$gcc_pic_dw_cmpxchg_asm
+      fi
+ 
+   fi
+
+    CFLAGS="$save_CFLAGS"
+
+    if test "$gcc_cmpxchg8b_pic_no_clobber_ebx" = "yes"; then
+      AC_DEFINE(ETHR_CMPXCHG8B_PIC_NO_CLOBBER_EBX, 1, [Define if gcc wont let you clobber ebx with cmpxchg8b and position independent code])
     fi
-    AC_MSG_RESULT([$gcc_dw_cmpxchg_asm])
+    if test "$gcc_cmpxchg8b_pic_no_clobber_ebx_register_shortage" = "yes"; then
+      AC_DEFINE(ETHR_CMPXCHG8B_REGISTER_SHORTAGE, 1, [Define if you get a register shortage with cmpxchg8b and position independent code])
+    fi
     if test "$gcc_dw_cmpxchg_asm" = "yes"; then
       AC_DEFINE(ETHR_GCC_HAVE_DW_CMPXCHG_ASM_SUPPORT, 1, [Define if you use a gcc that supports the double word cmpxchg instruction])
     fi;;
@@ -2177,10 +2367,10 @@ AS_HELP_STRING([--with-clock-gettime-monotonic-id=CLOCKID],
                [specify clock id to use with clock_gettime() for monotonic time)]))
 
 AC_ARG_ENABLE(prefer-elapsed-monotonic-time-during-suspend,
-	      AS_HELP_STRING([--enable-prefer-elapsed-monotonic-time-during-suspend],
-                             [Prefer an OS monotonic time source with elapsed time during suspend])
-	      AS_HELP_STRING([--disable-prefer-elapsed-monotonic-time-during-suspend],
-                             [Do not prefer an OS monotonic time source with elapsed time during suspend]),
+AS_HELP_STRING([--enable-prefer-elapsed-monotonic-time-during-suspend],
+               [Prefer an OS monotonic time source with elapsed time during suspend])
+AS_HELP_STRING([--disable-prefer-elapsed-monotonic-time-during-suspend],
+               [Do not prefer an OS monotonic time source with elapsed time during suspend]),
 [ case "$enableval" in
     yes) prefer_elapsed_monotonic_time_during_suspend=yes ;;
     *)  prefer_elapsed_monotonic_time_during_suspend=no ;;
@@ -2254,6 +2444,9 @@ case "$erl_wall_clock_func-$erl_wall_clock_id-$with_clock_gettime_realtime_id" i
 esac
 
 case $erl_wall_clock_func in
+  none)
+    AC_MSG_ERROR([No wall clock source found])
+    ;;
   mach_clock_get_time)
     AC_DEFINE(OS_SYSTEM_TIME_USING_MACH_CLOCK_GET_TIME, [1], [Define if you want to implement erts_os_system_time() using mach clock_get_time()])
     ;;
@@ -2337,7 +2530,13 @@ if test $erl_monotonic_clock_low_resolution = yes; then
   AC_DEFINE(ERTS_HAVE_LOW_RESOLUTION_OS_MONOTONIC_LOW, [1], [Define if you have a low resolution OS monotonic clock])
 fi
 
-xrtlib="$erl_monotonic_clock_lib"
+xrtlib=
+if test "$erl_monotonic_clock_lib" != ""; then
+   xrtlib="$erl_monotonic_clock_lib"
+fi
+if test "$erl_wall_clock_lib" != ""; then
+   xrtlib="$erl_wall_clock_lib"
+fi
 if test "x$erl_monotonic_clock_id" != "x"; then
     AC_DEFINE_UNQUOTED(MONOTONIC_CLOCK_ID_STR, ["$erl_monotonic_clock_id"], [Define as a string of monotonic clock id to use])
     AC_DEFINE_UNQUOTED(MONOTONIC_CLOCK_ID, [$erl_monotonic_clock_id], [Define to monotonic clock id to use])
@@ -2469,7 +2668,7 @@ case $erl_gethrvtime in
 	dnl Check if clock_gettime (linux) is working
 	dnl
 
-	AC_MSG_CHECKING([if clock_gettime can be used to get process CPU time])
+	AC_MSG_CHECKING([if clock_gettime can be used to get thread CPU time])
 	save_libs=$LIBS
 	LIBS="-lrt"
 	AC_TRY_RUN([
@@ -2483,11 +2682,11 @@ case $erl_gethrvtime in
 	    int i;
 	    struct timespec tp;
 
-	    if (clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &tp) < 0)
+	    if (clock_gettime(CLOCK_THREAD_CPUTIME_ID, &tp) < 0)
 	      exit(1);
 	    start = ((long long)tp.tv_sec * 1000000000LL) + (long long)tp.tv_nsec;
 	    for (i = 0; i < 100; i++)
-	      clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &tp);
+	      clock_gettime(CLOCK_THREAD_CPUTIME_ID, &tp);
 	    stop = ((long long)tp.tv_sec * 1000000000LL) + (long long)tp.tv_nsec;
 	    if (start == 0)
 	      exit(4);
@@ -2510,7 +2709,7 @@ case $erl_gethrvtime in
 	case $erl_clock_gettime_cpu_time in
 		yes)
 			AC_DEFINE(HAVE_CLOCK_GETTIME_CPU_TIME,[],
-				  [define if clock_gettime() works for getting process time])
+				  [define if clock_gettime() works for getting thread time])
 			LIBRT=-lrt
 			;;
 		cross)
@@ -2550,6 +2749,43 @@ AC_DEFUN([LM_TRY_ENABLE_CFLAG], [
     fi
 ])
 
+AC_DEFUN([LM_CHECK_ENABLE_CFLAG], [
+    AC_MSG_CHECKING([whether $CC accepts $1...])
+    saved_CFLAGS=$CFLAGS;
+    CFLAGS="$1 $CFLAGS";
+    AC_TRY_COMPILE([],[return 0;],can_enable_flag=true,can_enable_flag=false)
+    CFLAGS=$saved_CFLAGS;
+    if test "X$can_enable_flag" = "Xtrue"; then
+        AS_VAR_SET($2, true)
+        AC_MSG_RESULT([yes])
+    else
+        AS_VAR_SET($2, false)
+        AC_MSG_RESULT([no])
+    fi
+])
+
+dnl
+dnl LM_CHECK_RUN_CFLAG
+dnl
+dnl As LM_CHECK_ENABLE_CFLAG but also runs the command. Required for testing
+dnl profile-guided optimization, for which the "use" step may require that the
+dnl binary created in the "generate" step runs.
+dnl
+AC_DEFUN([LM_CHECK_RUN_CFLAG], [
+    AC_MSG_CHECKING([whether $CC accepts $1...])
+    saved_CFLAGS=$CFLAGS;
+    CFLAGS="$1 $CFLAGS";
+    AC_TRY_RUN([],[return 0;],can_enable_flag=true,can_enable_flag=false)
+    CFLAGS=$saved_CFLAGS;
+    if test "X$can_enable_flag" = "Xtrue"; then
+        AS_VAR_SET($2, true)
+        AC_MSG_RESULT([yes])
+    else
+        AS_VAR_SET($2, false)
+        AC_MSG_RESULT([no])
+    fi
+])
+
 dnl ERL_TRY_LINK_JAVA(CLASSES, FUNCTION-BODY
 dnl                   [ACTION_IF_FOUND [, ACTION-IF-NOT-FOUND]])
 dnl Freely inspired by AC_TRY_LINK. (Maybe better to create a 
@@ -2579,3 +2815,343 @@ rm -f conftest*])
 #define UNSAFE_MASK  0xc0000000 /* Mask for bits that must be constant */
 
 
+dnl ----------------------------------------------------------------------
+dnl
+dnl LM_HARDWARE_ARCH
+dnl
+dnl Determine target hardware in ARCH
+dnl
+AC_DEFUN([LM_HARDWARE_ARCH], [
+    AC_MSG_CHECKING([target hardware architecture])
+    if test "x$host_alias" != "x" -a "x$host_cpu" != "x"; then
+        chk_arch_=$host_cpu
+    else
+        chk_arch_=`uname -m`
+    fi
+
+    case $chk_arch_ in
+    sun4u)	ARCH=ultrasparc;;
+    sparc64)	ARCH=sparc64;;
+    sun4v)	ARCH=ultrasparc;;
+    i86pc)	ARCH=x86;;
+    i386)	ARCH=x86;;
+    i486)	ARCH=x86;;
+    i586)	ARCH=x86;;
+    i686)	ARCH=x86;;
+    x86_64)	ARCH=amd64;;
+    amd64)	ARCH=amd64;;
+    macppc)	ARCH=ppc;;
+    powerpc)	ARCH=ppc;;
+    ppc)	ARCH=ppc;;
+    ppc64)	ARCH=ppc64;;
+    ppc64le)	ARCH=ppc64le;;
+    "Power Macintosh")	ARCH=ppc;;
+    arm64)	ARCH=arm64;;
+    armv5b)	ARCH=arm;;
+    armv5teb)	ARCH=arm;;
+    armv5tel)	ARCH=arm;;
+    armv5tejl)	ARCH=arm;;
+    armv6l)	ARCH=arm;;
+    armv6hl)	ARCH=arm;;
+    armv7l)	ARCH=arm;;
+    armv7hl)	ARCH=arm;;
+    tile)	ARCH=tile;;
+    e2k)        ARCH=e2k;;
+    *)	 	ARCH=noarch;;
+    esac
+    AC_MSG_RESULT($ARCH)
+
+    dnl
+    dnl Convert between x86 and amd64 based on the compiler's mode.
+    dnl Ditto between ultrasparc and sparc64.
+    dnl
+    AC_MSG_CHECKING(whether compilation mode forces ARCH adjustment)
+    case "$ARCH-$ac_cv_sizeof_void_p" in
+    x86-8)
+	AC_MSG_RESULT(yes: adjusting ARCH=x86 to ARCH=amd64)
+	ARCH=amd64
+	;;
+    amd64-4)
+	AC_MSG_RESULT(yes: adjusting ARCH=amd64 to ARCH=x86)
+	ARCH=x86
+	;;
+    ultrasparc-8)
+	AC_MSG_RESULT(yes: adjusting ARCH=ultrasparc to ARCH=sparc64)
+	ARCH=sparc64
+	;;
+    sparc64-4)
+	AC_MSG_RESULT(yes: adjusting ARCH=sparc64 to ARCH=ultrasparc)
+	ARCH=ultrasparc
+	;;
+    ppc64-4)
+	AC_MSG_RESULT(yes: adjusting ARCH=ppc64 to ARCH=ppc)
+	ARCH=ppc
+	;;
+    ppc-8)
+	AC_MSG_RESULT(yes: adjusting ARCH=ppc to ARCH=ppc64)
+	ARCH=ppc64
+	;;
+    arm-8)
+	AC_MSG_RESULT(yes: adjusting ARCH=arm to ARCH=noarch)
+	ARCH=noarch
+	;;
+    *)
+	AC_MSG_RESULT(no: ARCH is $ARCH)
+	;;
+    esac
+
+    AC_SUBST(ARCH)
+])
+
+dnl
+dnl--------------------------------------------------------------------
+dnl Dynamic Erlang Drivers
+dnl
+dnl Linking to produce dynamic Erlang drivers to be loaded by Erlang's
+dnl Dynamic Driver Loader and Linker (DDLL). Below the prefix DED is an
+dnl abbreviation for `Dynamic Erlang Driver'.
+dnl
+dnl For DED we need something quite sloppy, which allows undefined references 
+dnl (notably driver functions) in the resulting shared library. 
+dnl Example of Makefile rule (and settings of macros):
+dnl
+dnl LIBS = @LIBS@
+dnl LD = @DED_LD@
+dnl LDFLAGS = @DED_LDFLAGS@
+dnl soname = @ldsoname@
+dnl
+dnl my_drv.so:   my_drv.o my_utils.o
+dnl              $(LD) $(LDFLAGS) $(soname) $@ -o $@ $^ -lc $(LIBS)
+dnl
+dnl--------------------------------------------------------------------
+dnl
+
+AC_DEFUN(ERL_DED,
+	[
+
+USER_LD=$LD
+USER_LDFLAGS="$LDFLAGS"
+
+LM_CHECK_THR_LIB
+
+DED_CC=$CC
+DED_GCC=$GCC
+
+DED_CFLAGS=
+DED_OSTYPE=unix
+case $host_os in
+     linux*)
+	DED_CFLAGS="-D_GNU_SOURCE" ;;
+     win32)
+	DED_CFLAGS="-D_WIN32_WINNT=0x0600 -DWINVER=0x0600"
+        DED_OSTYPE=win32 ;;
+     *)
+        ;;
+esac
+
+
+DED_WARN_FLAGS="-Wall -Wstrict-prototypes"
+case "$host_cpu" in
+  tile*)
+    # tile-gcc is a bit stricter with -Wmissing-prototypes than other gccs,
+    # and too strict for our taste.
+    ;;
+  *)
+    DED_WARN_FLAGS="$DED_WARN_FLAGS -Wmissing-prototypes";;
+esac
+  
+LM_TRY_ENABLE_CFLAG([-Wdeclaration-after-statement], [DED_WARN_FLAGS])
+
+LM_TRY_ENABLE_CFLAG([-Werror=return-type], [DED_WERRORFLAGS])
+LM_TRY_ENABLE_CFLAG([-Werror=implicit], [DED_WERRORFLAGS])
+LM_TRY_ENABLE_CFLAG([-Werror=undef], [DED_WERRORFLAGS])
+
+DED_SYS_INCLUDE="-I${ERL_TOP}/erts/emulator/beam -I${ERL_TOP}/erts/include -I${ERL_TOP}/erts/include/$host -I${ERL_TOP}/erts/include/internal -I${ERL_TOP}/erts/include/internal/$host -I${ERL_TOP}/erts/emulator/sys/$DED_OSTYPE -I${ERL_TOP}/erts/emulator/sys/common"
+DED_INCLUDE=$DED_SYS_INCLUDE
+
+if test "$THR_DEFS" = ""; then
+    DED_THR_DEFS="-D_THREAD_SAFE -D_REENTRANT"
+else
+    DED_THR_DEFS="$THR_DEFS"
+fi
+# DED_EMU_THR_DEFS=$EMU_THR_DEFS
+DED_CFLAGS="$CFLAGS $CPPFLAGS $DED_CFLAGS"
+if test "x$GCC" = xyes; then
+    # Use -fno-common for gcc, that is link error if multiple definitions of
+    # global variables are encountered. This is ISO C compliant.
+    # Until version 10, gcc has had -fcommon as default, which allows and merges
+    # such dubious duplicates.
+    LM_TRY_ENABLE_CFLAG([-fno-common], [DED_CFLAGS])
+
+    DED_STATIC_CFLAGS="$DED_CFLAGS"
+    DED_CFLAGS="$DED_CFLAGS -fPIC"
+    # Remove -fPIE and -fno-PIE
+    DED_CFLAGS=`echo $DED_CFLAGS | sed 's/-f\(no-\)\?PIE//g'`
+fi
+
+DED_EXT=so
+case $host_os in
+    win32) DED_EXT=dll;;
+    darwin*)
+	DED_CFLAGS="$DED_CFLAGS -fno-common"
+	DED_STATIC_CFLAGS="$DED_STATIC_CFLAGS -fno-common";;
+    *)
+	;;
+esac
+
+DED_STATIC_CFLAGS="$DED_STATIC_CFLAGS -DSTATIC_ERLANG_NIF -DSTATIC_ERLANG_DRIVER"
+
+if test "$CFLAG_RUNTIME_LIBRARY_PATH" = ""; then
+
+  CFLAG_RUNTIME_LIBRARY_PATH="-Wl,-R"
+  case $host_os in
+    darwin*)
+	CFLAG_RUNTIME_LIBRARY_PATH=
+	;;
+    win32)
+	CFLAG_RUNTIME_LIBRARY_PATH=
+	;;
+    osf*)
+	CFLAG_RUNTIME_LIBRARY_PATH="-Wl,-rpath,"
+	;;
+    *)
+	;;
+  esac
+
+fi
+
+# If DED_LD is set in environment, we expect all DED_LD* variables
+# to be specified (cross compiling)
+if test "x$DED_LD" = "x"; then
+
+DED_LD_FLAG_RUNTIME_LIBRARY_PATH="-R"
+case $host_os in
+	win32)
+		DED_LD="ld.sh"
+		DED_LDFLAGS="-dll"
+		DED_LD_FLAG_RUNTIME_LIBRARY_PATH=
+	;;
+	solaris2*|sysv4*)
+		DED_LDFLAGS="-G"
+		if test X${enable_m64_build} = Xyes; then
+			DED_LDFLAGS="-64 $DED_LDFLAGS"
+		fi
+	;;
+	aix*|os400*)
+		DED_LDFLAGS="-G -bnoentry -bexpall"
+	;;
+	freebsd2*)
+		# Non-ELF GNU linker
+		DED_LDFLAGS="-Bshareable"
+	;;
+	darwin*)
+		# Mach-O linker: a shared lib and a loadable
+		# object file is not the same thing.
+		DED_LDFLAGS="-bundle -bundle_loader ${ERL_TOP}/bin/$host/beam.smp"
+		if test X${enable_m64_build} = Xyes; then
+		  DED_LDFLAGS="-m64 $DED_LDFLAGS"
+		else
+		  if test X${enable_m32_build} = Xyes; then
+		    DED_LDFLAGS="-m32 $DED_LDFLAGS"
+		  else
+		    AC_CHECK_SIZEOF(void *)
+		    case "$ac_cv_sizeof_void_p" in
+		      8)
+			DED_LDFLAGS="-m64 $DED_LDFLAGS";;
+		      *)
+		        ;;
+		    esac
+		  fi
+		fi
+		DED_LD="$CC"
+		DED_LD_FLAG_RUNTIME_LIBRARY_PATH="$CFLAG_RUNTIME_LIBRARY_PATH"
+	;;
+	linux*)
+		DED_LD="$CC"
+		DED_LD_FLAG_RUNTIME_LIBRARY_PATH="$CFLAG_RUNTIME_LIBRARY_PATH"
+		DED_LDFLAGS="-shared -Wl,-Bsymbolic"
+		if test X${enable_m64_build} = Xyes; then
+			DED_LDFLAGS="-m64 $DED_LDFLAGS"
+		fi;
+		if test X${enable_m32_build} = Xyes; then
+			DED_LDFLAGS="-m32 $DED_LDFLAGS"
+		fi
+	;;	
+	freebsd*)
+		DED_LD="$CC"
+		DED_LD_FLAG_RUNTIME_LIBRARY_PATH="$CFLAG_RUNTIME_LIBRARY_PATH"
+		DED_LDFLAGS="-shared"
+		if test X${enable_m64_build} = Xyes; then
+			DED_LDFLAGS="-m64 $DED_LDFLAGS"
+		fi;
+		if test X${enable_m32_build} = Xyes; then
+			DED_LDFLAGS="-m32 $DED_LDFLAGS"
+		fi
+	;;	
+	openbsd*)
+		DED_LD="$CC"
+		DED_LD_FLAG_RUNTIME_LIBRARY_PATH="$CFLAG_RUNTIME_LIBRARY_PATH"
+		DED_LDFLAGS="-shared"
+	;;
+	osf*)
+		# NOTE! Whitespace after -rpath is important.
+		DED_LD_FLAG_RUNTIME_LIBRARY_PATH="-rpath "
+		DED_LDFLAGS="-shared -expect_unresolved '*'"
+	;;
+	*)
+		# assume GNU linker and ELF
+		DED_LDFLAGS="-shared"
+		# GNU linker has no option for 64bit build, should not propagate -m64
+	;;
+esac
+
+if test "$DED_LD" = "" && test "$USER_LD" != ""; then
+    DED_LD="$USER_LD"
+    DED_LDFLAGS="$USER_LDFLAGS $DED_LDFLAGS"
+fi
+
+DED_LIBS=$LIBS
+
+fi # "x$DED_LD" = "x"
+
+AC_CHECK_TOOL(DED_LD, ld, false)
+test "$DED_LD" != "false" || AC_MSG_ERROR([No linker found])
+
+AC_MSG_CHECKING(for static compiler flags)
+DED_STATIC_CFLAGS="$DED_WERRORFLAGS $DED_WFLAGS $DED_THR_DEFS $DED_STATIC_CFLAGS"
+AC_MSG_RESULT([$DED_STATIC_CFLAGS])
+AC_MSG_CHECKING(for basic compiler flags for loadable drivers)
+DED_BASIC_CFLAGS=$DED_CFLAGS
+AC_MSG_RESULT([$DED_CFLAGS])
+AC_MSG_CHECKING(for compiler flags for loadable drivers)
+DED_CFLAGS="$DED_WERRORFLAGS $DED_WARN_FLAGS $DED_THR_DEFS $DED_CFLAGS"
+AC_MSG_RESULT([$DED_CFLAGS])
+AC_MSG_CHECKING(for linker for loadable drivers)
+AC_MSG_RESULT([$DED_LD])
+AC_MSG_CHECKING(for linker flags for loadable drivers)
+AC_MSG_RESULT([$DED_LDFLAGS])
+AC_MSG_CHECKING(for 'runtime library path' linker flag)
+if test "x$DED_LD_FLAG_RUNTIME_LIBRARY_PATH" != "x"; then
+	AC_MSG_RESULT([$DED_LD_FLAG_RUNTIME_LIBRARY_PATH])
+else
+	AC_MSG_RESULT([not found])
+fi
+
+AC_SUBST(DED_CC)
+AC_SUBST(DED_GCC)
+AC_SUBST(DED_EXT)
+AC_SUBST(DED_SYS_INCLUDE)
+AC_SUBST(DED_INCLUDE)
+AC_SUBST(DED_BASIC_CFLAGS)
+AC_SUBST(DED_CFLAGS)
+AC_SUBST(DED_STATIC_CFLAGS)
+AC_SUBST(DED_WARN_FLAGS)
+AC_SUBST(DED_WERRORFLAGS)
+AC_SUBST(DED_LD)
+AC_SUBST(DED_LDFLAGS)
+AC_SUBST(DED_LD_FLAG_RUNTIME_LIBRARY_PATH)
+AC_SUBST(DED_LIBS)
+AC_SUBST(DED_THR_DEFS)
+AC_SUBST(DED_OSTYPE)
+
+])

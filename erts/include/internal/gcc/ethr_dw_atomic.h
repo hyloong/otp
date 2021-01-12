@@ -1,7 +1,7 @@
 /*
  * %CopyrightBegin%
  *
- * Copyright Ericsson AB 2011-2015. All Rights Reserved.
+ * Copyright Ericsson AB 2011-2020. All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -28,7 +28,7 @@
  *
  *       Due to this we cannot use the __ATOMIC_SEQ_CST
  *       memory model. For more information see the comment
- *       in the begining of ethr_membar.h in this directory.
+ *       in the beginning of ethr_membar.h in this directory.
  */
 
 #undef ETHR_INCLUDE_DW_ATOMIC_IMPL__
@@ -78,7 +78,7 @@ typedef volatile ETHR_NATIVE_SU_DW_SINT_T * ethr_native_dw_ptr_t;
  * runtime. We, therefore, need an extra word allocated.
  */
 #define ETHR_DW_NATMC_MEM__(VAR) \
-   (&var->c[(int) ((ethr_uint_t) &(VAR)->c[0]) & ETHR_DW_NATMC_ALIGN_MASK__])
+   (&(VAR)->c[(int) ((ethr_uint_t) &(VAR)->c[0]) & ETHR_DW_NATMC_ALIGN_MASK__])
 typedef union {
     volatile ETHR_NATIVE_SU_DW_SINT_T dw_sint;
     volatile ethr_sint_t sint[3];

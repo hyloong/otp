@@ -4,7 +4,7 @@
 <chapter>
   <header>
     <copyright>
-      <year>1997</year><year>2014</year>
+      <year>1997</year><year>2018</year>
       <holder>Ericsson AB. All Rights Reserved.</holder>
     </copyright>
     <legalnotice>
@@ -45,61 +45,63 @@
     <p>The <c>sys</c> module has functions for simple debugging of
     processes implemented using behaviours. The <c>code_lock</c>
     example from
-    <seealso marker="fsm#ex">gen_fsm Behaviour</seealso>
+    <seeguide marker="statem#Example">gen_statem Behaviour</seeguide>
     is used to illustrate this:</p>
     <pre>
-% <input>erl</input>
-Erlang (BEAM) emulator version 5.2.3.6 [hipe] [threads:0]
+Erlang/OTP 20 [DEVELOPMENT] [erts-9.0] [source-5ace45e] [64-bit] [smp:8:8] [ds:8:8:10] [async-threads:10] [hipe] [kernel-poll:false]
 
-Eshell V5.2.3.6  (abort with ^G)
-1> <input>code_lock:start_link([1,2,3,4]).</input>
-{ok,&lt;0.32.0>}
-2> <input>sys:statistics(code_lock, true).</input>
+Eshell V9.0  (abort with ^G)
+1>  code_lock:start_link([1,2,3,4]).
+Lock
+{ok,&lt;0.63.0>}
+2> sys:statistics(code_lock, true).
 ok
-3> <input>sys:trace(code_lock, true).</input>
+3>  sys:trace(code_lock, true).
 ok
-4> <input>code_lock:button(4).</input>
-*DBG* code_lock got event {button,4} in state closed
+4>  code_lock:button(1).
+*DBG* code_lock receive cast {button,1} in state locked
 ok
-*DBG* code_lock switched to state closed
-5> <input>code_lock:button(3).</input>
-*DBG* code_lock got event {button,3} in state closed
+*DBG* code_lock consume cast {button,1} in state locked
+5>  code_lock:button(2).
+*DBG* code_lock receive cast {button,2} in state locked
 ok
-*DBG* code_lock switched to state closed
-6> <input>code_lock:button(2).</input>
-*DBG* code_lock got event {button,2} in state closed
+*DBG* code_lock consume cast {button,2} in state locked
+6>  code_lock:button(3).
+*DBG* code_lock receive cast {button,3} in state locked
 ok
-*DBG* code_lock switched to state closed
-7> <input>code_lock:button(1).</input>
-*DBG* code_lock got event {button,1} in state closed
+*DBG* code_lock consume cast {button,3} in state locked
+7>  code_lock:button(4).
+*DBG* code_lock receive cast {button,4} in state locked
 ok
-OPEN DOOR
-*DBG* code_lock switched to state open
-*DBG* code_lock got event timeout in state open
-CLOSE DOOR
-*DBG* code_lock switched to state closed
-8> <input>sys:statistics(code_lock, get).</input> 
-{ok,[{start_time,{{2003,6,12},{14,11,40}}},
-     {current_time,{{2003,6,12},{14,12,14}}},
-     {reductions,333},
+Unlock
+*DBG* code_lock consume cast {button,4} in state locked
+*DBG* code_lock receive state_timeout lock in state open
+Lock
+*DBG* code_lock consume state_timeout lock in state open
+8> sys:statistics(code_lock, get).
+{ok,[{start_time,{{2017,4,21},{16,8,7}}},
+     {current_time,{{2017,4,21},{16,9,42}}},
+     {reductions,2973},
      {messages_in,5},
      {messages_out,0}]}
-9> <input>sys:statistics(code_lock, false).</input>
+9> sys:statistics(code_lock, false).
 ok
-10> <input>sys:trace(code_lock, false).</input>     
+10> sys:trace(code_lock, false).
 ok
-11> <input>sys:get_status(code_lock).</input>
-{status,&lt;0.32.0>,
-        {module,gen_fsm},
-        [[{'$ancestors',[&lt;0.30.0>]},
-          {'$initial_call',{gen,init_it,
-                                [gen_fsm,&lt;0.30.0>,&lt;0.30.0>,
-                                 {local,code_lock},
-                                 code_lock,
-                                 [1,2,3,4],
-                                 []]}}],
-         running,&lt;0.30.0>,[],
-         [code_lock,closed,{[],[1,2,3,4]},code_lock,infinity]]}</pre>
+11> sys:get_status(code_lock).
+{status,&lt;0.63.0>,
+        {module,gen_statem},
+        [[{'$initial_call',{code_lock,init,1}},
+          {'$ancestors',[&lt;0.61.0>]}],
+         running,&lt;0.61.0>,[],
+         [{header,"Status for state machine code_lock"},
+          {data,[{"Status",running},
+                 {"Parent",&lt;0.61.0>},
+                 {"Logged Events",[]},
+                 {"Postponed",[]}]},
+          {data,[{"State",
+                  {locked,#{code => [1,2,3,4],remaining => [1,2,3,4]}}}]}]]}
+    </pre>
   </section>
 
   <section>
@@ -111,9 +113,9 @@ ok
       <item>Be started in a way that makes the process fit into a
       supervision tree</item>
       <item>Support the <c>sys</c>
-      <seealso marker="#debug">debug facilities</seealso></item>
+      <seeguide marker="#debug">debug facilities</seeguide></item>
       <item>Take care of
-      <seealso marker="#msg">system messages</seealso>.</item>
+      <seeguide marker="#msg">system messages</seeguide>.</item>
     </list>
     <p>System messages are messages with a special meaning, used in
       the supervision tree. Typical system messages are requests for
@@ -124,7 +126,7 @@ ok
     <section>
       <title>Example</title>
       <p>The simple server from
-      <seealso marker="des_princ#ch1">Overview</seealso>,
+      <seeguide marker="des_princ#ch1">Overview</seeguide>,
       implemented using <c>sys</c> and <c>proc_lib</c> so it fits into a
       supervision tree:</p>
       <marker id="ex"></marker>
@@ -310,7 +312,7 @@ sys:handle_debug(Deb, Func, Info, Event) => Deb1</code>
             define what a system event is and how it is to be
             represented. Typically at least incoming and outgoing
             messages are considered system events and represented by
-            the tuples <c>{in,Msg[,From]}</c> and <c>{out,Msg,To}</c>,
+            the tuples <c>{in,Msg[,From]}</c> and <c>{out,Msg,To[,State]}</c>,
             respectively.</item>
       </list>
       <p><c>handle_debug</c> returns an updated debug structure
@@ -443,8 +445,8 @@ loop(...) ->
 -callback NameM(ArgM_1, ArgM_2, ..., ArgM_NM) -> ResM.</code>
     <p><c>NameX</c> are the names of the expected callbacks.
       <c>ArgX_Y</c> and <c>ResX</c> are types as they are described in
-      <seealso marker="../reference_manual/typespec">Types and
-      Function Specifications</seealso>. The whole syntax of the <c>-spec</c>
+      <seeguide marker="system/reference_manual:typespec">Types and
+      Function Specifications</seeguide>. The whole syntax of the <c>-spec</c>
       attribute is supported by the <c>-callback</c> attribute.</p>
     <p>Callback functions that are optional for the user of the
       behaviour to implement are specified by use of the
@@ -522,9 +524,36 @@ init(Parent, Name, Module) ->
 -module(db).
 -behaviour(simple_server).
 
--export([init/0, handle_req/2, terminate/0]).
+-export([init/1, handle_req/2, terminate/0]).
 
 ...</code>
+
+    <p>The contracts specified with <c>-callback</c> attributes in
+    behaviour modules can be further refined by adding <c>-spec</c>
+    attributes in callback modules. This can be useful as
+    <c>-callback</c> contracts are usually generic. The same callback
+    module with contracts for the callbacks:</p>
+    
+    <code type="none">
+-module(db).
+-behaviour(simple_server).
+
+-export([init/1, handle_req/2, terminate/0]).
+
+-record(state, {field1 :: [atom()], field2 :: integer()}).
+
+-type state()   :: #state{}.
+-type request() :: {'store', term(), term()};
+                   {'lookup', term()}.
+
+...
+
+-spec handle_req(request(), state()) -> {'ok', term()}.
+
+...</code>
+
+    <p>Each <c>-spec</c> contract is to be a subtype of the respective
+    <c>-callback</c> contract.</p>
+    
   </section>
 </chapter>
-

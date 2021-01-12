@@ -1,7 +1,7 @@
 /*
  * %CopyrightBegin%
  *
- * Copyright Ericsson AB 1996-2013. All Rights Reserved.
+ * Copyright Ericsson AB 1996-2017. All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -27,11 +27,12 @@
 #include "global.h"
 #include "export.h"
 #include "hash.h"
+#include "jit/beam_asm.h"
 
 #define EXPORT_INITIAL_SIZE   4000
 #define EXPORT_LIMIT  (512*1024)
 
-#define EXPORT_HASH(m,f,a) ((m)*(f)+(a))
+#define EXPORT_HASH(m,f,a) ((atom_val(m) * atom_val(f)) ^ (a))
 
 #ifdef DEBUG
 #  define IF_DEBUG(x) x
@@ -41,17 +42,12 @@
 
 static IndexTable export_tables[ERTS_NUM_CODE_IX];  /* Active not locked */
 
-static erts_smp_atomic_t total_entries_bytes;
-
-#include "erl_smp.h"
+static erts_atomic_t total_entries_bytes;
 
 /* This lock protects the staging export table from concurrent access
  * AND it protects the staging table from becoming active.
  */
-erts_smp_mtx_t export_staging_lock;
-
-extern BeamInstr* em_call_error_handler;
-extern BeamInstr* em_call_traced_function;
+erts_mtx_t export_staging_lock;
 
 struct export_entry
 {
@@ -79,24 +75,19 @@ struct export_templ
 
 static struct export_blob* entry_to_blob(struct export_entry* ee)
 {
-    return (struct export_blob*)
-        ((char*)ee->ep - offsetof(struct export_blob,exp));
+    return ErtsContainerStruct(ee->ep, struct export_blob, exp);
 }
 
 void
-export_info(int to, void *to_arg)
+export_info(fmtfn_t to, void *to_arg)
 {
-#ifdef ERTS_SMP
     int lock = !ERTS_IS_CRASH_DUMPING;
     if (lock)
 	export_staging_lock();
-#endif
     index_info(to, to_arg, &export_tables[erts_active_code_ix()]);
     hash_info(to, to_arg, &export_tables[erts_staging_code_ix()].htable);
-#ifdef ERTS_SMP
     if (lock)
 	export_staging_unlock();
-#endif
 }
 
 
@@ -104,7 +95,8 @@ static HashValue
 export_hash(struct export_entry* ee)
 {
     Export* x = ee->ep;
-    return EXPORT_HASH(x->code[0], x->code[1], x->code[2]);
+    return EXPORT_HASH(x->info.mfa.module, x->info.mfa.function,
+                       x->info.mfa.arity);
 }
 
 static int
@@ -112,9 +104,9 @@ export_cmp(struct export_entry* tmpl_e, struct export_entry* obj_e)
 {
     Export* tmpl = tmpl_e->ep;
     Export* obj = obj_e->ep;
-    return !(tmpl->code[0] == obj->code[0] &&
-	     tmpl->code[1] == obj->code[1] &&
-	     tmpl->code[2] == obj->code[2]);
+    return !(tmpl->info.mfa.module == obj->info.mfa.module &&
+	     tmpl->info.mfa.function == obj->info.mfa.function &&
+	     tmpl->info.mfa.arity == obj->info.mfa.arity);
 }
 
 
@@ -129,23 +121,32 @@ export_alloc(struct export_entry* tmpl_e)
 	Export* obj;
 
 	blob = (struct export_blob*) erts_alloc(ERTS_ALC_T_EXPORT, sizeof(*blob));
-	erts_smp_atomic_add_nob(&total_entries_bytes, sizeof(*blob));
+	erts_atomic_add_nob(&total_entries_bytes, sizeof(*blob));
 	obj = &blob->exp;
-	obj->fake_op_func_info_for_hipe[0] = 0;
-	obj->fake_op_func_info_for_hipe[1] = 0;
-	obj->code[0] = tmpl->code[0];
-	obj->code[1] = tmpl->code[1];
-	obj->code[2] = tmpl->code[2];
-	obj->code[3] = (BeamInstr) em_call_error_handler;
-	obj->code[4] = 0;
+	obj->info.op = 0;
+	obj->info.u.gen_bp = NULL;
+	obj->info.mfa.module = tmpl->info.mfa.module;
+	obj->info.mfa.function = tmpl->info.mfa.function;
+	obj->info.mfa.arity = tmpl->info.mfa.arity;
+        obj->bif_number = -1;
+        obj->is_bif_traced = 0;
 
-	for (ix=0; ix<ERTS_NUM_CODE_IX; ix++) {
-	    obj->addressv[ix] = obj->code+3;
+        memset(&obj->trampoline, 0, sizeof(obj->trampoline));
 
-	    blob->entryv[ix].slot.index = -1;
-	    blob->entryv[ix].ep = &blob->exp;
-	}
+        if (BeamOpsAreInitialized()) {
+            obj->trampoline.common.op = BeamOpCodeAddr(op_call_error_handler);
+        }
+
+        for (ix=0; ix<ERTS_NUM_CODE_IX; ix++) {
+            erts_activate_export_trampoline(obj, ix);
+
+            blob->entryv[ix].slot.index = -1;
+            blob->entryv[ix].ep = &blob->exp;
+        }
+
 	ix = 0;
+
+	DBG_TRACE_MFA_P(&obj->info.mfa, "export allocation at %p", obj);
     }
     else { /* Existing entry in another table, use free entry in blob */
 	blob = entry_to_blob(tmpl_e);
@@ -164,11 +165,14 @@ export_free(struct export_entry* obj)
     obj->slot.index = -1;
     for (i=0; i < ERTS_NUM_CODE_IX; i++) {
 	if (blob->entryv[i].slot.index >= 0) {
+	    DBG_TRACE_MFA_P(&blob->exp.info.mfa, "export entry slot %u freed for %p",
+			  (obj - blob->entryv), &blob->exp);
 	    return;
 	}
     }
+    DBG_TRACE_MFA_P(&blob->exp.info.mfa, "export blob deallocation at %p", &blob->exp);
     erts_free(ERTS_ALC_T_EXPORT, blob);
-    erts_smp_atomic_add_nob(&total_entries_bytes, -sizeof(*blob));
+    erts_atomic_add_nob(&total_entries_bytes, -sizeof(*blob));
 }
 
 void
@@ -177,18 +181,35 @@ init_export_table(void)
     HashFunctions f;
     int i;
 
-    erts_smp_mtx_init(&export_staging_lock, "export_tab");
-    erts_smp_atomic_init_nob(&total_entries_bytes, 0);
+    erts_mtx_init(&export_staging_lock, "export_tab", NIL,
+        ERTS_LOCK_FLAGS_PROPERTY_STATIC | ERTS_LOCK_FLAGS_CATEGORY_GENERIC);
+    erts_atomic_init_nob(&total_entries_bytes, 0);
 
     f.hash = (H_FUN) export_hash;
     f.cmp  = (HCMP_FUN) export_cmp;
     f.alloc = (HALLOC_FUN) export_alloc;
     f.free = (HFREE_FUN) export_free;
+    f.meta_alloc = (HMALLOC_FUN) erts_alloc;
+    f.meta_free = (HMFREE_FUN) erts_free;
+    f.meta_print = (HMPRINT_FUN) erts_print;
 
     for (i=0; i<ERTS_NUM_CODE_IX; i++) {
 	erts_index_init(ERTS_ALC_T_EXPORT_TABLE, &export_tables[i], "export_list",
 			EXPORT_INITIAL_SIZE, EXPORT_LIMIT, f);
     }
+}
+
+static struct export_entry* init_template(struct export_templ* templ,
+					  Eterm m, Eterm f, unsigned a)
+{
+    templ->entry.ep = &templ->exp;
+    templ->entry.slot.index = -1;
+    templ->exp.info.mfa.module = m;
+    templ->exp.info.mfa.function = f;
+    templ->exp.info.mfa.arity = a;
+    templ->exp.bif_number = -1;
+    templ->exp.is_bif_traced = 0;
+    return &templ->entry;
 }
 
 /*
@@ -209,38 +230,14 @@ erts_find_export_entry(Eterm m, Eterm f, unsigned int a,ErtsCodeIndex code_ix);
 Export*
 erts_find_export_entry(Eterm m, Eterm f, unsigned int a, ErtsCodeIndex code_ix)
 {
-    HashValue hval = EXPORT_HASH((BeamInstr) m, (BeamInstr) f, (BeamInstr) a);
-    int ix;
-    HashBucket* b;
-
-    ix = hval % export_tables[code_ix].htable.size;
-    b = export_tables[code_ix].htable.bucket[ix];
-
-    /*
-     * Note: We have inlined the code from hash.c for speed.
-     */
-	
-    while (b != (HashBucket*) 0) {
-	Export* ep = ((struct export_entry*) b)->ep;
-	if (ep->code[0] == m && ep->code[1] == f && ep->code[2] == a) {
-	    return ep;
-	}
-	b = b->next;
-    }
+    struct export_templ templ;
+    struct export_entry *ee =
+        hash_fetch(&export_tables[code_ix].htable,
+                   init_template(&templ, m, f, a),
+                   (H_FUN)export_hash, (HCMP_FUN)export_cmp);
+    if (ee) return ee->ep;
     return NULL;
 }
-
-static struct export_entry* init_template(struct export_templ* templ,
-					  Eterm m, Eterm f, unsigned a)
-{
-    templ->entry.ep = &templ->exp;
-    templ->entry.slot.index = -1;
-    templ->exp.code[0] = m;
-    templ->exp.code[1] = f;
-    templ->exp.code[2] = a;
-    return &templ->entry;
-}
-
 
 /*
  * Find the export entry for a loaded function.
@@ -260,11 +257,13 @@ erts_find_function(Eterm m, Eterm f, unsigned int a, ErtsCodeIndex code_ix)
     struct export_entry* ee;
 
     ee = hash_get(&export_tables[code_ix].htable, init_template(&templ, m, f, a));
-    if (ee == NULL ||
-	(ee->ep->addressv[code_ix] == ee->ep->code+3 &&
-	 ee->ep->code[3] != (BeamInstr) BeamOp(op_i_generic_breakpoint))) {
-	return NULL;
+
+    if (ee == NULL
+        || (erts_is_export_trampoline_active(ee->ep, code_ix) &&
+            !BeamIsOpCode(ee->ep->trampoline.common.op, op_i_generic_breakpoint))) {
+        return NULL;
     }
+
     return ee->ep;
 }
 
@@ -282,6 +281,7 @@ erts_export_put(Eterm mod, Eterm func, unsigned int arity)
     ErtsCodeIndex code_ix = erts_staging_code_ix();
     struct export_templ templ;
     struct export_entry* ee;
+    Export* res;
 
     ASSERT(is_atom(mod));
     ASSERT(is_atom(func));
@@ -289,7 +289,14 @@ erts_export_put(Eterm mod, Eterm func, unsigned int arity)
     ee = (struct export_entry*) index_put_entry(&export_tables[code_ix],
 						init_template(&templ, mod, func, arity));
     export_staging_unlock();
-    return ee->ep;
+
+    res = ee->ep;
+
+#ifdef BEAMASM
+    res->addresses[ERTS_SAVE_CALLS_CODE_IX] = beam_save_calls;
+#endif
+
+    return res;
 }
 
 /*
@@ -327,6 +334,11 @@ erts_export_get_or_make_stub(Eterm mod, Eterm func, unsigned int arity)
 		init_template(&templ, mod, func, arity);
 		entry = (struct export_entry *) index_put_entry(tab, &templ.entry);
 		ep = entry->ep;
+
+#ifdef BEAMASM
+                ep->addresses[ERTS_SAVE_CALLS_CODE_IX] = beam_save_calls;
+#endif
+
 		ASSERT(ep);
 	    }
 	    else { /* race */
@@ -346,7 +358,7 @@ Export *export_list(int i, ErtsCodeIndex code_ix)
 
 int export_list_size(ErtsCodeIndex code_ix)
 {
-    return export_tables[code_ix].entries;
+    return erts_index_num_entries(&export_tables[code_ix]);
 }
 
 int export_table_sz(void)
@@ -362,7 +374,7 @@ int export_table_sz(void)
 }
 int export_entries_sz(void)
 {
-    return erts_smp_atomic_read_nob(&total_entries_bytes);
+    return erts_atomic_read_nob(&total_entries_bytes);
 }
 Export *export_get(Export *e)
 {
@@ -398,7 +410,7 @@ void export_start_staging(void)
      */
     for (i = 0; i < src->entries; i++) {
 	src_entry = (struct export_entry*) erts_index_lookup(src, i);
-        src_entry->ep->addressv[dst_ix] = src_entry->ep->addressv[src_ix];
+        src_entry->ep->addresses[dst_ix] = src_entry->ep->addresses[src_ix];
 #ifdef DEBUG
 	dst_entry = (struct export_entry*) 
 #endif

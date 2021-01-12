@@ -4,14 +4,14 @@
 <chapter>
   <header>
     <copyright>
-      <year>1996</year><year>2013</year>
+      <year>1996</year><year>2020</year>
       <holder>Ericsson AB. All Rights Reserved.</holder>
     </copyright>
     <legalnotice>
       Licensed under the Apache License, Version 2.0 (the "License");
       you may not use this file except in compliance with the License.
       You may obtain a copy of the License at
- 
+
           http://www.apache.org/licenses/LICENSE-2.0
 
       Unless required by applicable law or agreed to in writing, software
@@ -39,7 +39,553 @@
     thus constitutes one section in this document. The title of each
     section is the version number of Mnesia.</p>
 
-  <section><title>Mnesia 4.13</title>
+  <section><title>Mnesia 4.18.1</title>
+
+    <section><title>Fixed Bugs and Malfunctions</title>
+      <list>
+        <item>
+          <p>
+	    Avoid potential performance issue, if the input queue to
+	    <c>mnesia_tm</c> is long.</p>
+          <p>
+	    Own Id: OTP-17066 Aux Id: PR-2889 </p>
+        </item>
+      </list>
+    </section>
+
+</section>
+
+<section><title>Mnesia 4.18</title>
+
+    <section><title>Fixed Bugs and Malfunctions</title>
+      <list>
+        <item>
+          <p>
+	    FIx mnesia delete object handling in transaction storage.
+	    In a transaction <c>mnesia:read/1</c> could indicate that
+	    exiting objects did not exist after another object was
+	    deleted.</p>
+          <p>
+	    Own Id: OTP-16782 Aux Id: PR-2663 </p>
+        </item>
+      </list>
+    </section>
+
+
+    <section><title>Improvements and New Features</title>
+      <list>
+        <item>
+          <p>
+	    Fixed crash during startup, which could happen if a table
+	    was deleted on another node.</p>
+          <p>
+	    Own Id: OTP-16815 Aux Id: ERIERL-500 </p>
+        </item>
+      </list>
+    </section>
+
+</section>
+
+<section><title>Mnesia 4.17</title>
+
+    <section><title>Fixed Bugs and Malfunctions</title>
+      <list>
+        <item>
+          <p>
+	    Make <c>mnesia:create_table/2</c> return correct badarg
+	    value.</p>
+          <p>
+	    Own Id: OTP-16072 Aux Id: PR-2320 </p>
+        </item>
+        <item>
+          <p>
+	    Fixed a bug where mnesia was sometimes not waiting during
+	    start for a commit decision on asymmetric transactions.</p>
+          <p>
+	    Own Id: OTP-16634 Aux Id: PR-2610 ERL-1227 </p>
+        </item>
+      </list>
+    </section>
+
+
+    <section><title>Improvements and New Features</title>
+      <list>
+        <item>
+          <p>
+	    Remove usage and documentation of old requests of the
+	    I/O-protocol.</p>
+          <p>
+	    Own Id: OTP-15695</p>
+        </item>
+        <item>
+          <p>
+	    Avoid using <c>rpc</c> calls to do table reads, which
+	    will reduce the load on rpc server and improve
+	    performance.</p>
+          <p>
+	    Own Id: OTP-16189</p>
+        </item>
+      </list>
+    </section>
+
+</section>
+
+  <section><title>Mnesia 4.16.3.1</title>
+
+    <section><title>Improvements and New Features</title>
+      <list>
+        <item>
+          <p>
+	    Fixed crash during startup, which could happen if a table
+	    was deleted on another node.</p>
+          <p>
+	    Own Id: OTP-16815 Aux Id: ERIERL-500 </p>
+        </item>
+      </list>
+    </section>
+
+</section>
+
+<section><title>Mnesia 4.16.3</title>
+
+    <section><title>Fixed Bugs and Malfunctions</title>
+      <list>
+        <item>
+          <p>
+	    Fixed a timing issue in uninstall fallback functionality.</p>
+          <p>
+	    Own Id: OTP-16468 Aux Id: ERL-1151 </p>
+        </item>
+      </list>
+    </section>
+
+</section>
+
+<section><title>Mnesia 4.16.2</title>
+
+    <section><title>Fixed Bugs and Malfunctions</title>
+      <list>
+        <item>
+          <p>
+	    Fixed mnesia crash which could happen when trying to
+	    recover from failures in transactions containing
+	    <c>sticky_locks</c>.</p>
+          <p>
+	    Own Id: OTP-16286 Aux Id: ERL-1077 </p>
+        </item>
+        <item>
+          <p>
+	    Fixed mnesia index issue. Could happen when updating
+	    records with a index plugin backend.</p>
+          <p>
+	    Own Id: OTP-16291 Aux Id: ERL-1091 </p>
+        </item>
+      </list>
+    </section>
+
+</section>
+
+<section><title>Mnesia 4.16.1</title>
+
+    <section><title>Fixed Bugs and Malfunctions</title>
+      <list>
+        <item>
+          <p>
+	    <c>mnesia:add_table_copy/3</c> could cause a deadlock if
+	    called when a new node was starting.</p>
+          <p>
+	    Own Id: OTP-15933 Aux Id: ERL-872 </p>
+        </item>
+        <item>
+	    <p>Transactions with sticky locks could with async_asym
+	    transactions be committed in the wrong order, since asym
+	    transaction are spawned on the remote nodes.</p> <p>To
+	    fix this bug the communication protocol between mnesia
+	    nodes had to be updated, thus mnesia will no longer be
+	    able to connect to nodes earlier than mnesia-4.14 ,
+	    OTP-19.0.</p>
+          <p>
+	    *** POTENTIAL INCOMPATIBILITY ***</p>
+          <p>
+	    Own Id: OTP-15979 Aux Id: ERL-768 </p>
+        </item>
+      </list>
+    </section>
+
+</section>
+
+<section><title>Mnesia 4.16</title>
+
+    <section><title>Fixed Bugs and Malfunctions</title>
+      <list>
+        <item>
+          <p>
+	    Optimize mnesia:read/1 if data have been written in the
+	    same transaction.</p>
+          <p>
+	    Own Id: OTP-15550 Aux Id: PR-2029 </p>
+        </item>
+        <item>
+          <p>
+	    Fixed bugs in table index plugin handling.</p>
+          <p>
+	    Own Id: OTP-15689 Aux Id: PR-1695 ERL-556 </p>
+        </item>
+      </list>
+    </section>
+
+
+    <section><title>Improvements and New Features</title>
+      <list>
+        <item>
+          <p>
+	    Optimized dumping of tables with plugin backends.</p>
+          <p>
+	    Own Id: OTP-15588 Aux Id: PR-2102 </p>
+        </item>
+        <item>
+          <p>
+	    Include stacktrace in exception if a dirty activity
+	    errors, thus if user have matched on the error thrown it
+	    may not match any more.</p>
+          <p>
+	    *** POTENTIAL INCOMPATIBILITY ***</p>
+          <p>
+	    Own Id: OTP-15804 Aux Id: PR-2216 </p>
+        </item>
+      </list>
+    </section>
+
+</section>
+
+<section><title>Mnesia 4.15.6</title>
+
+    <section><title>Fixed Bugs and Malfunctions</title>
+      <list>
+        <item>
+          <p>
+	    Avoid overload warnings caused by a race condition.</p>
+          <p>
+	    Own Id: OTP-15619 Aux Id: ERIERL-310 </p>
+        </item>
+      </list>
+    </section>
+
+</section>
+
+<section><title>Mnesia 4.15.5</title>
+
+    <section><title>Fixed Bugs and Malfunctions</title>
+      <list>
+        <item>
+          <p>
+	    Fixed type spec for <c>mnesia:change_config/2</c>.</p>
+          <p>
+	    Own Id: OTP-15201 Aux Id: PR-1881 </p>
+        </item>
+        <item>
+          <p>
+	    When master node is set do not force a load from
+	    ram_copies replica when there are no available
+	    disc_copies, since that would load an empty table. Wait
+	    until a disk replica is available or until user
+	    explicitly force_loads the table.</p>
+          <p>
+	    Own Id: OTP-15221 Aux Id: ERIERL-217 </p>
+        </item>
+        <item>
+          <p>
+	    Allow to add replicas even if all other replicas are down
+	    when the other replicas are not stored on disk.</p>
+          <p>
+	    Own Id: OTP-15226 Aux Id: ERIERL-221 </p>
+        </item>
+        <item>
+          <p>
+	    Fixed <c>mnesia:delete_object/1</c> bug, where
+	    delete_object was deleting the record if it was written
+	    in the same transaction even if it was written to a
+	    different value.</p>
+          <p>
+	    Own Id: OTP-15231 Aux Id: PR-1858 </p>
+        </item>
+        <item>
+          <p>
+	    Fixed a bug where the bag table index data was not
+	    deleted when objects were deleted.</p>
+          <p>
+	    Own Id: OTP-15243</p>
+        </item>
+      </list>
+    </section>
+
+</section>
+
+<section><title>Mnesia 4.15.4</title>
+
+    <section><title>Improvements and New Features</title>
+      <list>
+        <item>
+	    <p> Calls to <c>erlang:get_stacktrace()</c> are removed.
+	    </p>
+          <p>
+	    Own Id: OTP-14861</p>
+        </item>
+      </list>
+    </section>
+
+</section>
+
+<section><title>Mnesia 4.15.3.1</title>
+
+    <section><title>Fixed Bugs and Malfunctions</title>
+      <list>
+        <item>
+          <p>
+	    When master node is set do not force a load from
+	    ram_copies replica when there are no available
+	    disc_copies, since that would load an empty table. Wait
+	    until a disk replica is available or until user
+	    explicitly force_loads the table.</p>
+          <p>
+	    Own Id: OTP-15221 Aux Id: ERIERL-217 </p>
+        </item>
+        <item>
+          <p>
+	    Allow to add replicas even if all other replicas are down
+	    when the other replicase are not stored on disk.</p>
+          <p>
+	    Own Id: OTP-15226 Aux Id: ERIERL-221 </p>
+        </item>
+      </list>
+    </section>
+
+</section>
+
+<section><title>Mnesia 4.15.3</title>
+
+    <section><title>Fixed Bugs and Malfunctions</title>
+      <list>
+        <item>
+          <p>
+	    Removed a quadratic behavior in startup. This change
+	    implies that backend plugins (if used) must be set when
+	    the schema is created or via configuration parameters
+	    before mnesia is started.</p>
+          <p>
+	    Own Id: OTP-14829 Aux Id: ERIERL-84 </p>
+        </item>
+        <item>
+          <p>
+	    Bad timing could crash mnesia after a checkpoint was
+	    deactivated and reactivated with the same checkpoint name
+	    on different tables.</p>
+          <p>
+	    Own Id: OTP-14841 Aux Id: ERIERL-113 </p>
+        </item>
+      </list>
+    </section>
+
+</section>
+
+<section><title>Mnesia 4.15.2</title>
+
+    <section><title>Fixed Bugs and Malfunctions</title>
+      <list>
+        <item>
+          <p>
+	    Fix backup error handling, the real failure reason was
+	    not returned.</p>
+          <p>
+	    Own Id: OTP-14776 Aux Id: ERIERL-103 </p>
+        </item>
+      </list>
+    </section>
+
+</section>
+
+<section><title>Mnesia 4.15.1</title>
+
+    <section><title>Improvements and New Features</title>
+      <list>
+        <item>
+          <p>
+	    General Unicode improvements.</p>
+          <p>
+	    Own Id: OTP-14462</p>
+        </item>
+      </list>
+    </section>
+
+</section>
+
+<section><title>Mnesia 4.15</title>
+
+    <section><title>Improvements and New Features</title>
+      <list>
+        <item>
+          <p>
+	    Removed the wrapping of select continuations in extension
+	    plugin handling. This might require the user to rewrite
+	    user backend plugin if used.</p>
+          <p>
+	    *** POTENTIAL INCOMPATIBILITY ***</p>
+          <p>
+	    Own Id: OTP-14039</p>
+        </item>
+      </list>
+    </section>
+
+</section>
+
+<section><title>Mnesia 4.14.3</title>
+
+    <section><title>Fixed Bugs and Malfunctions</title>
+      <list>
+        <item>
+          <p>
+	    Fixed crash in checkpoint handling when table was deleted
+	    during backup.</p>
+          <p>
+	    Own Id: OTP-14167</p>
+        </item>
+      </list>
+    </section>
+
+</section>
+
+<section><title>Mnesia 4.14.2</title>
+
+    <section><title>Fixed Bugs and Malfunctions</title>
+      <list>
+        <item>
+          <p>
+	    A continuation returned by mnesia:select/[14] should be
+	    reusable in different, non-transactional activities.</p>
+          <p>
+	    Own Id: OTP-13944 Aux Id: PR-1184 </p>
+        </item>
+        <item>
+          <p>
+	    Fixed crash when calling block_table multiple times.
+	    Could happen when having locks for a long time and
+	    restarting mnesia.</p>
+          <p>
+	    Own Id: OTP-13970 Aux Id: Seq-13198 </p>
+        </item>
+        <item>
+          <p>
+	    Change mnesia_tm process to have off-heap messages since
+	    mnesia_tm can be the receiver of many non-synchronized
+	    message from other nodes.</p>
+          <p>
+	    Own Id: OTP-14074</p>
+        </item>
+      </list>
+    </section>
+
+</section>
+
+<section><title>Mnesia 4.14.1</title>
+
+    <section><title>Improvements and New Features</title>
+      <list>
+        <item>
+	    <p> Correct some minor documentation issues. </p>
+          <p>
+	    Own Id: OTP-13891</p>
+        </item>
+      </list>
+    </section>
+
+</section>
+
+<section><title>Mnesia 4.14</title>
+
+    <section><title>Improvements and New Features</title>
+      <list>
+        <item>
+          <p>
+	    Added experimental external backend plugin api. This adds
+	    the possibility for the user to write other storage
+	    backends for data, for example by using shared memory or
+	    ram-cached disk storage.</p>
+          <p>
+	    The plugin api may change in future versions after being
+	    battle tested.</p>
+          <p>
+	    Own Id: OTP-13058</p>
+        </item>
+      </list>
+    </section>
+
+</section>
+
+<section><title>Mnesia 4.13.4</title>
+
+    <section><title>Fixed Bugs and Malfunctions</title>
+      <list>
+        <item>
+          <p>
+	    Mnesia transactions could hang while waiting on a
+	    response from a node who had stopped.</p>
+          <p>
+	    Own Id: OTP-13423</p>
+        </item>
+      </list>
+    </section>
+
+</section>
+
+<section><title>Mnesia 4.13.3</title>
+
+    <section><title>Fixed Bugs and Malfunctions</title>
+      <list>
+        <item>
+          <p>
+	    Avoid deadlock possibility in
+	    <c>mnesia:del_table_copy/2</c></p>
+          <p>
+	    Own Id: OTP-13284</p>
+        </item>
+      </list>
+    </section>
+
+</section>
+
+<section><title>Mnesia 4.13.2</title>
+
+    <section><title>Fixed Bugs and Malfunctions</title>
+      <list>
+        <item>
+          <p>
+	    Fixed a process and file descriptor leak in
+	    mnesia:restore/2.</p>
+          <p>
+	    Own Id: OTP-13025 Aux Id: seq12957 </p>
+        </item>
+      </list>
+    </section>
+
+</section>
+
+<section><title>Mnesia 4.13.1</title>
+
+    <section><title>Fixed Bugs and Malfunctions</title>
+      <list>
+        <item>
+          <p>
+	    Improved index updates to avoid a timing glitch in
+	    dirty_index_read.</p>
+          <p>
+	    Own Id: OTP-12972</p>
+        </item>
+      </list>
+    </section>
+
+</section>
+
+<section><title>Mnesia 4.13</title>
 
     <section><title>Fixed Bugs and Malfunctions</title>
       <list>
@@ -425,7 +971,7 @@
           <p>
 	    Returns the same value for
 	    mnesia_loader:disc_load_table/2 as
-	    mnesia_loader:net_load_table/4 if a table copy can not be
+	    mnesia_loader:net_load_table/4 if a table copy cannot be
 	    found. (Thanks to Uwe Dauernheim)</p>
           <p>
 	    Own Id: OTP-10015</p>
@@ -725,9 +1271,9 @@
         </item>
       </list>
     </section>
-    
-  </section>  
-  
+
+  </section>
+
   <section><title>Mnesia 4.4.13</title>
 
     <section><title>Fixed Bugs and Malfunctions</title>
@@ -796,7 +1342,7 @@
 
   </section>
   <section><title>Mnesia 4.4.10</title>
-    
+
     <section><title>Fixed Bugs and Malfunctions</title>
       <list>
         <item>
@@ -826,7 +1372,7 @@
         </item>
       </list>
     </section>
-    
+
   </section>
 
 
@@ -844,7 +1390,7 @@
         </item>
       </list>
     </section>
-    
+
   </section>
 
   <section><title>Mnesia 4.4.8</title>
@@ -869,7 +1415,7 @@
         </item>
       </list>
     </section>
-    
+
   </section>
 
  <section><title>Mnesia 4.4.7</title>
@@ -903,7 +1449,7 @@
 
 </section>
 
- <section><title>Mnesia 4.4.6</title>    
+ <section><title>Mnesia 4.4.6</title>
     <section><title>Fixed Bugs and Malfunctions</title>
       <list>
         <item>
@@ -1094,9 +1640,4 @@
     </section>
   </section>
 
-  <!-- section>
-    <title>Previous Notes</title>
-    <p>For information about older versions see <url href="part_notes_history_frame.html">release notes history</url>.</p>
-  </section -->
 </chapter>
-

@@ -10,9 +10,11 @@
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <fcntl.h>
+#include <ctype.h>
 
 #ifndef __WIN32__
 #include <unistd.h>
+#include <limits.h>
 
 #include <sys/time.h>
 
@@ -32,14 +34,14 @@
     exit(1); \
 }
 
-#define MAIN(argc, argv) main(argc, argv)
+#define ASSERT(e) ((void) ((e) ? 1 : abort()))
 
 extern int errno;
 
 typedef struct {
     char* progname;	        /* Name of this program (from argv[0]). */
     int header_size;	        /* Number of bytes in each packet header:
-				 * 1, 2, or 4, or 0 for a continous byte stream. */
+				 * 1, 2, or 4, or 0 for a continuous byte stream. */
     int fd_from_erl;	        /* File descriptor from Erlang. */
     int fd_to_erl;	        /* File descriptor to Erlang. */
     unsigned char* io_buf;      /* Buffer for file i/o. */
@@ -48,6 +50,7 @@ typedef struct {
 				 * after reading the header for a packet
 				 * before reading the rest.
 				 */
+    int fd_count;               /* Count the number of open fds */
     int break_mode;		/* If set, this program will close standard
 				 * input, which should case broken pipe
 				 * error in the writer.
@@ -103,11 +106,9 @@ int err;
 #endif
 
 
-MAIN(argc, argv)
-int argc;
-char *argv[];
+int main(int argc, char *argv[])
 {
-  int ret;
+  int ret, fd_count;
   if((port_data = (PORT_TEST_DATA *) malloc(sizeof(PORT_TEST_DATA))) == NULL) {
     fprintf(stderr, "Couldn't malloc for port_data");
     exit(1);
@@ -115,6 +116,7 @@ char *argv[];
   port_data->header_size = 0;
   port_data->io_buf_size = 0;	
   port_data->delay_mode = 0;	
+  port_data->fd_count = 0;
   port_data->break_mode = 0;	
   port_data->quit_mode = 0;	
   port_data->slow_writes = 0;	
@@ -143,6 +145,9 @@ char *argv[];
       break;
     case 'e': 
       port_data->fd_to_erl = 2;
+      break;
+    case 'f':
+      port_data->fd_count = 1;
       break;
     case 'h':			/* Header size for packets. */
       switch (argv[1][2]) {
@@ -189,17 +194,30 @@ char *argv[];
     /* XXX Add error printout here */
   }
 
+  if (port_data->fd_count) {
+#ifdef __WIN32__
+      DWORD handles;
+      GetProcessHandleCount(GetCurrentProcess(), &handles);
+      fd_count = handles;
+#else
+      int i;
+      for (i = 0, fd_count = 0; i < 1024; i++)
+          if (fcntl(i, F_GETFD) >= 0) {
+              fd_count++;
+          }
+#endif
+  }
+
+  if (port_data->output_file)
+      replace_stdout(port_data->output_file);
+
+  if (port_data->fd_count)
+      reply(&fd_count, sizeof(fd_count));
+
   if (port_data->no_packet_loop){
       free(port_data);
       exit(0);
   }
-
-  /*
-   * If an output file was given, let it replace standard output.
-   */
-
-  if (port_data->output_file)
-    replace_stdout(port_data->output_file);
 
   ret = packet_loop();
   if(port_data->io_buf_size > 0)
@@ -358,9 +376,11 @@ write_reply(buf, size)
      int size;			/* Size of buffer to send. */
 {
     int n;			/* Temporary to hold size. */
+    int rv;
 
     if (port_data->slow_writes <= 0) {	/* Normal, "fast", write. */
-	write(port_data->fd_to_erl, buf, size);
+	rv = write(port_data->fd_to_erl, buf, size);
+        ASSERT(rv == size);
     } else {
 	/*
 	 * Write chunks with delays in between.
@@ -368,7 +388,8 @@ write_reply(buf, size)
 
 	while (size > 0) {
 	    n = size > port_data->slow_writes ? port_data->slow_writes : size;
-	    write(port_data->fd_to_erl, buf, n);
+	    rv = write(port_data->fd_to_erl, buf, n);
+            ASSERT(rv == n);
 	    size -= n;
 	    buf += n;
 	    if (size)
@@ -539,7 +560,7 @@ char* spec;			/* Specification for reply. */
     buf = (char *) malloc(total_size);
     if (buf == NULL) {
 	fprintf(stderr, "%s: insufficent memory for reply buffer of size %d\n",
-		port_data->progname, total_size);
+		port_data->progname, (int)total_size);
 	exit(1);
     }
 

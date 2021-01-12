@@ -1,7 +1,7 @@
 /*
  * %CopyrightBegin%
  *
- * Copyright Ericsson AB 2010-2011. All Rights Reserved.
+ * Copyright Ericsson AB 2010-2016. All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -24,7 +24,7 @@
  * Author: Rickard Green
  */
 
-#include "erl_nif.h"
+#include <erl_nif.h>
 
 #ifdef __WIN32__
 #  ifndef WIN32_LEAN_AND_MEAN
@@ -39,6 +39,7 @@
 
 #include <errno.h>
 #include <stdio.h>
+#include <string.h>
 
 static int
 fail(const char *file, int line, const char *function, const char *assertion);

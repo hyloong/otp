@@ -7,20 +7,25 @@
 %%
 %% Copyright (C) 2002-2005 Richard Carlsson
 %%
-%% This library is free software; you can redistribute it and/or modify
-%% it under the terms of the GNU Lesser General Public License as
-%% published by the Free Software Foundation; either version 2 of the
-%% License, or (at your option) any later version.
+%% Licensed under the Apache License, Version 2.0 (the "License"); you may
+%% not use this file except in compliance with the License. You may obtain
+%% a copy of the License at <http://www.apache.org/licenses/LICENSE-2.0>
 %%
-%% This library is distributed in the hope that it will be useful, but
-%% WITHOUT ANY WARRANTY; without even the implied warranty of
-%% MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
-%% Lesser General Public License for more details.
+%% Unless required by applicable law or agreed to in writing, software
+%% distributed under the License is distributed on an "AS IS" BASIS,
+%% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+%% See the License for the specific language governing permissions and
+%% limitations under the License.
 %%
-%% You should have received a copy of the GNU Lesser General Public
-%% License along with this library; if not, write to the Free Software
-%% Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307
-%% USA
+%% Alternatively, you may use this file under the terms of the GNU Lesser
+%% General Public License (the "LGPL") as published by the Free Software
+%% Foundation; either version 2.1, or (at your option) any later version.
+%% If you wish to allow use of your version of this file only under the
+%% terms of the LGPL, you should delete the provisions above and replace
+%% them with the notice and other provisions required by the LGPL; see
+%% <http://www.gnu.org/licenses/>. If you do not delete the provisions
+%% above, a recipient may use your version of this file under the terms of
+%% either the Apache License or the LGPL.
 %%
 %% Author contact: carlsson.richard@gmail.com
 %% =====================================================================
@@ -36,8 +41,8 @@ Terminals
 atom float integer var an_var string start_spec start_typedef start_throws
 start_ref
 
-'(' ')' ',' '.' '=>' '->' '{' '}' '[' ']' '|' '+' ':' '::' '=' '/' '//' '*'
-'#' 'where' '<<' '>>' '..' '...'.
+'(' ')' ',' '.' '=>' ':=' '->' '{' '}' '[' ']' '|' '+' ':' '::' '=' '/' '//'
+'*' '#' 'where' '<<' '>>' '..' '...'.
 
 Rootsymbol start.
 
@@ -76,7 +81,12 @@ utype_map_fields -> '$empty' : [].
 utype_map_fields -> utype_map_field : ['$1'].
 utype_map_fields -> utype_map_fields ',' utype_map_field : ['$3' | '$1'].
 
-utype_map_field -> utype '=>' utype : #t_map_field{ k_type = '$1', v_type = '$3'}.
+utype_map_field -> utype '=>' utype : #t_map_field{assoc_type = assoc,
+                                                   k_type = '$1',
+                                                   v_type = '$3'}.
+utype_map_field -> utype ':=' utype : #t_map_field{assoc_type = exact,
+                                                   k_type = '$1',
+                                                   v_type = '$3'}.
 
 utype_tuple -> '{' utypes '}' : lists:reverse('$2').
 
@@ -233,57 +243,36 @@ throws -> etype where_defs:
 	#t_throws{type = '$1',
 		  defs = '$2'}.
 
-%% (commented out for now)
-%% Header
-%% "%% ========================== -*-Erlang-*- ============================="
-%% "%% EDoc function specification parser, generated from the file"
-%% "%% \"edoc_parser.yrl\" by the Yecc parser generator."
-%% "%%"
-%% "%% Copyright (C) 2002-2005 Richard Carlsson"
-%% "%%"
-%% "%% This library is free software; you can redistribute it and/or modify"
-%% "%% it under the terms of the GNU Lesser General Public License as"
-%% "%% published by the Free Software Foundation; either version 2 of the"
-%% "%% License, or (at your option) any later version."
-%% "%%"
-%% "%% This library is distributed in the hope that it will be useful, but"
-%% "%% WITHOUT ANY WARRANTY; without even the implied warranty of"
-%% "%% MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU"
-%% "%% Lesser General Public License for more details."
-%% "%%"
-%% "%% You should have received a copy of the GNU Lesser General Public"
-%% "%% License along with this library; if not, write to the Free Software"
-%% "%% Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307"
-%% "%% USA"
-%% "%%"
-%% "%% @private"
-%% "%% @author Richard Carlsson <carlsson.richard@gmail.com>"
-%% "%% ===================================================================="
-%% .
+Header
+"%% EDoc function specification parser, generated from the file"
+"%% \"edoc_parser.yrl\" by the Yecc parser generator."
+"%%"
+"%% Licensed under the Apache License, Version 2.0 (the \"License\"); you may"
+"%% not use this file except in compliance with the License. You may obtain"
+"%% a copy of the License at <http://www.apache.org/licenses/LICENSE-2.0>"
+"%%"
+"%% Unless required by applicable law or agreed to in writing, software"
+"%% distributed under the License is distributed on an \"AS IS\" BASIS,"
+"%% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied."
+"%% See the License for the specific language governing permissions and"
+"%% limitations under the License."
+"%%"
+"%% Alternatively, you may use this file under the terms of the GNU Lesser"
+"%% General Public License (the \"LGPL\") as published by the Free Software"
+"%% Foundation; either version 2.1, or (at your option) any later version."
+"%% If you wish to allow use of your version of this file only under the"
+"%% terms of the LGPL, you should delete the provisions above and replace"
+"%% them with the notice and other provisions required by the LGPL; see"
+"%% <http://www.gnu.org/licenses/>. If you do not delete the provisions"
+"%% above, a recipient may use your version of this file under the terms of"
+"%% either the Apache License or the LGPL."
+"%%"
+"%% @private"
+"%% @copyright 2002-2005 Richard Carlsson"
+"%% @author Richard Carlsson <carlsson.richard@gmail.com>"
+"".
 
 Erlang code.
-
-%% ========================== -*-Erlang-*- =============================
-%% EDoc function specification parser, generated from the file
-%% "edoc_parser.yrl" by the Yecc parser generator.
-%%
-%% Copyright (C) 2002-2005 Richard Carlsson
-%%
-%% This library is free software; you can redistribute it and/or modify
-%% it under the terms of the GNU Lesser General Public License as
-%% published by the Free Software Foundation; either version 2 of the
-%% License, or (at your option) any later version.
-%%
-%% This library is distributed in the hope that it will be useful, but
-%% WITHOUT ANY WARRANTY; without even the implied warranty of
-%% MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
-%% Lesser General Public License for more details.
-%%
-%% You should have received a copy of the GNU Lesser General Public
-%% License along with this library; if not, write to the Free Software
-%% Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307
-%% USA
-%% ====================================================================
 
 -export([parse_spec/2, parse_typedef/2, parse_throws/2, parse_ref/2,
 	 parse_see/2, parse_param/2]).
@@ -348,7 +337,7 @@ all_vars(As) ->
 
 %% ---------------------------------------------------------------------
 
-%% @doc EDoc type specification parsing. Parses the content of
+%% EDoc type specification parsing. Parses the content of
 %% <a href="overview-summary.html#ftag-spec">`@spec'</a> declarations.
 
 parse_spec(S, L) ->
@@ -366,7 +355,7 @@ parse_spec(S, L) ->
 
 %% ---------------------------------------------------------------------
 
-%% @doc EDoc type definition parsing. Parses the content of
+%% EDoc type definition parsing. Parses the content of
 %% <a href="overview-summary.html#gtag-type">`@type'</a> declarations.
 
 parse_typedef(S, L) ->
@@ -391,7 +380,7 @@ parse_typedef_1(S, L) ->
 
 %% ---------------------------------------------------------------------
 
-%% @doc Parses a <a
+%% Parses a <a
 %% href="overview-summary.html#References">reference</a> to a module,
 %% function, type, or application
 
@@ -410,7 +399,7 @@ parse_ref(S, L) ->
 
 %% ---------------------------------------------------------------------
 
-%% @doc Parses the content of
+%% Parses the content of
 %% <a href="overview-summary.html#ftag-see">`@see'</a> references.
 parse_see(S, L) ->
     {S1, S2} = edoc_lib:split_at_stop(S),
@@ -421,7 +410,7 @@ parse_see(S, L) ->
 
 %% ---------------------------------------------------------------------
 
-%% @doc Parses the content of
+%% Parses the content of
 %% <a href="overview-summary.html#ftag-param">`@param'</a> tags.
 parse_param(S, L) ->
     {S1, S2} = edoc_lib:split_at_space(edoc_lib:strip_space(S)),
@@ -434,7 +423,7 @@ parse_param(S, L) ->
 
 %% ---------------------------------------------------------------------
 
-%% @doc EDoc exception specification parsing. Parses the content of
+%% EDoc exception specification parsing. Parses the content of
 %% <a href="overview-summary.html#ftag-throws">`@throws'</a> declarations.
 
 parse_throws(S, L) ->

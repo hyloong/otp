@@ -1,7 +1,7 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2006-2012. All Rights Reserved.
+%% Copyright Ericsson AB 2006-2020. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -23,9 +23,10 @@
 	 init_per_group/2,end_per_group/2,
 	 init_per_testcase/2,end_per_testcase/2,
 	 tobias/1,empty_string/1,md5/1,silly_coverage/1,
-	 confused_literals/1,integer_encoding/1,override_bif/1]).
+	 confused_literals/1,integer_encoding/0,integer_encoding/1,
+	 override_bif/1]).
 	 
--include_lib("test_server/include/test_server.hrl").
+-include_lib("common_test/include/ct.hrl").
 
 %% For the override_bif testcase.
 %% NB, no other testcases in this testsuite can use these without erlang:prefix!
@@ -38,34 +39,38 @@
 -compile({no_auto_import,[byte_size/1]}).
 -import(erlang,[byte_size/1]).
 
-
+%% Cover the code for callback handling.
+-callback must_define_this_one() -> 'ok'.
+-callback do_something_strange(atom()) -> 'ok'.
+-optional_callbacks([do_something_strange/1]).
+-optional_callbacks([ignore_me]).		%Invalid; ignored.
 
 %% Include an opaque declaration to cover the stripping of
 %% opaque types from attributes in v3_kernel.
 -opaque misc_SUITE_test_cases() :: [atom()].
 
 init_per_testcase(Case, Config) when is_atom(Case), is_list(Config) ->
-    Dog = test_server:timetrap(?t:minutes(10)),
-    [{watchdog,Dog}|Config].
+    Config.
 
 end_per_testcase(Case, Config) when is_atom(Case), is_list(Config) ->
-    Dog = ?config(watchdog, Config),
-    ?t:timetrap_cancel(Dog),
     ok.
 
-suite() -> [{ct_hooks,[ts_install_cth]}].
+suite() ->
+    [{ct_hooks,[ts_install_cth]},
+     {timetrap,{minutes,10}}].
 
 -spec all() -> misc_SUITE_test_cases().
 all() -> 
-    test_lib:recompile(?MODULE),
-    [{group,p}].
+    slow_group() ++ [{group,p}].
 
 groups() -> 
-    [{p,[],
-      [tobias,empty_string,md5,silly_coverage,
-       confused_literals,integer_encoding,override_bif]}].
+    [{p,[parallel],
+      [tobias,empty_string,silly_coverage,
+       confused_literals,override_bif]},
+     {slow,[parallel],[integer_encoding,md5]}].
 
 init_per_suite(Config) ->
+    test_lib:recompile(?MODULE),
     Config.
 
 end_per_suite(_Config) ->
@@ -77,8 +82,16 @@ init_per_group(_GroupName, Config) ->
 end_per_group(_GroupName, Config) ->
     Config.
 
-
-
+slow_group() ->
+    case ?MODULE of
+	misc_SUITE ->
+            %% Canononical module name. Run slow cases.
+            [{group,slow}];
+        _ ->
+            %% Cloned module. Don't run.
+            []
+    end.
+    
 %%
 %% Functions that override new and old bif's
 %%
@@ -88,32 +101,27 @@ abs(_N) ->
 binary_part(_,_,_) ->
     dummy_bp.
 
-% Make sure that auto-imported BIF's are overridden correctly
-
-override_bif(suite) ->
-    [];
-override_bif(doc) ->
-    ["Test dat local functions and imports override auto-imported BIFs."];
+%% Test that local functions and imports override auto-imported BIFs.
 override_bif(Config) when is_list(Config) ->
-    ?line dummy_abs = abs(1),
-    ?line dummy_bp = binary_part(<<"hello">>,1,1),
-    ?line dummy = binary_part(<<"hello">>,{1,1}),
-    ?line 1 = erlang:abs(1),
-    ?line <<"e">> = erlang:binary_part(<<"hello">>,1,1),
-    ?line <<"e">> = erlang:binary_part(<<"hello">>,{1,1}),
+    dummy_abs = abs(1),
+    dummy_bp = binary_part(<<"hello">>,1,1),
+    dummy = binary_part(<<"hello">>,{1,1}),
+    1 = erlang:abs(1),
+    <<"e">> = erlang:binary_part(<<"hello">>,1,1),
+    <<"e">> = erlang:binary_part(<<"hello">>,{1,1}),
     F = fun(X) when byte_size(X) =:= 4 ->
 		four;
 	   (X) ->
 		byte_size(X)
 	end,
-    ?line four = F(<<1,2,3,4>>),
-    ?line 5 = F(<<1,2,3,4,5>>),
+    four = F(<<1,2,3,4>>),
+    5 = F(<<1,2,3,4,5>>),
     ok.
 
 %% A bug reported by Tobias Lindahl for a development version of R11B.
 
 tobias(Config) when is_list(Config) ->
-    ?line 1 = tobias_1([1,2,3]),
+    1 = tobias_1([1,2,3]),
     ok.
 
 tobias_1([H|_T]) ->
@@ -134,7 +142,7 @@ tobias_2(_, _) ->
 -record(r, {s = ""}).
 
 empty_string(Config) when is_list(Config) ->
-    ?line #r{s="x"} = empty_string_1(#r{}),
+    #r{s="x"} = empty_string_1(#r{}),
     ok.
 
 empty_string_1(T) ->
@@ -143,34 +151,34 @@ empty_string_1(T) ->
     end.
 
 md5(Config) when is_list(Config) ->
-    case ?MODULE of
-	misc_SUITE -> md5();
-	_ -> {skip,"Enough to run this case once."}
-    end.
-
-md5() ->
-    ?line Dir = filename:dirname(code:which(?MODULE)),
-    ?line Beams = filelib:wildcard(filename:join(Dir, "*.beam")),
-    ?line io:format("Found ~w beam files", [length(Beams)]),
-    ?line lists:foreach(fun md5_1/1, Beams).
+    Dir = filename:dirname(code:which(?MODULE)),
+    Beams = filelib:wildcard(filename:join(Dir, "*.beam")),
+    io:format("Found ~w beam files", [length(Beams)]),
+    lists:foreach(fun md5_1/1, Beams).
 
 md5_1(Beam) ->
-    ?line {ok,{Mod,[Vsn]}} = beam_lib:version(Beam),
-    ?line {ok,Code} = file:read_file(Beam),
-    ?line {Mod,<<Vsn:128>>} = {Mod,code:module_md5(Code)}.
+    {ok,{Mod,[Vsn]}} = beam_lib:version(Beam),
+    {ok,Code} = file:read_file(Beam),
+    {Mod,<<Vsn:128>>} = {Mod,code:module_md5(Code)}.
 
 %% Cover some code that handles internal errors.
 
 silly_coverage(Config) when is_list(Config) ->
-    %% sys_core_fold, sys_core_setel, v3_kernel
+    %% v3_core
+    BadAbstr = [{attribute,0,module,bad_module},
+                {function,0,foo,2,[bad_clauses]}],
+    expect_error(fun() -> v3_core:module(BadAbstr, []) end),
+
+    %% sys_core_fold, sys_core_alias, sys_core_bsm, v3_kernel
     BadCoreErlang = {c_module,[],
 		     name,[],[],
 		     [{{c_var,[],{foo,2}},seriously_bad_body}]},
-    ?line expect_error(fun() -> sys_core_fold:module(BadCoreErlang, []) end),
-    ?line expect_error(fun() -> sys_core_dsetel:module(BadCoreErlang, []) end),
-    ?line expect_error(fun() -> v3_kernel:module(BadCoreErlang, []) end),
+    expect_error(fun() -> sys_core_fold:module(BadCoreErlang, []) end),
+    expect_error(fun() -> sys_core_alias:module(BadCoreErlang, []) end),
+    expect_error(fun() -> sys_core_bsm:module(BadCoreErlang, []) end),
+    expect_error(fun() -> v3_kernel:module(BadCoreErlang, []) end),
 
-    %% v3_life
+    %% beam_kernel_to_ssa
     BadKernel = {k_mdef,[],?MODULE,
 		 [{foo,0}],
 		 [],
@@ -178,11 +186,43 @@ silly_coverage(Config) when is_list(Config) ->
 		   {k,[],[],[]},
 		   f,0,[],
 		   seriously_bad_body}]},
-    ?line expect_error(fun() -> v3_life:module(BadKernel, []) end),
+    expect_error(fun() -> beam_kernel_to_ssa:module(BadKernel, []) end),
 
-    %% v3_codegen
-    CodegenInput = {?MODULE,[{foo,0}],[],[{function,foo,0,[a|b],a,b,[]}]},
-    ?line expect_error(fun() -> v3_codegen:module(CodegenInput, []) end),
+    %% beam_ssa_lint
+    %% beam_ssa_bool
+    %% beam_ssa_recv
+    %% beam_ssa_share
+    %% beam_ssa_pre_codegen
+    %% beam_ssa_codegen
+    BadSSA = {b_module,#{},a,b,c,
+              [{b_function,#{func_info=>{mod,foo,0}},args,bad_blocks,0}]},
+    expect_error(fun() -> beam_ssa_lint:module(BadSSA, []) end),
+    expect_error(fun() -> beam_ssa_bool:module(BadSSA, []) end),
+    expect_error(fun() -> beam_ssa_recv:module(BadSSA, []) end),
+    expect_error(fun() -> beam_ssa_share:module(BadSSA, []) end),
+    expect_error(fun() -> beam_ssa_pre_codegen:module(BadSSA, []) end),
+    expect_error(fun() -> beam_ssa_codegen:module(BadSSA, []) end),
+
+    %% beam_ssa_opt
+    BadSSABlocks = #{0 => {b_blk,#{},[bad_code],{b_ret,#{},arg}}},
+    BadSSAOpt = {b_module,#{},a,[],[],
+                 [{b_function,#{func_info=>{mod,foo,0}},[],
+                   BadSSABlocks,0}]},
+    expect_error(fun() -> beam_ssa_opt:module(BadSSAOpt, []) end),
+
+    %% beam_ssa_bc_size
+    cover_beam_ssa_bc_size(1),
+
+    %% beam_ssa_lint, beam_ssa_pp
+    {error,[{_,Errors}]} = beam_ssa_lint:module(bad_ssa_lint_input(), []),
+    _ = [io:put_chars(Mod:format_error(Reason)) ||
+            {Mod,Reason} <- Errors],
+
+    %% Cover printing of annotations in beam_ssa_pp
+    PPAnno = #{func_info=>{mod,foo,0},other_anno=>value,map_anno=>#{k=>v}},
+    PPBlocks = #{0=>{b_blk,#{},[],{b_ret,#{},{b_literal,42}}}},
+    PP = {b_function,PPAnno,[],PPBlocks,0},
+    io:put_chars(beam_ssa_pp:format_function(PP)),
 
     %% beam_a
     BeamAInput = {?MODULE,[{foo,0}],[],
@@ -192,57 +232,17 @@ silly_coverage(Config) when is_list(Config) ->
 		     {label,2}|non_proper_list]}],99},
     expect_error(fun() -> beam_a:module(BeamAInput, []) end),
 
-    %% beam_reorder
-    BlockInput = {?MODULE,[{foo,0}],[],
-		  [{function,foo,0,2,
-		    [{label,1},
-		     {func_info,{atom,?MODULE},{atom,foo},0},
-		     {label,2}|non_proper_list]}],99},
-    expect_error(fun() -> beam_reorder:module(BlockInput, []) end),
-
     %% beam_block
     BlockInput = {?MODULE,[{foo,0}],[],
 		  [{function,foo,0,2,
 		    [{label,1},
 		     {func_info,{atom,?MODULE},{atom,foo},0},
 		     {label,2}|non_proper_list]}],99},
-    ?line expect_error(fun() -> beam_block:module(BlockInput, []) end),
+    expect_error(fun() -> beam_block:module(BlockInput, []) end),
 
-    %% beam_type
-    TypeInput = {?MODULE,[{foo,0}],[],
-		   [{function,foo,0,2,
-		     [{label,1},
-		      {line,loc},
-		      {func_info,{atom,?MODULE},{atom,foo},0},
-		      {label,2}|non_proper_list]}],99},
-    expect_error(fun() -> beam_type:module(TypeInput, []) end),
-
-    %% beam_except
-    ExceptInput = {?MODULE,[{foo,0}],[],
-		   [{function,foo,0,2,
-		     [{label,1},
-		      {line,loc},
-		      {func_info,{atom,?MODULE},{atom,foo},0},
-		      {label,2}|non_proper_list]}],99},
-    expect_error(fun() -> beam_except:module(ExceptInput, []) end),
-
-    %% beam_bool
-    BoolInput = {?MODULE,[{foo,0}],[],
-		  [{function,foo,0,2,
-		    [{label,1},
-		     {func_info,{atom,?MODULE},{atom,foo},0},
-		     {label,2}|non_proper_list]}],99},
-    ?line expect_error(fun() -> beam_bool:module(BoolInput, []) end),
-
-    %% beam_dead. This is tricky. Our function must look OK to
-    %% beam_utils:clean_labels/1, but must crash beam_dead.
-    DeadInput = {?MODULE,[{foo,0}],[],
-		  [{function,foo,0,2,
-		    [{label,1},
-		     {func_info,{atom,?MODULE},{atom,foo},0},
-		     {label,2},
-		     {test,is_eq_exact,{f,1},[bad,operands]}]}],99},
-    expect_error(fun() -> beam_dead:module(DeadInput, []) end),
+    %% beam_jump
+    JumpInput = BlockInput,
+    expect_error(fun() -> beam_jump:module(JumpInput, []) end),
 
     %% beam_clean
     CleanInput = {?MODULE,[{foo,0}],[],
@@ -251,36 +251,22 @@ silly_coverage(Config) when is_list(Config) ->
 		     {func_info,{atom,?MODULE},{atom,foo},0},
 		     {label,2},
 		     {jump,{f,42}}]}],99},
-    ?line expect_error(fun() -> beam_clean:module(CleanInput, []) end),
+    expect_error(fun() -> beam_clean:module(CleanInput, []) end),
 
-    %% beam_peep
+    %% beam_jump
+    TrimInput = BlockInput,
+    expect_error(fun() -> beam_trim:module(TrimInput, []) end),
+
+    %% beam_peep. This is tricky. Use a select instruction with
+    %% an odd number of elements in the list to crash
+    %% prune_redundant_values/2 but not beam_clean:clean_labels/1.
     PeepInput = {?MODULE,[{foo,0}],[],
 		 [{function,foo,0,2,
 		   [{label,1},
 		    {func_info,{atom,?MODULE},{atom,foo},0},
-		    {label,2}|non_proper_list]}],99},
-    ?line expect_error(fun() -> beam_peep:module(PeepInput, []) end),
-
-    %% beam_bsm. This is tricky. Our function must be sane enough to not crash
-    %% btb_index/1, but must crash the main optimization pass.
-    BsmInput = {?MODULE,[{foo,0}],[],
-		[{function,foo,0,2,
-		  [{label,1},
-		   {func_info,{atom,?MODULE},{atom,foo},0},
-		   {label,2},
-		   {test,bs_get_binary2,{f,99},0,[{x,0},{atom,all},1,[]],{x,0}},
-		   {block,[a|b]}]}],0},
-    ?line expect_error(fun() -> beam_bsm:module(BsmInput, []) end),
-
-    %% beam_receive.
-    ReceiveInput = {?MODULE,[{foo,0}],[],
-		    [{function,foo,0,2,
-		      [{label,1},
-		       {func_info,{atom,?MODULE},{atom,foo},0},
-		       {label,2},
-		       {call_ext,0,{extfunc,erlang,make_ref,0}},
-		       {block,[a|b]}]}],0},
-    ?line expect_error(fun() -> beam_receive:module(ReceiveInput, []) end),
+		    {label,2},{select,select_val,r,{f,2},[{f,2}]}]}],
+		 2},
+    expect_error(fun() -> beam_peep:module(PeepInput, []) end),
 
     BeamZInput = {?MODULE,[{foo,0}],[],
 		  [{function,foo,0,2,
@@ -295,59 +281,106 @@ silly_coverage(Config) when is_list(Config) ->
 		      [{label,1},
 		       {func_info,{atom,?MODULE},{atom,foo},0},
 		       {label,2}|non_proper_list]}],99},
-    expect_error(fun() -> beam_validator:module(BeamValInput, []) end),
+    expect_error(fun() -> beam_validator:validate(BeamValInput, strong) end),
 
     ok.
+
+cover_beam_ssa_bc_size(20) ->
+    ok;
+cover_beam_ssa_bc_size(N) ->
+    BcSizeKey = {b_local,{b_literal,name},1},
+    %% Try different sizes for the opt_st record.
+    OptSt = erlang:make_tuple(N, whatever, [{1,opt_st}]),
+    expect_error(fun() -> beam_ssa_bc_size:opt(#{BcSizeKey => OptSt}) end),
+    cover_beam_ssa_bc_size(N + 1).
+
+bad_ssa_lint_input() ->
+    {b_module,#{},t,
+     [{a,1},{b,1},{c,1},{module_info,0},{module_info,1}],
+     [],
+     [{b_function,
+       #{func_info => {t,a,1},location => {"t.erl",4}},
+       [{b_var,0}],
+       #{0 => {b_blk,#{},[],{b_ret,#{},{b_var,'@undefined_var'}}}},
+       3},
+      {b_function,
+       #{func_info => {t,b,1},location => {"t.erl",5}},
+       [{b_var,0}],
+       #{0 =>
+             {b_blk,#{},
+              [{b_set,#{},{b_var,'@first_var'},first_op,[]},
+               {b_set,#{},{b_var,'@second_var'},second_op,[]},
+               {b_set,#{},{b_var,'@ret'},succeeded,[{b_var,'@first_var'}]}],
+              {b_ret,#{},{b_var,'@ret'}}}},
+       3},
+      {b_function,
+       #{func_info => {t,c,1},location => {"t.erl",6}},
+       [{b_var,0}],
+       #{0 =>
+             {b_blk,#{},
+              [{b_set,#{},{b_var,'@first_var'},first_op,[]},
+               {b_set,#{},{b_var,'@ret'},succeeded,[{b_var,'@first_var'}]},
+               {b_set,#{},{b_var,'@second_var'},second_op,[]}],
+              {b_ret,#{},{b_var,'@ret'}}}},
+       3},
+      {b_function,
+       #{func_info => {t,module_info,0}},
+       [],
+       #{0 =>
+             {b_blk,#{},
+              [{b_set,#{},
+                {b_var,{'@ssa_ret',3}},
+                call,
+                [{b_remote,
+                  {b_literal,erlang},
+                  {b_literal,get_module_info},
+                  1},
+                 {b_var,'@unknown_variable'}]}],
+              {b_ret,#{},{b_var,{'@ssa_ret',3}}}}},
+       4}]}.
 
 expect_error(Fun) ->
     try	Fun() of
 	Any ->
 	    io:format("~p", [Any]),
-	    ?t:fail(call_was_supposed_to_fail)
+	    ct:fail(call_was_supposed_to_fail)
     catch
-	Class:Reason ->
-	    Stk = erlang:get_stacktrace(),
+	Class:Reason:Stk ->
 	    io:format("~p:~p\n~p\n", [Class,Reason,Stk]),
 	    case {Class,Reason} of
 		{error,undef} ->
-		    ?t:fail(not_supposed_to_fail_with_undef);
+		    ct:fail(not_supposed_to_fail_with_undef);
 		{_,_} ->
 		    ok
 	    end
     end.
 
 confused_literals(Config) when is_list(Config) ->
-    ?line {0,infinity} = confused_literals_1(int),
-    ?line {0.0,infinity} = confused_literals_1(float),
+    {0,infinity} = confused_literals_1(int),
+    {0.0,infinity} = confused_literals_1(float),
     ok.
 
 confused_literals_1(int) -> {0,infinity};
 confused_literals_1(float) -> {0.0,infinity}.
 
-integer_encoding(Config) when is_list(Config) ->
-    case ?MODULE of
-	misc_SUITE -> integer_encoding_1(Config);
-	_ -> {skip,"Enough to run this case once."}
-    end.
+integer_encoding() ->
+    [{timetrap,{minutes,4}}].
 
-integer_encoding_1(Config) ->
-    Dog = test_server:timetrap(?t:minutes(4)),
-    ?line PrivDir = ?config(priv_dir, Config),
-    ?line SrcFile = filename:join(PrivDir, "misc_SUITE_integer_encoding.erl"),
-    ?line DataFile = filename:join(PrivDir, "integer_encoding.data"),
+integer_encoding(Config) when is_list(Config) ->
+    PrivDir = proplists:get_value(priv_dir, Config),
+    SrcFile = filename:join(PrivDir, "misc_SUITE_integer_encoding.erl"),
+    DataFile = filename:join(PrivDir, "integer_encoding.data"),
     Mod = misc_SUITE_integer_encoding,
 
     %% Create files.
-    ?line {ok,Src} = file:open(SrcFile, [write]),
-    ?line {ok,Data} = file:open(DataFile, [write]),
+    {ok,Src} = file:open(SrcFile, [write]),
+    {ok,Data} = file:open(DataFile, [write]),
     io:format(Src, "-module(~s).\n", [Mod]),
     io:put_chars(Src, "-export([t/1]).\n"),
     io:put_chars(Src, "t(Last) ->[\n"),
     io:put_chars(Data, "[\n"),
 
-    ?line do_integer_encoding(-(id(1) bsl 10000), Src, Data),
-    ?line do_integer_encoding(id(1) bsl 10000, Src, Data),
-    do_integer_encoding(1024, 0, Src, Data),
+    do_integer_encoding(137, 0, Src, Data),
     _ = [begin
 	     B = 1 bsl I,
 	     do_integer_encoding(-B-1, Src, Data),
@@ -356,34 +389,31 @@ integer_encoding_1(Config) ->
 	     do_integer_encoding(B-1, Src, Data),
 	     do_integer_encoding(B, Src, Data),
 	     do_integer_encoding(B+1, Src, Data)
-	 end || I <- lists:seq(1, 128)],
+	 end || I <- lists:seq(1, 130)],
     io:put_chars(Src, "Last].\n\n"),
-    ?line ok = file:close(Src),
+    ok = file:close(Src),
     io:put_chars(Data, "0].\n\n"),
-    ?line ok = file:close(Data),
+    ok = file:close(Data),
 
     %% Compile and load Erlang module.
-    ?line SrcRoot = filename:rootname(SrcFile),
-    ?line {ok,Mod,Binary} = compile:file(SrcRoot, [binary,report]),
-    ?line {module,Mod} = code:load_binary(Mod, SrcRoot, Binary),
+    SrcRoot = filename:rootname(SrcFile),
+    {ok,Mod,Binary} = compile:file(SrcRoot, [binary,report]),
+    {module,Mod} = code:load_binary(Mod, SrcRoot, Binary),
 
     %% Compare lists.
-    ?line List = Mod:t(0),
-    ?line {ok,[List]} = file:consult(DataFile),
-    OneBsl10000 = id(1) bsl 10000,
-    ?line [-(1 bsl 10000),OneBsl10000|_] = List,
+    List = Mod:t(0),
+    {ok,[List]} = file:consult(DataFile),
 
     %% Cleanup.
-    ?line file:delete(SrcFile),
-    ?line file:delete(DataFile),
-    ?t:timetrap_cancel(Dog),
+    file:delete(SrcFile),
+    file:delete(DataFile),
     ok.
 
 do_integer_encoding(0, _, _, _) -> ok;
 do_integer_encoding(N, I0, Src, Data) ->
-    I1 = (I0 bsl 5) bor (random:uniform(32) - 1),
+    I1 = (I0 bsl 5) bor (rand:uniform(32) - 1),
     do_integer_encoding(I1, Src, Data),
-    I2 = -(I1 bxor (random:uniform(32) - 1)),
+    I2 = -(I1 bxor (rand:uniform(32) - 1)),
     do_integer_encoding(I2, Src, Data),
     do_integer_encoding(N-1, I1, Src, Data).
 
@@ -391,7 +421,3 @@ do_integer_encoding(I, Src, Data) ->
     Str = integer_to_list(I),
     io:put_chars(Src, [Str,",\n"]),
     io:put_chars(Data, [Str,",\n"]).
-
-    
-id(I) -> I.
-    

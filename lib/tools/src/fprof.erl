@@ -1,7 +1,7 @@
 %%
 %% %CopyrightBegin%
 %% 
-%% Copyright Ericsson AB 2001-2013. All Rights Reserved.
+%% Copyright Ericsson AB 2001-2020. All Rights Reserved.
 %% 
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -87,6 +87,9 @@ dbg(_, _, _) ->
 %%%----------------------------------------------------------------------
 
 
+-spec apply(Func, Args) -> term() when
+      Func :: fun() | {Module :: module(), Function :: atom()},
+      Args :: [term()].
 
 apply({M, F}, Args) 
   when is_atom(M), is_atom(F), is_list(Args) ->
@@ -96,6 +99,34 @@ apply(Fun, Args)
     apply_1(Fun, Args, []);
 apply(A, B) ->
     erlang:error(badarg, [A, B]).
+
+-type pid_spec() :: pid() | atom().
+-type trace_option() :: 'cpu_time'
+                      | {'cpu_time', boolean()}
+                      | 'file'
+                      | {'file', Filename :: file:filename()}
+                      | {'procs', PidSpec :: pid_spec()}
+                      | {'procs', [PidSpec :: pid_spec()]}
+                      | 'start'
+                      | 'stop'
+                      | {'tracer', Tracer :: pid() | port()}
+                      | 'verbose'
+                      | {'verbose', boolean()}.
+
+-type apply_option() :: 'continue'
+                        | {'procs', PidList :: [pid()]}
+                        | 'start'
+                        | TraceStartOption :: trace_option().
+
+-spec apply(Module, Function, Args) -> term() when
+                Module :: module(),
+                Function :: atom(),
+                Args :: [term()];
+           (Func, Args, OptionList) -> term() when
+                Func :: fun() | {Module :: module(), Function :: atom()},
+                Args :: [term()],
+                OptionList :: [Option],
+                Option :: apply_option().
 
 apply(M, F, Args) when is_atom(M), is_atom(F), is_list(Args) ->
     apply_1(M, F, Args, []);
@@ -107,6 +138,13 @@ apply(Fun, Args, Options)
     apply_1(Fun, Args, Options);
 apply(A, B, C) ->
     erlang:error(badarg, [A, B, C]).
+
+-spec apply(Module, Function, Args, OptionList) -> term() when
+      Module :: module(),
+      Function :: atom(),
+      Args :: [term()],
+      OptionList :: [Option],
+      Option :: apply_option().
 
 apply(M, F, Args, Options)
   when is_atom(M), is_atom(F), is_list(Args), is_list(Options) ->
@@ -278,15 +316,62 @@ apply_continue(Function, Args, Procs, Options) ->
 %%%----------------------------------------------------------------------
 
 
+-dialyzer({no_contracts, trace/2}).
+-spec trace('start', Filename) -> 'ok' |
+                                  {'error', Reason} |
+                                  {'EXIT', ServerPid, Reason} when
+                Filename :: file:filename(),
+                ServerPid :: pid(),
+                Reason :: term();
+           ('verbose', Filename) -> 'ok' |
+                                    {'error', Reason} |
+                                    {'EXIT', ServerPid, Reason} when
+                Filename :: file:filename(),
+                ServerPid :: pid(),
+                Reason :: term();
+           (OptionName, OptionValue) -> 'ok' |
+                                     {'error', Reason} |
+                                     {'EXIT', ServerPid, Reason} when
+                OptionName :: atom(),
+                OptionValue :: term(),
+                ServerPid :: pid(),
+                Reason :: term().
 
 trace(start, Filename) ->
     trace([start, {file, Filename}]);
 trace(verbose, Filename) ->
     trace([start, verbose, {file, Filename}]);
-trace(Option, Value) when is_atom(Option) ->
-    trace([{Option, Value}]);
-trace(Option, Value) ->
-    erlang:error(badarg, [Option, Value]).
+trace(OptionName, Value) when is_atom(OptionName) ->
+    trace([{OptionName, Value}]);
+trace(OptionName, Value) ->
+    erlang:error(badarg, [OptionName, Value]).
+
+-dialyzer({no_contracts, trace/1}).
+-spec trace('verbose') -> 'ok' |
+                        {'error', Reason} |
+                        {'EXIT', ServerPid, Reason} when
+                ServerPid :: pid(),
+                Reason :: term();
+           (OptionName) -> 'ok' |
+                           {'error', Reason} |
+                           {'EXIT', ServerPid, Reason} when
+                OptionName :: atom(),
+                ServerPid :: pid(),
+                Reason :: term();
+           ({OptionName, OptionValue}) -> 'ok' |
+                                          {'error', Reason} |
+                                          {'EXIT', ServerPid, Reason} when
+                OptionName :: atom(),
+                OptionValue :: term(),
+                ServerPid :: pid(),
+                Reason :: term();
+           (OptionList) -> 'ok' |
+                           {'error', Reason} |
+                           {'EXIT', ServerPid, Reason} when
+                OptionList :: [Option],
+                Option :: trace_option(),
+                ServerPid :: pid(),
+                Reason :: term().
 
 trace(stop) ->
     %% This shortcut is present to minimize the number of undesired
@@ -357,14 +442,65 @@ trace(Options) ->
     erlang:error(badarg, [Options]).
 
 
+-spec profile() -> 'ok' |
+                   {'error', Reason} |
+                   {'EXIT', ServerPid, Reason} when
+                ServerPid :: pid(),
+                Reason :: term().
 
 profile() ->
     profile([]).
+
+-type profile_option() :: 'append'
+                        | 'dump'
+                        | {'dump',
+                           pid() | Dump :: (Dumpfile :: file:filename() | [])}
+                        | 'file'
+                        | {'file', Filename :: file:filename()}
+                        | 'start'
+                        | 'stop'.
+
+-spec profile(OptionName, OptionValue) ->'ok' |
+                                         {'ok', Tracer} |
+                                         {'error', Reason} |
+                                         {'EXIT', ServerPid, Reason} when
+      OptionName :: atom(),
+      OptionValue :: term(),
+      Tracer :: pid(),
+      ServerPid :: pid(),
+      Reason :: term().
 
 profile(Option, Value) when is_atom(Option) ->
     profile([{Option, Value}]);
 profile(Option, Value) ->
     erlang:error(badarg, [Option, Value]).
+
+-spec profile(OptionName) -> 'ok' |
+                             {'ok', Tracer} |
+                             {'error', Reason} |
+                             {'EXIT', ServerPid, Reason} when
+                  OptionName :: atom(),
+                  Tracer :: pid(),
+                  ServerPid :: pid(),
+                  Reason :: term();
+           ({OptionName, OptionValue}) -> 'ok' |
+                                          {'ok', Tracer} |
+                                          {'error', Reason} |
+                                          {'EXIT', ServerPid, Reason} when
+                  OptionName :: atom(),
+                  OptionValue :: term(),
+                  Tracer :: pid(),
+                  ServerPid :: pid(),
+                  Reason :: term();
+           (OptionList) -> 'ok' |
+                           {'ok', Tracer} |
+                           {'error', Reason} |
+                           {'EXIT', ServerPid, Reason} when
+                  OptionList :: [Option],
+                  Option :: profile_option(),
+                  Tracer :: pid(),
+                  ServerPid :: pid(),
+                  Reason :: term().
 
 profile(Option) when is_atom(Option) ->
     profile([Option]);
@@ -427,14 +563,63 @@ profile(Options) ->
     erlang:error(badarg, [Options]).
 
 
+-spec analyse() ->  'ok' |
+                    {'error', Reason} |
+                    {'EXIT', ServerPid, Reason} when
+      ServerPid :: pid(),
+      Reason :: term().
 
 analyse() ->
     analyse([]).
+
+-spec analyse(OptionName, OptionValue) ->'ok' |
+                                         {'error', Reason} |
+                                         {'EXIT', ServerPid, Reason} when
+      OptionName :: atom(),
+      OptionValue :: term(),
+      ServerPid :: pid(),
+      Reason :: term().
 
 analyse(Option, Value) when is_atom(Option) ->
     analyse([{Option, Value}]);
 analyse(Option, Value) ->
     erlang:error(badarg, [Option, Value]).
+
+-type analyse_option() :: 'append'
+                        | 'callers'
+                        | {'callers', boolean()}
+                        | {'cols', Cols :: non_neg_integer()}
+                        | 'dest'
+                        | {'dest',
+                           Dest :: (pid() | (Destfile :: file:filename()))}
+                        | 'details'
+                        | {'details', boolean()}
+                        | 'no_callers'
+                        | 'no_details'
+                        | {'sort', SortSpec :: 'acc' | 'own'}
+                        | 'totals'
+                        | {'totals', boolean()}.
+
+-spec analyse(OptionName) -> 'ok' |
+                             {'error', Reason} |
+                             {'EXIT', ServerPid, Reason} when
+                  OptionName :: atom(),
+                  ServerPid :: pid(),
+                  Reason :: term();
+           ({OptionName, OptionValue}) -> 'ok' |
+                                          {'error', Reason} |
+                                          {'EXIT', ServerPid, Reason} when
+                  OptionName :: atom(),
+                  OptionValue :: term(),
+                  ServerPid :: pid(),
+                  Reason :: term();
+           (OptionList) -> 'ok' |
+                           {'error', Reason} |
+                           {'EXIT', ServerPid, Reason} when
+                  OptionList :: [Option],
+                  Option :: analyse_option(),
+                  ServerPid :: pid(),
+                  Reason :: term().
 
 analyse(Option) when is_atom(Option) ->
     analyse([Option]);
@@ -649,6 +834,9 @@ code_change() ->
 %%% Exported functions
 %%%-------------------
 
+-spec start() -> {'ok', Pid} | {'error', {'already_started', Pid}} when
+      Pid :: pid().
+
 %% Start server process
 start() ->
     spawn_3step(
@@ -676,11 +864,14 @@ start() ->
       end).
 
 
+-spec stop() -> 'ok'.
 
 %% Stop server process
-
 stop() ->
     stop(normal).
+
+-spec stop(Reason) -> 'ok' when
+      Reason :: term().
 
 stop(kill) ->
     case whereis(?FPROF_SERVER) of
@@ -705,7 +896,7 @@ stop(Reason) ->
 call(Request) ->
     case whereis(?FPROF_SERVER) of
 	undefined ->
-	    start(),
+	    _ = start(),
 	    just_call(Request);
 	Server ->
 	    just_call(Server, Request)
@@ -1003,7 +1194,7 @@ handle_req(#analyse{dest = Dest,
 			already_open ->
 			    ok;
 			ok ->
-			    file:close(DestPid)
+			    ok = file:close(DestPid)
 		    end,
 		    State
 	    end;
@@ -1136,7 +1327,7 @@ ensure_open(Pid, _Options) when is_pid(Pid) ->
 ensure_open([], _Options) ->
     {already_open, undefined};
 ensure_open(Filename, Options) when is_atom(Filename); is_list(Filename) ->
-    file:open(Filename, Options).
+    file:open(Filename, [{encoding, utf8} | Options]).
 
 %%%---------------------------------
 %%% Fairly generic utility functions
@@ -1242,8 +1433,7 @@ spawn_3step(Spawn, FunPrelude, FunAck, FunBody)
 		    catch Child ! {Parent, Ref, Go},
 		    Result
 	    catch
-		Class:Reason ->
-		    Stacktrace = erlang:get_stacktrace(),
+		Class:Reason:Stacktrace ->
 		    catch exit(Child, kill),
 		    erlang:raise(Class, Reason, Stacktrace)
 	    end;
@@ -1364,7 +1554,7 @@ tracer_loop(Parent, Handler, State) ->
 	Trace when element(1, Trace) =:= trace_ts ->
 	    tracer_loop(Parent, Handler, Handler(Trace, State));
 	{'EXIT', Parent, Reason} ->
-	    handler(end_of_trace, State),
+	    _ = handler(end_of_trace, State),
 	    exit(Reason);
 	_ ->
 	    tracer_loop(Parent, Handler, State)
@@ -1450,12 +1640,10 @@ end_of_trace(Table, TS) ->
     Procs = get(),
     put(table, Table),
     ?dbg(2, "get() -> ~p~n", [Procs]),
-    lists:map(
-      fun ({Pid, _}) when is_pid(Pid) ->
-	      trace_exit(Table, Pid, TS)
-      end,
-      Procs),
-    erase(),
+    _ = lists:map(fun ({Pid, _}) when is_pid(Pid) ->
+                          trace_exit(Table, Pid, TS)
+                  end, Procs),
+    _ = erase(),
     ok.
 
 
@@ -1477,7 +1665,7 @@ info_suspect_call(GroupLeader, GroupLeader, _, _) ->
     ok;
 info_suspect_call(GroupLeader, _, Func, Pid) ->
     io:format(GroupLeader,
-	      "~nWarning: ~p called in ~p - trace may become corrupt!~n",
+	      "~nWarning: ~tp called in ~p - trace may become corrupt!~n",
 	      parsify([Func, Pid])).
 
 info(GroupLeader, GroupLeader, _, _) ->
@@ -1500,13 +1688,13 @@ dump_stack(Dump, Stack, Term) ->
 			{N, length(hd(Stack))}
 		end
 	end,
-     io:format(Dump, "~s~p.~n", [lists:duplicate(Depth, "  "), parsify(Term)]),
+     io:format(Dump, "~s~tp.~n", [lists:duplicate(Depth, "  "), parsify(Term)]),
     true.
 
 dump(undefined, _) ->
     false;
 dump(Dump, Term) ->
-    io:format(Dump, "~p.~n", [parsify(Term)]),
+    io:format(Dump, "~tp.~n", [parsify(Term)]),
     true.
 
 
@@ -1567,11 +1755,18 @@ trace_handler({trace_ts, Pid, return_to, {_M, _F, Args} = MFArgs, TS} = Trace,
     trace_return_to(Table, Pid, Func, TS),
     TS;
 %%
-%% spawn
+%% spawn, only needed (and reliable) prior to 19.0
 trace_handler({trace_ts, Pid, spawn, Child, MFArgs, TS} = Trace,
 	      Table, _, Dump) ->
     dump_stack(Dump, get(Pid), Trace),
     trace_spawn(Table, Child, MFArgs, TS, Pid),
+    TS;
+%%
+%% spawned, added in 19.0
+trace_handler({trace_ts, Pid, spawned, Parent, MFArgs, TS} = Trace,
+	      Table, _, Dump) ->
+    dump_stack(Dump, get(Pid), Trace),
+    trace_spawn(Table, Pid, MFArgs, TS, Parent),
     TS;
 %%
 %% exit
@@ -1622,18 +1817,38 @@ trace_handler({trace_ts, Pid, in, {_M, _F, Args} = MFArgs, TS} = Trace,
     TS;
 %%
 %% gc_start
-trace_handler({trace_ts, Pid, gc_start, _Func, TS} = Trace,
-	      Table, _, Dump) ->
+trace_handler({trace_ts, Pid, gc_minor_start, _Func, TS} = Trace, Table, _, Dump) ->
     dump_stack(Dump, get(Pid), Trace),
     trace_gc_start(Table, Pid, TS),
     TS;
+
+trace_handler({trace_ts, Pid, gc_major_start, _Func, TS} = Trace, Table, _, Dump) ->
+    dump_stack(Dump, get(Pid), Trace),
+    trace_gc_start(Table, Pid, TS),
+    TS;
+    
+trace_handler({trace_ts, Pid, gc_start, _Func, TS} = Trace, Table, _, Dump) ->
+    dump_stack(Dump, get(Pid), Trace),
+    trace_gc_start(Table, Pid, TS),
+    TS;
+
 %%
 %% gc_end
-trace_handler({trace_ts, Pid, gc_end, _Func, TS} = Trace,
-	      Table, _, Dump) ->
+trace_handler({trace_ts, Pid, gc_minor_end, _Func, TS} = Trace, Table, _, Dump) ->
     dump_stack(Dump, get(Pid), Trace),
     trace_gc_end(Table, Pid, TS),
     TS;
+
+trace_handler({trace_ts, Pid, gc_major_end, _Func, TS} = Trace, Table, _, Dump) ->
+    dump_stack(Dump, get(Pid), Trace),
+    trace_gc_end(Table, Pid, TS),
+    TS;
+    
+trace_handler({trace_ts, Pid, gc_end, _Func, TS} = Trace, Table, _, Dump) ->
+    dump_stack(Dump, get(Pid), Trace),
+    trace_gc_end(Table, Pid, TS),
+    TS;
+    
 %%
 %% link
 trace_handler({trace_ts, Pid, link, _OtherPid, TS} = Trace,
@@ -1673,6 +1888,12 @@ trace_handler({trace_ts, Pid, unregister, _Name, TS} = Trace,
 %%
 %% send
 trace_handler({trace_ts, Pid, send, _OtherPid, _Msg, TS} = Trace,
+	      _Table, _, Dump) ->
+    dump_stack(Dump, get(Pid), Trace),
+    TS;
+%%
+%% send_to_non_existing_process
+trace_handler({trace_ts, Pid, send_to_non_existing_process, _OtherPid, _Msg, TS} = Trace,
 	      _Table, _, Dump) ->
     dump_stack(Dump, get(Pid), Trace),
     TS;
@@ -2014,8 +2235,10 @@ trace_spawn(Table, Pid, MFArgs, TS, Parent) ->
 	    ets:insert(Table, #proc{id = Pid, parent = Parent,
 				    spawned_as = MFArgs});
 	_ ->
-	    throw({inconsistent_trace_data, ?MODULE, ?LINE,
-		  [Pid, MFArgs, TS, Parent, Stack]})
+            %% In 19.0 we get both a spawn and spawned event,
+            %% however we do not know the order so we just ignore
+            %% the second event that comes
+	    ok
     end.
 
 
@@ -2029,7 +2252,7 @@ trace_exit(Table, Pid, TS) ->
 	[] ->
 	    ok;
 	[_ | _] = Stack ->
-	    trace_return_to_int(Table, Pid, undefined, TS, Stack),
+	    _ = trace_return_to_int(Table, Pid, undefined, TS, Stack),
 	    ok
     end,
     ok.
@@ -2155,7 +2378,7 @@ trace_clock(_Table, _Pid, _T,
 	    [[{suspend, _}], [{suspend, _}] | _]=_Stack, _Clock) ->
     ?dbg(9, "trace_clock(Table, ~w, ~w, ~w, ~w)~n",
 	 [_Pid, _T, _Stack, _Clock]),
-    void;
+    ok;
 trace_clock(Table, Pid, T, 
 	    [[{garbage_collect, TS0}], [{suspend, _}]], Clock) ->
     trace_clock_1(Table, Pid, T, TS0, undefined, garbage_collect, Clock);
@@ -2170,7 +2393,7 @@ trace_clock(Table, Pid, T, [[{Func0, TS0}], [{Func1, _} | _] | _], Clock) ->
 trace_clock(Table, Pid, T, [[{Func0, TS0}]], Clock) ->
     trace_clock_1(Table, Pid, T, TS0, undefined, Func0, Clock);
 trace_clock(_, _, _, [], _) ->
-    void.
+    ok.
 
 trace_clock_1(Table, Pid, _, _, Caller, suspend, #clocks.own) ->
     clock_add(Table, {Pid, Caller, suspend}, #clocks.own, 0);
@@ -2184,7 +2407,7 @@ trace_clock_1(Table, Pid, T, TS, Caller, Func, Clock) ->
 
 clock_add(Table, Id, Clock, T) ->
     ?dbg(1, "clock_add(Table, ~w, ~w, ~w)~n", [Id, Clock, T]),
-    try ets:update_counter(Table, Id, {Clock, T})
+    try ets:update_counter(Table, Id, {Clock, T}), ok
     catch
 	error:badarg ->
 	    ets:insert(Table, #clocks{id = Id}),
@@ -2193,7 +2416,7 @@ clock_add(Table, Id, Clock, T) ->
 	       true -> ?dbg(0, "Negative counter value ~p ~p ~p ~p~n",
 			  [X, Id, Clock, T])
 	    end,
-	    X
+	    ok
     end.
 
 clocks_add(Table, #clocks{id = Id} = Clocks) ->
@@ -2250,6 +2473,8 @@ do_analyse(Table, Analyse) ->
 	end,
     ?dbg(5, "do_analyse_1(_, _) ->~p~n", [Result]),
     Result.
+
+-dialyzer({no_improper_lists, do_analyse_1/2}).
 
 do_analyse_1(Table, 
 	   #analyse{group_leader = GroupLeader,
@@ -2568,17 +2793,17 @@ println({Io, [W1, W2, W3, W4]}, Head,
 println({Io, _}, Head,
 	[],
 	Tail, Comment) ->
-    io:format(Io, "~s~s~s~n",
+    io:format(Io, "~s~ts~ts~n",
 	      [pad(Head, $ , 3), Tail, Comment]);
 println({Io, _}, Head,
 	{Tag, Term},
 	Tail, Comment) ->
-    io:format(Io, "~s~p, ~p~s~s~n",
+    io:format(Io, "~s~tp, ~tp~ts~ts~n",
 	      [pad(Head, $ , 3), parsify(Tag), parsify(Term), Tail, Comment]);
 println({Io, _}, Head,
 	Term,
 	Tail, Comment) ->
-    io:format(Io, "~s~p~s~s~n",
+    io:format(Io, "~s~tp~ts~ts~n",
 	      [pad(Head, $ , 3), parsify(Term), Tail, Comment]).
 
 
@@ -2601,21 +2826,31 @@ funcstat_pd(Pid, Func1, Func0, Clocks) ->
 	    #funcstat{callers_sum = CallersSum,
 		      callers = Callers} = FuncstatCallers ->
 		FuncstatCallers#funcstat{
-		  callers_sum = clocks_sum(CallersSum, Clocks, Func0),
-		  callers = [Clocks#clocks{id = Func1} | Callers]}
-	end),
+                  callers_sum = clocks_sum(CallersSum, Clocks, Func0),
+                  callers = insert_call(Clocks, Func1, Callers)}
+        end),
     put({Pid, Func1},
         case get({Pid, Func1}) of
             undefined ->
-                #funcstat{callers_sum = #clocks{id = Func1}, 
+                #funcstat{callers_sum = #clocks{id = Func1},
                           called_sum = Clocks#clocks{id = Func1},
                           called = [Clocks#clocks{id = Func0}]};
             #funcstat{called_sum = CalledSum,
                       called = Called} = FuncstatCalled ->
                 FuncstatCalled#funcstat{
                   called_sum = clocks_sum(CalledSum, Clocks, Func1),
-                  called = [Clocks#clocks{id = Func0} | Called]}
+                  called = insert_call(Clocks, Func0, Called)}
         end).
+
+insert_call(Clocks, Func, ClocksList) ->
+    insert_call(Clocks, Func, ClocksList, []).
+
+insert_call(Clocks, Func, [#clocks{id = Func} = C | T], Acc) ->
+    [clocks_sum(C, Clocks, Func) | T ++ Acc];
+insert_call(Clocks, Func, [H | T], Acc) ->
+    insert_call(Clocks, Func, T, [H | Acc]);
+insert_call(Clocks, Func, [], Acc) ->
+    [Clocks#clocks{id = Func} | Acc].
 
 
 
@@ -2623,6 +2858,8 @@ funcstat_pd(Pid, Func1, Func0, Clocks) ->
 %% and sort the callers and called lists within the funcstat record.
 funcstat_sort_r(FuncstatList, Element) ->
     funcstat_sort_r_1(FuncstatList, Element, []).
+
+-dialyzer({no_improper_lists, funcstat_sort_r_1/3}).
 
 funcstat_sort_r_1([], _, R) ->
     postsort_r(lists:sort(R));
@@ -2645,6 +2882,8 @@ funcstat_sort_r_1([#funcstat{callers_sum = #clocks{} = Clocks,
 %% Sort a list of clocks records.
 clocks_sort_r(L, E) ->
     clocks_sort_r_1(L, E, []).
+
+-dialyzer({no_improper_lists, clocks_sort_r_1/3}).
 
 clocks_sort_r_1([], _, R) ->
     postsort_r(lists:sort(R));
@@ -2671,7 +2910,7 @@ postsort_r([[_|C] | L], R) ->
 flat_format(F, Trailer) when is_float(F) ->
     lists:flatten([io_lib:format("~.3f", [F]), Trailer]);
 flat_format(W, Trailer) ->
-    lists:flatten([io_lib:format("~p", [W]), Trailer]).
+    lists:flatten([io_lib:format("~tp", [W]), Trailer]).
 
 %% Format, flatten, and pad.
 flat_format(Term, Trailer, Width) ->
@@ -2734,6 +2973,8 @@ parsify({A, B, C}) ->
     {parsify(A), parsify(B), parsify(C)};
 parsify(Tuple) when is_tuple(Tuple) ->
     list_to_tuple(parsify(tuple_to_list(Tuple)));
+parsify(Map) when is_map(Map) ->
+    maps:from_list(parsify(maps:to_list(Map)));
 parsify(Pid) when is_pid(Pid) ->
     erlang:pid_to_list(Pid);
 parsify(Port) when is_port(Port) ->

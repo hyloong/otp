@@ -1,15 +1,17 @@
 <?xml version="1.0" encoding="utf-8" ?>
 <!DOCTYPE erlref SYSTEM "erlref.dtd" [
-  <!ENTITY spawn_opt
-  '<seealso marker="erts:erlang#spawn_opt-2">erlang:spawn_opt/2</seealso>'>
+  <!ENTITY spawn_opt2
+  '<seemfa marker="erts:erlang#spawn_opt/2">erlang:spawn_opt/2</seemfa>'>
+  <!ENTITY spawn_opt5
+  '<seemfa marker="erts:erlang#spawn_opt/5">erlang:spawn_opt/5</seemfa>'>
   <!ENTITY nodes
-  '<seealso marker="erts:erlang#nodes-0">erlang:nodes/0</seealso>'>
+  '<seemfa marker="erts:erlang#nodes/0">erlang:nodes/0</seemfa>'>
   <!ENTITY make_ref
-  '<seealso marker="erts:erlang#make_ref-0">erlang:make_ref/0</seealso>'>
+  '<seemfa marker="erts:erlang#make_ref/0">erlang:make_ref/0</seemfa>'>
   <!ENTITY transport_module
-  '<seealso marker="diameter_transport">transport module</seealso>'>
+  '<seeerl marker="diameter_transport">transport module</seeerl>'>
   <!ENTITY dictionary
-  '<seealso marker="diameter_dict">dictionary</seealso>'>
+  '<seefile marker="diameter_dict">dictionary</seefile>'>
   <!ENTITY % also SYSTEM "seealso.ent" >
   <!ENTITY % here SYSTEM "seehere.ent" >
   %also;
@@ -21,7 +23,7 @@
 
 <copyright>
 <year>2011</year>
-<year>2015</year>
+<year>2020</year>
 <holder>Ericsson AB. All Rights Reserved.</holder>
 </copyright>
 <legalnotice>
@@ -55,7 +57,7 @@ limitations under the License.
 <!-- ===================================================================== -->
 <!-- ===================================================================== -->
 
-<module>diameter</module>
+<module since="OTP R14B03">diameter</module>
 <modulesummary>Main API of the diameter application.</modulesummary>
 
 <description>
@@ -94,12 +96,12 @@ in this module.</p>
 
 <taglist>
 
-<tag><c>Address()</c></tag>
-<tag><c>DiameterIdentity()</c></tag>
-<tag><c>Grouped()</c></tag>
-<tag><c>OctetString()</c></tag>
-<tag><c>Time()</c></tag>
-<tag><c>Unsigned32()</c></tag>
+<tag><c>Address()</c></tag><item/>
+<tag><c>DiameterIdentity()</c></tag><item/>
+<tag><c>Grouped()</c></tag><item/>
+<tag><c>OctetString()</c></tag><item/>
+<tag><c>Time()</c></tag><item/>
+<tag><c>Unsigned32()</c></tag><item/>
 <tag><c>UTF8String()</c></tag>
 <item>
 <p>
@@ -135,7 +137,7 @@ along with any
 extra arguments to be appended to those documented.
 Note that extra arguments specific to an outgoing request can be
 specified to &call;, in which case
-those are are appended to any module-specific extra arguments.</p>
+those are appended to any module-specific extra arguments.</p>
 
 <p>
 Specifying a <c>#diameter_callback{}</c> record allows individual
@@ -150,7 +152,7 @@ See <c>diameter_callback.erl</c> for details.</p>
 
 <p>
 Options defining a Diameter application.
-Has one the following types.</p>
+Has one of the following types.</p>
 
 <taglist>
 
@@ -159,8 +161,7 @@ Has one the following types.</p>
 <p>
 Unique identifier for the application in the scope of the
 service.
-Defaults to the value of the <c>dictionary</c> option if
-unspecified.</p>
+Defaults to the value of the <c>dictionary</c> option.</p>
 </item>
 
 <tag><c>{dictionary, atom()}</c></tag>
@@ -187,7 +188,7 @@ Initial callback state.
 The prevailing state is passed to some
 &man_app;
 callbacks, which can then return a new state.
-Defaults to the value of the <c>alias</c> option if unspecified.</p>
+Defaults to the value of the <c>alias</c> option.</p>
 </item>
 
 <tag><c>{call_mutates_state, true|false}</c></tag>
@@ -195,7 +196,7 @@ Defaults to the value of the <c>alias</c> option if unspecified.</p>
 <p>
 Whether or not the &app_pick_peer;
 application callback can modify the application state.
-Defaults to <c>false</c> if unspecified.</p>
+Defaults to <c>false</c>.</p>
 
 <warning>
 <p>
@@ -228,7 +229,7 @@ question is as if a callback had taken place and returned
 <c>{error, failure}</c>.</p>
 
 <p>
-Defaults to <c>discard</c> if unspecified.</p>
+Defaults to <c>discard</c>.</p>
 </item>
 
 <tag><c>{request_errors, answer_3xxx|answer|callback}</c></tag>
@@ -249,7 +250,7 @@ place and its return value determines the answer sent to the peer, if
 any.</p>
 
 <p>
-Defaults to <c>answer_3xxx</c> if unspecified.</p>
+Defaults to <c>answer_3xxx</c>.</p>
 
 <note>
 <p>
@@ -301,6 +302,17 @@ corresponding list of filters.
 Defaults to <c>none</c>.</p>
 </item>
 
+<tag><c>{peer, &app_peer_ref;}</c></tag>
+<item>
+<p>
+Peer to which the request in question can be sent, preempting the
+selection of peers having advertised support for the Diameter
+application in question.
+Multiple options can be specified, and their order is
+respected in the candidate lists passed to a subsequent
+&app_pick_peer; callback.</p>
+</item>
+
 <tag><c>{timeout, &dict_Unsigned32;}</c></tag>
 <item>
 <p>
@@ -339,8 +351,8 @@ Has one of the following types.</p>
 
 <taglist>
 
-<tag><c>{'Origin-Host', &dict_DiameterIdentity;}</c></tag>
-<tag><c>{'Origin-Realm', &dict_DiameterIdentity;}</c></tag>
+<tag><c>{'Origin-Host', &dict_DiameterIdentity;}</c></tag><item/>
+<tag><c>{'Origin-Realm', &dict_DiameterIdentity;}</c></tag><item/>
 <tag><c>{'Host-IP-Address', [&dict_Address;]}</c></tag>
 <item>
 <p>
@@ -352,8 +364,8 @@ question communicates an address list as described in
 &man_transport;</p>
 </item>
 
-<tag><c>{'Vendor-Id', &dict_Unsigned32;}</c></tag>
-<tag><c>{'Product-Name', &dict_UTF8String;}</c></tag>
+<tag><c>{'Vendor-Id', &dict_Unsigned32;}</c></tag><item/>
+<tag><c>{'Product-Name', &dict_UTF8String;}</c></tag><item/>
 <tag><c>{'Origin-State-Id', &dict_Unsigned32;}</c></tag>
 <item>
 <p>
@@ -366,8 +378,8 @@ can be used as to retrieve a value that is computed when the diameter
 application is started.</p>
 </item>
 
-<tag><c>{'Supported-Vendor-Id', [&dict_Unsigned32;]}</c></tag>
-<tag><c>{'Auth-Application-Id', [&dict_Unsigned32;]}</c></tag>
+<tag><c>{'Supported-Vendor-Id', [&dict_Unsigned32;]}</c></tag><item/>
+<tag><c>{'Auth-Application-Id', [&dict_Unsigned32;]}</c></tag><item/>
 <tag><c>{'Inband-Security-Id', [&dict_Unsigned32;]}</c></tag>
 <item>
 <p>
@@ -377,9 +389,9 @@ If 1 (TLS) is specified then TLS is selected if the CER/CEA received
 from the peer offers it.</p>
 </item>
 
-<tag><c>{'Acct-Application-Id', [&dict_Unsigned32;]}</c></tag>
-<tag><c>{'Vendor-Specific-Application-Id', [&dict_Grouped;]}</c></tag>
-<tag><c>{'Firmware-Revision', &dict_Unsigned32;}</c></tag>
+<tag><c>{'Acct-Application-Id', [&dict_Unsigned32;]}</c></tag><item/>
+<tag><c>{'Vendor-Specific-Application-Id', [&dict_Grouped;]}</c></tag><item/>
+<tag><c>{'Firmware-Revision', &dict_Unsigned32;}</c></tag><item/>
 
 </taglist>
 
@@ -387,10 +399,10 @@ from the peer offers it.</p>
 Note that each tuple communicates one or more AVP values.
 It is an error to specify duplicate tuples.</p>
 
-<marker id="evaluable"/>
+<marker id="eval"/>
 </item>
 
-<tag><c>evaluable() = {M,F,A} | fun() | [evaluable() | A]</c></tag>
+<tag><c>eval() = {M,F,A} | fun() | [eval() | A]</c></tag>
 <item>
 <p>
 An expression that can be evaluated as a function in the following
@@ -408,7 +420,7 @@ eval(F) ->
 </pre>
 
 <p>
-Applying an <c>&evaluable;</c>
+Applying an <c>&eval;</c>
 <c>E</c> to an argument list <c>A</c>
 is meant in the sense of <c>eval([E|A])</c>.</p>
 
@@ -467,18 +479,18 @@ Matches only those peers whose Origin-Host has the
 specified value, or all peers if the atom <c>any</c>.</p>
 </item>
 
-<tag><c>{realm, any|&dict_DiameterIdentity;</c></tag>
+<tag><c>{realm, any|&dict_DiameterIdentity;}</c></tag>
 <item>
 <p>
 Matches only those peers whose Origin-Realm has the
 specified value, or all peers if the atom <c>any</c>.</p>
 </item>
 
-<tag><c>{eval, &evaluable;}</c></tag>
+<tag><c>{eval, &eval;}</c></tag>
 <item>
 <p>
 Matches only those peers for which the specified
-<c>&evaluable;</c> returns
+<c>&eval;</c> returns
 <c>true</c> when applied to the connection's <c>diameter_caps</c>
 record.
 Any other return value or exception is equivalent to <c>false</c>.</p>
@@ -500,18 +512,22 @@ Matches only those peers matched by each filter in the specified list.</p>
 <item>
 <p>
 Matches only those peers matched by at least one filter in the
-specified list.</p>
-
-<p>
-The resulting peer list will be in match order, peers matching the
+specified list.
+The resulting list will be in match order, peers matching the
 first filter of the list sorting before those matched by the second,
-and so on.
-For example, the following filter causes peers matching both the host
-and realm filters to be presented before those matching only the realm
-filter.</p>
+and so on.</p>
+</item>
+
+<tag><c>{first, [&peer_filter;]}</c></tag>
+<item>
+<p>
+Like <c>any</c>, but stops at the first filter for which there are
+matches, which can be much more efficient when there are many peers.
+For example, the following filter causes only peers best matching
+both the host and realm filters to be presented.</p>
 
 <pre>
-{any, [{all, [host, realm]}, realm]}
+{first, [{all, [host, realm]}, realm]}
 </pre>
 </item>
 
@@ -563,9 +579,8 @@ Can have one of the following types.</p>
 
 <taglist>
 
-<tag><c>start</c></tag>
+<tag><c>start</c></tag><item/>
 <tag><c>stop</c></tag>
-
 <item>
 <p>
 The service is being started or stopped.
@@ -574,8 +589,8 @@ No event follows a <c>stop</c> event, and this event
 implies the termination of all transport processes.</p>
 </item>
 
-<tag><c>{up, Ref, Peer, Config, Pkt}</c></tag>
-<tag><c>{up, Ref, Peer, Config}</c></tag>
+<tag><c>{up, Ref, Peer, Config, Pkt}</c></tag><item/>
+<tag><c>{up, Ref, Peer, Config}</c></tag><item/>
 <tag><c>{down, Ref, Peer, Config}</c></tag>
 <item>
 <pre>
@@ -637,7 +652,7 @@ Result = ResultCode | {capabilities_cb, CB, ResultCode|discard}
 Caps = #diameter_caps{}
 Pkt  = #diameter_packet{}
 ResultCode = integer()
-CB = &evaluable;
+CB = &eval;
 </pre>
 
 <p>
@@ -784,16 +799,32 @@ be matched by corresponding &capability; configuration, of
 
 </item>
 
-<marker id="incoming_maxlen"/>
-<tag><c>{incoming_maxlen, 0..16777215}</c></tag>
+<tag>
+<marker id="decode_format"/>
+<c>{decode_format, record | list | map | none}</c></tag>
 <item>
 <p>
-Bound on the expected size of incoming Diameter messages.
-Messages larger than the specified number of bytes are discarded.</p>
+The format of decoded messages and grouped AVPs in the <c>msg</c> field
+of diameter_packet records and <c>value</c> field of diameter_avp
+records respectively.
+If <c>record</c> then a record whose definition is generated from the
+dictionary file in question.
+If <c>list</c> or <c>map</c> then a <c>[Name | Avps]</c> pair where
+<c>Avps</c> is a list of AVP name/values pairs or a map keyed on
+AVP names respectively.
+If <c>none</c> then the atom-value message name, or <c>undefined</c>
+for a Grouped AVP.
+See also &codec_message;.</p>
 
 <p>
-Defaults to <c>16777215</c>, the maximum value of the 24-bit Message
-Length field in a Diameter Header.</p>
+Defaults to <c>record</c>.</p>
+
+<note>
+<p>
+AVPs are decoded into a list of diameter_avp records in <c>avps</c>
+field of diameter_packet records independently of
+<c>decode_format</c>.</p>
+</note>
 
 </item>
 
@@ -801,7 +832,7 @@ Length field in a Diameter Header.</p>
                              | node
                              | nodes
                              | [node()]
-                             | evaluable()}</c></tag>
+                             | eval()}</c></tag>
 <item>
 <p>
 The degree to which the service allows multiple transport
@@ -812,7 +843,7 @@ at capabilities exchange.</p>
 If <c>[node()]</c> then a connection is rejected if another already
 exists on any of the specified nodes.
 Types <c>false</c>, <c>node</c>, <c>nodes</c> and
-&evaluable; are equivalent to
+&eval; are equivalent to
 <c>[]</c>, <c>[node()]</c>, <c>[node()|nodes()]</c> and the
 evaluated value respectively, evaluation of each expression taking
 place whenever a new connection is to be established.
@@ -827,7 +858,7 @@ by their own peer and watchdog state machines.</p>
 Defaults to <c>nodes</c>.</p>
 </item>
 
-<tag><c>{sequence, {H,N} | &evaluable;}</c></tag>
+<tag><c>{sequence, {H,N} | &eval;}</c></tag>
 <item>
 <p>
 A constant value <c>H</c> for the topmost <c>32-N</c> bits of
@@ -862,7 +893,7 @@ outgoing requests.</p>
 </warning>
 </item>
 
-<tag><c>{share_peers, boolean() | [node()] | evaluable()}</c></tag>
+<tag><c>{share_peers, boolean() | [node()] | eval()}</c></tag>
 <item>
 <p>
 Nodes to which peer connections established on the local
@@ -875,7 +906,7 @@ configured to use them: see <c>use_shared_peers</c> below.</p>
 If <c>false</c> then peers are not shared.
 If <c>[node()]</c> then peers are shared with the specified list of
 nodes.
-If <c>evaluable()</c> then peers are shared with the nodes returned
+If <c>eval()</c> then peers are shared with the nodes returned
 by the specified function, evaluated whenever a peer connection
 becomes available or a remote service requests information about local
 connections.
@@ -901,20 +932,40 @@ of a single Diameter node across multiple Erlang nodes.</p>
 </note>
 </item>
 
-<tag><c>{spawn_opt, [term()]}</c></tag>
+<tag>
+<marker id="strict_arities"/><c>{strict_arities, boolean()
+                                               | encode
+                                               | decode}</c></tag>
 <item>
 <p>
-Options list passed to &spawn_opt; when spawning a process for an
-incoming Diameter request, unless the transport in question
-specifies another value.
-Options <c>monitor</c> and <c>link</c> are ignored.</p>
+Whether or not to require that the number of AVPs in a message or
+grouped AVP agree with those specified in the dictionary in question
+when passing messages to &man_app; callbacks.
+If <c>true</c> then mismatches in an outgoing messages cause message
+encoding to fail, while mismatches in an incoming message are reported
+as 5005/5009 errors in the errors field of the diameter_packet record
+passed to &app_handle_request; or &app_handle_answer; callbacks.
+If <c>false</c> then neither error is enforced/detected.
+If <c>encode</c> or <c>decode</c> then errors are only
+enforced/detected on outgoing or incoming messages respectively.</p>
 
 <p>
-Defaults to the empty list.</p>
+Defaults to <c>true</c>.</p>
+
+<note>
+<p>
+Disabling arity checks affects the form of messages at encode/decode.
+In particular, decoded AVPs are represented as lists of values,
+regardless of the AVP's arity (ie. expected number in the message/AVP
+grammar in question), and values are expected to be supplied as lists
+at encode.
+This differs from the historic decode behaviour of representing AVPs
+of arity 1 as bare values, not wrapped in a list.</p>
+</note>
 </item>
 
-<marker id="string_decode"/>
-<tag><c>{string_decode, boolean()}</c></tag>
+<tag>
+<marker id="string_decode"/><c>{string_decode, boolean()}</c></tag>
 <item>
 <p>
 Whether or not to decode AVPs of type &dict_OctetString; and its
@@ -937,7 +988,27 @@ The default value is for backwards compatibility.</p>
 
 </item>
 
-<tag><c>{use_shared_peers, boolean() | [node()] | evaluable()}</c></tag>
+<tag>
+<marker id="traffic_counters"/><c>{traffic_counters, boolean()}</c></tag>
+<item>
+<p>
+Whether or not to count application-specific messages; those for which
+&man_app; callbacks take place.
+If false then only messages handled by diameter itself are counted:
+CER/CEA, DWR/DWA, DPR/DPA.</p>
+
+<p>
+Defaults to <c>true</c>.</p>
+
+<note>
+<p>
+Disabling counters is a performance improvement, but means that the
+omitted counters are not returned by &service_info;.</p>
+</note>
+
+</item>
+
+<tag><c>{use_shared_peers, boolean() | [node()] | eval()}</c></tag>
 <item>
 <p>
 Nodes from which communicated peers are made available in
@@ -947,7 +1018,7 @@ the remote candidates list of &app_pick_peer; callbacks.</p>
 If <c>false</c> then remote peers are not used.
 If <c>[node()]</c> then only peers from the specified list of nodes
 are used.
-If <c>evaluable()</c> then only peers returned by the specified
+If <c>eval()</c> then only peers returned by the specified
 function are used, evaluated whenever a remote service communicates
 information about an available peer connection.
 The value <c>true</c> is equivalent to <c>fun &nodes;</c>.
@@ -972,6 +1043,16 @@ each node from which requests are sent.</p>
 </warning>
 </item>
 
+<tag><c>&transport_opt;</c></tag>
+<item>
+<p>
+Any transport option except <c>applications</c>,
+<c>capabilities</c>, <c>transport_config</c>, and
+<c>transport_module</c>.
+Used as defaults for transport configuration, values passed to
+&add_transport; overriding values configured on the service.</p>
+</item>
+
 </taglist>
 
 <marker id="transport_opt"/>
@@ -984,8 +1065,9 @@ Option passed to &add_transport;.
 Has one of the following types.</p>
 
 <taglist>
-<marker id="applications"/>
-<tag><c>{applications, [&application_alias;]}</c></tag>
+
+<tag>
+<marker id="applications"/><c>{applications, [&application_alias;]}</c></tag>
 <item>
 <p>
 Diameter applications to which the transport should be restricted.
@@ -1003,8 +1085,39 @@ implies having to set matching *-Application-Id AVPs in a
 
 </item>
 
-<marker id="capabilities"/>
-<tag><c>{capabilities, [&capability;]}</c></tag>
+<tag>
+<marker id="avp_dictionaries"/><c>{avp_dictionaries, [module()]}</c></tag>
+<item>
+<p>
+A list of alternate dictionary modules with which to encode/decode
+AVPs that are not defined by the dictionary of the application in
+question.
+At decode, such AVPs are represented as diameter_avp records in the
+<c>'AVP'</c> field of a decoded message or Grouped AVP, the first
+alternate that succeeds in decoding the AVP setting the record's value
+field.
+At encode, values in an <c>'AVP'</c> list can be passed as AVP
+name/value 2-tuples, and it is an encode error for no alternate to
+define the AVP of such a tuple.</p>
+
+<p>
+Defaults to the empty list.</p>
+
+<note>
+<p>
+The motivation for alternate dictionaries is RFC 7683, Diameter
+Overload Indication Conveyance (DOIC), which defines AVPs to
+be piggybacked onto existing application messages rather than defining
+an application of its own.
+The DOIC dictionary is provided by the diameter application, as module
+<c>diameter_gen_doic_rfc7683</c>, but alternate dictionaries can be
+used to encode/decode any set of AVPs not known to an application
+dictionary.</p>
+</note>
+</item>
+
+<tag>
+<marker id="capabilities"/><c>{capabilities, [&capability;]}</c></tag>
 <item>
 <p>
 AVPs used to construct outgoing CER/CEA messages.
@@ -1017,8 +1130,8 @@ may be particularly appropriate for Inband-Security-Id, in case
 TLS is desired over TCP as implemented by &man_tcp;.</p>
 </item>
 
-<marker id="capabilities_cb"/>
-<tag><c>{capabilities_cb, &evaluable;}</c></tag>
+<tag>
+<marker id="capabilities_cb"/><c>{capabilities_cb, &eval;}</c></tag>
 <item>
 <p>
 Callback invoked upon reception of CER/CEA during capabilities
@@ -1065,8 +1178,8 @@ case the corresponding callbacks are applied until either all return
 <c>ok</c> or one does not.</p>
 </item>
 
-<marker id="capx_timeout"/>
-<tag><c>{capx_timeout, &dict_Unsigned32;}</c></tag>
+<tag>
+<marker id="capx_timeout"/><c>{capx_timeout, &dict_Unsigned32;}</c></tag>
 <item>
 <p>
 Number of milliseconds after which a transport process having an
@@ -1080,8 +1193,8 @@ For a listening transport, the peer determines the timing.</p>
 Defaults to 10000.</p>
 </item>
 
-<marker id="connect_timer"/>
-<tag><c>{connect_timer, Tc}</c></tag>
+<tag>
+<marker id="connect_timer"/><c>{connect_timer, Tc}</c></tag>
 <item>
 <pre>
 Tc = &dict_Unsigned32;
@@ -1111,9 +1224,8 @@ Defaults to 30000 for a connecting transport and 60000 for a listening
 transport.</p>
 </item>
 
-<marker id="disconnect_cb"/>
-<tag><c>{disconnect_cb, &evaluable;}</c></tag>
-
+<tag>
+<marker id="disconnect_cb"/><c>{disconnect_cb, &eval;}</c></tag>
 <item>
 <p>
 Callback invoked prior to terminating the transport process of a
@@ -1189,8 +1301,8 @@ configured them.</p>
 Defaults to a single callback returning <c>dpr</c>.</p>
 </item>
 
-<marker id="dpa_timeout"/>
-<tag><c>{dpa_timeout, &dict_Unsigned32;}</c></tag>
+<tag>
+<marker id="dpa_timeout"/><c>{dpa_timeout, &dict_Unsigned32;}</c></tag>
 <item>
 <p>
 Number of milliseconds after which a transport connection is
@@ -1200,8 +1312,8 @@ terminated following an outgoing DPR if DPA is not received.</p>
 Defaults to 1000.</p>
 </item>
 
-<marker id="dpr_timeout"/>
-<tag><c>{dpr_timeout, &dict_Unsigned32;}</c></tag>
+<tag>
+<marker id="dpr_timeout"/><c>{dpr_timeout, &dict_Unsigned32;}</c></tag>
 <item>
 <p>
 Number of milliseconds after which a transport connection is
@@ -1212,8 +1324,21 @@ connection.</p>
 Defaults to 5000.</p>
 </item>
 
-<marker id="length_errors"/>
-<tag><c>{length_errors, exit|handle|discard}</c></tag>
+<tag>
+<marker id="incoming_maxlen"/><c>{incoming_maxlen, 0..16777215}</c></tag>
+<item>
+<p>
+Bound on the expected size of incoming Diameter messages.
+Messages larger than the specified number of bytes are discarded.</p>
+
+<p>
+Defaults to <c>16777215</c>, the maximum value of the 24-bit Message
+Length field in a Diameter Header.</p>
+
+</item>
+
+<tag>
+<marker id="length_errors"/><c>{length_errors, exit|handle|discard}</c></tag>
 <item>
 <p>
 How to deal with errors in the Message Length field of the
@@ -1261,27 +1386,95 @@ the same peer.</p>
 
 </item>
 
-<marker id="spawn_opt"/>
-<tag><c>{spawn_opt, [term()]}</c></tag>
+<tag>
+<marker id="spawn_opt"/><c>{spawn_opt, [term()] | {M,F,A}}</c></tag>
 <item>
 <p>
-Options passed to &spawn_opt; when spawning a process for an
-incoming Diameter request.
-Options <c>monitor</c> and <c>link</c> are ignored.</p>
+An options list passed to &spawn_opt2; to spawn a handler process for an
+incoming Diameter request on the local node, or an MFA that returns
+the pid of a handler process.</p>
 
 <p>
-Defaults to the list configured on the service if not specified.</p>
+Options <c>monitor</c> and <c>link</c> are ignored in the list-valued
+case.
+An MFA is applied with an additional term prepended to its argument
+list, and should return either the pid of the handler process that
+invokes <c>diameter_traffic:request/1</c> on the argument in order to
+process the request, or the atom <c>discard</c>.
+The handler process need not be local, and diameter need not be
+started on the remote node, but diameter and relevant application
+callbacks must be on the code path.</p>
+
+<p>
+Defaults to the empty list.</p>
 </item>
 
-<marker id="transport_config"/>
-<tag><c>{transport_config, term()}</c></tag>
+<tag>
+<marker id="strict_capx"/><c>{strict_capx, boolean()]}</c></tag>
+<item>
+<p>
+Whether or not to enforce the RFC 6733 requirement that any message
+before capabilities exchange should close the peer connection.
+If false then unexpected messages are discarded.</p>
+
+<p>
+Defaults to true.
+Changing this results in non-standard behaviour, but can be useful in
+case peers are known to be behave badly.</p>
+</item>
+
+<tag>
+<marker id="strict_mbit"/><c>{strict_mbit, boolean()}</c></tag>
+<item>
+<p>
+Whether or not to regard an AVP setting the M-bit as erroneous when
+the command grammar in question does not explicitly allow the AVP.
+If <c>true</c> then such AVPs are regarded as 5001 errors,
+DIAMETER_AVP_UNSUPPORTED.
+If <c>false</c> then the M-bit is ignored and policing
+it becomes the receiver's responsibility.</p>
+
+<p>
+Defaults to <c>true</c>.</p>
+
+<warning>
+<p>
+RFC 6733 is unclear about the semantics of the M-bit.
+One the one hand, the CCF specification in section 3.2 documents AVP
+in a command grammar as meaning <em>any</em> arbitrary AVP; on the
+other hand, 1.3.4 states that AVPs setting the M-bit cannot be added
+to an existing command: the modified command must instead be
+placed in a new Diameter application.</p>
+<p>
+The reason for the latter is presumably interoperability:
+allowing arbitrary AVPs setting the M-bit in a command makes its
+interpretation implementation-dependent, since there's no
+guarantee that all implementations will understand the same set of
+arbitrary AVPs in the context of a given command.
+However, interpreting <c>AVP</c> in a command grammar as any
+AVP, regardless of M-bit, renders 1.3.4 meaningless, since the receiver
+can simply ignore any AVP it thinks isn't relevant, regardless of the
+sender's intent.</p>
+<p>
+Beware of confusing mandatory in the sense of the M-bit with mandatory
+in the sense of the command grammar.
+The former is a semantic requirement: that the receiver understand the
+semantics of the AVP in the context in question.
+The latter is a syntactic requirement: whether or not the AVP must
+occur in the message in question.</p>
+</warning>
+
+</item>
+
+<tag>
+<marker id="transport_config"/><c>{transport_config, term()}</c></tag><item/>
 <tag><c>{transport_config, term(), &dict_Unsigned32; | infinity}</c></tag>
 <item>
 <p>
 Term passed as the third argument to the &transport_start; function of
 the relevant &transport_module; in order to
 start a transport process.
-Defaults to the empty list if unspecified.</p>
+Defaults to the empty list.</p>
 
 <p>
 The 3-tuple form additionally specifies an interval, in milliseconds,
@@ -1302,12 +1495,12 @@ request a connection with one peer over SCTP or another
 To listen on both SCTP and TCP, define one transport for each.</p>
 </item>
 
-<marker id="transport_module"/>
-<tag><c>{transport_module, atom()}</c></tag>
+<tag>
+<marker id="transport_module"/><c>{transport_module, atom()}</c></tag>
 <item>
 <p>
 Module implementing a transport process as defined in &man_transport;.
-Defaults to <c>diameter_tcp</c> if unspecified.</p>
+Defaults to <c>diameter_tcp</c>.</p>
 
 <p>
 Multiple <c>transport_module</c> and &transport_config;
@@ -1322,8 +1515,9 @@ modules in order until one establishes a connection within the
 corresponding timeout (see below) or all fail.</p>
 </item>
 
-<marker id="watchdog_config"/>
-<tag><c>{watchdog_config, [{okay|suspect, non_neg_integer()}]}</c></tag>
+<tag>
+<marker id="watchdog_config"/><c>{watchdog_config,
+                       [{okay|suspect, non_neg_integer()}]}</c></tag>
 <item>
 <p>
 Configuration that alters the behaviour of the watchdog
@@ -1346,8 +1540,8 @@ misbehaving nodes during test.</p>
 </warning>
 </item>
 
-<marker id="watchdog_timer"/>
-<tag><c>{watchdog_timer, TwInit}</c></tag>
+<tag>
+<marker id="watchdog_timer"/><c>{watchdog_timer, TwInit}</c></tag>
 <item>
 <pre>
 TwInit = &dict_Unsigned32;
@@ -1365,7 +1559,7 @@ the callback.</p>
 
 <p>
 An integer value must be at least 6000 as required by RFC 3539.
-Defaults to 30000 if unspecified.</p>
+Defaults to 30000.</p>
 </item>
 
 </taglist>
@@ -1375,10 +1569,10 @@ Unrecognized options are silently ignored but are returned unmodified
 by &service_info; and can be referred to
 in predicate functions passed to &remove_transport;.</p>
 
-<marker id="transport_ref"/>
 </item>
 
-<tag><c>transport_ref() = reference()</c></tag>
+<tag>
+<marker id="transport_ref"/><c>transport_ref() = reference()</c></tag>
 <item>
 <p>
 Reference returned by &add_transport; that
@@ -1394,7 +1588,7 @@ identifies the configuration.</p>
 <!-- ===================================================================== -->
 
 <func>
-<name>add_transport(SvcName, {connect|listen, [Opt]})
+<name since="OTP R14B03">add_transport(SvcName, {connect|listen, [Opt]})
         -> {ok, Ref} | {error, Reason}</name>
 <fsummary>Add transport capability to a service.</fsummary>
 <type>
@@ -1444,7 +1638,7 @@ its transports.</p>
 <!-- ===================================================================== -->
 
 <func>
-<name>call(SvcName, App, Request, [Opt]) -> Answer | ok | {error, Reason}</name>
+<name since="OTP R14B03">call(SvcName, App, Request, [Opt]) -> Answer | ok | {error, Reason}</name>
 <fsummary>Send a Diameter request message.</fsummary>
 <type>
 <v>SvcName = &service_name;</v>
@@ -1550,7 +1744,7 @@ transport connection.</p>
 <!-- ===================================================================== -->
 
 <func>
-<name>origin_state_id() -> &dict_Unsigned32;</name>
+<name since="OTP R14B03">origin_state_id() -> &dict_Unsigned32;</name>
 <fsummary>Returns a reasonable Origin-State-Id.</fsummary>
 <desc>
 <p>
@@ -1568,7 +1762,7 @@ at the time the diameter application was started.</p>
 <!-- ===================================================================== -->
 
 <func>
-<name>remove_transport(SvcName, Pred) -> ok | {error, Reason}</name>
+<name since="OTP R14B03">remove_transport(SvcName, Pred) -> ok | {error, Reason}</name>
 <fsummary>Remove previously added transports.</fsummary>
 <type>
 <v>SvcName = &service_name;</v>
@@ -1615,7 +1809,7 @@ configured on the transport.</p>
 <!-- ===================================================================== -->
 
 <func>
-<name>service_info(SvcName, Info) -> term()</name>
+<name since="OTP R14B03">service_info(SvcName, Info) -> term()</name>
 <fsummary>Return information about a started service.</fsummary>
 <type>
 <v>SvcName = &service_name;</v>
@@ -1635,17 +1829,17 @@ returned.</p>
 
 <taglist>
 
-<tag><c>'Origin-Host'</c></tag>
-<tag><c>'Origin-Realm'</c></tag>
-<tag><c>'Vendor-Id'</c></tag>
-<tag><c>'Product-Name'</c></tag>
-<tag><c>'Origin-State-Id'</c></tag>
-<tag><c>'Host-IP-Address'</c></tag>
-<tag><c>'Supported-Vendor'</c></tag>
-<tag><c>'Auth-Application-Id'</c></tag>
-<tag><c>'Inband-Security-Id'</c></tag>
-<tag><c>'Acct-Application-Id'</c></tag>
-<tag><c>'Vendor-Specific-Application-Id'</c></tag>
+<tag><c>'Origin-Host'</c></tag><item/>
+<tag><c>'Origin-Realm'</c></tag><item/>
+<tag><c>'Vendor-Id'</c></tag><item/>
+<tag><c>'Product-Name'</c></tag><item/>
+<tag><c>'Origin-State-Id'</c></tag><item/>
+<tag><c>'Host-IP-Address'</c></tag><item/>
+<tag><c>'Supported-Vendor'</c></tag><item/>
+<tag><c>'Auth-Application-Id'</c></tag><item/>
+<tag><c>'Inband-Security-Id'</c></tag><item/>
+<tag><c>'Acct-Application-Id'</c></tag><item/>
+<tag><c>'Vendor-Specific-Application-Id'</c></tag><item/>
 <tag><c>'Firmware-Revision'</c></tag>
 <item>
 <p>
@@ -1685,8 +1879,8 @@ An example return value with for a client service with Origin-Host
                                {raddr,{127,0,0,1}},
                                {rport,3868},
                                {reuseaddr,true}]}]},
-  {watchdog,{&lt;0.66.0>,{1346,171491,996448},okay}},
-  {peer,{&lt;0.67.0>,{1346,171491,999906}}},
+  {watchdog,{&lt;0.66.0>,-576460736368485571,okay}},
+  {peer,{&lt;0.67.0>,-576460736357885808}},
   {apps,[{0,common}]},
   {caps,[{origin_host,{"client.example.com","server.example.com"}},
          {origin_realm,{"example.com","example.com"}},
@@ -1717,11 +1911,13 @@ An example return value with for a client service with Origin-Host
                       {send_pend,0}]}]},
   {statistics,[{{{0,258,0},recv},3},
                {{{0,258,1},send},3},
+               {{{0,258,0},recv,{'Result-Code',2001}},3},
                {{{0,257,0},recv},1},
                {{{0,257,1},send},1},
-               {{{0,258,0},recv,{'Result-Code',2001}},3},
+               {{{0,257,0},recv,{'Result-Code',2001}},1},
                {{{0,280,1},recv},2},
-               {{{0,280,0},send},2}]}]]
+               {{{0,280,0},send},2},
+               {{{0,280,0},send,{'Result-Code',2001}},2}]}]]
 </pre>
 
 <p>
@@ -1764,8 +1960,8 @@ connection might look as follows.</p>
             {transport_config,[{reuseaddr,true},
                                {ip,{127,0,0,1}},
                                {port,3868}]}]},
-  {accept,[[{watchdog,{&lt;0.56.0>,{1346,171481,226895},okay}},
-            {peer,{&lt;0.58.0>,{1346,171491,999511}}},
+  {accept,[[{watchdog,{&lt;0.56.0>,-576460739249514012,okay}},
+            {peer,{&lt;0.58.0>,-576460638229179167}},
             {apps,[{0,common}]},
             {caps,[{origin_host,{"server.example.com","client.example.com"}},
                    {origin_realm,{"example.com","example.com"}},
@@ -1794,16 +1990,19 @@ connection might look as follows.</p>
                                 {send_max,148},
                                 {send_avg,87},
                                 {send_pend,0}]}]}],
-           [{watchdog,{&lt;0.72.0>,{1346,171491,998404},initial}}]]},
+           [{watchdog,{&lt;0.72.0>,-576460638229717546,initial}}]]},
   {statistics,[{{{0,280,0},recv},7},
                {{{0,280,1},send},7},
-               {{{0,258,0},send,{'Result-Code',2001}},3},
+               {{{0,280,0},recv,{'Result-Code',2001}},7},
                {{{0,258,1},recv},3},
                {{{0,258,0},send},3},
+               {{{0,258,0},send,{'Result-Code',2001}},3},
                {{{0,280,1},recv},5},
                {{{0,280,0},send},5},
+               {{{0,280,0},send,{'Result-Code',2001}},5},
                {{{0,257,1},recv},1},
-               {{{0,257,0},send},1}]}]]
+               {{{0,257,0},send},1},
+               {{{0,257,0},send,{'Result-Code',2001}},1}]}]]
 </pre>
 
 <p>
@@ -1839,8 +2038,8 @@ A return value for the server above might look as follows.</p>
             {transport_config,[{reuseaddr,true},
                                {ip,{127,0,0,1}},
                                {port,3868}]}]},
-  {watchdog,{&lt;0.56.0>,{1346,171481,226895},okay}},
-  {peer,{&lt;0.58.0>,{1346,171491,999511}}},
+  {watchdog,{&lt;0.56.0>,-576460739249514012,okay}},
+  {peer,{&lt;0.58.0>,-576460638229179167}},
   {apps,[{0,common}]},
   {caps,[{origin_host,{"server.example.com","client.example.com"}},
          {origin_realm,{"example.com","example.com"}},
@@ -1871,13 +2070,16 @@ A return value for the server above might look as follows.</p>
                       {send_pend,0}]}]},
   {statistics,[{{{0,280,0},recv},62},
                {{{0,280,1},send},62},
-               {{{0,258,0},send,{'Result-Code',2001}},3},
+               {{{0,280,0},recv,{'Result-Code',2001}},62},
                {{{0,258,1},recv},3},
                {{{0,258,0},send},3},
+               {{{0,258,0},send,{'Result-Code',2001}},3},
                {{{0,280,1},recv},66},
                {{{0,280,0},send},66},
+               {{{0,280,0},send,{'Result-Code',2001}},66},
                {{{0,257,1},recv},1},
-               {{{0,257,0},send},1}]}]]
+               {{{0,257,0},send},1},
+               {{{0,257,0},send,{'Result-Code',2001}},1}]}]]
 </pre>
 
 <p>
@@ -1926,7 +2128,7 @@ For example:</p>
 <!-- ===================================================================== -->
 
 <func>
-<name>services() -> [SvcName]</name>
+<name since="OTP R14B03">services() -> [SvcName]</name>
 <fsummary>Return the list of started services.</fsummary>
 <type>
 <v>SvcName = &service_name;</v>
@@ -1941,7 +2143,7 @@ Return the list of started services.</p>
 <!-- ===================================================================== -->
 
 <func>
-<name>session_id(Ident) -> &dict_OctetString;</name>
+<name since="OTP R14B03">session_id(Ident) -> &dict_OctetString;</name>
 <fsummary>Return a value for a Session-Id AVP.</fsummary>
 <type>
 <v>Ident = &dict_DiameterIdentity;</v>
@@ -1960,7 +2162,7 @@ the message containing the returned value will be sent.</p>
 
 <!-- ===================================================================== -->
 <func>
-<name>start() -> ok | {error, Reason}</name>
+<name since="OTP R14B03">start() -> ok | {error, Reason}</name>
 <fsummary>Start the diameter application.</fsummary>
 <desc>
 <p>
@@ -1976,7 +2178,7 @@ file, not by calling <c>start/0</c> explicitly.</p>
 
 <!-- ===================================================================== -->
 <func>
-<name>start_service(SvcName, Options) -> ok | {error, Reason}</name>
+<name since="OTP R14B03">start_service(SvcName, Options) -> ok | {error, Reason}</name>
 <fsummary>Start a Diameter service.</fsummary>
 <type>
 <v>SvcName = &service_name;</v>
@@ -2006,7 +2208,7 @@ necessarily the case.</p>
 
 <!-- ===================================================================== -->
 <func>
-<name>stop() -> ok | {error, Reason}</name>
+<name since="OTP R14B03">stop() -> ok | {error, Reason}</name>
 <fsummary>Stop the diameter application.</fsummary>
 <desc>
 <p>
@@ -2020,7 +2222,7 @@ Stop the diameter application.</p>
 
 <!-- ===================================================================== -->
 <func>
-<name>stop_service(SvcName) -> ok | {error, Reason}</name>
+<name since="OTP R14B03">stop_service(SvcName) -> ok | {error, Reason}</name>
 <fsummary>Stop a Diameter service.</fsummary>
 <type>
 <v>SvcName = &service_name;</v>
@@ -2033,7 +2235,7 @@ Stop a diameter service.</p>
 <p>
 Stopping a service causes all associated transport connections to be
 broken.
-A DPR message with be sent as in the case of &remove_transport;.</p>
+A DPR message will be sent as in the case of &remove_transport;.</p>
 
 <note>
 <p>
@@ -2048,7 +2250,7 @@ be called to remove transport configuration.</p>
 <!-- ===================================================================== -->
 
 <func>
-<name>subscribe(SvcName) -> true</name>
+<name since="OTP R14B03">subscribe(SvcName) -> true</name>
 <fsummary>Subscribe to event messages.</fsummary>
 <type>
 <v>SvcName = &service_name;</v>
@@ -2070,7 +2272,7 @@ reception of all transport-related events.</p>
 <!-- ===================================================================== -->
 
 <func>
-<name>unsubscribe(SvcName) -> true</name>
+<name since="OTP R14B03">unsubscribe(SvcName) -> true</name>
 <fsummary>Unsubscribe to event messages.</fsummary>
 <type>
 <v>SvcName = &service_name;</v>

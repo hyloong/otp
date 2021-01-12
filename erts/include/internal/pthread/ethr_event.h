@@ -1,7 +1,7 @@
 /*
  * %CopyrightBegin%
  *
- * Copyright Ericsson AB 2009-2011. All Rights Reserved.
+ * Copyright Ericsson AB 2009-2016. All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -83,12 +83,22 @@ ETHR_INLINE_FUNC_NAME_(ethr_event_reset)(ethr_event *e)
 #elif defined(ETHR_PTHREADS)
 /* --- Posix mutex/cond pipe/select implementation of events ---------------- */
 
+#if defined(__APPLE__) && defined(__MACH__) && !defined(__DARWIN__)
+#  define __DARWIN__ 1
+#endif
+
+#ifdef __DARWIN__
+typedef struct ethr_event_fdsets___ ethr_event_fdsets__;
+#endif
 
 typedef struct {
     ethr_atomic32_t state;
     pthread_mutex_t mtx;
     pthread_cond_t cnd;
     int fd[2];
+#ifdef __DARWIN__
+    ethr_event_fdsets__ *fdsets;
+#endif
 } ethr_event;
 
 #define ETHR_EVENT_OFF_WAITER_SELECT__	((ethr_sint32_t) -2)
@@ -148,6 +158,7 @@ ETHR_INLINE_FUNC_NAME_(ethr_event_reset)(ethr_event *e)
 #endif
 
 int ethr_event_init(ethr_event *e);
+int ethr_event_prepare_timed(ethr_event *e);
 int ethr_event_destroy(ethr_event *e);
 int ethr_event_wait(ethr_event *e);
 int ethr_event_swait(ethr_event *e, int spincount);

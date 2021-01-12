@@ -1,7 +1,7 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2008-2015. All Rights Reserved.
+%% Copyright Ericsson AB 2008-2020. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -22,9 +22,72 @@
 -module(ssh_connection_SUITE).
 
 -include_lib("common_test/include/ct.hrl").
--include_lib("ssh/src/ssh_connect.hrl").
+-include("ssh_connect.hrl").
+-include("ssh_test_lib.hrl").
 
--compile(export_all).
+
+
+-export([
+         suite/0,
+         all/0,
+         groups/0,
+         init_per_suite/1,
+         end_per_suite/1,
+         init_per_group/2,
+         end_per_group/2,
+         init_per_testcase/2,
+         end_per_testcase/2
+        ]).
+
+-export([
+         big_cat/1,
+         connect_sock_not_passive/1,
+         connect_sock_not_tcp/1,
+         daemon_sock_not_passive/1,
+         daemon_sock_not_tcp/1,
+         do_interrupted_send/3,
+         do_simple_exec/1,
+         encode_decode_pty_opts/1,
+         exec_disabled/1,
+         exec_erlang_term/1,
+         exec_erlang_term_non_default_shell/1,
+         exec_shell_disabled/1,
+         gracefull_invalid_long_start/1,
+         gracefull_invalid_long_start_no_nl/1,
+         gracefull_invalid_start/1,
+         gracefull_invalid_version/1,
+         interrupted_send/1,
+         max_channels_option/1,
+         ptty_alloc/1,
+         ptty_alloc_default/1,
+         ptty_alloc_pixel/1,
+         read_write_loop/1,
+         read_write_loop1/2,
+         send_after_exit/1,
+         simple_eval/1,
+         simple_exec/1,
+         simple_exec_sock/1,
+         simple_exec_two_socks/1,
+         small_cat/1,
+         small_interrupted_send/1,
+         start_exec_direct_fun1_read_write/1,
+         start_exec_direct_fun1_read_write_advanced/1,
+         start_shell/1,
+         start_shell_exec/1,
+         start_shell_exec_direct_fun/1,
+         start_shell_exec_direct_fun1_error/1,
+         start_shell_exec_direct_fun1_error_type/1,
+         start_shell_exec_direct_fun2/1,
+         start_shell_exec_direct_fun3/1,
+         start_shell_exec_fun/1,
+         start_shell_exec_fun2/1,
+         start_shell_exec_fun3/1,
+         start_shell_sock_daemon_exec/1,
+         start_shell_sock_daemon_exec_multi/1,
+         start_shell_sock_exec_fun/1,
+         start_subsystem_on_closed_channel/1,
+         stop_listener/1
+        ]).
 
 -define(SSH_DEFAULT_PORT, 22).
 -define(EXEC_TIMEOUT, 10000).
@@ -36,25 +99,51 @@
 %% suite() ->
 %%     [{ct_hooks,[ts_install_cth]}].
 
+suite() ->
+    [{timetrap,{seconds,40}}].
+
 all() ->
     [
      {group, openssh},
+     small_interrupted_send,
      interrupted_send,
+     exec_erlang_term,
+     exec_erlang_term_non_default_shell,
+     exec_disabled,
+     exec_shell_disabled,
      start_shell,
      start_shell_exec,
      start_shell_exec_fun,
+     start_shell_exec_fun2,
+     start_shell_exec_fun3,
+     start_shell_exec_direct_fun,
+     start_shell_exec_direct_fun2,
+     start_shell_exec_direct_fun3,
+     start_shell_exec_direct_fun1_error,
+     start_shell_exec_direct_fun1_error_type,
+     start_exec_direct_fun1_read_write,
+     start_exec_direct_fun1_read_write_advanced,
+     start_shell_sock_exec_fun,
+     start_shell_sock_daemon_exec,
+     start_shell_sock_daemon_exec_multi,
+     encode_decode_pty_opts,
+     connect_sock_not_tcp,
+     daemon_sock_not_tcp,
      gracefull_invalid_version,
      gracefull_invalid_start,
      gracefull_invalid_long_start,
      gracefull_invalid_long_start_no_nl,
      stop_listener,
-     start_subsystem_on_closed_channel
+     start_subsystem_on_closed_channel,
+     max_channels_option
     ].
 groups() ->
-    [{openssh, [], payload() ++ ptty()}].
+    [{openssh, [], payload() ++ ptty() ++ sock()}].
 
 payload() ->
     [simple_exec,
+     simple_exec_sock,
+     simple_exec_two_socks,
      small_cat,
      big_cat,
      send_after_exit].
@@ -64,24 +153,27 @@ ptty() ->
      ptty_alloc,
      ptty_alloc_pixel].
 
+sock() ->
+    [connect_sock_not_passive,
+     daemon_sock_not_passive
+    ].
+
 %%--------------------------------------------------------------------
 init_per_suite(Config) ->
-    catch crypto:stop(),
-    case catch crypto:start() of
-	ok ->
-	    Config;
-	_Else ->
-	    {skip, "Crypto could not be started!"}
-    end.
+    ?CHECK_CRYPTO(
+       [{ptty_supported, ssh_test_lib:ptty_supported()}
+        | Config]
+      ).
 
 end_per_suite(_Config) ->
-    crypto:stop().
+    catch ssh:stop(),
+    ok.
 
 %%--------------------------------------------------------------------
 init_per_group(openssh, Config) ->
-    case gen_tcp:connect("localhost", 22, []) of
+    case ssh_test_lib:gen_tcp_connect("localhost", 22, []) of
 	{error,econnrefused} ->
-	    {skip,"No openssh deamon"};
+	    {skip,"No openssh deamon (econnrefused)"};
 	{ok, Socket} ->
 	    gen_tcp:close(Socket),
 	    ssh_test_lib:openssh_sanity_check(Config)
@@ -96,49 +188,74 @@ end_per_group(_, Config) ->
 init_per_testcase(_TestCase, Config) ->
     %% To make sure we start clean as it is not certain that
     %% end_per_testcase will be run!
-    end_per_testcase(Config),
+    end_per_testcase(any, Config),
     ssh:start(),
     Config.
 
-end_per_testcase(_Config) ->
+end_per_testcase(_TestCase, _Config) ->
     ssh:stop().
 
 %%--------------------------------------------------------------------
 %% Test Cases --------------------------------------------------------
 %%--------------------------------------------------------------------
-simple_exec() ->
-    [{doc, "Simple openssh connectivity test for ssh_connection:exec"}].
-
 simple_exec(Config) when is_list(Config) ->
     ConnectionRef = ssh_test_lib:connect(?SSH_DEFAULT_PORT, [{silently_accept_hosts, true},
 							     {user_interaction, false}]),
-    {ok, ChannelId0} = ssh_connection:session_channel(ConnectionRef, infinity),
-    success = ssh_connection:exec(ConnectionRef, ChannelId0,
-				  "echo testing", infinity),
-    %% receive response to input
-    receive
-	{ssh_cm, ConnectionRef, {data, ChannelId0, 0, <<"testing\n">>}} ->
-	    ok
-    end,
+    do_simple_exec(ConnectionRef).
 
-    %% receive close messages
+%%--------------------------------------------------------------------
+simple_exec_sock(_Config) ->
+    {ok, Sock} = ssh_test_lib:gen_tcp_connect("localhost", ?SSH_DEFAULT_PORT, [{active,false}]),
+    {ok, ConnectionRef} = ssh:connect(Sock, [{silently_accept_hosts, true},
+					     {user_interaction, false}]),
+    do_simple_exec(ConnectionRef).
+
+%%--------------------------------------------------------------------
+simple_exec_two_socks(_Config) ->
+    Parent = self(),
+    F = fun() ->
+                spawn_link(
+                  fun() ->
+                          {ok, Sock} = ssh_test_lib:gen_tcp_connect("localhost", ?SSH_DEFAULT_PORT, [{active,false}]),
+                          {ok, ConnectionRef} = ssh:connect(Sock, [{silently_accept_hosts, true},
+                                                                   {user_interaction, false}]),
+                          Parent ! {self(),do_simple_exec(ConnectionRef)}
+                  end)
+        end,
+    Pid1 = F(),
+    Pid2 = F(),
     receive
-	{ssh_cm, ConnectionRef, {eof, ChannelId0}} ->
-	    ok
+        {Pid1,ok} -> ok
     end,
     receive
-	{ssh_cm, ConnectionRef, {exit_status, ChannelId0, 0}} ->
-	    ok
-    end,
-    receive
-	{ssh_cm, ConnectionRef,{closed, ChannelId0}} ->
-	    ok
+        {Pid2,ok} -> ok
     end.
 
 %%--------------------------------------------------------------------
-small_cat() ->
-    [{doc, "Use 'cat' to echo small data block back to us."}].
+connect_sock_not_tcp(_Config) ->
+    {ok,Sock} = gen_udp:open(0, []), 
+    {error, not_tcp_socket} = ssh:connect(Sock, []),
+    gen_udp:close(Sock).
 
+%%--------------------------------------------------------------------
+daemon_sock_not_tcp(_Config) ->
+    {ok,Sock} = gen_udp:open(0, []), 
+    {error, not_tcp_socket} = ssh:daemon(Sock),
+    gen_udp:close(Sock).
+
+%%--------------------------------------------------------------------
+connect_sock_not_passive(_Config) ->
+    {ok,Sock} = ssh_test_lib:gen_tcp_connect("localhost", ?SSH_DEFAULT_PORT, []), 
+    {error, not_passive_mode} = ssh:connect(Sock, []),
+    gen_tcp:close(Sock).
+
+%%--------------------------------------------------------------------
+daemon_sock_not_passive(_Config) ->
+    {ok,Sock} = ssh_test_lib:gen_tcp_connect("localhost", ?SSH_DEFAULT_PORT, []), 
+    {error, not_passive_mode} = ssh:daemon(Sock),
+    gen_tcp:close(Sock).
+
+%%--------------------------------------------------------------------
 small_cat(Config) when is_list(Config) ->
     ConnectionRef = ssh_test_lib:connect(?SSH_DEFAULT_PORT, [{silently_accept_hosts, true},
 							     {user_interaction, false}]),
@@ -154,25 +271,30 @@ small_cat(Config) when is_list(Config) ->
     receive
 	{ssh_cm, ConnectionRef, {data, ChannelId0, 0, Data}} ->
 	    ok
+    after 
+	10000 -> ct:fail("timeout ~p:~p",[?MODULE,?LINE])
     end,
 
     %% receive close messages
     receive
 	{ssh_cm, ConnectionRef, {eof, ChannelId0}} ->
 	    ok
+    after 
+	10000 -> ct:fail("timeout ~p:~p",[?MODULE,?LINE])
     end,
     receive
 	{ssh_cm, ConnectionRef, {exit_status, ChannelId0, 0}} ->
 	    ok
+    after 
+	10000 -> ct:fail("timeout ~p:~p",[?MODULE,?LINE])
     end,
     receive
 	{ssh_cm, ConnectionRef,{closed, ChannelId0}} ->
 	    ok
+    after 
+	10000 -> ct:fail("timeout ~p:~p",[?MODULE,?LINE])
     end.
 %%--------------------------------------------------------------------
-big_cat() ->
-    [{doc,"Use 'cat' to echo large data block back to us."}].
-
 big_cat(Config) when is_list(Config) ->
     ConnectionRef = ssh_test_lib:connect(?SSH_DEFAULT_PORT, [{silently_accept_hosts, true},
 							     {user_interaction, false}]),
@@ -211,17 +333,18 @@ big_cat(Config) when is_list(Config) ->
     %% receive close messages (eof already consumed)
     receive
 	{ssh_cm, ConnectionRef, {exit_status, ChannelId0, 0}} ->
-	    ok
+	    ok 
+    after 
+	10000 -> ct:fail("timeout ~p:~p",[?MODULE,?LINE])
     end,
     receive
 	{ssh_cm, ConnectionRef,{closed, ChannelId0}} ->
 	    ok
+    after 
+	10000 -> ct:fail("timeout ~p:~p",[?MODULE,?LINE])
     end.
 
 %%--------------------------------------------------------------------
-send_after_exit() ->
-    [{doc, "Send channel data after the channel has been closed."}].
-
 send_after_exit(Config) when is_list(Config) ->
     ConnectionRef = ssh_test_lib:connect(?SSH_DEFAULT_PORT, [{silently_accept_hosts, true},
 							     {user_interaction, false}]),
@@ -234,14 +357,20 @@ send_after_exit(Config) when is_list(Config) ->
     receive
 	{ssh_cm, ConnectionRef, {eof, ChannelId0}} ->
 	    ok
+    after 
+	10000 -> ct:fail("timeout ~p:~p",[?MODULE,?LINE])
     end,
     receive
-	{ssh_cm, ConnectionRef, {exit_status, ChannelId0, _ExitStatus}} ->
+	{ssh_cm, ConnectionRef, {exit_status, ChannelId0, ExitStatus}} when ExitStatus=/=0 ->
 	    ok
+    after 
+	10000 -> ct:fail("timeout ~p:~p",[?MODULE,?LINE])
     end,
     receive
 	{ssh_cm, ConnectionRef,{closed, ChannelId0}} ->
 	    ok
+    after 
+	10000 -> ct:fail("timeout ~p:~p",[?MODULE,?LINE])
     end,
     case ssh_connection:send(ConnectionRef, ChannelId0, Data, 2000) of
 	{error, closed} -> ok;
@@ -254,94 +383,191 @@ send_after_exit(Config) when is_list(Config) ->
     end.
 
 %%--------------------------------------------------------------------
-ptty_alloc_default() ->
-    [{doc, "Test sending PTTY alloc message with only defaults."}].
+encode_decode_pty_opts(_Config) ->
+    Tags =
+        [vintr, vquit, verase, vkill, veof, veol, veol2, vstart, vstop, vsusp, vdsusp,
+         vreprint, vwerase, vlnext, vflush, vswtch, vstatus, vdiscard, ignpar, parmrk,
+         inpck, istrip, inlcr, igncr, icrnl, iuclc, ixon, ixany, ixoff, imaxbel, isig,
+         icanon, xcase, echo, echoe, echok, echonl, noflsh, tostop, iexten, echoctl,
+         echoke, pendin, opost, olcuc, onlcr, ocrnl, onocr, onlret, cs7, cs8, parenb,
+         parodd, tty_op_ispeed, tty_op_ospeed],
+    Opts =
+        lists:zip(Tags,
+                  lists:seq(1, length(Tags))),
+    
+    case ssh_connection:encode_pty_opts(Opts) of
+        Bin when is_binary(Bin) ->
+            case ssh_connection:decode_pty_opts(Bin) of
+                Opts ->
+                    ok;
+                Other ->
+                    ct:log("Expected ~p~nGot ~p~nBin = ~p",[Opts,Other,Bin]),
+                    ct:fail("Not the same",[])
+            end;
+        Other ->
+            ct:log("encode -> ~p",[Other]),
+            ct:fail("Encode failed",[])
+    end.
 
+%%--------------------------------------------------------------------
 ptty_alloc_default(Config) when is_list(Config) ->
     ConnectionRef = ssh_test_lib:connect(?SSH_DEFAULT_PORT, [{silently_accept_hosts, true},
 							     {user_interaction, false}]),
     {ok, ChannelId} = ssh_connection:session_channel(ConnectionRef, infinity),
-    success = ssh_connection:ptty_alloc(ConnectionRef, ChannelId, []),
+    Expect = case proplists:get_value(ptty_supported, Config) of
+                 true -> success;
+                 false -> failure
+             end,
+    Expect = ssh_connection:ptty_alloc(ConnectionRef, ChannelId, []),
     ssh:close(ConnectionRef).
 
 %%--------------------------------------------------------------------
-ptty_alloc() ->
-    [{doc, "Test sending PTTY alloc message with width,height options."}].
-
 ptty_alloc(Config) when is_list(Config) ->
     ConnectionRef = ssh_test_lib:connect(?SSH_DEFAULT_PORT, [{silently_accept_hosts, true},
 							     {user_interaction, false}]),
     {ok, ChannelId} = ssh_connection:session_channel(ConnectionRef, infinity),
-    success = ssh_connection:ptty_alloc(ConnectionRef, ChannelId, 
-					[{term, os:getenv("TERM", ?DEFAULT_TERMINAL)}, {width, 70}, {height, 20}]),
+    Expect = case proplists:get_value(ptty_supported, Config) of
+                 true -> success;
+                 false -> failure
+             end,
+    Expect = ssh_connection:ptty_alloc(ConnectionRef, ChannelId, 
+                                       [{term, os:getenv("TERM", ?DEFAULT_TERMINAL)}, {width, 70}, {height, 20}]),
     ssh:close(ConnectionRef).
 
 
 %%--------------------------------------------------------------------
-ptty_alloc_pixel() ->
-    [{doc, "Test sending PTTY alloc message pixel options."}].
-
 ptty_alloc_pixel(Config) when is_list(Config) ->
     ConnectionRef = ssh_test_lib:connect(?SSH_DEFAULT_PORT, [{silently_accept_hosts, true},
 							     {user_interaction, false}]),
     {ok, ChannelId} = ssh_connection:session_channel(ConnectionRef, infinity),
-    success = ssh_connection:ptty_alloc(ConnectionRef, ChannelId, 
-					[{term, os:getenv("TERM", ?DEFAULT_TERMINAL)}, {pixel_widh, 630}, {pixel_hight, 470}]),
+    Expect = case proplists:get_value(ptty_supported, Config) of
+                 true -> success;
+                 false -> failure
+             end,
+    Expect = ssh_connection:ptty_alloc(ConnectionRef, ChannelId, 
+                                       [{term, os:getenv("TERM", ?DEFAULT_TERMINAL)}, {pixel_widh, 630}, {pixel_hight, 470}]),
     ssh:close(ConnectionRef).
 
 %%--------------------------------------------------------------------
+small_interrupted_send(Config) -> 
+    K = 1024,
+    M = K*K,
+    do_interrupted_send(Config, 10*M, 4*K).
+interrupted_send(Config) ->
+    M = 1024*1024,
+    do_interrupted_send(Config, 10*M, 4*M).
 
-interrupted_send() ->
-    [{doc, "Use a subsystem that echos n char and then sends eof to cause a channel exit partway through a large send."}].
-
-interrupted_send(Config) when is_list(Config) ->
-    PrivDir = ?config(priv_dir, Config),
+do_interrupted_send(Config, SendSize, EchoSize) ->
+    PrivDir = proplists:get_value(priv_dir, Config),
     UserDir = filename:join(PrivDir, nopubkey), % to make sure we don't use public-key-auth
     file:make_dir(UserDir),
-    SysDir = ?config(data_dir, Config),
+    SysDir = proplists:get_value(data_dir, Config),
+    EchoSS_spec = {ssh_echo_server, [EchoSize,[{dbg,true}]]},
     {Pid, Host, Port} = ssh_test_lib:daemon([{system_dir, SysDir},
 					     {user_dir, UserDir},
 					     {password, "morot"},
-					     {subsystems, [{"echo_n", {ssh_echo_server, [4000000]}}]}]),
-
+					     {subsystems, [{"echo_n",EchoSS_spec}]}]),
+    
+    ct:log("~p:~p connect", [?MODULE,?LINE]),
     ConnectionRef = ssh_test_lib:connect(Host, Port, [{silently_accept_hosts, true},
 						      {user, "foo"},
 						      {password, "morot"},
 						      {user_interaction, false},
 						      {user_dir, UserDir}]),
+    ct:log("~p:~p connected", [?MODULE,?LINE]),
 
-    {ok, ChannelId} = ssh_connection:session_channel(ConnectionRef, infinity),
+    %% build big binary
+    Data = << <<X:32>> || X <- lists:seq(1,SendSize div 4)>>,
 
-    success = ssh_connection:subsystem(ConnectionRef, ChannelId, "echo_n", infinity),
+    %% expect remote end to send us EchoSize back
+    <<ExpectedData:EchoSize/binary, _/binary>> = Data,
 
-    %% build 10MB binary
-    Data = << <<X:32>> || X <- lists:seq(1,2500000)>>,
+    %% Spawn listener. Otherwise we could get a deadlock due to filled buffers
+    Parent = self(),
+    ResultPid = spawn(
+		  fun() ->
+			  ct:log("~p:~p open channel",[?MODULE,?LINE]),
+			  {ok, ChannelId} = ssh_connection:session_channel(ConnectionRef, infinity),
+			  ct:log("~p:~p start subsystem", [?MODULE,?LINE]),
+			  case ssh_connection:subsystem(ConnectionRef, ChannelId, "echo_n", infinity) of
+			      success ->
+				  Parent ! {self(), channelId, ChannelId},
+				  
+				  Result = 
+				      try collect_data(ConnectionRef, ChannelId, EchoSize)
+				      of
+					  ExpectedData -> 
+					      ct:log("~p:~p got expected data",[?MODULE,?LINE]),
+					      ok;
+					  Other ->
+					      ct:log("~p:~p unexpect: ~p", [?MODULE,?LINE,Other]),
+					      {fail,"unexpected result in listener"}
+				      catch
+					  Class:Exception ->
+					      {fail, io_lib:format("Listener exception ~p:~p",[Class,Exception])}
+				      end,
+				  Parent ! {self(), result, Result};
+			      Other ->
+				  Parent ! {self(), channelId, error, Other}
+			  end
+		  end),
+    
+    receive
+	{ResultPid, channelId, error, Other} ->
+	    ct:log("~p:~p channelId error ~p", [?MODULE,?LINE,Other]),
+	    ssh:close(ConnectionRef),
+	    ssh:stop_daemon(Pid),
+	    {fail, "ssh_connection:subsystem"};
 
-    %% expect remote end to send us 4MB back
-    <<ExpectedData:4000000/binary, _/binary>> = Data,
+	{ResultPid, channelId, ChannelId} ->
+	    ct:log("~p:~p ~p going to send ~p bytes", [?MODULE,?LINE,self(),size(Data)]),
+	    SenderPid = spawn(fun() ->
+				      Parent ! {self(),  ssh_connection:send(ConnectionRef, ChannelId, Data, 30000)}
+			      end),
+	    receive
+	    	{ResultPid, result, {fail, Fail}} ->
+		    ct:log("~p:~p Listener failed: ~p", [?MODULE,?LINE,Fail]),
+		    {fail, Fail};
 
-    %% pre-adjust receive window so the other end doesn't block
-    ssh_connection:adjust_window(ConnectionRef, ChannelId, size(ExpectedData) + 1),
+		{ResultPid, result, Result} ->
+		    ct:log("~p:~p Got result: ~p", [?MODULE,?LINE,Result]),
+		    ssh:close(ConnectionRef),
+		    ssh:stop_daemon(Pid),
+		    ct:log("~p:~p Check sender", [?MODULE,?LINE]),
+		    receive
+			{SenderPid, {error, closed}} ->
+			    ct:log("~p:~p {error,closed} - That's what we expect :)",[?MODULE,?LINE]),
+			    ok;
+			Msg ->
+			    ct:log("~p:~p Not expected send result: ~p",[?MODULE,?LINE,Msg]),
+			    {fail, "Not expected msg"}
+		    end;
 
-    case ssh_connection:send(ConnectionRef, ChannelId, Data, 10000) of
-	{error, closed} ->
-	    ok;
-	Msg ->
-	    ct:fail({expected,{error,closed}, got, Msg})
-    end,
-    receive_data(ExpectedData, ConnectionRef, ChannelId),
-    ssh:close(ConnectionRef),
-    ssh:stop_daemon(Pid).
+		{SenderPid, {error, closed}} ->
+		    ct:log("~p:~p {error,closed} - That's what we expect, but client channel handler has not reported yet",[?MODULE,?LINE]),
+		    receive
+			{ResultPid, result, Result} ->
+			    ct:log("~p:~p Now got the result: ~p", [?MODULE,?LINE,Result]),
+			    ssh:close(ConnectionRef),
+			    ssh:stop_daemon(Pid),
+			    ok;
+			Msg ->
+			    ct:log("~p:~p Got an unexpected msg ~p",[?MODULE,?LINE,Msg]),
+			    {fail, "Un-expected msg"}
+		    end;
+
+		Msg ->
+		    ct:log("~p:~p Got unexpected ~p",[?MODULE,?LINE,Msg]),
+		    {fail, "Unexpected msg"}
+	    end
+    end.
 
 %%--------------------------------------------------------------------
-start_shell() ->
-    [{doc, "Start a shell"}].
-
 start_shell(Config) when is_list(Config) ->
-    PrivDir = ?config(priv_dir, Config),
+    PrivDir = proplists:get_value(priv_dir, Config),
     UserDir = filename:join(PrivDir, nopubkey), % to make sure we don't use public-key-auth
     file:make_dir(UserDir),
-    SysDir = ?config(data_dir, Config),
+    SysDir = proplists:get_value(data_dir, Config),
     {Pid, Host, Port} = ssh_test_lib:daemon([{system_dir, SysDir},
 					     {user_dir, UserDir},
 					     {password, "morot"},
@@ -352,32 +578,291 @@ start_shell(Config) when is_list(Config) ->
 						      {password, "morot"},
 						      {user_interaction, true},
 						      {user_dir, UserDir}]),
-
-    {ok, ChannelId0} = ssh_connection:session_channel(ConnectionRef, infinity),
-    ok = ssh_connection:shell(ConnectionRef,ChannelId0),
-
-    receive
-	{ssh_cm,ConnectionRef, {data, ChannelId0, 0, <<"Enter command\r\n">>}} ->
-	    ok
-    after 5000 ->
-	    ct:fail("CLI Timeout")
-    end,
-
+    test_shell_is_enabled(ConnectionRef, <<"Enter command\r\n">>),
+    test_exec_is_disabled(ConnectionRef),
     ssh:close(ConnectionRef),
     ssh:stop_daemon(Pid).
-%%--------------------------------------------------------------------
-start_shell_exec() ->
-    [{doc, "start shell to exec command"}].
 
+
+%%--------------------------------------------------------------------
 start_shell_exec(Config) when is_list(Config) ->
-    PrivDir = ?config(priv_dir, Config),
+    PrivDir = proplists:get_value(priv_dir, Config),
     UserDir = filename:join(PrivDir, nopubkey), % to make sure we don't use public-key-auth
     file:make_dir(UserDir),
-    SysDir = ?config(data_dir, Config),
+    SysDir = proplists:get_value(data_dir, Config),
     {Pid, Host, Port} = ssh_test_lib:daemon([{system_dir, SysDir},
 					     {user_dir, UserDir},
 					     {password, "morot"},
-					     {exec, {?MODULE,ssh_exec,[]}} ]),
+					     {exec, {?MODULE,ssh_exec_echo,[]}} ]),
+
+    ConnectionRef = ssh_test_lib:connect(Host, Port, [{silently_accept_hosts, true},
+						      {user, "foo"},
+						      {password, "morot"},
+						      {user_interaction, true},
+						      {user_dir, UserDir}]),
+    test_shell_is_enabled(ConnectionRef),
+    test_exec_is_enabled(ConnectionRef,  "testing",  <<"echo testing\r\n">>),
+    ssh:close(ConnectionRef),
+    ssh:stop_daemon(Pid).
+
+%%--------------------------------------------------------------------
+exec_erlang_term(Config) when is_list(Config) ->
+    PrivDir = proplists:get_value(priv_dir, Config),
+    UserDir = filename:join(PrivDir, nopubkey), % to make sure we don't use public-key-auth
+    file:make_dir(UserDir),
+    SysDir = proplists:get_value(data_dir, Config),
+    {Pid, Host, Port} = ssh_test_lib:daemon([{system_dir, SysDir},
+					     {user_dir, UserDir},
+					     {password, "morot"}
+                                            ]),
+
+    ConnectionRef = ssh_test_lib:connect(Host, Port, [{silently_accept_hosts, true},
+						      {user, "foo"},
+						      {password, "morot"},
+						      {user_interaction, true},
+						      {user_dir, UserDir}]),
+    test_shell_is_enabled(ConnectionRef),
+    test_exec_is_enabled(ConnectionRef),
+    ssh:close(ConnectionRef),
+    ssh:stop_daemon(Pid).
+
+%%--------------------------------------------------------------------
+exec_erlang_term_non_default_shell(Config) when is_list(Config) ->
+    PrivDir = proplists:get_value(priv_dir, Config),
+    UserDir = filename:join(PrivDir, nopubkey), % to make sure we don't use public-key-auth
+    file:make_dir(UserDir),
+    SysDir = proplists:get_value(data_dir, Config),
+    {Pid, Host, Port} = ssh_test_lib:daemon([{system_dir, SysDir},
+					     {user_dir, UserDir},
+					     {password, "morot"},
+                                             {shell, fun(U, H) -> start_our_shell(U, H) end}
+                                            ]),
+
+    ConnectionRef = ssh_test_lib:connect(Host, Port, [{silently_accept_hosts, true},
+						      {user, "foo"},
+						      {password, "morot"},
+						      {user_interaction, true},
+						      {user_dir, UserDir}
+                                                     ]),
+    test_exec_is_disabled(ConnectionRef),
+    ssh:close(ConnectionRef),
+    ssh:stop_daemon(Pid).
+
+%%--------------------------------------------------------------------
+exec_disabled(Config) when is_list(Config) ->
+    PrivDir = proplists:get_value(priv_dir, Config),
+    UserDir = filename:join(PrivDir, nopubkey), % to make sure we don't use public-key-auth
+    file:make_dir(UserDir),
+    SysDir = proplists:get_value(data_dir, Config),
+    {Pid, Host, Port} = ssh_test_lib:daemon([{system_dir, SysDir},
+					     {user_dir, UserDir},
+					     {password, "morot"},
+                                             {exec, disabled}
+                                            ]),
+    ConnectionRef = ssh_test_lib:connect(Host, Port, [{silently_accept_hosts, true},
+						      {user, "foo"},
+						      {password, "morot"},
+						      {user_interaction, true},
+						      {user_dir, UserDir}
+                                                     ]),
+    test_shell_is_enabled(ConnectionRef),
+    test_exec_is_disabled(ConnectionRef),
+    ssh:stop_daemon(Pid).
+
+
+exec_shell_disabled(Config) when is_list(Config) ->
+    PrivDir = proplists:get_value(priv_dir, Config),
+    UserDir = filename:join(PrivDir, nopubkey), % to make sure we don't use public-key-auth
+    file:make_dir(UserDir),
+    SysDir = proplists:get_value(data_dir, Config),
+    {Pid, Host, Port} = ssh_test_lib:daemon([{system_dir, SysDir},
+					     {user_dir, UserDir},
+					     {password, "morot"},
+                                             {shell, disabled}
+                                            ]),
+    ConnectionRef = ssh_test_lib:connect(Host, Port, [{silently_accept_hosts, true},
+						      {user, "foo"},
+						      {password, "morot"},
+						      {user_interaction, true},
+						      {user_dir, UserDir}
+                                                     ]),
+    test_shell_is_disabled(ConnectionRef),
+    test_exec_is_enabled(ConnectionRef),
+    ssh:stop_daemon(Pid).
+
+%%--------------------------------------------------------------------
+start_shell_exec_fun(Config) ->
+    do_start_shell_exec_fun(fun ssh_exec_echo/1,
+                            "testing", <<"echo testing\r\n">>, 0,
+                            Config).
+
+start_shell_exec_fun2(Config) ->
+    do_start_shell_exec_fun(fun ssh_exec_echo/2,
+                            "testing", <<"echo foo testing\r\n">>, 0,
+                            Config).
+
+start_shell_exec_fun3(Config) ->
+    do_start_shell_exec_fun(fun ssh_exec_echo/3,
+                            "testing", <<"echo foo testing\r\n">>, 0,
+                            Config).
+
+start_shell_exec_direct_fun(Config) ->
+    do_start_shell_exec_fun({direct, fun ssh_exec_direct_echo/1},
+                            "testing", <<"echo testing\n">>, 0,
+                            Config).
+
+start_shell_exec_direct_fun2(Config) ->
+    do_start_shell_exec_fun({direct, fun ssh_exec_direct_echo/2},
+                            "testing", <<"echo foo testing">>, 0,
+                            Config).
+
+start_shell_exec_direct_fun3(Config) ->
+    do_start_shell_exec_fun({direct, fun ssh_exec_direct_echo/3},
+                            "testing", <<"echo foo testing">>, 0,
+                            Config).
+
+start_shell_exec_direct_fun1_error(Config) ->
+    do_start_shell_exec_fun({direct, fun ssh_exec_direct_echo_error_return/1},
+                            "testing", <<"**Error** {bad}">>, 1,
+                            Config).
+
+start_shell_exec_direct_fun1_error_type(Config) ->
+    do_start_shell_exec_fun({direct, fun ssh_exec_direct_echo_error_return_type/1},
+                            "testing", <<"**Error** Bad exec fun in server. Invalid return value: very_bad">>, 1,
+                            Config).
+
+start_exec_direct_fun1_read_write(Config) ->
+    PrivDir = proplists:get_value(priv_dir, Config),
+    UserDir = filename:join(PrivDir, nopubkey), % to make sure we don't use public-key-auth
+    file:make_dir(UserDir),
+    SysDir = proplists:get_value(data_dir, Config),
+    {Pid, Host, Port} = ssh_test_lib:daemon([{system_dir, SysDir},
+					     {user_dir, UserDir},
+					     {password, "morot"},
+					     {exec, {direct,fun read_write_loop/1}}]),
+
+    C = ssh_test_lib:connect(Host, Port, [{silently_accept_hosts, true},
+                                          {user, "foo"},
+                                          {password, "morot"},
+                                          {user_interaction, true},
+                                          {user_dir, UserDir}]),
+
+    {ok, Ch} = ssh_connection:session_channel(C, infinity),
+
+    success = ssh_connection:exec(C, Ch, "> ", infinity),
+    ssh_test_lib:receive_exec_result_or_fail({ssh_cm,C,{data,Ch,0,<<"Tiny read/write test\r\n">>}}),
+
+    ssh_test_lib:receive_exec_result_or_fail({ssh_cm,C,{data,Ch,0,<<"1> ">>}}),
+    ok = ssh_connection:send(C, Ch, "hej.\n", 5000),
+    ssh_test_lib:receive_exec_result_or_fail({ssh_cm,C,{data,Ch,0,<<"{simple_eval,hej}\r\n">>}}),
+
+    ssh_test_lib:receive_exec_result_or_fail({ssh_cm,C,{data,Ch,0,<<"2> ">>}}),
+    ok = ssh_connection:send(C, Ch, "quit.\n", 5000),
+    ssh_test_lib:receive_exec_result_or_fail({ssh_cm,C,{data,Ch,0,<<"{1,inputs}">>}}),
+    receive
+        {ssh_cm,C,{exit_status,Ch,0}} -> ok
+    after 5000 -> go_on
+    end,
+    receive
+        {ssh_cm,C,{eof,Ch}} -> ok
+    after 5000 -> go_on
+    end,
+    receive
+        {ssh_cm,C,{closed,Ch}} -> ok
+    after 5000 -> go_on
+    end,
+    receive
+        X -> ct:fail("remaining messages"),
+             ct:log("remaining message: ~p",[X])
+    after 0 -> go_on
+    end,
+    ssh:stop_daemon(Pid).
+
+
+start_exec_direct_fun1_read_write_advanced(Config) ->
+    PrivDir = proplists:get_value(priv_dir, Config),
+    UserDir = filename:join(PrivDir, nopubkey), % to make sure we don't use public-key-auth
+    file:make_dir(UserDir),
+    SysDir = proplists:get_value(data_dir, Config),
+    {Pid, Host, Port} = ssh_test_lib:daemon([{system_dir, SysDir},
+					     {user_dir, UserDir},
+					     {password, "morot"},
+					     {exec, {direct,fun read_write_loop/1}}]),
+
+    C = ssh_test_lib:connect(Host, Port, [{silently_accept_hosts, true},
+                                          {user, "foo"},
+                                          {password, "morot"},
+                                          {user_interaction, true},
+                                          {user_dir, UserDir}]),
+
+    {ok, Ch} = ssh_connection:session_channel(C, infinity),
+
+    success = ssh_connection:exec(C, Ch, "> ", infinity),
+    ssh_test_lib:receive_exec_result_or_fail({ssh_cm,C,{data,Ch,0,<<"Tiny read/write test\r\n">>}}),
+
+    ssh_test_lib:receive_exec_result_or_fail({ssh_cm,C,{data,Ch,0,<<"1> ">>}}),
+    ok = ssh_connection:send(C, Ch, "hej.\n", 5000),
+    ssh_test_lib:receive_exec_result_or_fail({ssh_cm,C,{data,Ch,0,<<"{simple_eval,hej}\r\n">>}}),
+
+    ssh_test_lib:receive_exec_result_or_fail({ssh_cm,C,{data,Ch,0,<<"2> ">>}}),
+    ok = ssh_connection:send(C, Ch, "'Hi ", 5000),
+    ok = ssh_connection:send(C, Ch, "there", 5000),
+    ok = ssh_connection:send(C, Ch, "'", 5000),
+    ok = ssh_connection:send(C, Ch, ".\n", 5000),
+    ssh_test_lib:receive_exec_result_or_fail({ssh_cm,C,{data,Ch,0,<<"{simple_eval,'Hi there'}\r\n">>}}),
+    ssh_test_lib:receive_exec_result_or_fail({ssh_cm,C,{data,Ch,0,<<"3> ">>}}),
+    ok = ssh_connection:send(C, Ch, "bad_input.\n", 5000),
+    ssh_test_lib:receive_exec_result_or_fail({ssh_cm,C,{data,Ch,1,<<"**Error** {bad_input,3}">>}}),
+    receive
+        {ssh_cm,C,{exit_status,Ch,255}} -> ok
+    after 5000 -> go_on
+    end,
+    receive
+        {ssh_cm,C,{eof,Ch}} -> ok
+    after 5000 -> go_on
+    end,
+    receive
+        {ssh_cm,C,{closed,Ch}} -> ok
+    after 5000 -> go_on
+    end,
+    receive
+        X -> ct:fail("remaining messages"),
+             ct:log("remaining message: ~p",[X])
+    after 0 -> go_on
+    end,
+    ssh:stop_daemon(Pid).
+
+
+
+    
+%% A tiny read-write loop ended by a 'quit.\n'
+read_write_loop(Prompt) ->
+    io:format("Tiny read/write test~n", []),
+    read_write_loop1(Prompt, 1).
+
+read_write_loop1(Prompt, N) ->
+    case io:read(lists:concat([N,Prompt])) of
+        {ok, quit} ->
+            {ok, {N-1, inputs}};
+        {ok, bad_input} ->
+            {error, {bad_input,N}};
+        {ok,Inp} ->
+            io:format("~p~n",[simple_eval(Inp)]),
+            read_write_loop1(Prompt, N+1)
+    end.
+    
+simple_eval(Inp) -> {simple_eval,Inp}.
+
+
+do_start_shell_exec_fun(Fun, Command, Expect, ExpectType, Config) ->
+    PrivDir = proplists:get_value(priv_dir, Config),
+    UserDir = filename:join(PrivDir, nopubkey), % to make sure we don't use public-key-auth
+    file:make_dir(UserDir),
+    SysDir = proplists:get_value(data_dir, Config),
+    {Pid, Host, Port} = ssh_test_lib:daemon([{system_dir, SysDir},
+					     {user_dir, UserDir},
+					     {password, "morot"},
+					     {exec, Fun}]),
 
     ConnectionRef = ssh_test_lib:connect(Host, Port, [{silently_accept_hosts, true},
 						      {user, "foo"},
@@ -387,37 +872,42 @@ start_shell_exec(Config) when is_list(Config) ->
 
     {ok, ChannelId0} = ssh_connection:session_channel(ConnectionRef, infinity),
 
-    success = ssh_connection:exec(ConnectionRef, ChannelId0,
-				  "testing", infinity),
+    success = ssh_connection:exec(ConnectionRef, ChannelId0, Command, infinity),
+
     receive
-	{ssh_cm, ConnectionRef, {data, _ChannelId, 0, <<"testing\r\n">>}} ->
+	{ssh_cm, ConnectionRef, {data, _ChannelId, ExpectType, Expect}} ->
 	    ok
     after 5000 ->
-	    ct:fail("Exec Timeout")
+            receive
+                Other ->
+                    ct:log("Received other:~n~p",[Other]),
+                    ct:fail("Unexpected response")
+            after 0 ->
+                    ct:fail("Exec Timeout")
+            end
     end,
 
     ssh:close(ConnectionRef),
     ssh:stop_daemon(Pid).
 
 %%--------------------------------------------------------------------
-start_shell_exec_fun() ->
-    [{doc, "start shell to exec command"}].
-
-start_shell_exec_fun(Config) when is_list(Config) ->
-    PrivDir = ?config(priv_dir, Config),
+start_shell_sock_exec_fun(Config) when is_list(Config) ->
+    PrivDir = proplists:get_value(priv_dir, Config),
     UserDir = filename:join(PrivDir, nopubkey), % to make sure we don't use public-key-auth
     file:make_dir(UserDir),
-    SysDir = ?config(data_dir, Config),
-    {Pid, Host, Port} = ssh_test_lib:daemon([{system_dir, SysDir},
-					     {user_dir, UserDir},
-					     {password, "morot"},
-					     {exec, fun ssh_exec/1}]),
+    SysDir = proplists:get_value(data_dir, Config),
+    {Pid, HostD, Port} = ssh_test_lib:daemon([{system_dir, SysDir},
+                                              {user_dir, UserDir},
+                                              {password, "morot"},
+                                              {exec, fun ssh_exec_echo/1}]),
+    Host = ssh_test_lib:ntoa(ssh_test_lib:mangle_connect_address(HostD)),
 
-    ConnectionRef = ssh_test_lib:connect(Host, Port, [{silently_accept_hosts, true},
-						      {user, "foo"},
-						      {password, "morot"},
-						      {user_interaction, true},
-						      {user_dir, UserDir}]),
+    {ok, Sock} = ssh_test_lib:gen_tcp_connect(Host, Port, [{active,false}]),
+    {ok,ConnectionRef} = ssh:connect(Sock, [{silently_accept_hosts, true},
+					    {user, "foo"},
+					    {password, "morot"},
+					    {user_interaction, true},
+					    {user_dir, UserDir}]),
 
     {ok, ChannelId0} = ssh_connection:session_channel(ConnectionRef, infinity),
 
@@ -425,7 +915,7 @@ start_shell_exec_fun(Config) when is_list(Config) ->
 				  "testing", infinity),
 
     receive
-	{ssh_cm, ConnectionRef, {data, _ChannelId, 0, <<"testing\r\n">>}} ->
+	{ssh_cm, ConnectionRef, {data, _ChannelId, 0, <<"echo testing\r\n">>}} ->
 	    ok
     after 5000 ->
 	    ct:fail("Exec Timeout")
@@ -435,18 +925,130 @@ start_shell_exec_fun(Config) when is_list(Config) ->
     ssh:stop_daemon(Pid).
 
 %%--------------------------------------------------------------------
+start_shell_sock_daemon_exec(Config) ->
+    PrivDir = proplists:get_value(priv_dir, Config),
+    UserDir = filename:join(PrivDir, nopubkey), % to make sure we don't use public-key-auth
+    file:make_dir(UserDir),
+    SysDir = proplists:get_value(data_dir, Config),
 
+    %% Listening tcp socket at the client side
+    {ok,Sl} = gen_tcp:listen(0, [{active,false}]),
+    {ok,{_IP,Port}} = inet:sockname(Sl),	% _IP is likely to be {0,0,0,0}. Win don't like...
+
+    %% A server tcp-contects to the listening socket and starts an ssh daemon
+    spawn_link(fun() ->
+		       {ok,Ss} = ssh_test_lib:gen_tcp_connect("localhost", Port, [{active,false}]),
+		       {ok, _Pid} = ssh:daemon(Ss, [{system_dir, SysDir},
+						    {user_dir, UserDir},
+						    {password, "morot"},
+						    {exec, fun ssh_exec_echo/1}])
+	       end),
+
+    %% The client accepts the tcp connection from the server and ssh-connects to it
+    {ok,Sc} = gen_tcp:accept(Sl),
+    {ok,ConnectionRef} = ssh:connect(Sc, [{silently_accept_hosts, true},
+					  {user, "foo"},
+					  {password, "morot"},
+					  {user_interaction, true},
+					  {user_dir, UserDir}]),
+
+    %% And runs some commands
+    {ok, ChannelId0} = ssh_connection:session_channel(ConnectionRef, infinity),
+
+    success = ssh_connection:exec(ConnectionRef, ChannelId0,
+				  "testing", infinity),
+
+    receive
+	{ssh_cm, ConnectionRef, {data, _ChannelId, 0, <<"echo testing\r\n">>}} ->
+	    ok
+    after 5000 ->
+	    ct:fail("Exec Timeout")
+    end,
+
+    ssh:close(ConnectionRef).
+
+%%--------------------------------------------------------------------
+start_shell_sock_daemon_exec_multi(Config) ->
+    PrivDir = proplists:get_value(priv_dir, Config),
+    UserDir = filename:join(PrivDir, nopubkey), % to make sure we don't use public-key-auth
+    file:make_dir(UserDir),
+    SysDir = proplists:get_value(data_dir, Config),
+
+    NumConcurent = 5,
+
+    %% Listening tcp socket at the client side
+    {ok,Sl} = gen_tcp:listen(0, [{active,false}]),
+    {ok,{_IP,Port}} = inet:sockname(Sl),	% _IP is likely to be {0,0,0,0}. Win don't like...
+
+    DaemonOpts = [{system_dir, SysDir},
+                  {user_dir, UserDir},
+                  {password, "morot"},
+                  {exec, fun ssh_exec_echo/1}],
+
+    %% Servers tcp-contects to the listening socket and starts an ssh daemon
+    Pids =
+        [spawn_link(fun() ->
+                            {ok,Ss} = ssh_test_lib:gen_tcp_connect("localhost", Port, [{active,false}]),
+                            {ok, _Pid} = ssh:daemon(Ss, DaemonOpts)
+                    end)
+         || _ <- lists:seq(1,NumConcurent)],
+    ct:log("~p:~p: ~p daemons spawned!", [?MODULE,?LINE,length(Pids)]),
+
+    %% The client accepts the tcp connections from the servers and ssh-connects to it
+    ConnectionRefs =
+        [begin
+             {ok,Sc} = gen_tcp:accept(Sl),
+             {ok,ConnectionRef} = ssh:connect(Sc, [{silently_accept_hosts, true},
+                                                   {user, "foo"},
+                                                   {password, "morot"},
+                                                   {user_interaction, true},
+                                                   {user_dir, UserDir}]),
+             ConnectionRef
+         end || _Pid <- Pids],
+    ct:log("~p:~p: ~p connections accepted!", [?MODULE,?LINE,length(ConnectionRefs)]),
+
+    %% And runs some exec commands
+    Parent = self(),
+    ClientPids =
+        lists:map(
+          fun(ConnectionRef) ->
+                  spawn_link(
+                    fun() ->
+                            {ok, ChannelId0} = ssh_connection:session_channel(ConnectionRef, infinity),
+                            success = ssh_connection:exec(ConnectionRef, ChannelId0, "testing", infinity),
+                            ct:log("~p:~p: exec on connection ~p", [?MODULE,?LINE,ConnectionRef]),
+                            receive
+                                {ssh_cm, ConnectionRef, {data, _ChannelId, 0, <<"echo testing\r\n">>}} ->
+                                    Parent ! {answer_received,self()},
+                                    ct:log("~p:~p: recevied result on connection ~p", [?MODULE,?LINE,ConnectionRef])
+                            after 5000 ->
+                                    ct:fail("Exec Timeout")
+                            end
+                    end)
+          end, ConnectionRefs),
+    ct:log("~p:~p: ~p clients spawned!", [?MODULE,?LINE,length(ClientPids)]),
+
+    lists:foreach(fun(P) ->
+                          receive
+                              {answer_received,P} -> ok
+                          end
+                  end, ClientPids),
+    ct:log("~p:~p: All answers received!", [?MODULE,?LINE]),
+
+    lists:foreach(fun ssh:close/1, ConnectionRefs).
+
+%%--------------------------------------------------------------------
 gracefull_invalid_version(Config) when is_list(Config) ->
-    PrivDir = ?config(priv_dir, Config),
+    PrivDir = proplists:get_value(priv_dir, Config),
     UserDir = filename:join(PrivDir, nopubkey), % to make sure we don't use public-key-auth
     file:make_dir(UserDir),
-    SysDir = ?config(data_dir, Config),
+    SysDir = proplists:get_value(data_dir, Config),
     
     {_Pid, Host, Port} = ssh_test_lib:daemon([{system_dir, SysDir},
-					     {user_dir, UserDir},
-					     {password, "morot"}]),
+                                               {user_dir, UserDir},
+                                               {password, "morot"}]),
 
-    {ok, S} = gen_tcp:connect(Host, Port, []),
+    {ok, S} = ssh_test_lib:gen_tcp_connect(Host, Port, []),
     ok = gen_tcp:send(S,  ["SSH-8.-1","\r\n"]),
     receive
 	Verstring ->
@@ -455,18 +1057,20 @@ gracefull_invalid_version(Config) when is_list(Config) ->
 		{tcp_closed, S} ->
 		    ok
 	    end
+    after 
+	10000 -> ct:fail("timeout ~p:~p",[?MODULE,?LINE])
     end.
 
 gracefull_invalid_start(Config) when is_list(Config) ->
-    PrivDir = ?config(priv_dir, Config),
+    PrivDir = proplists:get_value(priv_dir, Config),
     UserDir = filename:join(PrivDir, nopubkey), % to make sure we don't use public-key-auth
     file:make_dir(UserDir),
-    SysDir = ?config(data_dir, Config),
+    SysDir = proplists:get_value(data_dir, Config),
     {_Pid, Host, Port} = ssh_test_lib:daemon([{system_dir, SysDir},
-					     {user_dir, UserDir},
-					     {password, "morot"}]),
+                                               {user_dir, UserDir},
+                                               {password, "morot"}]),
 
-    {ok, S} = gen_tcp:connect(Host, Port, []),
+    {ok, S} = ssh_test_lib:gen_tcp_connect(Host, Port, []),
     ok = gen_tcp:send(S,  ["foobar","\r\n"]),
     receive
 	Verstring ->
@@ -475,18 +1079,20 @@ gracefull_invalid_start(Config) when is_list(Config) ->
 		{tcp_closed, S} ->
 		    ok
 	    end
+    after 
+	10000 -> ct:fail("timeout ~p:~p",[?MODULE,?LINE])
     end.
 
 gracefull_invalid_long_start(Config) when is_list(Config) ->
-    PrivDir = ?config(priv_dir, Config),
+    PrivDir = proplists:get_value(priv_dir, Config),
     UserDir = filename:join(PrivDir, nopubkey), % to make sure we don't use public-key-auth
     file:make_dir(UserDir),
-    SysDir = ?config(data_dir, Config),
+    SysDir = proplists:get_value(data_dir, Config),
     {_Pid, Host, Port} = ssh_test_lib:daemon([{system_dir, SysDir},
-					     {user_dir, UserDir},
-					     {password, "morot"}]),
+                                               {user_dir, UserDir},
+                                               {password, "morot"}]),
 
-    {ok, S} = gen_tcp:connect(Host, Port, []),
+    {ok, S} = ssh_test_lib:gen_tcp_connect(Host, Port, []),
     ok = gen_tcp:send(S, [lists:duplicate(257, $a), "\r\n"]),
     receive
 	Verstring ->
@@ -495,19 +1101,21 @@ gracefull_invalid_long_start(Config) when is_list(Config) ->
 		{tcp_closed, S} ->
 		    ok
 	    end
+    after 
+	10000 -> ct:fail("timeout ~p:~p",[?MODULE,?LINE])
     end.
 
 
 gracefull_invalid_long_start_no_nl(Config) when is_list(Config) ->
-    PrivDir = ?config(priv_dir, Config),
+    PrivDir = proplists:get_value(priv_dir, Config),
     UserDir = filename:join(PrivDir, nopubkey), % to make sure we don't use public-key-auth
     file:make_dir(UserDir),
-    SysDir = ?config(data_dir, Config),
+    SysDir = proplists:get_value(data_dir, Config),
     {_Pid, Host, Port} = ssh_test_lib:daemon([{system_dir, SysDir},
-					     {user_dir, UserDir},
-					     {password, "morot"}]),
+                                               {user_dir, UserDir},
+                                               {password, "morot"}]),
 
-    {ok, S} = gen_tcp:connect(Host, Port, []),
+    {ok, S} = ssh_test_lib:gen_tcp_connect(Host, Port, []),
     ok = gen_tcp:send(S, [lists:duplicate(257, $a), "\r\n"]),
     receive
 	Verstring ->
@@ -516,21 +1124,20 @@ gracefull_invalid_long_start_no_nl(Config) when is_list(Config) ->
 		{tcp_closed, S} ->
 		    ok
 	    end
+    after 
+	10000 -> ct:fail("timeout ~p:~p",[?MODULE,?LINE])
     end.
 
-stop_listener() ->
-    [{doc, "start ssh daemon, setup connections, stop listener, restart listner"}].
-
 stop_listener(Config) when is_list(Config) ->
-    PrivDir = ?config(priv_dir, Config),
+    PrivDir = proplists:get_value(priv_dir, Config),
     UserDir = filename:join(PrivDir, nopubkey), % to make sure we don't use public-key-auth
     file:make_dir(UserDir),
-    SysDir = ?config(data_dir, Config),
+    SysDir = proplists:get_value(data_dir, Config),
 
     {Pid0, Host, Port} = ssh_test_lib:daemon([{system_dir, SysDir},
 					      {user_dir, UserDir},
 					      {password, "morot"},
-					      {exec, fun ssh_exec/1}]),
+					      {exec, fun ssh_exec_echo/1}]),
 
     ConnectionRef0 = ssh_test_lib:connect(Host, Port, [{silently_accept_hosts, true},
 						       {user, "foo"},
@@ -550,41 +1157,42 @@ stop_listener(Config) when is_list(Config) ->
     success = ssh_connection:exec(ConnectionRef0, ChannelId0,
 				  "testing", infinity),
     receive
-	{ssh_cm, ConnectionRef0, {data, ChannelId0, 0, <<"testing\r\n">>}} ->
+	{ssh_cm, ConnectionRef0, {data, ChannelId0, 0, <<"echo testing\r\n">>}} ->
 	    ok
     after 5000 ->
 	    ct:fail("Exec Timeout")
     end,
 
-    {ok, HostAddr} = inet:getaddr(Host, inet),
-    case ssh_test_lib:daemon(HostAddr, Port, [{system_dir, SysDir},
-							     {user_dir, UserDir},
-							     {password, "potatis"},
-							     {exec, fun ssh_exec/1}]) of
-	{Pid1, HostAddr, Port} ->
+    case ssh_test_lib:daemon(Port, [{system_dir, SysDir},
+                                    {user_dir, UserDir},
+                                    {password, "potatis"},
+                                    {exec, fun ssh_exec_echo/1}]) of
+	{Pid1, Host, Port} ->
 	    ConnectionRef1 = ssh_test_lib:connect(Host, Port, [{silently_accept_hosts, true},
 							       {user, "foo"},
 							       {password, "potatis"},
 							       {user_interaction, true},
 							       {user_dir, UserDir}]),
 	    {error, _} = ssh:connect(Host, Port, [{silently_accept_hosts, true},
-						       {user, "foo"},
-						       {password, "morot"},
-						       {user_interaction, true},
-						       {user_dir, UserDir}]),
+                                                  {user, "foo"},
+                                                  {password, "morot"},
+                                                  {user_interaction, true},
+                                                  {user_dir, UserDir}]),
 	    ssh:close(ConnectionRef0),
 	    ssh:close(ConnectionRef1),
 	    ssh:stop_daemon(Pid0),
 	    ssh:stop_daemon(Pid1);
 	Error ->
+	    ssh:close(ConnectionRef0),
+	    ssh:stop_daemon(Pid0),
 	    ct:fail({unexpected, Error})
     end.
 
 start_subsystem_on_closed_channel(Config) ->
-    PrivDir = ?config(priv_dir, Config),
+    PrivDir = proplists:get_value(priv_dir, Config),
     UserDir = filename:join(PrivDir, nopubkey), % to make sure we don't use public-key-auth
     file:make_dir(UserDir),
-    SysDir = ?config(data_dir, Config),
+    SysDir = proplists:get_value(data_dir, Config),
     {Pid, Host, Port} = ssh_test_lib:daemon([{system_dir, SysDir},
 					     {user_dir, UserDir},
 					     {password, "morot"},
@@ -596,11 +1204,104 @@ start_subsystem_on_closed_channel(Config) ->
 						      {user_interaction, false},
 						      {user_dir, UserDir}]),
 
-    {ok, ChannelId} = ssh_connection:session_channel(ConnectionRef, infinity),
 
-    ok = ssh_connection:close(ConnectionRef, ChannelId),
+    {ok, ChannelId1} = ssh_connection:session_channel(ConnectionRef, infinity),
+    ok = ssh_connection:close(ConnectionRef, ChannelId1),
+    {error, closed} = ssh_connection:ptty_alloc(ConnectionRef, ChannelId1, []),
+    {error, closed} = ssh_connection:subsystem(ConnectionRef, ChannelId1, "echo_n", 5000),
+    {error, closed} = ssh_connection:exec(ConnectionRef, ChannelId1, "testing1.\n", 5000),
+    {error, closed} = ssh_connection:send(ConnectionRef, ChannelId1, "exit().\n", 5000),
 
-    {error, closed} = ssh_connection:subsystem(ConnectionRef, ChannelId, "echo_n", infinity),
+    %% Test that there could be a gap between close and an operation (Bugfix OTP-14939):
+    {ok, ChannelId2} = ssh_connection:session_channel(ConnectionRef, infinity),
+    ok = ssh_connection:close(ConnectionRef, ChannelId2),
+    timer:sleep(2000),
+    {error, closed} = ssh_connection:ptty_alloc(ConnectionRef, ChannelId2, []),
+    {error, closed} = ssh_connection:subsystem(ConnectionRef, ChannelId2, "echo_n", 5000),
+    {error, closed} = ssh_connection:exec(ConnectionRef, ChannelId2, "testing1.\n", 5000),
+    {error, closed} = ssh_connection:send(ConnectionRef, ChannelId2, "exit().\n", 5000),
+
+    ssh:close(ConnectionRef),
+    ssh:stop_daemon(Pid).
+
+%%--------------------------------------------------------------------
+max_channels_option(Config) when is_list(Config) ->
+    PrivDir = proplists:get_value(priv_dir, Config),
+    UserDir = filename:join(PrivDir, nopubkey), % to make sure we don't use public-key-auth
+    file:make_dir(UserDir),
+    SysDir = proplists:get_value(data_dir, Config),
+    {Pid, Host, Port} = ssh_test_lib:daemon([{system_dir, SysDir},
+					     {user_dir, UserDir},
+					     {password, "morot"},
+					     {max_channels, 3},
+					     {subsystems, [{"echo_n", {ssh_echo_server, [4000000]}}]}
+					    ]),
+
+    ConnectionRef = ssh_test_lib:connect(Host, Port, [{silently_accept_hosts, true},
+						      {user, "foo"},
+						      {password, "morot"},
+						      {user_interaction, true},
+						      {user_dir, UserDir}]),
+
+    %% Allocate a number of ChannelId:s to play with. (This operation is not
+    %% counted by the max_channel option).
+    {ok, ChannelId0} = ssh_connection:session_channel(ConnectionRef, infinity),
+    {ok, ChannelId1} = ssh_connection:session_channel(ConnectionRef, infinity),
+    {ok, ChannelId2} = ssh_connection:session_channel(ConnectionRef, infinity),
+    {ok, ChannelId3} = ssh_connection:session_channel(ConnectionRef, infinity),
+    {ok, ChannelId4} = ssh_connection:session_channel(ConnectionRef, infinity),
+    {ok, ChannelId5} = ssh_connection:session_channel(ConnectionRef, infinity),
+    {ok, ChannelId6} = ssh_connection:session_channel(ConnectionRef, infinity),
+    {ok, _ChannelId7} = ssh_connection:session_channel(ConnectionRef, infinity),
+
+    %% Now start to open the channels (this is counted my max_channels) to check that
+    %% it gives a failure at right place
+
+    %%%---- Channel 1(3): shell
+    ok = ssh_connection:shell(ConnectionRef,ChannelId0),
+    receive
+	{ssh_cm,ConnectionRef, {data, ChannelId0, 0, <<"Eshell",_/binary>>}} ->
+	    ok
+    after 5000 ->
+	    ct:fail("CLI Timeout")
+    end,
+
+    %%%---- Channel 2(3): subsystem "echo_n"
+    success = ssh_connection:subsystem(ConnectionRef, ChannelId1, "echo_n", infinity),
+
+    %%%---- Channel 3(3): exec. This closes itself.
+    success = ssh_connection:exec(ConnectionRef, ChannelId2, "testing1.\n", infinity),
+    receive
+	{ssh_cm, ConnectionRef, {data, ChannelId2, 0, <<"testing1",_/binary>>}} ->
+	    ok
+    after 5000 ->
+	    ct:fail("Exec #1 Timeout")
+    end,
+
+    %%%---- Channel 3(3): subsystem "echo_n" (Note that ChannelId2 should be closed now)
+    ?wait_match(success, ssh_connection:subsystem(ConnectionRef, ChannelId3, "echo_n", infinity)),
+
+    %%%---- Channel 4(3) !: exec  This should fail
+    failure = ssh_connection:exec(ConnectionRef, ChannelId4, "testing2.\n", infinity),
+
+    %%%---- close the shell (Frees one channel)
+    ok = ssh_connection:send(ConnectionRef, ChannelId0, "exit().\n", 5000),
+    
+    %%%---- wait for the subsystem to terminate
+    receive
+	{ssh_cm,ConnectionRef,{closed,ChannelId0}} -> ok
+    after 5000 ->
+	    ct:log("Timeout waiting for '{ssh_cm,~p,{closed,~p}}'~n"
+		   "Message queue:~n~p",
+		   [ConnectionRef,ChannelId0,erlang:process_info(self(),messages)]),
+	    ct:fail("exit Timeout",[])
+    end,
+
+    %%---- Try that we can open one channel instead of the closed one
+    ?wait_match(success, ssh_connection:subsystem(ConnectionRef, ChannelId5, "echo_n", infinity)),
+
+    %%---- But not a fourth one...
+    failure = ssh_connection:subsystem(ConnectionRef, ChannelId6, "echo_n", infinity),
 
     ssh:close(ConnectionRef),
     ssh:stop_daemon(Pid).
@@ -608,6 +1309,124 @@ start_subsystem_on_closed_channel(Config) ->
 %%--------------------------------------------------------------------
 %% Internal functions ------------------------------------------------
 %%--------------------------------------------------------------------
+
+do_simple_exec(ConnectionRef) ->
+    {ok, ChannelId0} = ssh_connection:session_channel(ConnectionRef, infinity),
+    success = ssh_connection:exec(ConnectionRef, ChannelId0,
+				  "echo testing", infinity),
+    %% receive response to input
+    receive
+	{ssh_cm, ConnectionRef, {data, ChannelId0, 0, <<"testing\n">>}} ->
+	    ok
+    after
+	10000 -> ct:fail("timeout ~p:~p",[?MODULE,?LINE])
+    end,
+
+    %% receive close messages
+    receive
+	{ssh_cm, ConnectionRef, {eof, ChannelId0}} ->
+	    ok
+    after
+	10000 -> ct:fail("timeout ~p:~p",[?MODULE,?LINE])
+    end,
+    receive
+	{ssh_cm, ConnectionRef, {exit_status, ChannelId0, 0}} ->
+	    ok
+    after
+	10000 -> ct:fail("timeout ~p:~p",[?MODULE,?LINE])
+    end,
+    receive
+	{ssh_cm, ConnectionRef,{closed, ChannelId0}} ->
+	    ok
+    after
+	10000 -> ct:fail("timeout ~p:~p",[?MODULE,?LINE])
+    end.
+
+
+%%--------------------------------------------------------------------
+flush_msgs() ->
+    receive
+        _ -> flush_msgs()
+    after
+        500 -> ok
+    end.
+
+%%--------------------------------------------------------------------
+test_shell_is_disabled(ConnectionRef) ->
+    test_shell_is_disabled(ConnectionRef, <<"Prohibited.">>, <<"Eshell V">>).
+
+test_shell_is_disabled(ConnectionRef, Expect, NotExpect) ->
+    {ok, ChannelId} = ssh_connection:session_channel(ConnectionRef, infinity),
+    ok = ssh_connection:shell(ConnectionRef, ChannelId),
+    ExpSz = size(Expect),
+    NotExpSz = size(NotExpect),
+    receive
+        {ssh_cm, ConnectionRef, {data, ChannelId, 1, <<Expect:ExpSz/binary, _/binary>>}} ->
+            flush_msgs();
+
+        {ssh_cm, ConnectionRef, {data, ChannelId, 0, <<NotExpect:NotExpSz/binary, _/binary>>}} ->
+            ct:fail("Could start disabled shell!");
+
+        R ->
+            ct:log("~p:~p Got unexpected ~p",[?MODULE,?LINE,R]),
+            ct:fail("Strange shell response")
+
+    after 5000 ->
+            ct:fail("Shell Timeout")
+    end.
+
+%%--------------------------------------------------------------------
+test_exec_is_disabled(ConnectionRef) ->
+    {ok, ChannelId} = ssh_connection:session_channel(ConnectionRef, infinity),
+    success = ssh_connection:exec(ConnectionRef, ChannelId, "1+2.", infinity),
+    receive
+        {ssh_cm, ConnectionRef, {data,ChannelId,1,<<"Prohibited.">>}} ->
+            flush_msgs();
+        R ->
+            ct:log("~p:~p Got unexpected ~p",[?MODULE,?LINE,R]),
+            ct:fail("Could exec erlang term although non-erlang shell")
+    after 5000 ->
+            ct:fail("Exec Timeout")
+    end.
+
+%%--------------------------------------------------------------------
+test_shell_is_enabled(ConnectionRef) ->
+    test_shell_is_enabled(ConnectionRef, <<"Eshell V">>).
+
+test_shell_is_enabled(ConnectionRef, Expect) ->
+    {ok, ChannelId} = ssh_connection:session_channel(ConnectionRef, infinity),
+    ok = ssh_connection:shell(ConnectionRef,ChannelId),
+    ExpSz = size(Expect),
+    receive
+	{ssh_cm,ConnectionRef, {data, ChannelId, 0, <<Expect:ExpSz/binary, _/binary>>}} ->
+	    flush_msgs();
+
+        R ->
+            ct:log("~p:~p Got unexpected ~p",[?MODULE,?LINE,R]),
+            ct:fail("Strange shell response")
+
+    after 5000 ->
+	    ct:fail("CLI Timeout")
+    end.
+
+
+test_exec_is_enabled(ConnectionRef) ->
+    test_exec_is_enabled(ConnectionRef, "1+2.", <<"3">>).
+
+test_exec_is_enabled(ConnectionRef, Exec, Expect) ->
+    {ok, ChannelId} = ssh_connection:session_channel(ConnectionRef, infinity),
+    success = ssh_connection:exec(ConnectionRef, ChannelId, Exec, infinity),
+    ExpSz = size(Expect),
+    receive
+        {ssh_cm, ConnectionRef, {data, ChannelId, 0, <<Expect:ExpSz/binary, _/binary>>}} = R ->
+            ct:log("~p:~p Got expected ~p",[?MODULE,?LINE,R]);
+        Other ->
+            ct:log("~p:~p Got unexpected ~p",[?MODULE,?LINE,Other])
+    after 5000 ->
+            {fail,"Exec Timeout"}
+    end.
+
+%%%----------------------------------------------------------------
 big_cat_rx(ConnectionRef, ChannelId) ->
     big_cat_rx(ConnectionRef, ChannelId, []).
 
@@ -623,20 +1442,46 @@ big_cat_rx(ConnectionRef, ChannelId, Acc) ->
 	    timeout
     end.
 
-receive_data(ExpectedData, ConnectionRef, ChannelId) ->
-    ExpectedData = collect_data(ConnectionRef, ChannelId).
+collect_data(ConnectionRef, ChannelId, EchoSize) ->
+    ct:log("~p:~p Listener ~p running! ConnectionRef=~p, ChannelId=~p",[?MODULE,?LINE,self(),ConnectionRef,ChannelId]),
+    collect_data(ConnectionRef, ChannelId, EchoSize, [], 0).
 
-collect_data(ConnectionRef, ChannelId) ->
-    collect_data(ConnectionRef, ChannelId, []).
-
-collect_data(ConnectionRef, ChannelId, Acc) ->
+collect_data(ConnectionRef, ChannelId, EchoSize, Acc, Sum) ->
+    TO = 5000,
     receive
-	{ssh_cm, ConnectionRef, {data, ChannelId, 0, Data}} ->
-	    collect_data(ConnectionRef, ChannelId, [Data | Acc]);
-	{ssh_cm, ConnectionRef, {eof, ChannelId}} ->
-	    iolist_to_binary(lists:reverse(Acc))
-    after 5000 ->
-	    timeout
+	{ssh_cm, ConnectionRef, {data, ChannelId, 0, Data}} when is_binary(Data) ->
+	    ct:log("~p:~p collect_data: received ~p bytes. total ~p bytes,  want ~p more",
+		   [?MODULE,?LINE,size(Data),Sum+size(Data),EchoSize-Sum]),
+	    ssh_connection:adjust_window(ConnectionRef, ChannelId, size(Data)),
+	    collect_data(ConnectionRef, ChannelId, EchoSize, [Data | Acc], Sum+size(Data));
+	{ssh_cm, ConnectionRef, Msg={eof, ChannelId}} ->
+	    collect_data_report_end(Acc, Msg, EchoSize);
+
+	{ssh_cm, ConnectionRef, Msg={closed,ChannelId}} ->
+	    collect_data_report_end(Acc, Msg, EchoSize);
+
+	Msg ->
+	    ct:log("~p:~p collect_data: ***** unexpected message *****~n~p",[?MODULE,?LINE,Msg]),
+	    collect_data(ConnectionRef, ChannelId, EchoSize, Acc, Sum)
+
+    after TO ->
+	    ct:log("~p:~p collect_data: ----- Nothing received for ~p seconds -----~n",[?MODULE,?LINE,TO]),
+	    collect_data(ConnectionRef, ChannelId, EchoSize, Acc, Sum)
+    end.
+
+collect_data_report_end(Acc, Msg, EchoSize) ->
+    try
+	iolist_to_binary(lists:reverse(Acc))
+    of
+	Bin ->
+	    ct:log("~p:~p collect_data: received ~p.~nGot in total ~p bytes,  want ~p more",
+		   [?MODULE,?LINE,Msg,size(Bin),EchoSize,size(Bin)]),
+	    Bin
+    catch
+	C:E ->
+	    ct:log("~p:~p collect_data: received ~p.~nAcc is strange...~nException=~p:~p~nAcc=~p",
+		   [?MODULE,?LINE,Msg,C,E,Acc]),
+	    {error,{C,E}}
     end.
 
 %%%-------------------------------------------------------------------
@@ -647,7 +1492,22 @@ start_our_shell(_User, _Peer) ->
 		  %% Don't actually loop, just exit
           end).
 
-ssh_exec(Cmd) ->
+
+ssh_exec_echo(Cmd) ->
     spawn(fun() ->
-		  io:format(Cmd ++ "\n")
+                  io:format("echo ~s\n", [Cmd])
           end).
+
+ssh_exec_echo(Cmd, User) ->
+    spawn(fun() ->
+                  io:format("echo ~s ~s\n",[User,Cmd])
+          end).
+ssh_exec_echo(Cmd, User, _PeerAddr) ->
+    ssh_exec_echo(Cmd,User).
+
+ssh_exec_direct_echo(Cmd) -> {ok, io_lib:format("echo ~s~n",[Cmd])}.
+ssh_exec_direct_echo(Cmd, User) -> {ok, io_lib:format("echo ~s ~s",[User,Cmd])}.
+ssh_exec_direct_echo(Cmd, User, _PeerAddr) -> ssh_exec_direct_echo(Cmd,User).
+
+ssh_exec_direct_echo_error_return(_Cmd) -> {error, {bad}}.
+ssh_exec_direct_echo_error_return_type(_Cmd) -> very_bad.

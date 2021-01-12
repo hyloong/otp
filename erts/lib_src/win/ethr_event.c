@@ -1,7 +1,7 @@
 /*
  * %CopyrightBegin%
  *
- * Copyright Ericsson AB 2009-2011. All Rights Reserved.
+ * Copyright Ericsson AB 2009-2016. All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -43,6 +43,12 @@ ethr_event_init(ethr_event *e)
     e->handle = CreateEvent(NULL, FALSE, FALSE, NULL);
     if (e->handle == INVALID_HANDLE_VALUE)
 	return ethr_win_get_errno__();
+    return 0;
+}
+
+int
+ethr_event_prepare_timed(ethr_event *e)
+{
     return 0;
 }
 

@@ -1,7 +1,7 @@
 %%
 %% %CopyrightBegin%
 %% 
-%% Copyright Ericsson AB 1999-2011. All Rights Reserved.
+%% Copyright Ericsson AB 1999-2020. All Rights Reserved.
 %% 
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -19,7 +19,7 @@
 %%
 -module(erl_distribution_wb_SUITE).
 
--include_lib("test_server/include/test_server.hrl").
+-include_lib("common_test/include/ct.hrl").
 -include_lib("kernel/include/inet.hrl").
 
 -export([all/0, suite/0,groups/0,init_per_suite/1, end_per_suite/1, 
@@ -28,15 +28,6 @@
 -export([init_per_testcase/2, end_per_testcase/2, whitebox/1, 
 	 switch_options/1, missing_compulsory_dflags/1]).
 
-%% 1)
-%%
-%% Connections are now always set up symetrically with respect to
-%% publication. If connecting node doesn't send DFLAG_PUBLISHED
-%% the other node wont send DFLAG_PUBLISHED. If the connecting
-%% node send DFLAG_PUBLISHED but the other node doesn't send
-%% DFLAG_PUBLISHED, the connecting node should consider its
-%% DFLAG_PUBLISHED as dropped, i.e the connecting node wont be
-%% published on the other node.
 
 -define(to_port(Socket, Data),
 	case inet_tcp:send(Socket, Data) of
@@ -47,6 +38,9 @@
 	        R
         end).
 
+-define(DIST_VER_HIGH, 6).
+-define(DIST_VER_LOW, 5).
+
 -define(DFLAG_PUBLISHED,1).
 -define(DFLAG_ATOM_CACHE,2).
 -define(DFLAG_EXTENDED_REFERENCES,4).
@@ -56,11 +50,22 @@
 -define(DFLAG_HIDDEN_ATOM_CACHE,16#40).
 -define(DFLAG_NEW_FUN_TAGS,16#80).
 -define(DFLAG_EXTENDED_PIDS_PORTS,16#100).
+-define(DFLAG_UTF8_ATOMS, 16#10000).
+-define(DFLAG_BIG_CREATION, 16#40000).
+-define(DFLAG_HANDSHAKE_23, 16#01000000).
 
 %% From R9 and forward extended references is compulsory
 %% From R10 and forward extended pids and ports are compulsory
--define(COMPULSORY_DFLAGS, (?DFLAG_EXTENDED_REFERENCES bor ?DFLAG_EXTENDED_PIDS_PORTS)).
+%% From R20 and forward UTF8 atoms are compulsory
+%% From R21 and forward NEW_FUN_TAGS is compulsory (no more tuple fallback {fun, ...})
+%% From R23 and forward BIG_CREATION is compulsory
+-define(COMPULSORY_DFLAGS, (?DFLAG_EXTENDED_REFERENCES bor
+                            ?DFLAG_EXTENDED_PIDS_PORTS bor
+                            ?DFLAG_UTF8_ATOMS bor
+                            ?DFLAG_NEW_FUN_TAGS bor
+                            ?DFLAG_BIG_CREATION)).
 
+-define(PASS_THROUGH, $p).
 
 -define(shutdown(X), exit(X)).
 -define(int16(X), [((X) bsr 8) band 16#ff, (X) band 16#ff]).
@@ -71,7 +76,7 @@
 
 -define(i16(X1,X0),
         (?u16(X1,X0) - 
-         (if (X1) > 127 -> 16#10000; true -> 0 end))).
+	     (if (X1) > 127 -> 16#10000; true -> 0 end))).
 
 -define(u16(X1,X0),
         (((X1) bsl 8) bor (X0))).
@@ -79,7 +84,9 @@
 -define(u32(X3,X2,X1,X0),
         (((X3) bsl 24) bor ((X2) bsl 16) bor ((X1) bsl 8) bor (X0))).
 
-suite() -> [{ct_hooks,[ts_install_cth]}].
+suite() ->
+    [{ct_hooks,[ts_install_cth]},
+     {timetrap,{minutes,1}}].
 
 all() -> 
     [whitebox, switch_options, missing_compulsory_dflags].
@@ -101,39 +108,42 @@ end_per_group(_GroupName, Config) ->
 
 
 init_per_testcase(Func, Config) when is_atom(Func), is_list(Config) ->
-    Dog=?t:timetrap(?t:minutes(1)),
-    [{watchdog, Dog}|Config].
+    Config.
 
-end_per_testcase(_Func, Config) ->
-    Dog=?config(watchdog, Config),
-    ?t:timetrap_cancel(Dog).
+end_per_testcase(_Func, _Config) ->
+    ok.
 
-switch_options(doc) ->
-    ["Tests switching of options for the tcp port, as this is done"
-     " when the distribution port is to be shortcut into the emulator."
-     " Maybe this should be in the inet test suite, but only the distribution"
-     " does such horrible things..."];
+%% Tests switching of options for the tcp port, as this is done
+%% when the distribution port is to be shortcut into the emulator.
+%% Maybe this should be in the inet test suite, but only the distribution
+%% does such horrible things...
 switch_options(Config) when is_list(Config) ->
     ok = test_switch_active(),
     ok = test_switch_active_partial() ,
     ok = test_switch_active_and_packet(),    
     ok.
-    
 
-whitebox(doc) ->
-    ["Whitebox testing of distribution handshakes. Tests both BC with R5 and "
-     "the md5 version. Note that after R6B, this should be revised to "
-     "remove BC code."];
+
+%% Whitebox testing of distribution handshakes.
 whitebox(Config) when is_list(Config) ->
-    ?line {ok, Node} = start_node(?MODULE,""),
-    ?line Cookie = erlang:get_cookie(),
-    ?line {_,Host} = split(node()),
-    ?line ok = pending_up_md5(Node, join(ccc,Host), Cookie),
-    ?line ok = simultaneous_md5(Node, join('A',Host), Cookie),
-    ?line ok = simultaneous_md5(Node, join(zzzzzzzzzzzzzz,Host), Cookie),
-    ?line stop_node(Node),
+    {ok, Node} = start_node(?MODULE,""),
+    Cookie = erlang:get_cookie(),
+    {_,Host} = split(node()),
+    [begin
+         io:format("Test OurVersion=~p and TrustEpmd=~p\n",
+                   [OurVersion, TrustEpmd]),
+         ok = pending_up_md5(Node, join(ccc,Host), OurVersion,
+                             TrustEpmd, Cookie),
+         ok = simultaneous_md5(Node, join('A',Host), OurVersion,
+                               TrustEpmd, Cookie),
+         ok = simultaneous_md5(Node, join(zzzzzzzzzzzzzz,Host),
+                               OurVersion, TrustEpmd, Cookie)
+     end
+     || OurVersion <- lists:seq(?DIST_VER_LOW, ?DIST_VER_HIGH),
+        TrustEpmd <- [true, false]],
+    stop_node(Node),
     ok.
-    
+
 %%
 %% The actual tests
 %%
@@ -143,238 +153,260 @@ whitebox(Config) when is_list(Config) ->
 %%
 
 test_switch_active() ->
-    ?line {Client, Server} = socket_pair(0, 4),
-    ?line ok = write_packets_32(Client, 1, 5),
+    {Client, Server} = socket_pair(0, 4),
+    ok = write_packets_32(Client, 1, 5),
     receive after 2000 -> ok end,
-    ?line ok = read_packets(Server, 1, 1),
+    ok = read_packets(Server, 1, 1),
     receive after 2000 -> ok end,
-    ?line ok = read_packets(Server, 2, 2),
-    ?line inet:setopts(Server, [{active, true}]),
-    ?line ok = receive_packets(Server, 3, 5),
+    ok = read_packets(Server, 2, 2),
+    inet:setopts(Server, [{active, true}]),
+    ok = receive_packets(Server, 3, 5),
     close_pair({Client, Server}),
     ok.
-    
+
 test_switch_active_partial() ->
-    ?line {Client, Server} = socket_pair(0, 4),
-    ?line ok = write_packets_32(Client, 1, 2),
-    ?line ok = gen_tcp:send(Client,[?int32(4), [0,0,0]]),
+    {Client, Server} = socket_pair(0, 4),
+    ok = write_packets_32(Client, 1, 2),
+    ok = gen_tcp:send(Client,[?int32(4), [0,0,0]]),
     receive after 2000 -> ok end,
-    ?line ok = read_packets(Server, 1, 1),
+    ok = read_packets(Server, 1, 1),
     receive after 2000 -> ok end,
-    ?line ok = read_packets(Server, 2, 2),
-    ?line inet:setopts(Server, [{active, true}]),
-    ?line ok = gen_tcp:send(Client,[3]),
-    ?line ok = write_packets_32(Client, 4, 5),
-    ?line ok = receive_packets(Server, 3, 5),
+    ok = read_packets(Server, 2, 2),
+    inet:setopts(Server, [{active, true}]),
+    ok = gen_tcp:send(Client,[3]),
+    ok = write_packets_32(Client, 4, 5),
+    ok = receive_packets(Server, 3, 5),
     close_pair({Client, Server}),
     ok.
-    
+
 do_test_switch_active_and_packet(SendBefore, SendAfter) ->
-    ?line {Client, Server} = socket_pair(0, 2),
-    ?line ok = write_packets_16(Client, 1, 2),
-    ?line ok = gen_tcp:send(Client,SendBefore),
+    {Client, Server} = socket_pair(0, 2),
+    ok = write_packets_16(Client, 1, 2),
+    ok = gen_tcp:send(Client,SendBefore),
     receive after 2000 -> ok end,
-    ?line ok = read_packets(Server, 1, 1),
+    ok = read_packets(Server, 1, 1),
     receive after 2000 -> ok end,
-    ?line ok = read_packets(Server, 2, 2),
-    ?line inet:setopts(Server, [{packet,4}, {active, true}]),
-    ?line ok = gen_tcp:send(Client,SendAfter),
-    ?line ok = write_packets_32(Client, 4, 5),
-    ?line ok = receive_packets(Server, 3, 5),
+    ok = read_packets(Server, 2, 2),
+    inet:setopts(Server, [{packet,4}, {active, true}]),
+    ok = gen_tcp:send(Client,SendAfter),
+    ok = write_packets_32(Client, 4, 5),
+    ok = receive_packets(Server, 3, 5),
     close_pair({Client, Server}),
     ok.
 
 test_switch_active_and_packet() ->
-    ?line ok = do_test_switch_active_and_packet([0],[0,0,4,0,0,0,3]),
-    ?line ok = do_test_switch_active_and_packet([0,0],[0,4,0,0,0,3]),
-    ?line ok = do_test_switch_active_and_packet([0,0,0],[4,0,0,0,3]),
-    ?line ok = do_test_switch_active_and_packet([0,0,0,4],[0,0,0,3]),
-    ?line ok = do_test_switch_active_and_packet([0,0,0,4,0],[0,0,3]),
-    ?line ok = do_test_switch_active_and_packet([0,0,0,4,0,0],[0,3]),
-    ?line ok = do_test_switch_active_and_packet([0,0,0,4,0,0,0],[3]),
-    ?line ok = do_test_switch_active_and_packet([0,0,0,4,0,0,0,3],[]),
+    ok = do_test_switch_active_and_packet([0],[0,0,4,0,0,0,3]),
+    ok = do_test_switch_active_and_packet([0,0],[0,4,0,0,0,3]),
+    ok = do_test_switch_active_and_packet([0,0,0],[4,0,0,0,3]),
+    ok = do_test_switch_active_and_packet([0,0,0,4],[0,0,0,3]),
+    ok = do_test_switch_active_and_packet([0,0,0,4,0],[0,0,3]),
+    ok = do_test_switch_active_and_packet([0,0,0,4,0,0],[0,3]),
+    ok = do_test_switch_active_and_packet([0,0,0,4,0,0,0],[3]),
+    ok = do_test_switch_active_and_packet([0,0,0,4,0,0,0,3],[]),
     ok.
 
 
 %%
 %% Handshake tests
 %%
-pending_up_md5(Node,OurName,Cookie) ->
-    ?line {NA,NB} = split(Node),
-    ?line {port,PortNo,_} = erl_epmd:port_please(NA,NB),
-    ?line {ok, SocketA} = gen_tcp:connect(atom_to_list(NB),PortNo,
-					  [{active,false},
-					   {packet,2}]),
-    ?line send_name(SocketA,OurName,5),
-    ?line ok = recv_status(SocketA),
-    ?line {hidden,Node,5,HisChallengeA} = recv_challenge(SocketA), % See 1)
-    ?line OurChallengeA = gen_challenge(),
-    ?line OurDigestA = gen_digest(HisChallengeA, Cookie),
-    ?line send_challenge_reply(SocketA, OurChallengeA, OurDigestA),
-    ?line ok = recv_challenge_ack(SocketA, OurChallengeA, Cookie),
-    %%%
-    %%% OK, one connection is up, now lets be nasty and try another up:
-    %%%
-    %%% But wait for a while, the other node might not have done setnode 
-    %%% just yet...
-    ?line receive after 1000 -> ok end,
-    ?line {ok, SocketB} = gen_tcp:connect(atom_to_list(NB),PortNo,
-					  [{active,false},
-					   {packet,2}]),
-    ?line send_name(SocketB,OurName,5),
-    ?line alive = recv_status(SocketB),
-    ?line send_status(SocketB, true),
-    ?line gen_tcp:close(SocketA),
-    ?line {hidden,Node,5,HisChallengeB} = recv_challenge(SocketB), % See 1)
-    ?line OurChallengeB = gen_challenge(),
-    ?line OurDigestB = gen_digest(HisChallengeB, Cookie),
-    ?line send_challenge_reply(SocketB, OurChallengeB, OurDigestB),
-    ?line ok = recv_challenge_ack(SocketB, OurChallengeB, Cookie),
-    %%%
-    %%% Well, are we happy?
-    %%%
-    
-    ?line inet:setopts(SocketB, [{active, false},
-				 {packet, 4}]),    
-    ?line gen_tcp:send(SocketB,build_rex_message('',OurName)),
-    ?line {Header, Message} = recv_message(SocketB),
-    ?line io:format("Received header ~p, data ~p.~n",
+pending_up_md5(Node,OurName,OurVersion,TrustEpmd,Cookie) ->
+    {NA,NB} = split(Node),
+    {port,PortNo,EpmdSaysVersion} = erl_epmd:port_please(NA,NB),
+    {ok, SocketA} = gen_tcp:connect(atom_to_list(NB),PortNo,
+				    [{active,false},
+				     {packet,2}]),
+    AssumedVersion = case TrustEpmd of
+                         true -> EpmdSaysVersion;
+                         false -> ?DIST_VER_LOW
+                     end,
+    SentNameMsg = send_name(SocketA,OurName, OurVersion, AssumedVersion),
+    ok = recv_status(SocketA),
+    {Node,ChallengeMsg,HisChallengeA} = recv_challenge(SocketA,OurVersion),
+    OurChallengeA = gen_challenge(),
+    OurDigestA = gen_digest(HisChallengeA, Cookie),
+    send_complement(SocketA, SentNameMsg, ChallengeMsg, OurVersion),
+    send_challenge_reply(SocketA, OurChallengeA, OurDigestA),
+    ok = recv_challenge_ack(SocketA, OurChallengeA, Cookie),
+%%%
+%%% OK, one connection is up, now lets be nasty and try another up:
+%%%
+%%% But wait for a while, the other node might not have done setnode
+%%% just yet...
+    receive after 1000 -> ok end,
+    {ok, SocketB} = gen_tcp:connect(atom_to_list(NB),PortNo,
+				    [{active,false},
+				     {packet,2}]),
+    SentNameMsg = send_name(SocketB,OurName, OurVersion, AssumedVersion),
+    alive = recv_status(SocketB),
+    send_status(SocketB, true),
+    gen_tcp:close(SocketA),
+    {Node,ChallengeMsg,HisChallengeB} = recv_challenge(SocketB,OurVersion),
+    OurChallengeB = gen_challenge(),
+    OurDigestB = gen_digest(HisChallengeB, Cookie),
+    send_complement(SocketB, SentNameMsg, ChallengeMsg, OurVersion),
+    send_challenge_reply(SocketB, OurChallengeB, OurDigestB),
+    ok = recv_challenge_ack(SocketB, OurChallengeB, Cookie),
+%%%
+%%% Well, are we happy?
+%%%
+
+    inet:setopts(SocketB, [{active, false},
+			   {packet, 4}]),
+    gen_tcp:send(SocketB,build_rex_message('',OurName)),
+    {Header, Message} = recv_message(SocketB),
+    io:format("Received header ~p, data ~p.~n",
 	      [Header, Message]),
-    ?line gen_tcp:close(SocketB),
+    gen_tcp:close(SocketB),
     ok.
 
-simultaneous_md5(Node, OurName, Cookie) when OurName < Node ->
-    ?line pong = net_adm:ping(Node),
-    ?line LSocket = case gen_tcp:listen(0, [{active, false}, {packet,2}]) of
+simultaneous_md5(Node, OurName, OurVersion, TrustEpmd, Cookie) when OurName < Node ->
+    pong = net_adm:ping(Node),
+    LSocket = case gen_tcp:listen(0, [{active, false}, {packet,2}]) of
 		  {ok, Socket} ->
 		      Socket;
 		  Else ->
 		      exit(Else)
 	      end,
-    ?line EpmdSocket = register(OurName, LSocket, 1, 5),
-    ?line {NA, NB} = split(Node),
-    ?line rpc:cast(Node, net_adm, ping, [OurName]),
-    ?line receive after 1000 -> ok end,
-    ?line {port, PortNo, _} = erl_epmd:port_please(NA,NB),
-    ?line {ok, SocketA} = gen_tcp:connect(atom_to_list(NB),PortNo,
-					  [{active,false},
-					   {packet,2}]),
-    ?line send_name(SocketA,OurName,5),
+    EpmdSocket = register_node(OurName, LSocket, ?DIST_VER_LOW, ?DIST_VER_LOW),
+    {NA, NB} = split(Node),
+    rpc:cast(Node, net_adm, ping, [OurName]),
+    receive after 1000 -> ok end,
+    {port, PortNo, EpmdSaysVersion} = erl_epmd:port_please(NA,NB),
+    {ok, SocketA} = gen_tcp:connect(atom_to_list(NB),PortNo,
+				    [{active,false},
+				     {packet,2}]),
+    AssumedVersion = case TrustEpmd of
+                         true -> EpmdSaysVersion;
+                         false -> ?DIST_VER_LOW
+                     end,
+    send_name(SocketA,OurName, OurVersion, AssumedVersion),
     %% We are still not marked up on the other side, as our first message 
     %% is not sent.
-    ?line SocketB = case gen_tcp:accept(LSocket) of
+    SocketB = case gen_tcp:accept(LSocket) of
 		  {ok, Socket1} ->
-		      ?line Socket1;
+		      Socket1;
 		  Else2 ->
-		      ?line exit(Else2)
+		      exit(Else2)
 	      end,
-    ?line nok = recv_status(SocketA),
-    % Now we are expected to close A
-    ?line gen_tcp:close(SocketA),
-    % But still Socket B will continue
-    ?line {normal,Node,5} = recv_name(SocketB),  % See 1)
-    ?line send_status(SocketB, ok_simultaneous),
-    ?line MyChallengeB = gen_challenge(),
-    ?line send_challenge(SocketB, OurName, MyChallengeB,5),
-    ?line HisChallengeB = recv_challenge_reply(SocketB, MyChallengeB, Cookie),
-    ?line DigestB = gen_digest(HisChallengeB,Cookie),
-    ?line send_challenge_ack(SocketB, DigestB),
-    ?line inet:setopts(SocketB, [{active, false},
-			  {packet, 4}]),    
-    % This should be the ping message.
-    ?line {Header, Message} = recv_message(SocketB),
-    ?line io:format("Received header ~p, data ~p.~n",
+    nok = recv_status(SocketA),
+    %% Now we are expected to close A
+    gen_tcp:close(SocketA),
+    %% But still Socket B will continue
+    {Node,GotNameMsg,GotFlags} = recv_name(SocketB),
+    true = (GotFlags band ?DFLAG_HANDSHAKE_23) =/= 0,
+    send_status(SocketB, ok_simultaneous),
+    MyChallengeB = gen_challenge(),
+    send_challenge(SocketB, OurName, MyChallengeB, OurVersion, GotFlags),
+    recv_complement(SocketB, GotNameMsg, OurVersion),
+    {ok,HisChallengeB} = recv_challenge_reply(SocketB, MyChallengeB, Cookie),
+    DigestB = gen_digest(HisChallengeB,Cookie),
+    send_challenge_ack(SocketB, DigestB),
+    inet:setopts(SocketB, [{active, false},
+			   {packet, 4}]),
+    %% This should be the ping message.
+    {Header, Message} = recv_message(SocketB),
+    io:format("Received header ~p, data ~p.~n",
 	      [Header, Message]),
-    ?line gen_tcp:close(SocketB),
-    ?line gen_tcp:close(LSocket),
-    ?line gen_tcp:close(EpmdSocket),
+    gen_tcp:close(SocketB),
+    gen_tcp:close(LSocket),
+    gen_tcp:close(EpmdSocket),
     ok;
-    
-simultaneous_md5(Node, OurName, Cookie) when OurName > Node ->
-    ?line pong = net_adm:ping(Node),
-    ?line LSocket = case gen_tcp:listen(0, [{active, false}, {packet,2}]) of
-			{ok, Socket} ->
-			    ?line Socket;
-			Else ->
-			    ?line exit(Else)
-		    end,
-    ?line EpmdSocket = register(OurName, LSocket, 1, 5),
-    ?line {NA, NB} = split(Node),
-    ?line rpc:cast(Node, net_adm, ping, [OurName]),
-    ?line receive after 1000 -> ok end,
-    ?line {port, PortNo, _} = erl_epmd:port_please(NA,NB),
-    ?line {ok, SocketA} = gen_tcp:connect(atom_to_list(NB),PortNo,
-					  [{active,false},
-					   {packet,2}]),
-    ?line SocketB = case gen_tcp:accept(LSocket) of
-		  {ok, Socket1} ->
-		      ?line Socket1;
-		  Else2 ->
-		      ?line exit(Else2)
+
+simultaneous_md5(Node, OurName, OurVersion, TrustEpmd, Cookie) when OurName > Node ->
+    pong = net_adm:ping(Node),
+    LSocket = case gen_tcp:listen(0, [{active, false}, {packet,2}]) of
+		  {ok, Socket} ->
+		      Socket;
+		  Else ->
+		      exit(Else)
 	      end,
-    ?line send_name(SocketA,OurName,5),
-    ?line ok_simultaneous = recv_status(SocketA),
+    EpmdSocket = register_node(OurName, LSocket,
+                               ?DIST_VER_LOW, ?DIST_VER_LOW),
+    {NA, NB} = split(Node),
+    rpc:cast(Node, net_adm, ping, [OurName]),
+    receive after 1000 -> ok end,
+    {port, PortNo, EpmdSaysVersion} = erl_epmd:port_please(NA,NB),
+    {ok, SocketA} = gen_tcp:connect(atom_to_list(NB),PortNo,
+				    [{active,false},
+				     {packet,2}]),
+    SocketB = case gen_tcp:accept(LSocket) of
+		  {ok, Socket1} ->
+		      Socket1;
+		  Else2 ->
+		      exit(Else2)
+	      end,
+    AssumedVersion = case TrustEpmd of
+                         true -> EpmdSaysVersion;
+                         false -> ?DIST_VER_LOW
+                     end,
+    SentNameMsg = send_name(SocketA,OurName, OurVersion, AssumedVersion),
+    ok_simultaneous = recv_status(SocketA),
     %% Socket B should die during this
-    ?line case catch begin
-			 ?line {normal,Node,5} = recv_name(SocketB),  % See 1)
-			 ?line send_status(SocketB, ok_simultaneous),
-			 ?line MyChallengeB = gen_challenge(),
-			 ?line send_challenge(SocketB, OurName, MyChallengeB,
-					      5),
-			 ?line HisChallengeB = recv_challenge_reply(
-						 SocketB, 
-						 MyChallengeB, 
-						 Cookie),
-			 ?line DigestB = gen_digest(HisChallengeB,Cookie),
-			 ?line send_challenge_ack(SocketB, DigestB),
-			 ?line inet:setopts(SocketB, [{active, false},
-						      {packet, 4}]),    
-			 ?line {HeaderB, MessageB} = recv_message(SocketB),
-			 ?line io:format("Received header ~p, data ~p.~n",
-					 [HeaderB, MessageB])
-		     end of
-	      {'EXIT', Exitcode} ->
-		  ?line io:format("Expected exitsignal caught: ~p.~n",
-				  [Exitcode]);
-	      Success ->
-		  ?line io:format("Unexpected success: ~p~n",
-				  [Success]),
-		  ?line exit(unexpected_success)
-	  end,
-    ?line gen_tcp:close(SocketB),
+    case catch begin
+		   {Node,GotNameMsg,GotFlagsB} = recv_name(SocketB),
+                   true = (GotFlagsB band ?DFLAG_HANDSHAKE_23) =/= 0,
+		   send_status(SocketB, ok_simultaneous),
+		   MyChallengeB = gen_challenge(),
+		   send_challenge(SocketB, OurName, MyChallengeB,
+				  OurVersion, GotFlagsB),
+                   recv_complement(SocketB, GotNameMsg, OurVersion),
+		   {ok,HisChallengeB} = recv_challenge_reply(
+				     SocketB,
+				     MyChallengeB,
+				     Cookie),
+		   DigestB = gen_digest(HisChallengeB,Cookie),
+		   send_challenge_ack(SocketB, DigestB),
+		   inet:setopts(SocketB, [{active, false},
+					  {packet, 4}]),
+		   {HeaderB, MessageB} = recv_message(SocketB),
+		   io:format("Received header ~p, data ~p.~n",
+			     [HeaderB, MessageB])
+	       end of
+	{'EXIT', Exitcode} ->
+	    io:format("Expected exitsignal caught: ~p.~n",
+		      [Exitcode]);
+	Success ->
+	    io:format("Unexpected success: ~p~n",
+		      [Success]),
+	    exit(unexpected_success)
+    end,
+    gen_tcp:close(SocketB),
     %% But still Socket A will continue
-    ?line {hidden,Node,5,HisChallengeA} = recv_challenge(SocketA), % See 1)
-    ?line OurChallengeA = gen_challenge(),
-    ?line OurDigestA = gen_digest(HisChallengeA, Cookie),
-    ?line send_challenge_reply(SocketA, OurChallengeA, OurDigestA),
-    ?line ok = recv_challenge_ack(SocketA, OurChallengeA, Cookie),
-    
-    ?line inet:setopts(SocketA, [{active, false},
-				 {packet, 4}]),    
-    ?line gen_tcp:send(SocketA,build_rex_message('',OurName)),
-    ?line {Header, Message} = recv_message(SocketA),
-    ?line io:format("Received header ~p, data ~p.~n",
+    {Node,ChallengeMsg,HisChallengeA} = recv_challenge(SocketA,OurVersion),
+    OurChallengeA = gen_challenge(),
+    OurDigestA = gen_digest(HisChallengeA, Cookie),
+    send_complement(SocketA, SentNameMsg, ChallengeMsg, OurVersion),
+    send_challenge_reply(SocketA, OurChallengeA, OurDigestA),
+    ok = recv_challenge_ack(SocketA, OurChallengeA, Cookie),
+
+    inet:setopts(SocketA, [{active, false},
+			   {packet, 4}]),
+    gen_tcp:send(SocketA,build_rex_message('',OurName)),
+    {Header, Message} = recv_message(SocketA),
+    io:format("Received header ~p, data ~p.~n",
 	      [Header, Message]),
-    ?line gen_tcp:close(SocketA),
-    ?line gen_tcp:close(LSocket),
-    ?line gen_tcp:close(EpmdSocket),
+    gen_tcp:close(SocketA),
+    gen_tcp:close(LSocket),
+    gen_tcp:close(EpmdSocket),
     ok.
 
-missing_compulsory_dflags(doc) -> [];
 missing_compulsory_dflags(Config) when is_list(Config) ->
-    ?line [Name1, Name2] = get_nodenames(2, missing_compulsory_dflags),
-    ?line {ok, Node} = start_node(Name1,""),
-    ?line {NA,NB} = split(Node),
-    ?line {port,PortNo,_} = erl_epmd:port_please(NA,NB),
-    ?line {ok, SocketA} = gen_tcp:connect(atom_to_list(NB),PortNo,
-					  [{active,false},
-					   {packet,2}]),
-    ?line BadNode = list_to_atom(atom_to_list(Name2)++"@"++atom_to_list(NB)),
-    ?line send_name(SocketA,BadNode,5,0),
-    ?line not_allowed = recv_status(SocketA),
-    ?line gen_tcp:close(SocketA),
-    ?line stop_node(Node),
-    ?line ok.
+    [Name1, Name2] = get_nodenames(2, missing_compulsory_dflags),
+    {ok, Node} = start_node(Name1,""),
+    {NA,NB} = split(Node),
+    {port,PortNo,_} = erl_epmd:port_please(NA,NB),
+    [begin
+         {ok, SocketA} = gen_tcp:connect(atom_to_list(NB),PortNo,
+                                         [{active,false},
+                                          {packet,2}]),
+         BadNode = list_to_atom(atom_to_list(Name2)++"@"++atom_to_list(NB)),
+         send_name(SocketA,BadNode, Version, Version, 0),
+         not_allowed = recv_status(SocketA),
+         gen_tcp:close(SocketA)
+     end
+     || Version <- lists:seq(?DIST_VER_LOW, ?DIST_VER_HIGH)],
+    stop_node(Node),
+    ok.
 
 %%
 %% Here comes the utilities
@@ -437,7 +469,7 @@ socket_pair(ClientPack, ServerPack) ->
     {ok, Server} = gen_tcp:accept(Listen),
     gen_tcp:close(Listen),
     {Client, Server}.
-    
+
 close_pair({Client, Server}) ->
     gen_tcp:close(Client),
     gen_tcp:close(Server),
@@ -454,7 +486,7 @@ close_pair({Client, Server}) ->
 
 gen_challenge() ->
     rand:uniform(1000000).
-    
+
 %% Generate a message digest from Challenge number and Cookie	
 gen_digest(Challenge, Cookie) when is_integer(Challenge), is_atom(Cookie) ->
     C0 = erlang:md5_init(),
@@ -484,46 +516,91 @@ recv_status(Socket) ->
 	    exit(Bad)
     end.
 
-send_challenge(Socket, Node, Challenge, Version) ->
-    send_challenge(Socket, Node, Challenge, Version, ?COMPULSORY_DFLAGS).
-send_challenge(Socket, Node, Challenge, Version, Flags) ->
-    {ok, {{_Ip1,_Ip2,_Ip3,_Ip4}, _}} = inet:sockname(Socket),
-    ?to_port(Socket, [$n,?int16(Version),?int32(Flags),
-		      ?int32(Challenge), atom_to_list(Node)]).
+send_challenge(Socket, Node, Challenge, Version, GotFlags) ->
+    send_challenge(Socket, Node, Challenge, Version, GotFlags, ?COMPULSORY_DFLAGS).
 
-recv_challenge(Socket) ->
-    case gen_tcp:recv(Socket, 0) of
-	{ok,[$n,V1,V0,Fl1,Fl2,Fl3,Fl4,CA3,CA2,CA1,CA0 | Ns]} ->
+send_challenge(Socket, Node, Challenge, ?DIST_VER_LOW, _GotFlags, Flags) ->
+    {ok, {{_Ip1,_Ip2,_Ip3,_Ip4}, _}} = inet:sockname(Socket),
+    ?to_port(Socket, [$n,<<?DIST_VER_LOW:16>>,<<Flags:32>>,
+		      <<Challenge:32>>, atom_to_list(Node)]);
+send_challenge(Socket, Node, Challenge, ?DIST_VER_HIGH, GotFlags, Flags) ->
+    true = (GotFlags band ?DFLAG_HANDSHAKE_23) =/= 0,
+    {ok, {{_Ip1,_Ip2,_Ip3,_Ip4}, _}} = inet:sockname(Socket),
+    NodeName = atom_to_list(Node),
+    Nlen = length(NodeName),
+    Creation = erts_internal:get_creation(),
+    ?to_port(Socket, [$N, <<(Flags bor ?DFLAG_HANDSHAKE_23):64>>,
+                      <<Challenge:32>>, <<Creation:32>>,
+                      <<Nlen:16>>, NodeName
+                      ]).
+
+recv_challenge(Socket, OurVersion) ->
+    {ok, Msg} = gen_tcp:recv(Socket, 0),
+    %%io:format("recv_challenge Msg=~p\n", [Msg]),
+    case {OurVersion, Msg} of
+	{?DIST_VER_LOW,
+         [$n,V1,V0,Fl1,Fl2,Fl3,Fl4,CA3,CA2,CA1,CA0 | Ns]} ->
 	    Flags = ?u32(Fl1,Fl2,Fl3,Fl4),
-	    Type = case Flags band ?DFLAG_PUBLISHED of
-		       0 ->
-			   hidden;
-		       _ ->
-			   normal
-		   end,
+            true = (Flags band ?COMPULSORY_DFLAGS) =:= ?COMPULSORY_DFLAGS,
 	    Node =list_to_atom(Ns),
-	    Version = ?u16(V1,V0),
+	    ?DIST_VER_LOW = ?u16(V1,V0),
 	    Challenge = ?u32(CA3,CA2,CA1,CA0),
-	    {Type,Node,Version,Challenge};
+	    {Node,$n,Challenge};
+
+	{?DIST_VER_HIGH,
+         [$N, F7,F6,F5,F4,F3,F2,F1,F0, CA3,CA2,CA1,CA0,
+              Cr3,Cr2,Cr1,Cr0, NL1,NL0 | Ns]} ->
+	    <<Flags:64>> = <<F7,F6,F5,F4,F3,F2,F1,F0>>,
+            true = (Flags band ?COMPULSORY_DFLAGS) =:= ?COMPULSORY_DFLAGS,
+            <<Creation:32>> = <<Cr3,Cr2,Cr1,Cr0>>,
+            true = (Creation =/= 0),
+            <<NameLen:16>> = <<NL1,NL0>>,
+            NameLen = length(Ns),
+	    Node = list_to_atom(Ns),
+	    Challenge = ?u32(CA3,CA2,CA1,CA0),
+	    {Node,$N,Challenge};
+
 	_ ->
 	    ?shutdown(no_node)	    
     end.
+
+send_complement(Socket, SentNameMsg, ChallengeMsg, OurVersion) ->
+    case {SentNameMsg,ChallengeMsg} of
+        {$n,$N} ->
+            FlagsHigh = our_flags(?COMPULSORY_DFLAGS, OurVersion) bsr 32,
+            ?to_port(Socket, [$c,
+                              <<FlagsHigh:32>>,
+                              ?int32(erts_internal:get_creation())]);
+        {Same,Same} ->
+            ok
+    end.
+
+recv_complement(Socket, $n, OurVersion) when OurVersion > ?DIST_VER_LOW ->
+    case gen_tcp:recv(Socket, 0) of
+	{ok,[$c,Cr3,Cr2,Cr1,Cr0]} ->
+	    Creation = ?u32(Cr3,Cr2,Cr1,Cr0),
+            true = (Creation =/= 0);
+	Err ->
+            {error,Err}
+    end;
+recv_complement(_, _ , _) ->
+    ok.
 
 send_challenge_reply(Socket, Challenge, Digest) ->
     ?to_port(Socket, [$r,?int32(Challenge),Digest]).
 
 recv_challenge_reply(Socket, ChallengeA, Cookie) ->
     case gen_tcp:recv(Socket, 0) of
-	{ok,[$r,CB3,CB2,CB1,CB0 | SumB]} when length(SumB) == 16 ->
+	{ok,[$r,CB3,CB2,CB1,CB0 | SumB]=Data} when length(SumB) == 16 ->
 	    SumA = gen_digest(ChallengeA, Cookie),
 	    ChallengeB = ?u32(CB3,CB2,CB1,CB0),
 	    if SumB == SumA ->
-		    ChallengeB;
+		    {ok,ChallengeB};
 	       true ->
-		    ?shutdown(bad_challenge_reply)
+		    {error,Data}
 	    end;
-	_ ->
-	    ?shutdown(no_node)
+	Err ->
+            {error,Err}
     end.
 
 send_challenge_ack(Socket, Digest) ->
@@ -537,20 +614,34 @@ recv_challenge_ack(Socket, ChallengeB, CookieA) ->
 		    ok;
 	       true ->
 		    ?shutdown(bad_challenge_ack)
-	    end;
-	_ ->
-	    ?shutdown(bad_challenge_ack)
+	    end
     end.
 
-send_name(Socket, MyNode0, Version) ->
-    send_name(Socket, MyNode0, Version, ?COMPULSORY_DFLAGS).
-send_name(Socket, MyNode0, Version, Flags) ->
-    MyNode = atom_to_list(MyNode0),
-    ok = ?to_port(Socket, [<<$n,Version:16,Flags:32>>|MyNode]).
+send_name(Socket, MyNode0, OurVersion, AssumedVersion) ->
+    send_name(Socket, MyNode0, OurVersion, AssumedVersion, ?COMPULSORY_DFLAGS).
 
-%%
-%% recv_name is common for both old and new handshake.
-%%
+send_name(Socket, MyNode0, OurVersion, AssumedVersion, Flags) ->
+    MyNode = atom_to_list(MyNode0),
+    if (OurVersion =:= ?DIST_VER_LOW) or
+       (AssumedVersion =:= ?DIST_VER_LOW) ->
+            OurFlags = our_flags(Flags,OurVersion),
+            ok = ?to_port(Socket, [<<$n,OurVersion:16,OurFlags:32>>|MyNode]),
+            $n;
+
+       (OurVersion > ?DIST_VER_LOW) and
+       (AssumedVersion > ?DIST_VER_LOW) ->
+            Creation = erts_internal:get_creation(),
+            NameLen = length(MyNode),
+            ok = ?to_port(Socket, [<<$N, (Flags bor ?DFLAG_HANDSHAKE_23):64,
+                                     Creation:32,NameLen:16>>|MyNode]),
+            $N
+    end.
+
+our_flags(Flags, ?DIST_VER_LOW) ->
+    Flags;
+our_flags(Flags, OurVersion) when OurVersion > ?DIST_VER_LOW ->
+    Flags bor ?DFLAG_HANDSHAKE_23.
+
 recv_name(Socket) ->
     case gen_tcp:recv(Socket, 0) of
 	{ok,Data} ->
@@ -559,19 +650,18 @@ recv_name(Socket) ->
 	    ?shutdown({no_node,Res})
     end.
 
-get_name([$m,VersionA,VersionB,_Ip1,_Ip2,_Ip3,_Ip4|OtherNode]) ->
-    {normal, list_to_atom(OtherNode), ?u16(VersionA,VersionB)};
-get_name([$h,VersionA,VersionB,_Ip1,_Ip2,_Ip3,_Ip4|OtherNode]) ->
-    {hidden, list_to_atom(OtherNode), ?u16(VersionA,VersionB)};
-get_name([$n,VersionA, VersionB, Flag1, Flag2, Flag3, Flag4 | OtherNode]) ->
-    Type = case ?u32(Flag1, Flag2, Flag3, Flag4) band ?DFLAG_PUBLISHED of
-	       0 ->
-		   hidden;
-	       _ -> 
-		   normal
-	   end,
-    {Type, list_to_atom(OtherNode), 
-     ?u16(VersionA,VersionB)};
+get_name([$n, V1,V0, F3,F2,F1,F0 | OtherNode]) ->
+    <<Version:16>> = <<V1,V0>>,
+    5 = Version,
+    <<Flags:32>> = <<F3,F2,F1,F0>>,
+    {list_to_atom(OtherNode), $n, Flags};
+get_name([$N, F7,F6,F5,F4,F3,F2,F1,F0,
+          _C3,_C2,_C1,_C0, NLen1,NLen2 | OtherNode]) ->
+    <<Flags:64>> = <<F7,F6,F5,F4,F3,F2,F1,F0>>,
+    true = (Flags band ?DFLAG_HANDSHAKE_23) =/= 0,
+    <<NameLen:16>> = <<NLen1,NLen2>>,
+    NameLen = length(OtherNode),
+    {list_to_atom(OtherNode), $N, Flags};
 get_name(Data) ->
     ?shutdown(Data).
 
@@ -595,15 +685,15 @@ do_register_node(NodeName, TcpPort, VLow, VHigh) ->
 	    Elen = length(Extra),
 	    Len = 1+2+1+1+2+2+2+length(Name)+2+Elen,
 	    gen_tcp:send(Socket, [?int16(Len), $x,
-				   ?int16(TcpPort),
-				   $M,
-				   0,
-				   ?int16(VHigh),
-				   ?int16(VLow),
-				   ?int16(length(Name)),
-				   Name,
-				   ?int16(Elen),
-				   Extra]),
+				  ?int16(TcpPort),
+				  $M,
+				  0,
+				  ?int16(VHigh),
+				  ?int16(VLow),
+				  ?int16(length(Name)),
+				  Name,
+				  ?int16(Elen),
+				  Extra]),
 	    case wait_for_reg_reply(Socket, []) of
 		{error, epmd_close} ->
 		    exit(epmd_broken);
@@ -618,6 +708,13 @@ wait_for_reg_reply(Socket, SoFar) ->
     receive
 	{tcp, Socket, Data0} ->
 	    case SoFar ++ Data0 of
+		[$v, Result, A, B, C, D] ->
+		    case Result of
+			0 ->
+			    {alive, Socket, ?u32(A, B, C, D)};
+			_ ->
+			    {error, duplicate_name}
+		    end;
 		[$y, Result, A, B] ->
 		    case Result of
 			0 ->
@@ -638,7 +735,7 @@ wait_for_reg_reply(Socket, SoFar) ->
     end.
 
 
-register(NodeName, ListenSocket, VLow, VHigh) ->
+register_node(NodeName, ListenSocket, VLow, VHigh) ->
     {ok,{_,TcpPort}} = inet:sockname(ListenSocket),
     case do_register_node(NodeName, TcpPort, VLow, VHigh) of
 	{alive, Socket, _Creation} ->
@@ -666,24 +763,25 @@ split(Atom) ->
 build_rex_message(Cookie,OurName) ->
     [$?,term_to_binary({6,self(),Cookie,rex}),
      term_to_binary({'$gen_cast',
-		    {cast,
-		     rpc,
-		     cast,
-		     [OurName, hello, world, []],
-		     self()} })].
+		     {cast,
+		      rpc,
+		      cast,
+		      [OurName, hello, world, []],
+		      self()} })].
 
 %% Receive a distribution message    
 recv_message(Socket) ->
     case gen_tcp:recv(Socket, 0) of
+        {ok,[]} ->
+            recv_message(Socket);  %% a tick, ignore
 	{ok,Data} ->
 	    B0 = list_to_binary(Data),
-	    {_,B1} = erlang:split_binary(B0,1),
-	    Header = binary_to_term(B1),
-	    Siz = byte_size(term_to_binary(Header)),
-	    {_,B2} = erlang:split_binary(B1,Siz),
+	    <<?PASS_THROUGH, B1/binary>> = B0,
+	    {Header,Siz} = binary_to_term(B1,[used]),
+	    <<_:Siz/binary,B2/binary>> = B1,
 	    Message = case (catch binary_to_term(B2)) of
 			  {'EXIT', _} ->
-			      could_not_digest_message;
+			      {could_not_digest_message,B2};
 			  Other ->
 			      Other
 		      end,
@@ -698,10 +796,10 @@ join(Name,Host) ->
 
 %% start/stop slave.
 start_node(Name, Param) ->
-    ?t:start_node(Name, slave, [{args, Param}]).
+    test_server:start_node(Name, slave, [{args, Param}]).
 
 stop_node(Node) ->
-    ?t:stop_node(Node).
+    test_server:stop_node(Node).
 
 
 get_nodenames(N, T) ->

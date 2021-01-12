@@ -1,7 +1,7 @@
 /*
  * %CopyrightBegin%
  *
- * Copyright Ericsson AB 1996-2013. All Rights Reserved.
+ * Copyright Ericsson AB 1996-2020. All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -21,6 +21,22 @@
 #ifndef __SYS_H__
 #define __SYS_H__
 
+#define ERTS_SUPPORT_OLD_RECV_MARK_INSTRS
+
+#if !defined(__GNUC__) || defined(__e2k__)
+#  define ERTS_AT_LEAST_GCC_VSN__(MAJ, MIN, PL) 0
+#elif !defined(__GNUC_MINOR__)
+#  define ERTS_AT_LEAST_GCC_VSN__(MAJ, MIN, PL) \
+  ((__GNUC__ << 24) >= (((MAJ) << 24) | ((MIN) << 12) | (PL)))
+#elif !defined(__GNUC_PATCHLEVEL__)
+#  define ERTS_AT_LEAST_GCC_VSN__(MAJ, MIN, PL) \
+  (((__GNUC__ << 24) | (__GNUC_MINOR__ << 12)) >= (((MAJ) << 24) | ((MIN) << 12) | (PL)))
+#else
+#  define ERTS_AT_LEAST_GCC_VSN__(MAJ, MIN, PL) \
+  (((__GNUC__ << 24) | (__GNUC_MINOR__ << 12) | __GNUC_PATCHLEVEL__) >= (((MAJ) << 24) | ((MIN) << 12) | (PL)))
+#endif
+
+
 #ifdef ERTS_INLINE
 #  ifndef ERTS_CAN_INLINE
 #    define ERTS_CAN_INLINE 1
@@ -38,6 +54,25 @@
 #  endif
 #endif
 
+#ifndef ERTS_FORCE_INLINE
+#  if ERTS_AT_LEAST_GCC_VSN__(3,1,1)
+#    define ERTS_FORCE_INLINE __inline__ __attribute__((__always_inline__))
+#  elif defined(__WIN32__)
+#    define ERTS_FORCE_INLINE __forceinline
+#  endif
+#  ifndef ERTS_FORCE_INLINE
+#    define ERTS_FORCE_INLINE ERTS_INLINE
+#  endif
+#endif
+
+#ifndef ERTS_NOINLINE
+#  if ERTS_AT_LEAST_GCC_VSN__(3,1,1)
+#    define ERTS_NOINLINE __attribute__((__noinline__))
+#  else
+#    define ERTS_NOINLINE
+#  endif
+#endif
+
 #if defined(DEBUG) || defined(ERTS_ENABLE_LOCK_CHECK)
 #  undef ERTS_CAN_INLINE
 #  define ERTS_CAN_INLINE 0
@@ -46,31 +81,38 @@
 #endif
 
 #if ERTS_CAN_INLINE
+#define ERTS_GLB_FORCE_INLINE static ERTS_FORCE_INLINE
 #define ERTS_GLB_INLINE static ERTS_INLINE
 #else
+#define ERTS_GLB_FORCE_INLINE
 #define ERTS_GLB_INLINE
 #endif
 
-#if ERTS_CAN_INLINE || defined(ERTS_DO_INCL_GLB_INLINE_FUNC_DEF) 
+#if (ERTS_CAN_INLINE || defined(ERTS_DO_INCL_GLB_INLINE_FUNC_DEF))
 #  define ERTS_GLB_INLINE_INCL_FUNC_DEF 1
 #else
 #  define ERTS_GLB_INLINE_INCL_FUNC_DEF 0
 #endif
 
-#if defined(VALGRIND) && !defined(NO_FPE_SIGNALS)
-#  define NO_FPE_SIGNALS
-#endif
-
-#ifdef DISABLE_CHILD_WAITER_THREAD
-#undef ENABLE_CHILD_WAITER_THREAD
-#endif
-
-#if defined(ERTS_SMP) && !defined(DISABLE_CHILD_WAITER_THREAD)
-#undef ENABLE_CHILD_WAITER_THREAD
-#define ENABLE_CHILD_WAITER_THREAD 1
+#ifdef __GNUC__
+#  define ERTS_NOINLINE __attribute__((__noinline__))
+#else
+#  define ERTS_NOINLINE
 #endif
 
 #define ERTS_I64_LITERAL(X) X##LL
+
+#define ErtsInArea(ptr,start,nbytes) \
+    ((UWord)((char*)(ptr) - (char*)(start)) < (nbytes))
+
+#define ErtsContainerStruct(ptr, type, member) \
+    ((type *)((char *)(1 ? (ptr) : &((type *)0)->member) - offsetof(type, member)))
+
+/* Use this variant when the member is an array */
+#define ErtsContainerStruct_(ptr, type, memberv) \
+    ((type *)((char *)(1 ? (ptr) : ((type *)0)->memberv) - offsetof(type, memberv)))
+
+#define ErtsSizeofMember(type, member) sizeof(((type *)0)->member)
 
 #if defined (__WIN32__)
 #  include "erl_win_sys.h"
@@ -79,6 +121,23 @@
 #ifndef UNIX
 #  define UNIX 1
 #endif
+#endif
+
+/*
+ * Test for clang's convenient __has_builtin feature checking macro.
+ */
+#ifndef __has_builtin
+  #define __has_builtin(x) 0
+#endif
+
+/*
+ * Define HAVE_OVERFLOW_CHECK_BUILTINS if the overflow checking arithmetic
+ * builtins are available.
+ */
+#if ERTS_AT_LEAST_GCC_VSN__(5, 1, 0)
+#  define HAVE_OVERFLOW_CHECK_BUILTINS 1
+#elif __has_builtin(__builtin_mul_overflow)
+#  define HAVE_OVERFLOW_CHECK_BUILTINS 1
 #endif
 
 #include "erl_misc_utils.h"
@@ -109,19 +168,6 @@ typedef int ErtsSysFdType;
 typedef ERTS_SYS_FD_TYPE ErtsSysFdType;
 #endif
 
-#if !defined(__GNUC__)
-#  define ERTS_AT_LEAST_GCC_VSN__(MAJ, MIN, PL) 0
-#elif !defined(__GNUC_MINOR__)
-#  define ERTS_AT_LEAST_GCC_VSN__(MAJ, MIN, PL) \
-  ((__GNUC__ << 24) >= (((MAJ) << 24) | ((MIN) << 12) | (PL)))
-#elif !defined(__GNUC_PATCHLEVEL__)
-#  define ERTS_AT_LEAST_GCC_VSN__(MAJ, MIN, PL) \
-  (((__GNUC__ << 24) | (__GNUC_MINOR__ << 12)) >= (((MAJ) << 24) | ((MIN) << 12) | (PL)))
-#else
-#  define ERTS_AT_LEAST_GCC_VSN__(MAJ, MIN, PL) \
-  (((__GNUC__ << 24) | (__GNUC_MINOR__ << 12) | __GNUC_PATCHLEVEL__) >= (((MAJ) << 24) | ((MIN) << 12) | (PL)))
-#endif
-
 #if ERTS_AT_LEAST_GCC_VSN__(2, 96, 0)
 #  define ERTS_LIKELY(BOOL)   __builtin_expect((BOOL), !0)
 #  define ERTS_UNLIKELY(BOOL) __builtin_expect((BOOL), 0)
@@ -129,8 +175,21 @@ typedef ERTS_SYS_FD_TYPE ErtsSysFdType;
 #  define ERTS_LIKELY(BOOL)   (BOOL)
 #  define ERTS_UNLIKELY(BOOL) (BOOL)
 #endif
+
+/* AIX doesn't like this and claims section conflicts */
+#if ERTS_AT_LEAST_GCC_VSN__(2, 96, 0) && !defined(_AIX)
+#if (defined(__APPLE__) && defined(__MACH__)) || defined(__DARWIN__)
+#  define ERTS_WRITE_UNLIKELY(X) X __attribute__ ((section ("__DATA,ERTS_LOW_WRITE") ))
+#else
+#  define ERTS_WRITE_UNLIKELY(X) X __attribute__ ((section ("ERTS_LOW_WRITE") ))
+#endif
+#else
+#  define ERTS_WRITE_UNLIKELY(X) X
+#endif
+
+/* clang may have too low __GNUC__ versions but can handle it */
 #ifdef __GNUC__
-#  if __GNUC__ > 4 || (__GNUC__ == 4 && __GNUC_MINOR__ > 5)
+#  if __GNUC__ > 4 || (__GNUC__ == 4 && __GNUC_MINOR__ > 5) || defined(__clang__)
 #    define ERTS_DECLARE_DUMMY(X) X __attribute__ ((unused))
 #  else
 #    define ERTS_DECLARE_DUMMY(X) X
@@ -157,7 +216,7 @@ typedef ERTS_SYS_FD_TYPE ErtsSysFdType;
 #endif
 
 /* In VC++, noreturn is a declspec that has to be before the types,
- * but in GNUC it is an att ribute to be placed between return type
+ * but in GNUC it is an attribute to be placed between return type
  * and function name, hence __decl_noreturn <types> __noreturn <function name>
  *
  * at some platforms (e.g. Android) __noreturn is defined at sys/cdef.h
@@ -200,10 +259,43 @@ __decl_noreturn void __noreturn erl_assert_error(const char* expr, const char *f
 #endif
 
 /*
+ * ERTS_GCC_DIAG_ON and ERTS_GCC_DIAG_OFF can be used to temporarly
+ * disable a gcc or clang warning in a file.
+ *
+ * Example:
+ * GCC_DIAG_OFF(unused-function)
+ * static int test(){ return 0;}
+ * GCC_DIAG_ON(unused-function)
+ *
+ * These macros were orginally authored by Jonathan Wakely and has
+ * been modified by Patrick Horgan.
+ *
+ * Source: http://dbp-consulting.com/tutorials/SuppressingGCCWarnings.html
+ *
+ */
+#if ((__GNUC__ * 100) + __GNUC_MINOR__) >= 402
+#define ERTS_GCC_DIAG_STR(s) #s
+#define ERTS_GCC_DIAG_JOINSTR(x,y) ERTS_GCC_DIAG_STR(x ## y)
+# define ERTS_GCC_DIAG_DO_PRAGMA(x) _Pragma (#x)
+# define ERTS_GCC_DIAG_PRAGMA(x) ERTS_GCC_DIAG_DO_PRAGMA(GCC diagnostic x)
+# if ((__GNUC__ * 100) + __GNUC_MINOR__) >= 406
+#  define ERTS_GCC_DIAG_OFF(x) ERTS_GCC_DIAG_PRAGMA(push) \
+      ERTS_GCC_DIAG_PRAGMA(ignored ERTS_GCC_DIAG_JOINSTR(-W,x))
+#  define ERTS_GCC_DIAG_ON(x) ERTS_GCC_DIAG_PRAGMA(pop)
+# else
+#  define ERTS_GCC_DIAG_OFF(x) ERTS_GCC_DIAG_PRAGMA(ignored ERTS_GCC_DIAG_JOINSTR(-W,x))
+#  define ERTS_GCC_DIAG_ON(x)  ERTS_GCC_DIAG_PRAGMA(warning ERTS_GCC_DIAG_JOINSTR(-W,x))
+# endif
+#else
+# define ERTS_GCC_DIAG_OFF(x)
+# define ERTS_GCC_DIAG_ON(x)
+#endif
+
+/*
  * Compile time assert
  * (the actual compiler error msg can be a bit confusing)
  */
-#if ERTS_AT_LEAST_GCC_VSN__(3,1,1)
+#if ERTS_AT_LEAST_GCC_VSN__(3,1,1) && !defined __cplusplus
 # define ERTS_CT_ASSERT(e) \
     do { \
 	enum { compile_time_assert__ = __builtin_choose_expr((e),0,(void)0) }; \
@@ -211,7 +303,7 @@ __decl_noreturn void __noreturn erl_assert_error(const char* expr, const char *f
 #else
 # define ERTS_CT_ASSERT(e) \
     do { \
-        enum { compile_time_assert__ = 1/(e) }; \
+        enum { compile_time_assert__ = 1/((int)(e)) };  \
     } while (0)
 #endif
 
@@ -253,8 +345,8 @@ __decl_noreturn void __noreturn erl_assert_error(const char* expr, const char *f
 **
 ** Eterm: A tagged erlang term (possibly 64 bits)
 ** BeamInstr: A beam code instruction unit, possibly larger than Eterm, not smaller.
-** UInt:  An unsigned integer exactly as large as an Eterm.
-** SInt:  A signed integer exactly as large as an eterm and therefor large
+** Uint:  An unsigned integer exactly as large as an Eterm.
+** Sint:  A signed integer exactly as large as an eterm and therefor large
 **        enough to hold the return value of the signed_val() macro.
 ** UWord: An unsigned integer at least as large as a void * and also as large
 **          or larger than an Eterm
@@ -289,33 +381,36 @@ __decl_noreturn void __noreturn erl_assert_error(const char* expr, const char *f
 #endif
 
 #if SIZEOF_VOID_P == SIZEOF_LONG
-typedef unsigned long Eterm;
-typedef unsigned long Uint;
-typedef long          Sint;
+typedef unsigned long Eterm erts_align_attribute(sizeof(long));
+typedef unsigned long Uint  erts_align_attribute(sizeof(long));
+typedef long          Sint  erts_align_attribute(sizeof(long));
 #define SWORD_CONSTANT(Const) Const##L
 #define UWORD_CONSTANT(Const) Const##UL
 #define ERTS_UWORD_MAX ULONG_MAX
 #define ERTS_SWORD_MAX LONG_MAX
+#define ERTS_SWORD_MIN LONG_MIN
 #define ERTS_SIZEOF_ETERM SIZEOF_LONG
 #define ErtsStrToSint strtol
 #elif SIZEOF_VOID_P == SIZEOF_INT
-typedef unsigned int Eterm;
-typedef unsigned int Uint;
-typedef int          Sint;
+typedef unsigned int Eterm erts_align_attribute(sizeof(int));
+typedef unsigned int Uint  erts_align_attribute(sizeof(int));
+typedef int          Sint  erts_align_attribute(sizeof(int));
 #define SWORD_CONSTANT(Const) Const
 #define UWORD_CONSTANT(Const) Const##U
 #define ERTS_UWORD_MAX UINT_MAX
 #define ERTS_SWORD_MAX INT_MAX
+#define ERTS_SWORD_MIN INT_MIN
 #define ERTS_SIZEOF_ETERM SIZEOF_INT
 #define ErtsStrToSint strtol
 #elif SIZEOF_VOID_P == SIZEOF_LONG_LONG
-typedef unsigned long long Eterm;
-typedef unsigned long long Uint;
-typedef long long          Sint;
+typedef unsigned long long Eterm erts_align_attribute(sizeof(long long));
+typedef unsigned long long Uint  erts_align_attribute(sizeof(long long));
+typedef long long          Sint  erts_align_attribute(sizeof(long long));
 #define SWORD_CONSTANT(Const) Const##LL
 #define UWORD_CONSTANT(Const) Const##ULL
 #define ERTS_UWORD_MAX ULLONG_MAX
 #define ERTS_SWORD_MAX LLONG_MAX
+#define ERTS_SWORD_MIN LLONG_MIN
 #define ERTS_SIZEOF_ETERM SIZEOF_LONG_LONG
 #if defined(__WIN32__)
 #define ErtsStrToSint _strtoi64
@@ -330,6 +425,7 @@ typedef Uint UWord;
 typedef Sint SWord;
 #define ERTS_UINT_MAX ERTS_UWORD_MAX
 
+typedef const void *ErtsCodePtr;
 typedef UWord BeamInstr;
 
 #ifndef HAVE_INT64
@@ -337,28 +433,12 @@ typedef UWord BeamInstr;
 #    define HAVE_INT64 1
 typedef unsigned long Uint64;
 typedef long          Sint64;
-#    ifdef ULONG_MAX
-#      define ERTS_UINT64_MAX ULONG_MAX
-#    endif
-#    ifdef LONG_MAX
-#      define ERTS_SINT64_MAX LONG_MAX
-#    endif
-#    ifdef LONG_MIN
-#      define ERTS_SINT64_MIN LONG_MIN
-#    endif
+#    define ErtsStrToSint64 strtol
 #  elif SIZEOF_LONG_LONG == 8
 #    define HAVE_INT64 1
 typedef unsigned long long Uint64;
 typedef long long          Sint64;
-#    ifdef ULLONG_MAX
-#      define ERTS_UINT64_MAX ULLONG_MAX
-#    endif
-#    ifdef LLONG_MAX
-#      define ERTS_SINT64_MAX LLONG_MAX
-#    endif
-#    ifdef LLONG_MIN
-#      define ERTS_SINT64_MIN LLONG_MIN
-#    endif
+#    define ErtsStrToSint64 strtoll
 #  else
 #    error "No 64-bit integer type found"
 #  endif
@@ -371,7 +451,7 @@ typedef long long          Sint64;
 #  define ERTS_SINT64_MAX ((Sint64) ((((Uint64) 1) << 63)-1))
 #endif
 #ifndef ERTS_SINT64_MIN
-#  define ERTS_SINT64_MIN (-1*(((Sint64) 1) << 63))
+#  define ERTS_SINT64_MIN ((Sint64) ((((Uint64) 1) << 63)))
 #endif
 
 #if SIZEOF_LONG == 4
@@ -384,6 +464,16 @@ typedef int          Sint32;
 #error Found no appropriate type to use for 'Uint32' and 'Sint32'
 #endif
 
+#ifndef ERTS_UINT32_MAX
+#  define ERTS_UINT32_MAX (~((Uint32) 0))
+#endif
+#ifndef ERTS_SINT32_MAX
+#  define ERTS_SINT32_MAX ((Sint32) ((((Uint32) 1) << 31)-1))
+#endif
+#ifndef ERTS_SINT32_MIN
+#  define ERTS_SINT32_MIN ((Sint32) ((((Uint32) 1) << 31)))
+#endif
+
 #if SIZEOF_INT == 2
 typedef unsigned int Uint16;
 typedef int          Sint16;
@@ -392,6 +482,16 @@ typedef unsigned short Uint16;
 typedef short          Sint16;
 #else
 #error Found no appropriate type to use for 'Uint16' and 'Sint16'
+#endif
+
+#ifndef ERTS_UINT16_MAX
+#  define ERTS_UINT16_MAX (~((Uint16) 0))
+#endif
+#ifndef ERTS_SINT16_MAX
+#  define ERTS_SINT16_MAX ((Sint16) ((((Uint16) 1) << 15)-1))
+#endif
+#ifndef ERTS_SINT16_MIN
+#  define ERTS_SINT16_MIN ((Sint16) ((((Uint16) 1) << 15)))
 #endif
 
 #if CHAR_BIT == 8
@@ -430,49 +530,25 @@ typedef union {
 
 #include "erl_lock_check.h"
 
-/* needed by erl_smp.h */
+/* needed by erl_threads.h */
 int erts_send_warning_to_logger_str_nogl(char *);
 
-#include "erl_smp.h"
+#include "erl_threads.h"
 
 #ifdef ERTS_WANT_BREAK_HANDLING
-#  ifdef ERTS_SMP
-extern erts_smp_atomic32_t erts_break_requested;
+extern erts_atomic32_t erts_break_requested;
 #    define ERTS_BREAK_REQUESTED \
-  ((int) erts_smp_atomic32_read_nob(&erts_break_requested))
-#  else
-extern volatile int erts_break_requested;
-#    define ERTS_BREAK_REQUESTED erts_break_requested
-#  endif
+  ((int) erts_atomic32_read_nob(&erts_break_requested))
 void erts_do_break_handling(void);
 #endif
 
-#ifdef ERTS_WANT_GOT_SIGUSR1
-#  ifndef UNIX
-#    define ERTS_GOT_SIGUSR1 0
-#  else
-#    ifdef ERTS_SMP
-extern erts_smp_atomic32_t erts_got_sigusr1;
-#      define ERTS_GOT_SIGUSR1 ((int) erts_smp_atomic32_read_mb(&erts_got_sigusr1))
-#    else
-extern volatile int erts_got_sigusr1;
-#      define ERTS_GOT_SIGUSR1 erts_got_sigusr1
-#    endif
-#  endif
-#endif
 
-#ifdef ERTS_SMP
-extern erts_smp_atomic32_t erts_writing_erl_crash_dump;
+extern erts_atomic32_t erts_writing_erl_crash_dump;
 extern erts_tsd_key_t erts_is_crash_dumping_key;
 #define ERTS_SOMEONE_IS_CRASH_DUMPING \
-  ((int) erts_smp_atomic32_read_mb(&erts_writing_erl_crash_dump))
+  ((int) erts_atomic32_read_mb(&erts_writing_erl_crash_dump))
 #define ERTS_IS_CRASH_DUMPING \
   ((int) (SWord) erts_tsd_get(erts_is_crash_dumping_key))
-#else
-extern volatile int erts_writing_erl_crash_dump;
-#define ERTS_SOMEONE_IS_CRASH_DUMPING erts_writing_erl_crash_dump
-#define ERTS_IS_CRASH_DUMPING erts_writing_erl_crash_dump
-#endif
 
 /* Deal with memcpy() vs bcopy() etc. We want to use the mem*() functions,
    but be able to fall back on bcopy() etc on systems that don't have
@@ -556,18 +632,19 @@ static unsigned long zero_value = 0, one_value = 1;
 #  endif /* !__WIN32__ */
 #endif /* WANT_NONBLOCKING */
 
-__decl_noreturn void __noreturn erl_exit(int n, char*, ...);
+__decl_noreturn void __noreturn erts_exit(int n, const char*, ...);
 
-/* Some special erl_exit() codes: */
-#define ERTS_INTR_EXIT	INT_MIN		/* called from signal handler */
-#define ERTS_ABORT_EXIT	(INT_MIN + 1)	/* no crash dump; only abort() */
-#define ERTS_DUMP_EXIT	(INT_MIN + 2)	/* crash dump; then exit() */
+/* Some special erts_exit() codes: */
+#define ERTS_INTR_EXIT	-1		/* called from signal handler */
+#define ERTS_ABORT_EXIT	-2	        /* no crash dump; only abort() */
+#define ERTS_DUMP_EXIT	-3              /* crash dump; then exit() */
+#define ERTS_ERROR_EXIT	-4              /* crash dump; then abort() */
 
 #define ERTS_INTERNAL_ERROR(What) \
-    erl_exit(ERTS_ABORT_EXIT, "%s:%d:%s(): Internal error: %s\n", \
+    erts_exit(ERTS_ABORT_EXIT, "%s:%d:%s(): Internal error: %s\n", \
 	     __FILE__, __LINE__, __func__, What)
 
-Eterm erts_check_io_info(void *p);
+UWord erts_sys_get_page_size(void);
 
 /* Size of misc memory allocated from system dependent code */
 Uint erts_sys_misc_mem_sz(void);
@@ -577,23 +654,21 @@ Uint erts_sys_misc_mem_sz(void);
 #include "erl_printf.h"
 
 /* Io constants to erts_print and erts_putc */
-#define ERTS_PRINT_STDERR	(2)
-#define ERTS_PRINT_STDOUT	(1)
-#define ERTS_PRINT_INVALID	(0) /* Don't want to use 0 since CBUF was 0 */
-#define ERTS_PRINT_FILE		(-1)
-#define ERTS_PRINT_SBUF		(-2)
-#define ERTS_PRINT_SNBUF	(-3)
-#define ERTS_PRINT_DSBUF	(-4)
-
-#define ERTS_PRINT_MIN		ERTS_PRINT_DSBUF
+#define ERTS_PRINT_STDERR	((fmtfn_t)0)
+#define ERTS_PRINT_STDOUT	((fmtfn_t)1)
+#define ERTS_PRINT_FILE		((fmtfn_t)2)
+#define ERTS_PRINT_SBUF		((fmtfn_t)3)
+#define ERTS_PRINT_SNBUF	((fmtfn_t)4)
+#define ERTS_PRINT_DSBUF	((fmtfn_t)5)
+#define ERTS_PRINT_FD           ((fmtfn_t)6)
 
 typedef struct {
     char *buf;
     size_t size;
 } erts_print_sn_buf;
 
-int erts_print(int to, void *arg, char *format, ...);	/* in utils.c */
-int erts_putc(int to, void *arg, char);			/* in utils.c */
+int erts_print(fmtfn_t to, void *arg, char *format, ...);	/* in utils.c */
+int erts_putc(fmtfn_t to, void *arg, char);			/* in utils.c */
 
 /* logger stuff is declared here instead of in global.h, so sys files
    won't have to include global.h */
@@ -610,7 +685,7 @@ int erts_send_info_to_logger_nogl(erts_dsprintf_buf_t *);
 int erts_send_warning_to_logger_nogl(erts_dsprintf_buf_t *);
 int erts_send_error_to_logger_nogl(erts_dsprintf_buf_t *);
 int erts_send_info_to_logger_str_nogl(char *);
-/* needed by erl_smp.h (declared above)
+/* needed by erl_threads.h (declared above)
    int erts_send_warning_to_logger_str_nogl(char *); */
 int erts_send_error_to_logger_str_nogl(char *);
 
@@ -620,30 +695,26 @@ typedef struct preload {
     unsigned char* code;	/* Code pointer */
 } Preload;
 
+/*
+ * ErtsTracer is either NIL, 'true' or [Mod | State]
+ *
+ * If set to NIL, it means no tracer.
+ * If set to 'true' it means the current process' tracer.
+ * If set to [Mod | State], there is a tracer.
+ *  See erts_tracer_update for more details
+ */
+typedef Eterm ErtsTracer;
+
 
 /*
- * This structure contains options to all built in drivers.
- * None of the drivers use all of the fields.
+ * This structure contains the rb tree for the erlang osenv copy
+ * see erl_osenv.h for more details.
  */
-
-typedef struct _SysDriverOpts {
-    Uint ifd;			/* Input file descriptor (fd driver). */
-    Uint ofd;			/* Outputfile descriptor (fd driver). */
-    int packet_bytes;		/* Number of bytes in packet header. */
-    int read_write;		/* Read and write bits. */
-    int use_stdio;		/* Use standard I/O: TRUE or FALSE. */
-    int redir_stderr;           /* Redirect stderr to stdout: TRUE/FALSE. */
-    int hide_window;		/* Hide this windows (Windows). */
-    int exit_status;		/* Report exit status of subprocess. */
-    int overlapped_io;          /* Only has effect on windows NT et al */
-    char *envir;		/* Environment of the port process, */
-				/* in Windows format. */
-    char **argv;                /* Argument vector in Unix'ish format. */
-    char *wd;			/* Working directory. */
-    unsigned spawn_type;        /* Bitfield of ERTS_SPAWN_DRIVER | 
-				   ERTS_SPAWN_EXTERNAL | both*/ 
-    int parallelism;            /* Optimize for parallelism */
-} SysDriverOpts;
+typedef struct __erts_osenv_t {
+    struct __env_rbtnode_t *tree;
+    int variable_count;
+    int content_size;
+} erts_osenv_t;
 
 extern char *erts_default_arg0;
 
@@ -678,25 +749,6 @@ extern void erts_late_sys_init_time(void);
 extern void erts_deliver_time(void);
 extern void erts_time_remaining(SysTimeval *);
 extern void erts_sys_init_float(void);
-extern void erts_thread_init_float(void);
-extern void erts_thread_disable_fpe(void);
-ERTS_GLB_INLINE int erts_block_fpe(void);
-ERTS_GLB_INLINE void erts_unblock_fpe(int);
-
-#if ERTS_GLB_INLINE_INCL_FUNC_DEF
-
-ERTS_GLB_INLINE int erts_block_fpe(void)
-{
-    return erts_sys_block_fpe();
-}
-
-ERTS_GLB_INLINE void erts_unblock_fpe(int unmasked)
-{
-    erts_sys_unblock_fpe(unmasked);
-}
-
-#endif /* #if ERTS_GLB_INLINE_INCL_FUNC_DEF */
-
 
 /* Dynamic library/driver loading */
 typedef struct {
@@ -722,15 +774,16 @@ extern char *erts_sys_ddll_error(int code);
 /*
  * System interfaces for startup.
  */
-void erts_sys_schedule_interrupt(int set);
-#ifdef ERTS_SMP
-void erts_sys_schedule_interrupt_timed(int, ErtsMonotonicTime);
 void erts_sys_main_thread(void);
-#endif
 
 extern int erts_sys_prepare_crash_dump(int secs);
 extern void erts_sys_pre_init(void);
+
+/* Platform-specific scheduler initialization, e.g. signal stack swapping. */
+extern void erts_sys_scheduler_init(void);
+
 extern void erl_sys_init(void);
+extern void erl_sys_late_init(void);
 extern void erl_sys_args(int *argc, char **argv);
 extern void erl_sys_schedule(int);
 void sys_tty_reset(int);
@@ -741,10 +794,6 @@ Preload* sys_preloaded(void);
 unsigned char* sys_preload_begin(Preload*);
 void sys_preload_end(Preload*);
 int sys_get_key(int);
-void elapsed_time_both(UWord *ms_user, UWord *ms_sys, 
-		       UWord *ms_user_diff, UWord *ms_sys_diff);
-void wall_clock_elapsed_time_both(UWord *ms_total, 
-				  UWord *ms_diff);
 void get_time(int *hour, int *minute, int *second);
 void get_date(int *year, int *month, int *day);
 void get_localtime(int *year, int *month, int *day, 
@@ -765,20 +814,21 @@ int local_to_univ(Sint *year, Sint *month, Sint *day,
 void get_now(Uint*, Uint*, Uint*);
 struct ErtsSchedulerData_;
 ErtsMonotonicTime erts_get_monotonic_time(struct ErtsSchedulerData_ *);
+ErtsMonotonicTime erts_get_time_offset(void);
+void
+erts_make_timestamp_value(Uint* megasec, Uint* sec, Uint* microsec,
+			  ErtsMonotonicTime mtime, ErtsMonotonicTime offset);
 void get_sys_now(Uint*, Uint*, Uint*);
 void set_break_quit(void (*)(void), void (*)(void));
 
 void os_flavor(char*, unsigned);
 void os_version(int*, int*, int*);
-void init_getenv_state(GETENV_STATE *);
-char * getenv_string(GETENV_STATE *);
-void fini_getenv_state(GETENV_STATE *);
 
 #define HAVE_ERTS_CHECK_IO_DEBUG
 typedef struct {
     int no_used_fds;
     int no_driver_select_structs;
-    int no_driver_event_structs;
+    int no_enif_select_structs;
 } ErtsCheckIoDebugInfo;
 int erts_check_io_debug(ErtsCheckIoDebugInfo *ip);
 
@@ -793,29 +843,36 @@ int sys_double_to_chars_ext(double, char*, size_t, size_t);
 int sys_double_to_chars_fast(double, char*, int, int, int);
 void sys_get_pid(char *, size_t);
 
-/* erts_sys_putenv() returns, 0 on success and a value != 0 on failure. */
-int erts_sys_putenv(char *key, char *value);
-/* Simple variant used from drivers, raw eightbit interface */
-int erts_sys_putenv_raw(char *key, char *value);
-/* erts_sys_getenv() returns 0 on success (length of value string in
-   *size), a value > 0 if value buffer is too small (*size is set to needed
-   size), and a value < 0 on failure. */
-int erts_sys_getenv(char *key, char *value, size_t *size);
-/* Simple variant used from drivers, raw eightbit interface */
-int erts_sys_getenv_raw(char *key, char *value, size_t *size);
-/* erts_sys_getenv__() is only allowed to be used in early init phase */
-int erts_sys_getenv__(char *key, char *value, size_t *size);
-/* erst_sys_unsetenv() returns 0 on success and a value != 0 on failure. */
-int erts_sys_unsetenv(char *key);
+/* erl_drv_get/putenv have been implicitly 8-bit for so long that we can't
+ * change them without breaking things on Windows. Their return values are
+ * identical to erts_osenv_get/putenv */
+int erts_sys_explicit_8bit_getenv(char *key, char *value, size_t *size);
+int erts_sys_explicit_8bit_putenv(char *key, char *value);
+
+/* This is identical to erts_sys_explicit_8bit_getenv but falls down to the
+ * host OS implementation instead of erts_osenv. */
+int erts_sys_explicit_host_getenv(char *key, char *value, size_t *size);
+
+const erts_osenv_t *erts_sys_rlock_global_osenv(void);
+void erts_sys_runlock_global_osenv(void);
+
+erts_osenv_t *erts_sys_rwlock_global_osenv(void);
+void erts_sys_rwunlock_global_osenv(void);
 
 /* Easier to use, but not as efficient, environment functions */
 char *erts_read_env(char *key);
 void erts_free_read_env(void *value);
 
-#if defined(ERTS_THR_HAVE_SIG_FUNCS) && !defined(ETHR_UNUSABLE_SIGUSRX)
+#if defined(ERTS_THR_HAVE_SIG_FUNCS) &&                         \
+    (!defined(ETHR_UNUSABLE_SIGUSRX) || defined(SIGRTMIN))
 extern void sys_thr_resume(erts_tid_t tid);
 extern void sys_thr_suspend(erts_tid_t tid);
-#endif
+#ifdef SIGRTMIN
+#define ERTS_SYS_SUSPEND_SIGNAL (SIGRTMIN+1)
+#else
+#define ERTS_SYS_SUSPEND_SIGNAL (SIGUSR2)
+#endif /* SIGRTMIN */
+#endif /* HAVE_SIG_FUNCS */
 
 /* utils.c */
 
@@ -847,10 +904,16 @@ void sys_alloc_stat(SysAllocStat *);
 #define ERTS_REFC_DEBUG
 #endif
 
-typedef erts_smp_atomic_t erts_refc_t;
+typedef erts_atomic_t erts_refc_t;
 
 ERTS_GLB_INLINE void erts_refc_init(erts_refc_t *refcp, erts_aint_t val);
 ERTS_GLB_INLINE void erts_refc_inc(erts_refc_t *refcp, erts_aint_t min_val);
+ERTS_GLB_INLINE erts_aint_t erts_refc_inc_unless(erts_refc_t *refcp,
+                                                 erts_aint_t unless_val,
+                                                 erts_aint_t min_val);
+ERTS_GLB_INLINE void erts_refc_inc_if(erts_refc_t *refcp,
+                                      erts_aint_t if_val,
+                                      erts_aint_t min_val);
 ERTS_GLB_INLINE erts_aint_t erts_refc_inctest(erts_refc_t *refcp,
 					      erts_aint_t min_val);
 ERTS_GLB_INLINE void erts_refc_dec(erts_refc_t *refcp, erts_aint_t min_val);
@@ -866,30 +929,75 @@ ERTS_GLB_INLINE erts_aint_t erts_refc_read(erts_refc_t *refcp,
 ERTS_GLB_INLINE void
 erts_refc_init(erts_refc_t *refcp, erts_aint_t val)
 {
-    erts_smp_atomic_init_nob((erts_smp_atomic_t *) refcp, val);
+    erts_atomic_init_nob((erts_atomic_t *) refcp, val);
 }
 
 ERTS_GLB_INLINE void
 erts_refc_inc(erts_refc_t *refcp, erts_aint_t min_val)
 {
 #ifdef ERTS_REFC_DEBUG
-    erts_aint_t val = erts_smp_atomic_inc_read_nob((erts_smp_atomic_t *) refcp);
+    erts_aint_t val = erts_atomic_inc_read_nob((erts_atomic_t *) refcp);
     if (val < min_val)
-	erl_exit(ERTS_ABORT_EXIT,
+	erts_exit(ERTS_ABORT_EXIT,
 		 "erts_refc_inc(): Bad refc found (refc=%ld < %ld)!\n",
 		 val, min_val);
 #else
-    erts_smp_atomic_inc_nob((erts_smp_atomic_t *) refcp);
+    erts_atomic_inc_nob((erts_atomic_t *) refcp);
 #endif
+}
+
+ERTS_GLB_INLINE erts_aint_t
+erts_refc_inc_unless(erts_refc_t *refcp,
+                     erts_aint_t unless_val,
+                     erts_aint_t min_val)
+{
+    erts_aint_t val = erts_atomic_read_nob((erts_atomic_t *) refcp);
+    while (1) {
+        erts_aint_t exp, new_value;
+#ifdef ERTS_REFC_DEBUG
+        if (val < min_val)
+            erts_exit(ERTS_ABORT_EXIT,
+                      "erts_refc_inc_unless(): Bad refc found (refc=%ld < %ld)!\n",
+                      val, min_val);
+#endif
+        if (val == unless_val)
+            return val;
+        new_value = val + 1;
+        exp = val;
+        val = erts_atomic_cmpxchg_nob((erts_atomic_t *) refcp, new_value, exp);
+        if (val == exp)
+            return new_value;
+    }
+}
+
+ERTS_GLB_INLINE void
+erts_refc_inc_if(erts_refc_t *refcp,
+                 erts_aint_t if_val,
+                 erts_aint_t min_val)
+{
+    erts_aint_t val = erts_atomic_read_nob((erts_atomic_t *) refcp);
+#ifdef ERTS_REFC_DEBUG
+    if (val < min_val)
+        erts_exit(ERTS_ABORT_EXIT,
+                  "erts_refc_inc_unless(): Bad refc found (refc=%ld < %ld)!\n",
+                  val, min_val);
+#endif
+    if (val == if_val) {
+        erts_atomic_cmpxchg_nob((erts_atomic_t *) refcp, val+1, val);
+        /*
+         * Ignore failure, as it means someone else took care of 'if_val'.
+         * Could be this function racing with itself.
+         */
+    }
 }
 
 ERTS_GLB_INLINE erts_aint_t
 erts_refc_inctest(erts_refc_t *refcp, erts_aint_t min_val)
 {
-    erts_aint_t val = erts_smp_atomic_inc_read_nob((erts_smp_atomic_t *) refcp);
+    erts_aint_t val = erts_atomic_inc_read_nob((erts_atomic_t *) refcp);
 #ifdef ERTS_REFC_DEBUG
     if (val < min_val)
-	erl_exit(ERTS_ABORT_EXIT,
+	erts_exit(ERTS_ABORT_EXIT,
 		 "erts_refc_inctest(): Bad refc found (refc=%ld < %ld)!\n",
 		 val, min_val);
 #endif
@@ -900,23 +1008,23 @@ ERTS_GLB_INLINE void
 erts_refc_dec(erts_refc_t *refcp, erts_aint_t min_val)
 {
 #ifdef ERTS_REFC_DEBUG
-    erts_aint_t val = erts_smp_atomic_dec_read_nob((erts_smp_atomic_t *) refcp);
+    erts_aint_t val = erts_atomic_dec_read_nob((erts_atomic_t *) refcp);
     if (val < min_val)
-	erl_exit(ERTS_ABORT_EXIT,
+	erts_exit(ERTS_ABORT_EXIT,
 		 "erts_refc_dec(): Bad refc found (refc=%ld < %ld)!\n",
 		 val, min_val);
 #else
-    erts_smp_atomic_dec_nob((erts_smp_atomic_t *) refcp);
+    erts_atomic_dec_nob((erts_atomic_t *) refcp);
 #endif
 }
 
 ERTS_GLB_INLINE erts_aint_t
 erts_refc_dectest(erts_refc_t *refcp, erts_aint_t min_val)
 {
-    erts_aint_t val = erts_smp_atomic_dec_read_nob((erts_smp_atomic_t *) refcp);
+    erts_aint_t val = erts_atomic_dec_read_nob((erts_atomic_t *) refcp);
 #ifdef ERTS_REFC_DEBUG
     if (val < min_val)
-	erl_exit(ERTS_ABORT_EXIT,
+	erts_exit(ERTS_ABORT_EXIT,
 		 "erts_refc_dectest(): Bad refc found (refc=%ld < %ld)!\n",
 		 val, min_val);
 #endif
@@ -927,45 +1035,105 @@ ERTS_GLB_INLINE void
 erts_refc_add(erts_refc_t *refcp, erts_aint_t diff, erts_aint_t min_val)
 {
 #ifdef ERTS_REFC_DEBUG
-    erts_aint_t val = erts_smp_atomic_add_read_nob((erts_smp_atomic_t *) refcp, diff);
+    erts_aint_t val = erts_atomic_add_read_nob((erts_atomic_t *) refcp, diff);
     if (val < min_val)
-	erl_exit(ERTS_ABORT_EXIT,
+	erts_exit(ERTS_ABORT_EXIT,
 		 "erts_refc_add(%ld): Bad refc found (refc=%ld < %ld)!\n",
 		 diff, val, min_val);
 #else
-    erts_smp_atomic_add_nob((erts_smp_atomic_t *) refcp, diff);
+    erts_atomic_add_nob((erts_atomic_t *) refcp, diff);
 #endif
 }
 
 ERTS_GLB_INLINE erts_aint_t
 erts_refc_read(erts_refc_t *refcp, erts_aint_t min_val)
 {
-    erts_aint_t val = erts_smp_atomic_read_nob((erts_smp_atomic_t *) refcp);
+    erts_aint_t val = erts_atomic_read_nob((erts_atomic_t *) refcp);
 #ifdef ERTS_REFC_DEBUG
     if (val < min_val)
-	erl_exit(ERTS_ABORT_EXIT,
+	erts_exit(ERTS_ABORT_EXIT,
 		 "erts_refc_read(): Bad refc found (refc=%ld < %ld)!\n",
 		 val, min_val);
 #endif
     return val;
 }
 
+#endif  /* #if ERTS_GLB_INLINE_INCL_FUNC_DEF */
+
+
+/* Thin wrappers around memcpy and friends, which should always be used in
+ * place of plain memcpy, memset, etc.
+ *
+ * Passing NULL to any of these functions is undefined behavior even though it
+ * may seemingly work when the length (if any) is zero; a compiler can take
+ * this as a hint that the passed operand may *never* be NULL and then optimize
+ * based on that information.
+ */
+ERTS_GLB_INLINE void *sys_memcpy(void *dest, const void *src, size_t n);
+ERTS_GLB_INLINE void *sys_memmove(void *dest, const void *src, size_t n);
+ERTS_GLB_INLINE int sys_memcmp(const void *s1, const void *s2, size_t n);
+ERTS_GLB_INLINE void *sys_memset(void *s, int c, size_t n);
+ERTS_GLB_INLINE void *sys_memzero(void *s, size_t n);
+ERTS_GLB_INLINE int sys_strcmp(const char *s1, const char *s2);
+ERTS_GLB_INLINE int sys_strncmp(const char *s1, const char *s2, size_t n);
+ERTS_GLB_INLINE char *sys_strcpy(char *dest, const char *src);
+ERTS_GLB_INLINE char *sys_strncpy(char *dest, const char *src, size_t n);
+ERTS_GLB_INLINE size_t sys_strlen(const char *s);
+
+#if ERTS_GLB_INLINE_INCL_FUNC_DEF
+
+ERTS_GLB_INLINE void *sys_memcpy(void *dest, const void *src, size_t n)
+{
+    ASSERT(dest != NULL && src != NULL);
+    return memcpy(dest,src,n);
+}
+ERTS_GLB_INLINE void *sys_memmove(void *dest, const void *src, size_t n)
+{
+    ASSERT(dest != NULL && src != NULL);
+    return memmove(dest,src,n);
+}
+ERTS_GLB_INLINE int sys_memcmp(const void *s1, const void *s2, size_t n)
+{
+    ASSERT(s1 != NULL && s2 != NULL);
+    return memcmp(s1,s2,n);
+}
+ERTS_GLB_INLINE void *sys_memset(void *s, int c, size_t n)
+{
+    ASSERT(s != NULL);
+    return memset(s,c,n);
+}
+ERTS_GLB_INLINE void *sys_memzero(void *s, size_t n)
+{
+    ASSERT(s != NULL);
+    return memset(s,'\0',n);
+}
+ERTS_GLB_INLINE int sys_strcmp(const char *s1, const char *s2)
+{
+    ASSERT(s1 != NULL && s2 != NULL);
+    return strcmp(s1,s2);
+}
+ERTS_GLB_INLINE int sys_strncmp(const char *s1, const char *s2, size_t n)
+{
+    ASSERT(s1 != NULL && s2 != NULL);
+    return strncmp(s1,s2,n);
+}
+ERTS_GLB_INLINE char *sys_strcpy(char *dest, const char *src)
+{
+    ASSERT(dest != NULL && src != NULL);
+    return strcpy(dest,src);
+
+}
+ERTS_GLB_INLINE char *sys_strncpy(char *dest, const char *src, size_t n)
+{
+    ASSERT(dest != NULL && src != NULL);
+    return strncpy(dest,src,n);
+}
+ERTS_GLB_INLINE size_t sys_strlen(const char *s)
+{
+    ASSERT(s != NULL);
+    return strlen(s);
+}
 #endif /* #if ERTS_GLB_INLINE_INCL_FUNC_DEF */
-
-#ifdef ERTS_ENABLE_KERNEL_POLL
-extern int erts_use_kernel_poll;
-#endif
-
-#define sys_memcpy(s1,s2,n)  memcpy(s1,s2,n)
-#define sys_memmove(s1,s2,n) memmove(s1,s2,n)
-#define sys_memcmp(s1,s2,n)  memcmp(s1,s2,n)
-#define sys_memset(s,c,n)    memset(s,c,n)
-#define sys_memzero(s, n)    memset(s,'\0',n)
-#define sys_strcmp(s1,s2)    strcmp(s1,s2)
-#define sys_strncmp(s1,s2,n) strncmp(s1,s2,n)
-#define sys_strcpy(s1,s2)    strcpy(s1,s2)
-#define sys_strncpy(s1,s2,n) strncpy(s1,s2,n)
-#define sys_strlen(s)        strlen(s)
 
 /* define function symbols (needed in sys_drv_api) */
 #define sys_fp_alloc     sys_alloc
@@ -1011,10 +1179,13 @@ extern int erts_use_kernel_poll;
                             ((char*)(s))[7] = (char)((Sint64)(i))       & 0xff;\
                            } while (0) 
 
+/* Returns a signed int */
 #define get_int32(s) ((((unsigned char*) (s))[0] << 24) | \
                       (((unsigned char*) (s))[1] << 16) | \
                       (((unsigned char*) (s))[2] << 8)  | \
                       (((unsigned char*) (s))[3]))
+
+#define get_uint32(s) ((Uint32)get_int32(s))
 
 #define put_int32(i, s) do {((char*)(s))[0] = (char)((i) >> 24) & 0xff;   \
                             ((char*)(s))[1] = (char)((i) >> 16) & 0xff;   \
@@ -1044,7 +1215,6 @@ extern int erts_use_kernel_poll;
 
 #define put_int8(i, s) do {((unsigned char*)(s))[0] = (i) & 0xff;} while (0)
 
-
 /*
  * Use DEBUGF as you would use printf, but use double parentheses:
  *
@@ -1060,6 +1230,14 @@ void erl_bin_write(unsigned char *, int, int);
 #  define DEBUGF(x) erl_debug x
 #else
 #  define DEBUGF(x)
+#endif
+
+#ifndef MAX
+#define MAX(A, B) ((A) > (B) ? (A) : (B))
+#endif
+
+#ifndef MIN
+#define MIN(A, B) ((A) < (B) ? (A) : (B))
 #endif
 
 #ifdef __WIN32__
@@ -1126,5 +1304,62 @@ void erts_set_printable_characters(int range);
 int erts_get_printable_characters(void);
 
 void erts_init_sys_common_misc(void);
+
+ERTS_GLB_INLINE Sint erts_raw_env_7bit_ascii_char_need(int encoding);
+ERTS_GLB_INLINE byte *erts_raw_env_7bit_ascii_char_put(byte c, byte *p,
+                                                       int encoding);
+ERTS_GLB_INLINE int  erts_raw_env_char_is_7bit_ascii_char(byte c, byte *p,
+                                                          int encoding);
+ERTS_GLB_INLINE byte *erts_raw_env_next_char(byte *p, int encoding);
+
+#if ERTS_GLB_INLINE_INCL_FUNC_DEF
+
+ERTS_GLB_INLINE Sint
+erts_raw_env_7bit_ascii_char_need(int encoding)
+{
+    return (encoding == ERL_FILENAME_WIN_WCHAR) ? 2 : 1;
+}
+
+ERTS_GLB_INLINE byte *
+erts_raw_env_7bit_ascii_char_put(byte c,
+                                 byte *p,
+                                 int encoding)
+{
+    *(p++) = c;
+    if (encoding == ERL_FILENAME_WIN_WCHAR)
+        *(p++) = 0;
+    return p;
+}
+
+ERTS_GLB_INLINE int
+erts_raw_env_char_is_7bit_ascii_char(byte c,
+                                     byte *p,
+                                     int encoding)
+{
+    if (encoding == ERL_FILENAME_WIN_WCHAR)
+        return (p[0] == c) & (p[1] == 0);
+    else
+        return p[0] == c;
+}
+
+ERTS_GLB_INLINE byte *
+erts_raw_env_next_char(byte *p, int encoding)
+{
+    if (encoding == ERL_FILENAME_WIN_WCHAR)
+        return p + 2;
+    else
+        return p + 1;
+}
+
+#endif /* #if ERTS_GLB_INLINE_INCL_FUNC_DEF */
+
+/*
+ * Magic numbers for our driver port_control callbacks.
+ * Kept them below 1<<27 to not inflict extra bignum garbage on 32-bit.
+ */
+#define ERTS_TTYSL_DRV_CONTROL_MAGIC_NUMBER  0x018b0900U
+#define ERTS_INET_DRV_CONTROL_MAGIC_NUMBER   0x03f1a300U
+#define ERTS_SPAWN_DRV_CONTROL_MAGIC_NUMBER  0x04c76a00U
+#define ERTS_FORKER_DRV_CONTROL_MAGIC_NUMBER 0x050a7800U
 
 #endif

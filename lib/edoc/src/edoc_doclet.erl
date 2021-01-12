@@ -1,18 +1,23 @@
 %% =====================================================================
-%% This library is free software; you can redistribute it and/or modify
-%% it under the terms of the GNU Lesser General Public License as
-%% published by the Free Software Foundation; either version 2 of the
-%% License, or (at your option) any later version.
+%% Licensed under the Apache License, Version 2.0 (the "License"); you may
+%% not use this file except in compliance with the License. You may obtain
+%% a copy of the License at <http://www.apache.org/licenses/LICENSE-2.0>
 %%
-%% This library is distributed in the hope that it will be useful, but
-%% WITHOUT ANY WARRANTY; without even the implied warranty of
-%% MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
-%% Lesser General Public License for more details.
+%% Unless required by applicable law or agreed to in writing, software
+%% distributed under the License is distributed on an "AS IS" BASIS,
+%% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+%% See the License for the specific language governing permissions and
+%% limitations under the License.
 %%
-%% You should have received a copy of the GNU Lesser General Public
-%% License along with this library; if not, write to the Free Software
-%% Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307
-%% USA
+%% Alternatively, you may use this file under the terms of the GNU Lesser
+%% General Public License (the "LGPL") as published by the Free Software
+%% Foundation; either version 2.1, or (at your option) any later version.
+%% If you wish to allow use of your version of this file only under the
+%% terms of the LGPL, you should delete the provisions above and replace
+%% them with the notice and other provisions required by the LGPL; see
+%% <http://www.gnu.org/licenses/>. If you do not delete the provisions
+%% above, a recipient may use your version of this file under the terms of
+%% either the Apache License or the LGPL.
 %%
 %% @copyright 2003-2006 Richard Carlsson
 %% @author Richard Carlsson <carlsson.richard@gmail.com>
@@ -35,7 +40,7 @@
 
 -import(edoc_report, [report/2, warning/2]).
 
-%% @headerfile "edoc_doclet.hrl"
+%% @headerfile "../include/edoc_doclet.hrl"
 -include("../include/edoc_doclet.hrl").
 
 -define(EDOC_APP, edoc).
@@ -50,14 +55,34 @@
 
 -include_lib("xmerl/include/xmerl.hrl").
 
-%% Sources is the list of inputs in the order they were found.
-%% Modules are sorted lists of atoms without duplicates. (They
-%% usually include the data from the edoc-info file in the target
-%% directory, if it exists.)
+-export_type([command/0,
+	      context/0,
+	      doclet_gen/0,
+	      doclet_toc/0]).
 
-%% @spec (Command::doclet_gen() | doclet_toc(), edoc_context()) -> ok
+-type command() :: doclet_gen()
+		 | doclet_toc().
+%% Doclet commands.
+
+-type context() :: #doclet_context{dir :: string(),
+				   env :: edoc:env(),
+				   opts :: [term()]}.
+%% Context for doclets.
+
+-type doclet_gen() :: #doclet_gen{sources :: [string()],
+				  app :: no_app | atom(),
+				  modules :: [module()]}.
+%% Doclet command.
+
+-type doclet_toc() :: #doclet_toc{paths :: [string()],
+				  indir :: string()}.
+%% Doclet command.
+
+-callback run(command(), context()) -> ok.
+%% Doclet entrypoint.
+
 %% @doc Main doclet entry point. See the file <a
-%% href="../include/edoc_doclet.hrl">`edoc_doclet.hrl'</a> for the data
+%% href="edoc_doclet.hrl">`edoc_doclet.hrl'</a> for the data
 %% structures used for passing parameters.
 %%
 %% Also see {@link edoc:layout/2} for layout-related options, and
@@ -111,6 +136,7 @@
 %% INHERIT-OPTIONS: copy_stylesheet/2
 %% INHERIT-OPTIONS: stylesheet/1
 
+-spec run(edoc_doclet:command(), edoc_doclet:context()) -> ok.
 run(#doclet_gen{}=Cmd, Ctxt) ->
     gen(Cmd#doclet_gen.sources,
 	Cmd#doclet_gen.app,
@@ -119,14 +145,18 @@ run(#doclet_gen{}=Cmd, Ctxt) ->
 run(#doclet_toc{}=Cmd, Ctxt) ->
     toc(Cmd#doclet_toc.paths, Ctxt).
 
+%% @doc `Sources' is the list of inputs in the order they were found.
+%% Modules are sorted lists of atoms without duplicates. (They
+%% usually include the data from the edoc-info file in the target
+%% directory, if it exists.)
 gen(Sources, App, Modules, Ctxt) ->
-    Dir = Ctxt#context.dir,
-    Env = Ctxt#context.env,
-    Options = Ctxt#context.opts,
+    Dir = Ctxt#doclet_context.dir,
+    Env = Ctxt#doclet_context.env,
+    Options = Ctxt#doclet_context.opts,
     Title = title(App, Options),
     CSS = stylesheet(Options),
     {Modules1, Error} = sources(Sources, Dir, Modules, Env, Options),
-    modules_frame(Dir, Modules1, Title, CSS),
+    modules_frame(Dir, Modules1, Title, CSS, Options),
     overview(Dir, Title, Env, Options),
     index_file(Dir, Title),
     edoc_lib:write_info_file(App, Modules1, Dir),
@@ -144,10 +174,10 @@ gen(Sources, App, Modules, Ctxt) ->
 
 title(App, Options) ->
     proplists:get_value(title, Options,
-			if App == ?NO_APP ->
+			if App == no_app ->
 				"Overview";
 			   true ->
-				io_lib:fwrite("Application: ~s", [App])
+				io_lib:fwrite("Application: ~ts", [App])
 			end).
 
 
@@ -193,7 +223,7 @@ source({M, Name, Path}, Dir, Suffix, Env, Set, Private, Hidden,
 		    {Set, Error}
 	    end;
 	R ->
-	    report("skipping source file '~ts': ~P.", [File, R, 15]),
+	    report("skipping source file '~ts': ~tP.", [File, R, 15]),
 	    {Set, true}
     end.
 
@@ -244,16 +274,17 @@ index_file(Dir, Title) ->
     Text = xmerl:export_simple([XML], xmerl_html, []),
     edoc_lib:write_file(Text, Dir, ?INDEX_FILE).
 
-modules_frame(Dir, Ms, Title, CSS) ->
+modules_frame(Dir, Ms, Title, CSS, Options) ->
+    Suffix = proplists:get_value(file_suffix, Options, ?DEFAULT_FILE_SUFFIX),
     Body = [?NL,
 	    {h2, [{class, "indextitle"}], ["Modules"]},
 	    ?NL,
 	    {table, [{width, "100%"}, {border, 0},
 		     {summary, "list of modules"}],
-	     lists:concat(
+	     lists:append(
 	       [[?NL,
 		 {tr, [{td, [],
-			[{a, [{href, module_ref(M)},
+			[{a, [{href, module_ref(M, Suffix)},
 			      {target, "overviewFrame"},
 			      {class, "module"}],
 			  [atom_to_list(M)]}]}]}]
@@ -263,8 +294,8 @@ modules_frame(Dir, Ms, Title, CSS) ->
     Text = xmerl:export_simple([XML], xmerl_html, []),
     edoc_lib:write_file(Text, Dir, ?MODULES_FRAME).
 
-module_ref(M) ->
-    atom_to_list(M) ++ ?DEFAULT_FILE_SUFFIX.
+module_ref(M, Suffix) ->
+    atom_to_list(M) ++ Suffix.
 
 xhtml(Title, CSS, Content) ->
     xhtml_1(Title, CSS, {body, [{bgcolor, "white"}], Content}).
@@ -416,9 +447,9 @@ read_file(File, Context, Env, Opts) ->
 -define(CURRENT_DIR, ".").
 
 toc(Paths, Ctxt) ->
-    Opts = Ctxt#context.opts,
-    Dir = Ctxt#context.dir,
-    Env = Ctxt#context.env,
+    Opts = Ctxt#doclet_context.opts,
+    Dir = Ctxt#doclet_context.dir,
+    Env = Ctxt#doclet_context.env,
     app_index_file(Paths, Dir, Env, Opts).
 
 %% TODO: FIXME: it's unclear how much of this is working at all
@@ -433,7 +464,7 @@ app_index_file(Paths, Dir, Env, Options) ->
     Apps1 = [{filename:dirname(A),filename:basename(A)} || A <- Paths],
     index_file(Dir, Title),
     application_frame(Dir, Apps1, Title, CSS),
-    modules_frame(Dir, [], Title, CSS),
+    modules_frame(Dir, [], Title, CSS, Options),
     overview(Dir, Title, Env, Options),
 %    edoc_lib:write_info_file(Prod, [], Modules1, Dir),
     copy_stylesheet(Dir, Options).
@@ -443,7 +474,7 @@ application_frame(Dir, Apps, Title, CSS) ->
 	    {h2, ["Applications"]},
 	    ?NL,
 	    {table, [{width, "100%"}, {border, 0}],
-	     lists:concat(
+	     lists:append(
 	       [[{tr, [{td, [], [{a, [{href,app_ref(Path,App)},
 				      {target,"_top"}],
 				  [App]}]}]}]

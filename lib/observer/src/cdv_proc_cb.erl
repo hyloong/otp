@@ -1,7 +1,7 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2013. All Rights Reserved.
+%% Copyright Ericsson AB 2013-2018. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -71,7 +71,7 @@ get_details(Id, _) ->
 	    Proplist0 =
 		crashdump_viewer:to_proplist(record_info(fields,proc),Info),
 	    Proplist = [{expand_table,Tab}|Proplist0],
-	    Title = io_lib:format("~s (~s)",[Info#proc.name, Id]),
+	    Title = io_lib:format("~ts (~s)",[Info#proc.name, Id]),
 	    {ok,{Title,Proplist,TW}};
 	{error,{other_node,NodeId}} ->
 	    Info = "The process you are searching for was residing on "
@@ -108,7 +108,7 @@ init_stack_page(Parent, Info) ->
 init_memory_page(Parent, Info0, Tag, Heading) ->
     Info = proplists:get_value(Tag,Info0),
     Tab = proplists:get_value(expand_table,Info0),
-    Html = observer_html_lib:expandable_term(Heading,Info,Tab),
+    Html = observer_html_lib:expandable_term(Heading,Info,Tab, observer_lib:colors(Parent)),
     cdv_html_wx:start_link(Parent,{expand,Html,Tab}).
 
 init_ets_page(Parent, Info) ->
@@ -149,6 +149,10 @@ info_fields() ->
        {"Old Heap",         old_heap},
        {"Heap Unused",      heap_unused},
        {"Old Heap Unused",  old_heap_unused},
+       {"Binary vheap",     bin_vheap},
+       {"Old Binary vheap", old_bin_vheap},
+       {"Binary vheap unused",  bin_vheap_unused},
+       {"Old Binary vheap unused", old_bin_vheap_unused},
        {"Number of Heap Fragements", num_heap_frag},
        {"Heap Fragment Data",heap_frag_data},
        {"New Heap Start",   new_heap_start},

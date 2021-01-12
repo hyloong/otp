@@ -4,7 +4,7 @@
 <application xmlns:xi="http://www.w3.org/2001/XInclude">
   <header>
     <copyright>
-      <year>1996</year><year>2015</year>
+      <year>1996</year><year>2018</year>
       <holder>Ericsson AB. All Rights Reserved.</holder>
     </copyright>
     <legalnotice>
@@ -30,9 +30,6 @@
     <file>application.xml</file>
   </header>
   <description>
-    <p>The Standard Erlang Libraries application, <em>STDLIB</em>,
-      contains modules for manipulating lists, strings and files etc.</p>
-    <br></br>
   </description>
   <xi:include href="stdlib_app.xml"/>
   <xi:include href="array.xml"/>
@@ -48,6 +45,7 @@
   <xi:include href="digraph_utils.xml"/>
   <xi:include href="epp.xml"/>
   <xi:include href="erl_anno.xml"/>
+  <xi:include href="erl_error.xml"/>
   <xi:include href="erl_eval.xml"/>
   <xi:include href="erl_expand_records.xml"/>
   <xi:include href="erl_id_trans.xml"/>
@@ -66,9 +64,9 @@
   <xi:include href="gen_event.xml"/>
   <xi:include href="gen_fsm.xml"/>
   <xi:include href="gen_server.xml"/>
+  <xi:include href="gen_statem.xml"/>
   <xi:include href="io.xml"/>
   <xi:include href="io_lib.xml"/>
-  <xi:include href="lib.xml"/>
   <xi:include href="lists.xml"/>
   <xi:include href="log_mf_h.xml"/>
   <xi:include href="maps.xml"/>
@@ -87,6 +85,7 @@
   <xi:include href="sets.xml"/>
   <xi:include href="shell.xml"/>
   <xi:include href="shell_default.xml"/>
+  <xi:include href="shell_docs.xml"/>
   <xi:include href="slave.xml"/>
   <xi:include href="sofs.xml"/>
   <xi:include href="string.xml"/>
@@ -95,6 +94,7 @@
   <xi:include href="sys.xml"/>
   <xi:include href="timer.xml"/>
   <xi:include href="unicode.xml"/>
+  <xi:include href="uri_string.xml"/>
   <xi:include href="win32reg.xml"/>
   <xi:include href="zip.xml"/>
 </application>

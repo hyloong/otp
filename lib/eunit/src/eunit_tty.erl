@@ -1,17 +1,22 @@
-%% This library is free software; you can redistribute it and/or modify
-%% it under the terms of the GNU Lesser General Public License as
-%% published by the Free Software Foundation; either version 2 of the
-%% License, or (at your option) any later version.
+%% Licensed under the Apache License, Version 2.0 (the "License"); you may
+%% not use this file except in compliance with the License. You may obtain
+%% a copy of the License at <http://www.apache.org/licenses/LICENSE-2.0>
 %%
-%% This library is distributed in the hope that it will be useful, but
-%% WITHOUT ANY WARRANTY; without even the implied warranty of
-%% MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
-%% Lesser General Public License for more details.
+%% Unless required by applicable law or agreed to in writing, software
+%% distributed under the License is distributed on an "AS IS" BASIS,
+%% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+%% See the License for the specific language governing permissions and
+%% limitations under the License.
 %%
-%% You should have received a copy of the GNU Lesser General Public
-%% License along with this library; if not, write to the Free Software
-%% Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307
-%% USA
+%% Alternatively, you may use this file under the terms of the GNU Lesser
+%% General Public License (the "LGPL") as published by the Free Software
+%% Foundation; either version 2.1, or (at your option) any later version.
+%% If you wish to allow use of your version of this file only under the
+%% terms of the LGPL, you should delete the provisions above and replace
+%% them with the notice and other provisions required by the LGPL; see
+%% <http://www.gnu.org/licenses/>. If you do not delete the provisions
+%% above, a recipient may use your version of this file under the terms of
+%% either the Apache License or the LGPL.
 %%
 %% @author Richard Carlsson <carlsson.richard@gmail.com>
 %% @copyright 2006-2009 Richard Carlsson
@@ -33,7 +38,8 @@
 	 terminate/2]).
 
 -record(state, {verbose = false,
-		indent = 0
+                indent = 0,
+                print_depth = 20
 	       }).
 
 start() ->
@@ -43,7 +49,9 @@ start(Options) ->
     eunit_listener:start(?MODULE, Options).
 
 init(Options) ->
-    St = #state{verbose = proplists:get_bool(verbose, Options)},
+    PrintDepth = proplists:get_value(print_depth, Options, 20),
+    St = #state{verbose = proplists:get_bool(verbose, Options),
+                print_depth = PrintDepth},
     put(no_tty, proplists:get_bool(no_tty, Options)),
     receive
 	{start, _Reference} ->
@@ -84,8 +92,8 @@ terminate({ok, Data}, St) ->
 	    end,
 	    sync_end(error)
     end;
-terminate({error, Reason}, _St) ->
-    fwrite("Internal error: ~tP.\n", [Reason, 25]),
+terminate({error, Reason}, #state{print_depth = Depth}) ->
+    fwrite("Internal error: ~tP.\n", [Reason, Depth]),
     sync_end(error).
 
 sync_end(Result) ->
@@ -142,7 +150,7 @@ handle_end(test, Data, St) ->
 	    if St#state.verbose -> ok;
 	       true -> print_test_begin(St#state.indent, Data)
 	    end,
-	    print_test_error(Status, Data),
+	    print_test_error(Status, Data, St),
 	    St
     end.
 
@@ -156,10 +164,10 @@ handle_cancel(group, Data, St) ->
 	Reason ->
 	    Desc = proplists:get_value(desc, Data),
 	    if Desc =/= "", Desc =/= undefined, St#state.verbose ->
-		    print_group_cancel(I, Reason);
+		    print_group_cancel(I, Reason, St);
 	       true ->
 		    print_group_start(I, Desc),
-		    print_group_cancel(I, Reason)
+		    print_group_cancel(I, Reason, St)
 	    end,
 	    St#state{indent = I - 1}
     end;
@@ -168,7 +176,7 @@ handle_cancel(test, Data, St) ->
     if St#state.verbose -> ok;
        true -> print_test_begin(St#state.indent, Data)
     end,
-    print_test_cancel(proplists:get_value(reason, Data)),
+    print_test_cancel(proplists:get_value(reason, Data), St),
     St.
 
 
@@ -213,9 +221,9 @@ print_test_end(Data) ->
 	end,
     fwrite("~tsok\n", [T]).
 
-print_test_error({error, Exception}, Data) ->
+print_test_error({error, Exception}, Data, #state{print_depth = Depth}) ->
     Output = proplists:get_value(output, Data),
-    fwrite("*failed*\n~ts", [eunit_lib:format_exception(Exception)]),
+    fwrite("*failed*\n~ts", [eunit_lib:format_exception(Exception, Depth)]),
     case Output of
 	<<>> ->
 	    fwrite("\n\n");
@@ -224,37 +232,37 @@ print_test_error({error, Exception}, Data) ->
 	_ ->
 	    fwrite("  output:<<\"~ts\">>\n\n", [Output])
     end;
-print_test_error({skipped, Reason}, _) ->
+print_test_error({skipped, Reason}, _, _St) ->
     fwrite("*did not run*\n::~ts\n", [format_skipped(Reason)]).
 
 format_skipped({module_not_found, M}) ->
     io_lib:fwrite("missing module: ~w", [M]);
 format_skipped({no_such_function, {M,F,A}}) ->
-    io_lib:fwrite("no such function: ~w:~w/~w", [M,F,A]).
+    io_lib:fwrite("no such function: ~w:~tw/~w", [M,F,A]).
 
-print_test_cancel(Reason) ->
-    fwrite(format_cancel(Reason)).
+print_test_cancel(Reason, #state{print_depth = Depth}) ->
+    fwrite(format_cancel(Reason, Depth)).
 
-print_group_cancel(_I, {blame, _}) ->
+print_group_cancel(_I, {blame, _}, _) ->
     ok;
-print_group_cancel(I, Reason) ->
+print_group_cancel(I, Reason, #state{print_depth = Depth}) ->
     indent(I),
-    fwrite(format_cancel(Reason)).
+    fwrite(format_cancel(Reason, Depth)).
 
-format_cancel(undefined) ->
+format_cancel(undefined, _) ->
     "*skipped*\n";
-format_cancel(timeout) ->
+format_cancel(timeout, _) ->
     "*timed out*\n";
-format_cancel({startup, Reason}) ->
+format_cancel({startup, Reason}, Depth) ->
     io_lib:fwrite("*could not start test process*\n::~tP\n\n",
-		  [Reason, 15]);
-format_cancel({blame, _SubId}) ->
+		  [Reason, Depth]);
+format_cancel({blame, _SubId}, _) ->
     "*cancelled because of subtask*\n";
-format_cancel({exit, Reason}) ->
+format_cancel({exit, Reason}, Depth) ->
     io_lib:fwrite("*unexpected termination of test process*\n::~tP\n\n",
-		  [Reason, 15]);
-format_cancel({abort, Reason}) ->
-    eunit_lib:format_error(Reason).
+		  [Reason, Depth]);
+format_cancel({abort, Reason}, Depth) ->
+    eunit_lib:format_error(Reason, Depth).
 
 fwrite(String) ->
     fwrite(String, []).

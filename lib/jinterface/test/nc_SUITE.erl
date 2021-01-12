@@ -1,7 +1,7 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2004-2013. All Rights Reserved.
+%% Copyright Ericsson AB 2004-2018. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -21,7 +21,6 @@
 
 
 -include_lib("common_test/include/ct.hrl").
--include("test_server_line.hrl").
 
 -define(VERSION_MAGIC,       131).
 
@@ -32,6 +31,12 @@
 -define(NEW_REFERENCE_EXT,   114).
 -define(ATOM_UTF8_EXT,       118).
 -define(SMALL_ATOM_UTF8_EXT, 119).
+-define(NEW_PID_EXT,         $X).
+-define(NEW_PORT_EXT,        $Y).
+-define(NEWER_REFERENCE_EXT, $Z).
+-define(V4_PORT_EXT,        $x).
+
+-define(OLD_MAX_PIDS_PORTS, ((1 bsl 28) - 1)).
 
 -export([all/0, suite/0,groups/0,init_per_group/2,end_per_group/2,
 	 init_per_suite/1,
@@ -124,12 +129,13 @@ pid_roundtrip(doc) -> [];
 pid_roundtrip(suite) -> [];
 pid_roundtrip(Config) when is_list(Config)->
     ThisNode = {node(), erlang:system_info(creation)},
-    RemNode = {gurka@sallad, 2},
+    RemPids = [mk_pid({gurka@sallad, Cr}, Num, Ser)
+	       || Cr <- [1,2,3,4,16#adec0ded],
+		  {Num, Ser} <- [{4711,4711},{32767, 8191}]],
     do_echo([self(),
 	     mk_pid(ThisNode, 4711, 4711),
-	     mk_pid(ThisNode, 32767, 8191),
-	     mk_pid(RemNode, 4711, 4711),
-	     mk_pid(RemNode, 32767, 8191)],
+	     mk_pid(ThisNode, 32767, 8191)
+	     | RemPids],
 	    Config).
 
 fun_roundtrip(doc) -> [];
@@ -138,33 +144,43 @@ fun_roundtrip(Config) when is_list(Config)->
     do_echo([fun(A, B) -> A + B end,
 	     fun(A) -> lists:reverse(A) end,
 	     fun() -> ok end,
-	     fun fun_roundtrip/1],
+	     fun fun_roundtrip/1,
+             fun ?MODULE:fun_roundtrip/1],
 	    Config).
 
 port_roundtrip(doc) -> [];
 port_roundtrip(suite) -> [];
 port_roundtrip(Config) when is_list(Config)->
     ThisNode = {node(), erlang:system_info(creation)},
-    RemNode = {gurka@sallad, 2},
+    RemPorts = [mk_port({gurka@sallad, Cr}, Num)
+		|| Cr <- [1,2,3,4,16#adec0ded],
+		   Num <- [4711, 268435455]]
+    %% V4 ports
+        ++ [mk_port({gurka@sallad, Cr}, Num)
+            || Cr <- [17, 4711, 16#adec0ded],
+               Num <- [(1 bsl 47) bor (1 bsl 25),
+                       (1 bsl 57) bor (1 bsl 23)]],
     do_echo([hd(erlang:ports()),
 	     mk_port(ThisNode, 4711),
-	     mk_port(ThisNode, 268435455),
-	     mk_port(RemNode, 4711),
-	     mk_port(RemNode, 268435455)],
+	     mk_port(ThisNode, 268435455)
+	     | RemPorts],
 	    Config).
 
 ref_roundtrip(doc) -> [];
 ref_roundtrip(suite) -> [];
 ref_roundtrip(Config) when is_list(Config)->
     ThisNode = {node(), erlang:system_info(creation)},
-    RemNode = {gurka@sallad, 2},
+    RemRefs = [mk_ref({gurka@sallad, Cr}, Words)
+	       || Cr <- [1,2,3,4,16#adec0ded],
+		  Words <- [[4711],
+			    [4711, 4711, 4711],
+			    [262143, 4294967295, 4294967295],
+                            [262143, 4294967295, 4294967294, 4294967293, 4294967292]]],
     do_echo([make_ref(),
 	     mk_ref(ThisNode, [4711]),
 	     mk_ref(ThisNode, [4711, 4711, 4711]),
-	     mk_ref(ThisNode, [262143, 4294967295, 4294967295]),
-	     mk_ref(RemNode, [4711]),
-	     mk_ref(RemNode, [4711, 4711, 4711]),
-	     mk_ref(RemNode, [262143, 4294967295, 4294967295])],
+	     mk_ref(ThisNode, [262143, 4294967295, 4294967295])
+	     | RemRefs],
 	    Config).
 
 new_float(doc) -> [];
@@ -215,6 +231,7 @@ decompress_roundtrip(Config) when is_list(Config) ->
 	 0.0,
 	 math:sqrt(2),
 	 <<1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,31:5>>,
+	 "{}",
 	 RandomBin1k,
 	 RandomBin1M,
 	 RandomBin10M,
@@ -244,6 +261,7 @@ compress_roundtrip(Config) when is_list(Config) ->
 	 0.0,
 	 math:sqrt(2),
 	 <<1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,31:5>>,
+	 "{}",
 	 RandomBin1k,
 	 RandomBin1M,
 	 RandomBin10M,
@@ -642,11 +660,10 @@ do_echo(DataList, Config, OutTrans, InTrans, ExtraArgs)
 echo_loop([D|Ds], Echoer, OutTrans, InTrans, TermAcc) ->
     OutMsg = OutTrans(D),
     Echoer ! OutMsg,
-    io:format("echo_server ~p: ~p ! ~P~n", [self(),Echoer,OutMsg,10]),
+    %%io:format("echo_server ~p: ~p ! ~P~n", [self(),Echoer,OutMsg,10]),
     receive
 	Reply ->
-	    io:format("echo_server ~p: receive ~P~n",
-		      [self(),Reply,10]),
+	    %%io:format("echo_server ~p: receive ~P~n", [self(),Reply,10]),
 	    InTrans(Echoer, D, Reply)
     end,
     Term = case OutMsg of
@@ -661,11 +678,10 @@ echo_loop(Cont, Echoer, OutTrans, InTrans, TermAcc)
   when is_function(Cont, 0) ->
     check_terms(Echoer, TermAcc),
     OutMsg = Echoer ! {self(),undefined,hash_clear},
-    io:format("echo_server ~p: ~p ! ~P~n", [self(),Echoer,OutMsg,10]),
+    %%io:format("echo_server ~p: ~p ! ~P~n", [self(),Echoer,OutMsg,10]),
     receive
 	{Echoer,hash_cleared,hash_clear}=Reply ->
-	    io:format("echo_server ~p: receive ~P~n",
-		      [self(),Reply,10]),
+	    %%io:format("echo_server ~p: receive ~P~n", [self(),Reply,10]),
 	    ok;
 	Other ->
 	    io:format("echo_server_terms unexpected ~p: receive ~P~n",
@@ -677,11 +693,10 @@ echo_loop(Cont, Echoer, OutTrans, InTrans, TermAcc)
 check_terms(Echoer, [Term | Rest]) ->
     OutMsg = {self(),Term,hash_lookup},
     Echoer ! OutMsg,
-    io:format("check_terms ~p: ~p ! ~P~n", [self(),Echoer,OutMsg,10]),
+    %%io:format("check_terms ~p: ~p ! ~P~n", [self(),Echoer,OutMsg,10]),
     receive
 	{Echoer,true,hash_lookup} = ReplyMsg ->
-	    io:format("check_terms ~p: receive ~P~n",
-		      [self(),ReplyMsg,10]),
+	    %%io:format("check_terms ~p: receive ~P~n", [self(),ReplyMsg,10]),
 	    check_terms(Echoer, Rest);
 	Other ->
 	    io:format("check_terms unexpected ~p: receive ~P~n",
@@ -737,6 +752,18 @@ make_name() ->
 		 ++ "-" ++ integer_to_list(B)
 		 ++ "-" ++ integer_to_list(C)).
 
+uint64_be(Uint) when is_integer(Uint), 0 =< Uint, Uint < 1 bsl 64 ->
+    [(Uint bsr 56) band 16#ff,
+     (Uint bsr 48) band 16#ff,
+     (Uint bsr 40) band 16#ff,
+     (Uint bsr 32) band 16#ff,
+     (Uint bsr 24) band 16#ff,
+     (Uint bsr 16) band 16#ff,
+     (Uint bsr 8) band 16#ff,
+     Uint band 16#ff];
+uint64_be(Uint) ->
+    exit({badarg, uint64_be, [Uint]}).
+
 uint32_be(Uint) when is_integer(Uint), 0 =< Uint, Uint < 1 bsl 32 ->
     [(Uint bsr 24) band 16#ff,
      (Uint bsr 16) band 16#ff,
@@ -758,17 +785,22 @@ uint8(Uint) ->
     exit({badarg, uint8, [Uint]}).
 
 
+pid_tag(Creation) when Creation =< 3 -> ?PID_EXT;
+pid_tag(_Creation) -> ?NEW_PID_EXT.
+
+enc_creation(Creation) when Creation =< 3 -> uint8(Creation);
+enc_creation(Creation) -> uint32_be(Creation).
 
 mk_pid({NodeName, Creation}, Number, Serial) when is_atom(NodeName) ->
     <<?VERSION_MAGIC, NodeNameExt/binary>> = term_to_binary(NodeName),
     mk_pid({NodeNameExt, Creation}, Number, Serial);
 mk_pid({NodeNameExt, Creation}, Number, Serial) ->
     case catch binary_to_term(list_to_binary([?VERSION_MAGIC,
-					      ?PID_EXT,
+					      pid_tag(Creation),
 					      NodeNameExt,
 					      uint32_be(Number),
 					      uint32_be(Serial),
-					      uint8(Creation)])) of
+					      enc_creation(Creation)])) of
 	Pid when is_pid(Pid) ->
 	    Pid;
 	{'EXIT', {badarg, _}} ->
@@ -777,15 +809,25 @@ mk_pid({NodeNameExt, Creation}, Number, Serial) ->
 	    exit({unexpected_binary_to_term_result, Other})
     end.
 
+port_tag(Num, Creation) when 0 =< Num, Num =< ?OLD_MAX_PIDS_PORTS, Creation =< 3 ->
+    ?PORT_EXT;
+port_tag(Num, _Creation) when 0 =< Num, Num =< ?OLD_MAX_PIDS_PORTS ->
+    ?NEW_PORT_EXT;
+port_tag(_Num, _Creation) ->
+    ?V4_PORT_EXT.
+
 mk_port({NodeName, Creation}, Number) when is_atom(NodeName) ->
     <<?VERSION_MAGIC, NodeNameExt/binary>> = term_to_binary(NodeName),
     mk_port({NodeNameExt, Creation}, Number);
 mk_port({NodeNameExt, Creation}, Number) ->
     case catch binary_to_term(list_to_binary([?VERSION_MAGIC,
-					      ?PORT_EXT,
+					      port_tag(Number, Creation),
 					      NodeNameExt,
-					      uint32_be(Number),
-					      uint8(Creation)])) of
+					      case Number > ?OLD_MAX_PIDS_PORTS of
+						  true -> uint64_be(Number);
+						  false -> uint32_be(Number)
+					      end,
+					      enc_creation(Creation)])) of
 	Port when is_port(Port) ->
 	    Port;
 	{'EXIT', {badarg, _}} ->
@@ -794,12 +836,16 @@ mk_port({NodeNameExt, Creation}, Number) ->
 	    exit({unexpected_binary_to_term_result, Other})
     end.
 
+ref_tag(Creation) when Creation =< 3 -> ?NEW_REFERENCE_EXT;
+ref_tag(_Creation) -> ?NEWER_REFERENCE_EXT.
+
 mk_ref({NodeName, Creation}, [Number] = NL) when is_atom(NodeName),
 						 is_integer(Creation),
 						 is_integer(Number) ->
     <<?VERSION_MAGIC, NodeNameExt/binary>> = term_to_binary(NodeName),
     mk_ref({NodeNameExt, Creation}, NL);
 mk_ref({NodeNameExt, Creation}, [Number]) when is_integer(Creation),
+					       Creation =< 3,
 					       is_integer(Number) ->
     case catch binary_to_term(list_to_binary([?VERSION_MAGIC,
 					      ?REFERENCE_EXT,
@@ -821,10 +867,10 @@ mk_ref({NodeName, Creation}, Numbers) when is_atom(NodeName),
 mk_ref({NodeNameExt, Creation}, Numbers) when is_integer(Creation),
 					      is_list(Numbers) ->
     case catch binary_to_term(list_to_binary([?VERSION_MAGIC,
-					      ?NEW_REFERENCE_EXT,
+					      ref_tag(Creation),
 					      uint16_be(length(Numbers)),
 					      NodeNameExt,
-					      uint8(Creation),
+					      enc_creation(Creation),
 					      lists:map(fun (N) ->
 								uint32_be(N)
 							end,

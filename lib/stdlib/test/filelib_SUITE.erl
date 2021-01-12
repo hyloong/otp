@@ -1,7 +1,7 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2005-2014. All Rights Reserved.
+%% Copyright Ericsson AB 2005-2020. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -25,28 +25,33 @@
 	 init_per_testcase/2,end_per_testcase/2,
 	 wildcard_one/1,wildcard_two/1,wildcard_errors/1,
 	 fold_files/1,otp_5960/1,ensure_dir_eexist/1,ensure_dir_symlink/1,
-	 wildcard_symlink/1, is_file_symlink/1, file_props_symlink/1]).
+	 wildcard_symlink/1, is_file_symlink/1, file_props_symlink/1,
+         find_source/1, find_source_subdir/1, safe_relative_path/1,
+         safe_relative_path_links/1]).
 
 -import(lists, [foreach/2]).
 
--include_lib("test_server/include/test_server.hrl").
+-include_lib("common_test/include/ct.hrl").
 -include_lib("kernel/include/file.hrl").
 
-init_per_testcase(_Case, Config) ->
-    ?line Dog = ?t:timetrap(?t:minutes(5)),
-    [{watchdog,Dog}|Config].
+-define(PRIM_FILE, prim_file).
 
-end_per_testcase(_Case, Config) ->
-    Dog = ?config(watchdog, Config),
-    test_server:timetrap_cancel(Dog),
+init_per_testcase(_Case, Config) ->
+    Config.
+
+end_per_testcase(_Case, _Config) ->
     ok.
 
-suite() -> [{ct_hooks,[ts_install_cth]}].
+suite() ->
+    [{ct_hooks,[ts_install_cth]},
+     {timetrap,{minutes,5}}].
 
 all() -> 
     [wildcard_one, wildcard_two, wildcard_errors,
      fold_files, otp_5960, ensure_dir_eexist, ensure_dir_symlink,
-     wildcard_symlink, is_file_symlink, file_props_symlink].
+     wildcard_symlink, is_file_symlink, file_props_symlink,
+     find_source, find_source_subdir, safe_relative_path,
+     safe_relative_path_links].
 
 groups() -> 
     [].
@@ -65,46 +70,48 @@ end_per_group(_GroupName, Config) ->
 
 
 wildcard_one(Config) when is_list(Config) ->
-    ?line {ok,OldCwd} = file:get_cwd(),
-    ?line Dir = filename:join(?config(priv_dir, Config), "wildcard_one"),
-    ?line ok = file:make_dir(Dir),
+    {ok,OldCwd} = file:get_cwd(),
+    Dir = filename:join(proplists:get_value(priv_dir, Config), "wildcard_one"),
+    ok = file:make_dir(Dir),
     do_wildcard_1(Dir,
 		  fun(Wc) ->
 			  filelib:wildcard(Wc, Dir, erl_prim_loader)
 		  end),
-    ?line file:set_cwd(Dir),
+    file:set_cwd(Dir),
     do_wildcard_1(Dir,
 		  fun(Wc) ->
 			  L = filelib:wildcard(Wc),
+			  L = filelib:wildcard(disable_prefix_opt(Wc)),
 			  L = filelib:wildcard(Wc, erl_prim_loader),
 			  L = filelib:wildcard(Wc, "."),
 			  L = filelib:wildcard(Wc, Dir),
+			  L = filelib:wildcard(disable_prefix_opt(Wc), Dir),
 			  L = filelib:wildcard(Wc, Dir++"/.")
 		  end),
-    ?line file:set_cwd(OldCwd),
-    ?line ok = file:del_dir(Dir),
+    file:set_cwd(OldCwd),
+    ok = file:del_dir(Dir),
     ok.
 
 wildcard_two(Config) when is_list(Config) ->
-    ?line Dir = filename:join(?config(priv_dir, Config), "wildcard_two"),
-    ?line ok = file:make_dir(Dir),
-    ?line do_wildcard_1(Dir, fun(Wc) -> io:format("~p~n",[{Wc,Dir, X = filelib:wildcard(Wc, Dir)}]),X  end),
-    ?line do_wildcard_1(Dir, fun(Wc) -> filelib:wildcard(Wc, Dir++"/") end),
-    ?line do_wildcard_1(Dir, fun(Wc) -> filelib:wildcard(Wc, Dir++"/.") end),
+    Dir = filename:join(proplists:get_value(priv_dir, Config), "wildcard_two"),
+    ok = file:make_dir(Dir),
+    do_wildcard_1(Dir, fun(Wc) -> io:format("~p~n",[{Wc,Dir, X = filelib:wildcard(Wc, Dir)}]),X  end),
+    do_wildcard_1(Dir, fun(Wc) -> filelib:wildcard(Wc, Dir++"/") end),
+    do_wildcard_1(Dir, fun(Wc) -> filelib:wildcard(Wc, Dir++"/.") end),
     case os:type() of
 	{win32,_} ->
 	    ok;
 	_ ->
-	    ?line do_wildcard_1(Dir, fun(Wc) -> filelib:wildcard(Wc, "//"++Dir) end)
+	    do_wildcard_1(Dir, fun(Wc) -> filelib:wildcard(Wc, "//"++Dir) end)
     end,
-    ?line ok = file:del_dir(Dir),
+    ok = file:del_dir(Dir),
     ok.
 
 wildcard_errors(Config) when is_list(Config) ->
-    ?line wcc("{", missing_delimiter),
-    ?line wcc("{a", missing_delimiter),
-    ?line wcc("{a,", missing_delimiter),
-    ?line wcc("{a,b", missing_delimiter),
+    wcc("{", missing_delimiter),
+    wcc("{a", missing_delimiter),
+    wcc("{a,", missing_delimiter),
+    wcc("{a,b", missing_delimiter),
     ok.
 
 wcc(Wc, Error) ->
@@ -116,10 +123,20 @@ wcc(Wc, Error) ->
     {'EXIT',{{badpattern,Error},
 	     [{filelib,wildcard,2,_}|_]}} = (catch filelib:wildcard(Wc, ".")).
 
+disable_prefix_opt([_,$:|_]=Wc) ->
+    Wc;
+disable_prefix_opt([C|Wc]) when $a =< C, C =< $z; C =:= $@ ->
+    %% There is an optimization for patterns that have a literal prefix
+    %% (such as "lib/compiler/ebin/*"). Test that we'll get the same result
+    %% if we disable that optimization.
+    [$[, C, $] | Wc];
+disable_prefix_opt(Wc) ->
+    Wc.
+
 do_wildcard_1(Dir, Wcf0) ->
     do_wildcard_2(Dir, Wcf0),
     Wcf = fun(Wc0) ->
-		  Wc = filename:join(Dir, Wc0),
+		  Wc = Dir ++ "/" ++ Wc0,
 		  L = Wcf0(Wc),
 		  [subtract_dir(N, Dir) || N <- L]
 	  end,
@@ -131,70 +148,70 @@ subtract_dir("/"++Cs, []) -> Cs.
 do_wildcard_2(Dir, Wcf) ->
     %% Basic wildcards.
     All = ["abc","abcdef","glurf"],
-    ?line Files = mkfiles(lists:reverse(All), Dir),
-    ?line All = Wcf("*"),
-    ?line ["abc","abcdef"] = Wcf("a*"),
-    ?line ["abc","abcdef"] = Wcf("abc*"),
-    ?line ["abcdef"] = Wcf("abc???"),
-    ?line ["abcdef"] = Wcf("abcd*"),
-    ?line ["abcdef"] = Wcf("*def"),
-    ?line ["abcdef","glurf"] = Wcf("{*def,gl*}"),
-    ?line ["abc","abcdef"] = Wcf("a*{def,}"),
-    ?line ["abc","abcdef"] = Wcf("a*{,def}"),
+    Files = mkfiles(lists:reverse(All), Dir),
+    All = Wcf("*"),
+    ["abc","abcdef"] = Wcf("a*"),
+    ["abc","abcdef"] = Wcf("abc*"),
+    ["abcdef"] = Wcf("abc???"),
+    ["abcdef"] = Wcf("abcd*"),
+    ["abcdef"] = Wcf("*def"),
+    ["abcdef","glurf"] = Wcf("{*def,gl*}"),
+    ["abc","abcdef"] = Wcf("a*{def,}"),
+    ["abc","abcdef"] = Wcf("a*{,def}"),
 
     %% Constant wildcard.
     ["abcdef"] = Wcf("abcdef"),
 
     %% Negative tests.
-    ?line [] = Wcf("b*"),
-    ?line [] = Wcf("bufflig"),
+    [] = Wcf("b*"),
+    [] = Wcf("bufflig"),
 
-    ?line del(Files),
+    del(Files),
     do_wildcard_3(Dir, Wcf).
-    
+
 do_wildcard_3(Dir, Wcf) ->
     %% Some character sets.
     All = ["a01","a02","a03","b00","c02","d19"],
-    ?line Files = mkfiles(lists:reverse(All), Dir),
-    ?line All = Wcf("[a-z]*"),
-    ?line All = Wcf("[a-d]*"),
-    ?line All = Wcf("[adbc]*"),
-    ?line All = Wcf("?[0-9][0-9]"),
-    ?line All = Wcf("?[0-1][0-39]"),
-    ?line All = Wcf("[abcdefgh][10][01239]"),
-    ?line ["a01","a02","a03","b00","c02"] = Wcf("[a-z]0[0-3]"),
-    ?line [] = Wcf("?[a-z][0-39]"),
-    ?line del(Files),
+    Files = mkfiles(lists:reverse(All), Dir),
+    All = Wcf("[a-z]*"),
+    All = Wcf("[a-d]*"),
+    All = Wcf("[adbc]*"),
+    All = Wcf("?[0-9][0-9]"),
+    All = Wcf("?[0-1][0-39]"),
+    All = Wcf("[abcdefgh][10][01239]"),
+    ["a01","a02","a03","b00","c02"] = Wcf("[a-z]0[0-3]"),
+    [] = Wcf("?[a-z][0-39]"),
+    del(Files),
     do_wildcard_4(Dir, Wcf).
 
 do_wildcard_4(Dir, Wcf) ->
     %% More character sets: tricky characters.
     All = ["a-","aA","aB","aC","a[","a]"],
-    ?line Files = mkfiles(lists:reverse(All), Dir),
-    ?line All = Wcf("a[][A-C-]"),
+    Files = mkfiles(lists:reverse(All), Dir),
+    All = Wcf("a[][A-C-]"),
     ["a-"] = Wcf("a[-]"),
     ["a["] = Wcf("a["),
-    ?line del(Files),
+    del(Files),
     do_wildcard_5(Dir, Wcf).
 
 do_wildcard_5(Dir, Wcf) ->
     Dirs = ["xa","blurf","yyy"],
-    ?line foreach(fun(D) -> ok = file:make_dir(filename:join(Dir, D)) end, Dirs),
+    foreach(fun(D) -> ok = file:make_dir(filename:join(Dir, D)) end, Dirs),
     All = ["blurf/nisse","xa/arne","xa/kalle","yyy/arne"],
-    ?line Files = mkfiles(lists:reverse(All), Dir),
+    Files = mkfiles(lists:reverse(All), Dir),
 
     %% Test.
-    ?line All = Wcf("*/*"),
-    ?line ["blurf/nisse","xa/arne","xa/kalle"] = Wcf("{blurf,xa}/*"),
-    ?line ["xa/arne","yyy/arne"] = Wcf("*/arne"),
-    ?line ["blurf/nisse"] = Wcf("*/nisse"),
-    ?line [] = Wcf("mountain/*"),
-    ?line [] = Wcf("xa/gurka"),
+    All = Wcf("*/*"),
+    ["blurf/nisse","xa/arne","xa/kalle"] = Wcf("{blurf,xa}/*"),
+    ["xa/arne","yyy/arne"] = Wcf("*/arne"),
+    ["blurf/nisse"] = Wcf("*/nisse"),
+    [] = Wcf("mountain/*"),
+    [] = Wcf("xa/gurka"),
     ["blurf/nisse"] = Wcf("blurf/nisse"),
 
     %% Cleanup
-    ?line del(Files),
-    ?line foreach(fun(D) -> ok = file:del_dir(filename:join(Dir, D)) end, Dirs),
+    del(Files),
+    foreach(fun(D) -> ok = file:del_dir(filename:join(Dir, D)) end, Dirs),
     do_wildcard_6(Dir, Wcf).
 
 do_wildcard_6(Dir, Wcf) ->
@@ -267,49 +284,102 @@ do_wildcard_9(Dir, Wcf) ->
     %% Cleanup.
     del(Files),
     [ok = file:del_dir(D) || D <- lists:reverse(Dirs)],
+    do_wildcard_10(Dir, Wcf).
+
+%% ERL-451/OTP-14577: Escape characters using \\.
+do_wildcard_10(Dir, Wcf) ->
+    All0 = ["{abc}","abc","def","---","z--","@a,b","@c"],
+    All = case os:type() of
+              {unix,_} ->
+                  %% '?' is allowed in file names on Unix, but
+                  %% not on Windows.
+                  ["?q"|All0];
+              _ ->
+                  All0
+          end,
+    Files = mkfiles(lists:reverse(All), Dir),
+
+    ["{abc}"] = Wcf("\\{a*"),
+    ["{abc}"] = Wcf("\\{abc}"),
+    ["abc","def","z--"] = Wcf("[a-z]*"),
+    ["---","abc","z--"] = Wcf("[a\\-z]*"),
+    ["@a,b","@c"] = Wcf("@{a\\,b,c}"),
+    ["@c"] = Wcf("@{a,b,c}"),
+
+    case os:type() of
+        {unix,_} ->
+            ["?q"] = Wcf("\\?q");
+        _ ->
+            [] = Wcf("\\?q")
+    end,
+
+    del(Files),
+    wildcard_11(Dir, Wcf).
+
+%% ERL-ERL-1029/OTP-15987: Fix problems with "@/.." and ".." in general.
+wildcard_11(Dir, Wcf) ->
+    Dirs0 = ["@","@dir","dir@"],
+    Dirs = [filename:join(Dir, D) || D <- Dirs0],
+    _ = [ok = file:make_dir(D) || D <- Dirs],
+    Files0 = ["@a","b@","x","y","z"],
+    Files = mkfiles(Files0, Dir),
+
+    ["@","@a","@dir","b@","dir@","x","y","z"] = Wcf("*"),
+    ["@"] = Wcf("@"),
+    ["@","@a","@dir"] = Wcf("@*"),
+    ["@/..","@dir/.."] = Wcf("@*/.."),
+    ["@/../@","@/../@a","@/../@dir",
+     "@dir/../@","@dir/../@a","@dir/../@dir"] = Wcf("@*/../@*"),
+
+    %% Non-directories followed by "/.." should not match any files.
+    [] = Wcf("@a/.."),
+    [] = Wcf("x/.."),
+
+    %% Cleanup.
+    del(Files),
+    [ok = file:del_dir(D) || D <- Dirs],
     ok.
 
-
 fold_files(Config) when is_list(Config) ->
-    ?line Dir = filename:join(?config(priv_dir, Config), "fold_files"),
-    ?line ok = file:make_dir(Dir),
-    ?line Dirs = [filename:join(Dir, D) || D <- ["blurf","blurf/blarf"]],
-    ?line foreach(fun(D) -> ok = file:make_dir(D) end, Dirs),
+    Dir = filename:join(proplists:get_value(priv_dir, Config), "fold_files"),
+    ok = file:make_dir(Dir),
+    Dirs = [filename:join(Dir, D) || D <- ["blurf","blurf/blarf"]],
+    foreach(fun(D) -> ok = file:make_dir(D) end, Dirs),
     All = ["fb.txt","ko.txt",
 	   "blurf/nisse.text","blurf/blarf/aaa.txt","blurf/blarf/urfa.txt"],
-    ?line Files = mkfiles(lists:reverse(All), Dir),
+    Files = mkfiles(lists:reverse(All), Dir),
 
     %% Test.
-    ?line Files0 = filelib:fold_files(Dir, "^", false,
-				      fun(H, T) -> [H|T] end, []),
-    ?line same_lists(["fb.txt","ko.txt"], Files0, Dir),
+    Files0 = filelib:fold_files(Dir, "^", false,
+				fun(H, T) -> [H|T] end, []),
+    same_lists(["fb.txt","ko.txt"], Files0, Dir),
 
-    ?line Files1 = filelib:fold_files(Dir, "^", true,
-				      fun(H, T) -> [H|T] end, []),
-    ?line same_lists(All, Files1, Dir),
+    Files1 = filelib:fold_files(Dir, "^", true,
+				fun(H, T) -> [H|T] end, []),
+    same_lists(All, Files1, Dir),
 
-    ?line Files2 = filelib:fold_files(Dir, "[.]text$", true,
-				      fun(H, T) -> [H|T] end, []),
-    ?line same_lists(["blurf/nisse.text"], Files2, Dir),
+    Files2 = filelib:fold_files(Dir, "[.]text$", true,
+				fun(H, T) -> [H|T] end, []),
+    same_lists(["blurf/nisse.text"], Files2, Dir),
 
 
-    ?line Files3 = filelib:fold_files(Dir, "^..[.]", true,
-				      fun(H, T) -> [H|T] end, []),
-    ?line same_lists(["fb.txt","ko.txt"], Files3, Dir),
+    Files3 = filelib:fold_files(Dir, "^..[.]", true,
+				fun(H, T) -> [H|T] end, []),
+    same_lists(["fb.txt","ko.txt"], Files3, Dir),
 
-    ?line Files4 = filelib:fold_files(Dir, "^ko[.]txt$", true,
-				  fun(H, T) -> [H|T] end, []),
-    ?line same_lists(["ko.txt"], Files4, Dir),
-    ?line Files4 = filelib:fold_files(Dir, "^ko[.]txt$", false,
-				      fun(H, T) -> [H|T] end, []),
+    Files4 = filelib:fold_files(Dir, "^ko[.]txt$", true,
+				fun(H, T) -> [H|T] end, []),
+    same_lists(["ko.txt"], Files4, Dir),
+    Files4 = filelib:fold_files(Dir, "^ko[.]txt$", false,
+				fun(H, T) -> [H|T] end, []),
 
-    ?line [] = filelib:fold_files(Dir, "^$", true,
-				  fun(H, T) -> [H|T] end, []),
+    [] = filelib:fold_files(Dir, "^$", true,
+			    fun(H, T) -> [H|T] end, []),
 
     %% Cleanup
-    ?line del(Files),
-    ?line foreach(fun(D) -> ok = file:del_dir(D) end, lists:reverse(Dirs)),
-    ?line ok = file:del_dir(Dir).
+    del(Files),
+    foreach(fun(D) -> ok = file:del_dir(D) end, lists:reverse(Dirs)),
+    ok = file:del_dir(Dir).
 
 same_lists(Expected0, Actual0, BaseDir) ->
     Expected = [filename:absname(N, BaseDir) || N <- lists:sort(Expected0)],
@@ -318,7 +388,7 @@ same_lists(Expected0, Actual0, BaseDir) ->
 
 mkfiles([H|T], Dir) ->
     Name = filename:join(Dir, H),
-    Garbage = [31+random:uniform(95) || _ <- lists:seq(1, random:uniform(1024))],
+    Garbage = [31+rand:uniform(95) || _ <- lists:seq(1, rand:uniform(1024))],
     file:write_file(Name, Garbage),
     [Name|mkfiles(T, Dir)];
 mkfiles([], _) -> [].
@@ -328,52 +398,49 @@ del([H|T]) ->
     del(T);
 del([]) -> ok.
 
-otp_5960(suite) ->
-    [];
-otp_5960(doc) ->
-    ["Test that filelib:ensure_dir/1 returns ok or {error,Reason}"];
+%% Test that filelib:ensure_dir/1 returns ok or {error,Reason}.
 otp_5960(Config) when is_list(Config) ->
-    ?line PrivDir = ?config(priv_dir, Config),
-    ?line Dir = filename:join(PrivDir, "otp_5960_dir"),
-    ?line Name1 = filename:join(Dir, name1),
-    ?line Name2 = filename:join(Dir, name2),
-    ?line ok = filelib:ensure_dir(Name1), % parent is created
-    ?line ok = filelib:ensure_dir(Name1), % repeating it should be OK
-    ?line ok = filelib:ensure_dir(Name2), % parent already exists
-    ?line ok = filelib:ensure_dir(Name2), % repeating it should be OK
-    ?line Name3 = filename:join(Name1, name3),
-    ?line {ok, FileInfo} = file:read_file_info(Dir),
+    PrivDir = proplists:get_value(priv_dir, Config),
+    Dir = filename:join(PrivDir, "otp_5960_dir"),
+    Name1 = filename:join(Dir, name1),
+    Name2 = filename:join(Dir, name2),
+    ok = filelib:ensure_dir(Name1), % parent is created
+    ok = filelib:ensure_dir(Name1), % repeating it should be OK
+    ok = filelib:ensure_dir(Name2), % parent already exists
+    ok = filelib:ensure_dir(Name2), % repeating it should be OK
+    Name3 = filename:join(Name1, name3),
+    {ok, FileInfo} = file:read_file_info(Dir),
     case os:type() of
 	{win32,_} ->
 	    %% Not possibly to write protect directories on Windows
 	    %% (at least not using file:write_file_info/2).
 	    ok;
 	_ ->
-	    ?line Mode = FileInfo#file_info.mode,
-	    ?line NoWriteMode = Mode - 8#00200 - 8#00020 - 8#00002,
-	    ?line ok = file:write_file_info(Dir, #file_info{mode=NoWriteMode}), 
-	    ?line {error, _} = filelib:ensure_dir(Name3),
-	    ?line ok = file:write_file_info(Dir, #file_info{mode=Mode}),
+	    Mode = FileInfo#file_info.mode,
+	    NoWriteMode = Mode - 8#00200 - 8#00020 - 8#00002,
+	    ok = file:write_file_info(Dir, #file_info{mode=NoWriteMode}),
+	    {error, _} = filelib:ensure_dir(Name3),
+	    ok = file:write_file_info(Dir, #file_info{mode=Mode}),
 	    ok
     end.
 
 ensure_dir_eexist(Config) when is_list(Config) ->
-    ?line PrivDir = ?config(priv_dir, Config),
-    ?line Dir = filename:join(PrivDir, "ensure_dir_eexist"),
-    ?line Name = filename:join(Dir, "same_name_as_file_and_dir"),
-    ?line ok = filelib:ensure_dir(Name),
-    ?line ok = file:write_file(Name, <<"some string\n">>),
+    PrivDir = proplists:get_value(priv_dir, Config),
+    Dir = filename:join(PrivDir, "ensure_dir_eexist"),
+    Name = filename:join(Dir, "same_name_as_file_and_dir"),
+    ok = filelib:ensure_dir(Name),
+    ok = file:write_file(Name, <<"some string\n">>),
 
     %% There already is a file with the name of the directory
     %% we want to create.
-    ?line NeedFile = filename:join(Name, "file"),
-    ?line NeedFileB = filename:join(Name, <<"file">>),
-    ?line {error, eexist} = filelib:ensure_dir(NeedFile),
-    ?line {error, eexist} = filelib:ensure_dir(NeedFileB),
+    NeedFile = filename:join(Name, "file"),
+    NeedFileB = filename:join(Name, <<"file">>),
+    {error, eexist} = filelib:ensure_dir(NeedFile),
+    {error, eexist} = filelib:ensure_dir(NeedFileB),
     ok.
 
 ensure_dir_symlink(Config) when is_list(Config) ->
-    PrivDir = ?config(priv_dir, Config),
+    PrivDir = proplists:get_value(priv_dir, Config),
     Dir = filename:join(PrivDir, "ensure_dir_symlink"),
     Name = filename:join(Dir, "same_name_as_file_and_dir"),
     ok = filelib:ensure_dir(Name),
@@ -392,7 +459,7 @@ ensure_dir_symlink(Config) when is_list(Config) ->
     end.
 
 wildcard_symlink(Config) when is_list(Config) ->
-    PrivDir = ?config(priv_dir, Config),
+    PrivDir = proplists:get_value(priv_dir, Config),
     Dir = filename:join(PrivDir, ?MODULE_STRING++"_wildcard_symlink"),
     SubDir = filename:join(Dir, "sub"),
     AFile = filename:join(SubDir, "a_file"),
@@ -419,10 +486,10 @@ wildcard_symlink(Config) when is_list(Config) ->
 						erl_prim_loader)),
 	    ["sub","symlink"] =
 		basenames(Dir, filelib:wildcard(filename:join(Dir, "*"),
-						prim_file)),
+						?PRIM_FILE)),
 	    ["symlink"] =
 		basenames(Dir, filelib:wildcard(filename:join(Dir, "symlink"),
-						prim_file)),
+						?PRIM_FILE)),
 	    ok = file:delete(AFile),
 	    %% The symlink should still be visible even when its target
 	    %% has been deleted.
@@ -438,10 +505,10 @@ wildcard_symlink(Config) when is_list(Config) ->
 						erl_prim_loader)),
 	    ["sub","symlink"] =
 		basenames(Dir, filelib:wildcard(filename:join(Dir, "*"),
-						prim_file)),
+						?PRIM_FILE)),
 	    ["symlink"] =
 		basenames(Dir, filelib:wildcard(filename:join(Dir, "symlink"),
-						prim_file)),
+						?PRIM_FILE)),
 	    ok
     end.
 
@@ -452,7 +519,7 @@ basenames(Dir, Files) ->
      end || F <- Files].
 
 is_file_symlink(Config) ->
-    PrivDir = ?config(priv_dir, Config),
+    PrivDir = proplists:get_value(priv_dir, Config),
     Dir = filename:join(PrivDir, ?MODULE_STRING++"_is_file_symlink"),
     SubDir = filename:join(Dir, "sub"),
     AFile = filename:join(SubDir, "a_file"),
@@ -470,22 +537,22 @@ is_file_symlink(Config) ->
 	ok ->
 	    true = filelib:is_dir(DirAlias),
 	    true = filelib:is_dir(DirAlias, erl_prim_loader),
-	    true = filelib:is_dir(DirAlias, prim_file),
+	    true = filelib:is_dir(DirAlias, ?PRIM_FILE),
 	    true = filelib:is_file(DirAlias),
 	    true = filelib:is_file(DirAlias, erl_prim_loader),
-	    true = filelib:is_file(DirAlias, prim_file),
+	    true = filelib:is_file(DirAlias, ?PRIM_FILE),
 	    ok = file:make_symlink(AFile,FileAlias),
 	    true = filelib:is_file(FileAlias),
 	    true = filelib:is_file(FileAlias, erl_prim_loader),
-	    true = filelib:is_file(FileAlias, prim_file),
+	    true = filelib:is_file(FileAlias, ?PRIM_FILE),
 	    true = filelib:is_regular(FileAlias),
 	    true = filelib:is_regular(FileAlias, erl_prim_loader),
-	    true = filelib:is_regular(FileAlias, prim_file),
+	    true = filelib:is_regular(FileAlias, ?PRIM_FILE),
 	    ok
     end.
 
 file_props_symlink(Config) ->
-    PrivDir = ?config(priv_dir, Config),
+    PrivDir = proplists:get_value(priv_dir, Config),
     Dir = filename:join(PrivDir, ?MODULE_STRING++"_file_props_symlink"),
     AFile = filename:join(Dir, "a_file"),
     Alias = filename:join(Dir, "symlink"),
@@ -501,9 +568,250 @@ file_props_symlink(Config) ->
 	    {_,_} = LastMod = filelib:last_modified(AFile),
 	    LastMod = filelib:last_modified(Alias),
 	    LastMod = filelib:last_modified(Alias, erl_prim_loader),
-	    LastMod = filelib:last_modified(Alias, prim_file),
+	    LastMod = filelib:last_modified(Alias, ?PRIM_FILE),
 	    FileSize = filelib:file_size(AFile),
 	    FileSize = filelib:file_size(Alias),
 	    FileSize = filelib:file_size(Alias, erl_prim_loader),
-	    FileSize = filelib:file_size(Alias, prim_file)
+	    FileSize = filelib:file_size(Alias, ?PRIM_FILE)
+    end.
+
+find_source(Config) when is_list(Config) ->
+    %% filelib:find_{file,source}() does not work if the files are
+    %% cover-compiled. To make sure that the test does not fail
+    %% when the STDLIB is cover-compiled, search for modules in
+    %% the compiler application.
+
+    BeamFile = code:which(compile),
+    BeamName = filename:basename(BeamFile),
+    BeamDir = filename:dirname(BeamFile),
+    SrcName = filename:basename(BeamFile, ".beam") ++ ".erl",
+
+    {ok, BeamFile} = filelib:find_file(BeamName, BeamDir),
+    {ok, BeamFile} = filelib:find_file(BeamName, BeamDir, []),
+    {ok, BeamFile} = filelib:find_file(BeamName, BeamDir, [{"",""},{"ebin","src"}]),
+    {error, not_found} = filelib:find_file(BeamName, BeamDir, [{"ebin","src"}]),
+
+    {ok, SrcFile} = filelib:find_file(SrcName, BeamDir),
+    {ok, SrcFile} = filelib:find_file(SrcName, BeamDir, []),
+    {ok, SrcFile} = filelib:find_file(SrcName, BeamDir, [{"foo","bar"},{"ebin","src"}]),
+    {error, not_found} = filelib:find_file(SrcName, BeamDir, [{"",""}]),
+
+    {ok, SrcFile} = filelib:find_source(BeamFile),
+    {ok, SrcFile} = filelib:find_source(BeamName, BeamDir),
+    {ok, SrcFile} = filelib:find_source(BeamName, BeamDir,
+                                         [{".erl",".yrl",[{"",""}]},
+                                          {".beam",".erl",[{"ebin","src"}]}]),
+    {error, not_found} = filelib:find_source(BeamName, BeamDir,
+                                              [{".erl",".yrl",[{"",""}]}]),
+
+    {ok, ParserErl} = filelib:find_source(code:which(core_parse)),
+    ParserErlName = filename:basename(ParserErl),
+    ParserErlDir = filename:dirname(ParserErl),
+    {ok, ParserYrl} = filelib:find_source(ParserErl),
+    "lry." ++ _ = lists:reverse(ParserYrl),
+    {ok, ParserYrl} = filelib:find_source(ParserErlName, ParserErlDir,
+                                           [{".beam",".erl",[{"ebin","src"}]},
+                                            {".erl",".yrl",[{"",""}]}]),
+
+    %% find_source automatically checks the local directory regardless of rules
+    {ok, ParserYrl} = filelib:find_source(ParserErl),
+    {ok, ParserYrl} = filelib:find_source(ParserErlName, ParserErlDir,
+                                          [{".erl",".yrl",[{"ebin","src"}]}]),
+
+    %% find_file does not check the local directory unless in the rules
+    ParserYrlName = filename:basename(ParserYrl),
+    ParserYrlDir = filename:dirname(ParserYrl),
+    {ok, ParserYrl} = filelib:find_file(ParserYrlName, ParserYrlDir,
+                                        [{"",""}]),
+    {error, not_found} = filelib:find_file(ParserYrlName, ParserYrlDir,
+                                           [{"ebin","src"}]),
+
+    %% local directory is in the default list for find_file
+    {ok, ParserYrl} = filelib:find_file(ParserYrlName, ParserYrlDir),
+    {ok, ParserYrl} = filelib:find_file(ParserYrlName, ParserYrlDir, []),
+    ok.
+
+find_source_subdir(Config) when is_list(Config) ->
+    BeamFile = code:which(inets), % Located in lib/inets/src/inets_app/
+    BeamName = filename:basename(BeamFile),
+    BeamDir = filename:dirname(BeamFile),
+    SrcName = filename:basename(BeamFile, ".beam") ++ ".erl",
+
+    {ok, SrcFile} = filelib:find_source(BeamName, BeamDir),
+    SrcName = filename:basename(SrcFile),
+
+    {error, not_found} =
+        filelib:find_source(BeamName, BeamDir,
+                            [{".beam",".erl",[{"ebin","src"}]}]),
+    {ok, SrcFile} =
+        filelib:find_source(BeamName, BeamDir,
+                            [{".beam",".erl",
+                              [{"ebin",filename:join("src", "*")}]}]),
+
+    {ok, SrcFile} = filelib:find_file(SrcName, BeamDir),
+
+    ok.
+
+safe_relative_path(Config) ->
+    PrivDir = proplists:get_value(priv_dir, Config),
+    Root = filename:join(PrivDir, "filelib_SUITE_safe_relative_path"),
+    ok = file:make_dir(Root),
+    ok = file:set_cwd(Root),
+
+    ok = file:make_dir("a"),
+    ok = file:set_cwd("a"),
+    ok = file:make_dir("b"),
+    ok = file:set_cwd("b"),
+    ok = file:make_dir("c"),
+
+    ok = file:set_cwd(Root),
+
+    "a" = test_srp("a"),
+    "a/b" = test_srp("a/b"),
+    "a/b" = test_srp("a/./b"),
+    "a/b" = test_srp("a/./b/."),
+
+    "" = test_srp("a/.."),
+    "" = test_srp("a/./.."),
+    "" = test_srp("a/../."),
+    "a" = test_srp("a/b/.."),
+    "a" = test_srp("a/../a"),
+    "a" = test_srp("a/../a/../a"),
+    "a/b/c" = test_srp("a/../a/b/c"),
+
+    unsafe = test_srp("a/../.."),
+    unsafe = test_srp("a/../../.."),
+    unsafe = test_srp("a/./../.."),
+    unsafe = test_srp("a/././../../.."),
+    unsafe = test_srp("a/b/././../../.."),
+
+    unsafe = test_srp(PrivDir),                 %Absolute path.
+
+    ok.
+
+test_srp(RelPath) ->
+    Res = do_test_srp(RelPath),
+    Res = case do_test_srp(list_to_binary(RelPath)) of
+              Bin when is_binary(Bin) ->
+                  binary_to_list(Bin);
+              Other ->
+                  Other
+          end.
+
+do_test_srp(RelPath) ->
+    {ok,Root} = file:get_cwd(),
+    ok = file:set_cwd(RelPath),
+    {ok,Cwd} = file:get_cwd(),
+    ok = file:set_cwd(Root),
+    case filelib:safe_relative_path(RelPath, Cwd) of
+        unsafe ->
+            true = length(Cwd) < length(Root),
+            unsafe;
+        "" ->
+            "";
+        SafeRelPath ->
+            ok = file:set_cwd(SafeRelPath),
+            {ok,Cwd} = file:get_cwd(),
+            true = length(Cwd) >= length(Root),
+            ok = file:set_cwd(Root),
+            SafeRelPath
+    end.
+
+safe_relative_path_links(Config) ->
+    PrivDir = ?config(priv_dir, Config),
+    BaseDir = filename:join(PrivDir, "filelib_SUITE_safe_relative_path_links"),
+    ok = file:make_dir(BaseDir),
+    try
+        case check_symlink_support(BaseDir) of
+            true ->
+                simple_test(BaseDir),
+                inside_directory_test(BaseDir),
+                nested_links_test(BaseDir),
+                loop_test(BaseDir),
+                loop_with_parent_test(BaseDir),
+                revist_links_test(BaseDir);
+            false ->
+                {skipped, "This platform/user can't create symlinks."}
+        end
+    after
+        %% This test leaves some rather nasty links that may screw with
+        %% z_SUITE's core file search, so we must make sure everything's
+        %% removed regardless of what happens.
+        rm_rf(BaseDir)
+    end.
+
+check_symlink_support(BaseDir) ->
+    Canary = filename:join(BaseDir, "symlink_canary"),
+    Link = filename:join(BaseDir, "symlink_canary_link"),
+    ok = file:write_file(Canary, <<"chirp">>),
+    ok =:= file:make_symlink(Canary, Link).
+
+simple_test(BaseDir) ->
+    file:make_dir(filename:join(BaseDir, "simple_test")),
+    file:make_symlink("..", filename:join(BaseDir, "simple_test/link")),
+
+    unsafe = filelib:safe_relative_path("link/file", filename:join(BaseDir, "simple_test")),
+    "file" = filelib:safe_relative_path("file", filename:join(BaseDir, "simple_test/link")).
+
+inside_directory_test(BaseDir) ->
+    file:make_dir(filename:join(BaseDir, "inside_directory_test")),
+    file:make_symlink("..", filename:join(BaseDir, "inside_directory_test/link")),
+
+    unsafe = filelib:safe_relative_path("link/file", filename:join(BaseDir, "inside_directory_test")),
+    "file" = filelib:safe_relative_path("file", filename:join(BaseDir, "inside_directory_test/link")).
+
+nested_links_test(BaseDir) ->
+    file:make_dir(filename:join(BaseDir, "nested_links_test")),
+    file:make_dir(filename:join(BaseDir, "nested_links_test/a")),
+    file:make_symlink("a/b/c", filename:join(BaseDir, "nested_links_test/link")),
+    file:make_symlink("..", filename:join(BaseDir, "nested_links_test/a/b")),
+
+    "c/file" = filelib:safe_relative_path("link/file", filename:join(BaseDir, "nested_links_test")),
+
+    file:delete(filename:join(BaseDir, "nested_links_test/a/b")),
+    file:make_symlink("../..", filename:join(BaseDir, "nested_links_test/a/b")),
+    unsafe = filelib:safe_relative_path("link/file", filename:join(BaseDir, "nested_links_test")).
+
+loop_test(BaseDir) ->
+    file:make_dir(filename:join(BaseDir, "loop_test")),
+
+    file:make_symlink("b", filename:join(BaseDir, "loop_test/c")),
+    file:make_symlink("c", filename:join(BaseDir, "loop_test/b")),
+
+    unsafe = filelib:safe_relative_path("c", filename:join(BaseDir, "loop_test")).
+
+loop_with_parent_test(BaseDir) ->
+    file:make_dir(filename:join(BaseDir, "loop_with_parent_test")),
+    file:make_dir(filename:join(BaseDir, "loop_with_parent_test/bar")),
+
+    file:make_symlink("../bar/foo", filename:join(BaseDir, "loop_with_parent_test/bar/foo")),
+
+    unsafe = filelib:safe_relative_path("bar/foo", filename:join(BaseDir, "loop_with_parent_test")).
+
+revist_links_test(BaseDir) ->
+    file:make_dir(filename:join(BaseDir, "revist_links_test")),
+
+    file:make_symlink(".", filename:join(BaseDir, "revist_links_test/x")),
+    file:make_symlink("x", filename:join(BaseDir, "revist_links_test/y")),
+    file:make_symlink("y", filename:join(BaseDir, "revist_links_test/z")),
+
+    "file" = filelib:safe_relative_path("x/file", filename:join(BaseDir, "revist_links_test")),
+    "file" = filelib:safe_relative_path("y/x/file", filename:join(BaseDir, "revist_links_test")),
+    "file" = filelib:safe_relative_path("x/x/file", filename:join(BaseDir, "revist_links_test")),
+    "file" = filelib:safe_relative_path("x/y/x/y/file", filename:join(BaseDir, "revist_links_test")),
+    "file" = filelib:safe_relative_path("x/y/z/x/y/z/file", filename:join(BaseDir, "revist_links_test")),
+    "file" = filelib:safe_relative_path("x/x/y/y/file", filename:join(BaseDir, "revist_links_test")),
+    "file" = filelib:safe_relative_path("x/z/y/x/./z/foo/../x/./y/file", filename:join(BaseDir, "revist_links_test")).
+
+rm_rf(Dir) ->
+    case file:read_link_info(Dir) of
+        {ok, #file_info{type = directory}} ->
+            {ok, Content} = file:list_dir_all(Dir),
+            [ rm_rf(filename:join(Dir,C)) || C <- Content ],
+            file:del_dir(Dir),
+            ok;
+        {ok, #file_info{}} ->
+            file:delete(Dir);
+        _ ->
+            ok
     end.

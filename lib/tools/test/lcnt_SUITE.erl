@@ -1,7 +1,7 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2010-2011. All Rights Reserved.
+%% Copyright Ericsson AB 2010-2018. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -19,59 +19,43 @@
 %%
 
 -module(lcnt_SUITE).
--include_lib("test_server/include/test_server.hrl").
+-include_lib("common_test/include/ct.hrl").
 
 %% Test server specific exports
--export([all/0, suite/0,groups/0,init_per_group/2,end_per_group/2]).
--export([init_per_suite/1, end_per_suite/1]).
+-export([all/0, suite/0]).
 -export([init_per_testcase/2, end_per_testcase/2]).
 
 %% Test cases
--export([
-	t_load/1,
-	t_conflicts/1,
-	t_locations/1,
-	t_swap_keys/1
-    ]).
-
-%% Default timetrap timeout (set in init_per_testcase)
--define(default_timeout, ?t:minutes(4)).
-
-init_per_suite(Config) when is_list(Config) ->
-    Config.
-
-end_per_suite(Config) when is_list(Config) ->
-    Config.
+-export([t_load/1,
+         t_conflicts/1,
+         t_locations/1,
+         t_swap_keys/1,
+         t_implicit_start/1,
+         t_crash_before_collect/1,
+         smoke_lcnt/1]).
 
 init_per_testcase(_Case, Config) ->
-    Dog = ?t:timetrap(?default_timeout),
-    [{watchdog,Dog} | Config].
+    Config.
 
-end_per_testcase(_Case, Config) ->
-    Dog = ?config(watchdog, Config),
-    ?t:timetrap_cancel(Dog),
+end_per_testcase(_Case, _Config) ->
     catch lcnt:stop(),
     ok.
 
-suite() -> [{ct_hooks,[ts_install_cth]}].
+suite() ->
+    [{ct_hooks,[ts_install_cth]},
+     {timetrap,{minutes,4}}].
 
-all() -> [t_load, t_conflicts, t_locations, t_swap_keys].
-
-groups() -> [].
-
-init_per_group(_GroupName, Config) -> Config.
-
-end_per_group(_GroupName, Config) -> Config.
-
+all() ->
+    [t_load, t_conflicts, t_locations, t_swap_keys, t_implicit_start,
+     t_crash_before_collect, smoke_lcnt].
 
 %%----------------------------------------------------------------------
 %% Tests
 %%----------------------------------------------------------------------
 
-t_load(suite) -> [];
-t_load(doc) -> ["Load data from file."];
+%% Load data from file.
 t_load(Config) when is_list(Config) ->
-    Path = ?config(data_dir, Config),
+    Path = proplists:get_value(data_dir, Config),
     Files = [filename:join([Path,"big_bang_40.lcnt"]),
 	     filename:join([Path,"ehb_3_3_hist.lcnt"])],
     ok = t_load_file(Files),
@@ -84,10 +68,9 @@ t_load_file([File|Files]) ->
     ok = lcnt:stop(),
     t_load_file(Files).
 
-t_conflicts(suite) -> [];
-t_conflicts(doc) -> ["API: conflicts"];
+%% API: conflicts
 t_conflicts(Config) when is_list(Config) ->
-    Path = ?config(data_dir, Config),
+    Path = proplists:get_value(data_dir, Config),
     Files = [filename:join([Path,"big_bang_40.lcnt"]),
 	     filename:join([Path,"ehb_3_3_hist.lcnt"])],
     ok = t_conflicts_file(Files),
@@ -118,10 +101,9 @@ test_conflicts_opts([Opt|Opts]) ->
     ok = lcnt:conflicts(Opt),
     test_conflicts_opts(Opts).
 
-t_locations(suite) -> [];
-t_locations(doc) -> ["API: locations"];
+%% API: locations
 t_locations(Config) when is_list(Config) ->
-    Path = ?config(data_dir, Config),
+    Path = proplists:get_value(data_dir, Config),
     Files = [filename:join([Path,"big_bang_40.lcnt"]),
 	     filename:join([Path,"ehb_3_3_hist.lcnt"])],
     ok = t_locations_file(Files),
@@ -151,10 +133,9 @@ test_locations_opts([Opt|Opts]) ->
     ok = lcnt:locations(Opt),
     test_locations_opts(Opts).
 
-t_swap_keys(suite) -> [];
-t_swap_keys(doc) -> ["Test interchanging port/process id with class"];
+%% Test interchanging port/process id with class
 t_swap_keys(Config) when is_list(Config) ->
-    Path = ?config(data_dir, Config),
+    Path = proplists:get_value(data_dir, Config),
     Files = [filename:join([Path,"big_bang_40.lcnt"]),
 	     filename:join([Path,"ehb_3_3_hist.lcnt"])],
     ok = t_swap_keys_file(Files),
@@ -170,11 +151,89 @@ t_swap_keys_file([File|Files]) ->
     ok = lcnt:stop(),
     t_swap_keys_file(Files).
 
+%% Prior to OTP-14913 this would crash with 'noproc' as the lcnt server hadn't
+%% been started yet.
+t_implicit_start(Config) when is_list(Config) ->
+    ok = lcnt:conflicts().
 
-%%----------------------------------------------------------------------
-%% Auxiliary tests
-%%----------------------------------------------------------------------
+t_crash_before_collect(Config) when is_list(Config) ->
+    {ok, _} = lcnt:start(),
+    ok = lcnt:information().
 
-%%----------------------------------------------------------------------
-%% Auxiliary
-%%----------------------------------------------------------------------
+%% Simple smoke test of actual lock-counting, if running on
+%% a run-time with lock-counting enabled.
+smoke_lcnt(Config) ->
+    case catch erlang:system_info(lock_counting) of
+        true ->
+            do_smoke_lcnt(Config);
+        _ ->
+            {skip,"Lock counting is not enabled"}
+    end.
+
+do_smoke_lcnt(Config) ->
+    PrivDir = proplists:get_value(priv_dir, Config),
+    SaveFile = filename:join(PrivDir, atom_to_list(?FUNCTION_NAME)),
+    {Time,ok} = timer:tc(fun() -> lcnt:apply(fun() -> big_bang(200) end) end),
+    io:format("~p ms\n", [Time]),
+    ok = lcnt:conflicts(),
+    ok = lcnt:save(SaveFile),
+    ok = lcnt:load(SaveFile),
+    ok = lcnt:conflicts(),
+    lcnt:stop().
+
+
+%%%
+%%% A slightly modified version of Rickard Green's Big Bang benchmark.
+%%%
+
+big_bang(N) when is_integer(N) ->
+    Procs = spawn_procs(N),
+    RMsgs = lists:map(fun (P) -> {done, P} end, Procs),
+    send_procs(Procs, {procs, Procs, self()}),
+    receive_msgs(RMsgs),
+    lists:foreach(fun (P) -> exit(P, normal) end, Procs).
+
+pinger([], [], true) ->
+    receive
+        {procs, Procs, ReportTo} ->
+            pinger(Procs, [], ReportTo)
+    end;
+pinger([], [], false) ->
+    receive {ping, From} -> From ! {pong, self()} end,
+    pinger([],[],false);
+pinger([], [], ReportTo) ->
+    ReportTo ! {done, self()},
+    pinger([],[],false);
+pinger([],[Po|Pos] = Pongers, ReportTo) ->
+    receive
+        {ping, From} ->
+            From ! {pong, self()},
+            pinger([], Pongers, ReportTo);
+        {pong, Po} ->
+            pinger([], Pos, ReportTo)
+    end;
+pinger([Pi|Pis], Pongers, ReportTo) ->
+    receive {ping, From} -> From ! {pong, self()}
+    after 0 -> ok
+    end,
+    Pi ! {ping, self()},
+    pinger(Pis, [Pi|Pongers], ReportTo).
+
+spawn_procs(N) when N =< 0 ->
+    [];
+spawn_procs(N) ->
+    [spawn_link(fun () -> pinger([], [], true) end) | spawn_procs(N-1)].
+
+send_procs([], Msg) ->
+    Msg;
+send_procs([P|Ps], Msg) ->
+    P ! Msg,
+    send_procs(Ps, Msg).
+
+receive_msgs([]) ->
+    ok;
+receive_msgs([M|Ms]) ->
+    receive
+        M ->
+            receive_msgs(Ms)
+    end.

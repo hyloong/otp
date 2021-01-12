@@ -9,6 +9,16 @@
 %% See the License for the specific language governing permissions and
 %% limitations under the License.
 %%
+%% Alternatively, you may use this file under the terms of the GNU Lesser
+%% General Public License (the "LGPL") as published by the Free Software
+%% Foundation; either version 2.1, or (at your option) any later version.
+%% If you wish to allow use of your version of this file only under the
+%% terms of the LGPL, you should delete the provisions above and replace
+%% them with the notice and other provisions required by the LGPL; see
+%% <http://www.gnu.org/licenses/>. If you do not delete the provisions
+%% above, a recipient may use your version of this file under the terms of
+%% either the Apache License or the LGPL.
+%%
 %% @author Richard Carlsson <carlsson.richard@gmail.com>
 %% @copyright 2012-2015 Richard Carlsson
 %% @doc Parse transform for merl. Enables the use of automatic metavariables
@@ -68,8 +78,7 @@ case_guard([{expr,_}, {text,Text}]) ->
     erl_syntax:is_literal(Text).
 
 case_body([{expr,Expr}, {text,_Text}], T) ->
-    pre_expand_case(Expr, erl_syntax:case_expr_clauses(T),
-                    erl_syntax:get_pos(T)).
+    pre_expand_case(Expr, erl_syntax:case_expr_clauses(T), get_location(T)).
 
 post(T) ->
     merl:switch(
@@ -79,7 +88,7 @@ post(T) ->
                   lists:all(fun erl_syntax:is_literal/1, [F|As])
           end,
           fun ([{args, As}, {function, F}]) ->
-                  Line = erl_syntax:get_pos(F),
+                  Line = get_location(F),
                   [F1|As1] = lists:map(fun erl_syntax:concrete/1, [F|As]),
                   eval_call(Line, F1, As1, T)
           end},
@@ -105,10 +114,15 @@ expand_qquote([Text, Env], T, Line) ->
     case erl_syntax:is_literal(Text) of
         true ->
             As = [Line, erl_syntax:concrete(Text)],
-            %% expand further if possible
-            expand(merl:qquote(Line, "merl:subst(_@tree, _@env)",
-                               [{tree, eval_call(Line, quote, As, T)},
-                                {env, Env}]));
+            case eval_call(Line, quote, As, failed) of
+                failed ->
+                    T;
+                T1 ->
+                    %% expand further if possible
+                    expand(merl:qquote(Line, "merl:subst(_@tree, _@env)",
+                                       [{tree, T1},
+                                        {env, Env}]))
+            end;
         false ->
             T
     end;
@@ -118,7 +132,7 @@ expand_qquote(_As, T, _StartPos) ->
 expand_template(F, [Pattern | Args], T) ->
     case erl_syntax:is_literal(Pattern) of
         true ->
-            Line = erl_syntax:get_pos(Pattern),
+            Line = get_location(Pattern),
             As = [erl_syntax:concrete(Pattern)],
             merl:qquote(Line, "merl:_@function(_@pattern, _@args)",
                [{function, F},
@@ -182,7 +196,7 @@ var_name(V) -> V.
 
 var_to_tag(V) when is_integer(V) -> V;
 var_to_tag(V) ->
-    list_to_atom(string:to_lower(atom_to_list(V))).
+    list_to_atom(string:lowercase(atom_to_list(V))).
 
 pre_expand_case(Expr, Clauses, Line) ->
     merl:qquote(Line, "merl:switch(_@expr, _@clauses)",
@@ -260,3 +274,12 @@ is_erlang_var([C|_]) when C >= $A, C =< $Z ; C >= $À, C =< $Þ, C /= $× ->
     true;
 is_erlang_var(_) ->
     false.
+
+get_location(T) ->
+    Pos = erl_syntax:get_pos(T),
+    case erl_anno:is_anno(Pos) of
+        true ->
+            erl_anno:location(Pos);
+        false ->
+            Pos
+    end.

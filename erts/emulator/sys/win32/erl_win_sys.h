@@ -1,7 +1,7 @@
 /*
  * %CopyrightBegin%
  * 
- * Copyright Ericsson AB 1997-2014. All Rights Reserved.
+ * Copyright Ericsson AB 1997-2018. All Rights Reserved.
  * 
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -52,10 +52,6 @@
 #include <fcntl.h>
 #include <time.h>
 #include <sys/timeb.h>
-#pragma comment(linker,"/manifestdependency:\"type='win32' "\
-		"name='Microsoft.Windows.Common-Controls' "\
-		"version='6.0.0.0' processorArchitecture='*' "\
-		"publicKeyToken='6595b64144ccf1df' language='*'\"")
 
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
@@ -88,7 +84,6 @@
 #define NO_SYSCONF
 #define NO_DAEMON
 #define NO_PWD
-/*#define HAVE_MEMMOVE*/
 
 #define strncasecmp _strnicmp
 
@@ -182,11 +177,14 @@ typedef LONGLONG ErtsMonotonicTime;
 typedef LONGLONG ErtsSysHrTime;
 #endif
 
+#define ErtsStrToSint64 _strtoi64
+
 typedef ErtsMonotonicTime ErtsSystemTime;
+typedef ErtsMonotonicTime ErtsSysPerfCounter;
 
 ErtsSystemTime erts_os_system_time(void);
 
-#define ERTS_MONOTONIC_TIME_MIN (((ErtsMonotonicTime) 1) << 63)
+#define ERTS_MONOTONIC_TIME_MIN ((ErtsMonotonicTime) (1ULL << 63))
 #define ERTS_MONOTONIC_TIME_MAX (~ERTS_MONOTONIC_TIME_MIN)
 
 #define ERTS_HAVE_OS_MONOTONIC_TIME_SUPPORT 1
@@ -213,6 +211,7 @@ ERTS_GLB_INLINE ErtsMonotonicTime erts_os_monotonic_time(void);
 ERTS_GLB_INLINE void erts_os_times(ErtsMonotonicTime *,
 				   ErtsSystemTime *);
 ERTS_GLB_INLINE ErtsSysHrTime erts_sys_hrtime(void);
+ERTS_GLB_INLINE ErtsSysPerfCounter erts_sys_perf_counter(void);
 
 #if ERTS_GLB_INLINE_INCL_FUNC_DEF
 
@@ -232,6 +231,18 @@ ERTS_GLB_INLINE ErtsSysHrTime
 erts_sys_hrtime(void)
 {
     return (*erts_sys_time_data__.r.o.sys_hrtime)();
+}
+
+ERTS_GLB_INLINE ErtsSysPerfCounter
+erts_sys_perf_counter(void)
+{
+    return (*erts_sys_time_data__.r.o.sys_hrtime)();
+}
+
+ERTS_GLB_INLINE ErtsSysPerfCounter
+erts_sys_perf_counter_unit(void)
+{
+    return 1000 * 1000 * 1000;
 }
 
 #endif /* ERTS_GLB_INLINE_INCL_FUNC_DEF */
@@ -295,10 +306,8 @@ typedef long ssize_t;
 #endif
 
 /* Threads */
-#ifdef USE_THREADS
 int init_async(int);
 int exit_async(void);
-#endif
 
 #define ERTS_HAVE_TRY_CATCH 1
 

@@ -1,7 +1,7 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2008-2012. All Rights Reserved.
+%% Copyright Ericsson AB 2008-2018. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -47,9 +47,9 @@ safe(What, QuitOnErr) ->
 	What(),
 	io:format("Completed successfully~n~n", []),
 	QuitOnErr andalso gen_util:halt(0)
-    catch Err:Reason ->
+    catch Err:Reason:Stacktrace ->
 	    io:format("Error ~p: ~p:~p~n  ~p~n", 
-		      [get(current_func),Err,Reason,erlang:get_stacktrace()]),
+		      [get(current_func),Err,Reason,Stacktrace]),
 	    (catch gen_util:close()),
 	    timer:sleep(1999),
 	    QuitOnErr andalso gen_util:halt(1)
@@ -59,17 +59,16 @@ gen_code() ->
     {ok, Opts0} = file:consult("glapi.conf"),
     erase(func_id),
     Opts = init_defs(Opts0),
-    GLUDefs = parse_glu_defs(Opts),   
-    GLDefs  = parse_gl_defs(Opts),    
+    GLUDefs = parse_glu_defs(Opts),
+    GLDefs  = parse_gl_defs(Opts),
     {GLUDefines,GLUFuncs} = setup(GLUDefs, Opts),
     {GLDefines,GLFuncs}   = setup(GLDefs, Opts),
-    gl_gen_erl:gl_defines(GLDefines),
-    gl_gen_erl:gl_api(GLFuncs),
     gl_gen_erl:glu_defines(GLUDefines),
-    gl_gen_erl:glu_api(GLUFuncs),
-
-    %%gl_gen_erl:gen_debug(GLFuncs,GLUFuncs),
-    gl_gen_c:gen(GLFuncs,GLUFuncs),
+    GluNifs = gl_gen_erl:glu_api(GLUFuncs),
+    gl_gen_erl:gl_defines(GLDefines),
+    gl_gen_erl:gl_api(GLFuncs, GluNifs),
+    gl_gen_nif:gen(GLFuncs,GLUFuncs),
+    gl_gen_doc:gen(GLFuncs,GLUFuncs),
     ok.
 
 init_defs(Opts0) ->
@@ -129,6 +128,9 @@ get_arg_names(As0) ->
     Args = lists:filter(fun("const") -> false; (_) -> true end, As0),
     get_arg_names(Args, []).
 
+get_arg_names([_Type,Name, Int],Acc) ->
+    true = is_integer(erlang:list_to_integer(Int)), %% assert
+    reverse([Name|Acc]);
 get_arg_names([_Type,Name|R],Acc) ->
     get_arg_names(R, [Name|Acc]);
 get_arg_names([],Acc) -> reverse(Acc);
@@ -160,8 +162,7 @@ parse_file(#xmlElement{name=memberdef,attributes=Attr, content=C}, Opts, Acc) ->
 	    try 
 		Def = parse_func(C, Opts),
 		[Def|Acc]
-	    catch throw:skip -> Acc
-	    after erase(current_func)
+	    catch throw:skip -> erase(current_func), Acc
 	    end;
 	{value, #xmlAttribute{value = "define"}} -> 
 	    try 
@@ -172,7 +173,7 @@ parse_file(#xmlElement{name=memberdef,attributes=Attr, content=C}, Opts, Acc) ->
 	{value, #xmlAttribute{value = "typedef"}} -> 
 	    Acc;
 	_W ->
-	    io:format("Hmm ~p~n",[_W]),
+	    %% io:format("Hmm ~p~n",[_W]),
 	    Acc
     end;
 parse_file(_Hmm,_,Acc) ->
@@ -191,8 +192,9 @@ parse_define([#xmlElement{name=initializer,content=Contents}|_R],Def,_Os) ->
     try
 	case Val0 of
 	    "0x" ++ Val1 ->
-		_ = http_util:hexlist_to_integer(Val1),
-		Def#def{val=Val1, type=hex};
+		Val2 = strip_type_cast(Val1),
+		_ = list_to_integer(Val2, 16),
+		Def#def{val=Val2, type=hex};
 	    _ ->
 		Val = list_to_integer(Val0),
 		Def#def{val=Val, type=int}
@@ -213,6 +215,15 @@ extract_def2([#xmlText{value=Val}|R]) ->
 extract_def2([#xmlElement{content=Cs}|R]) ->
     extract_def2(Cs) ++ extract_def2(R);
 extract_def2([]) -> [].
+
+strip_type_cast(Int) ->
+    lists:reverse(strip_type_cast2(lists:reverse(Int))).
+
+strip_type_cast2("u"++Rest) -> Rest; %% unsigned
+strip_type_cast2("lu"++Rest) -> Rest; %% unsigned  long
+strip_type_cast2("llu"++Rest) -> Rest; %% unsigned long long
+strip_type_cast2(Rest) -> Rest.
+
 
 strip_comment("/*" ++ Rest) ->
     strip_comment_until_end(Rest);
@@ -344,6 +355,7 @@ handle_arg_opt({single,Opt},P=#arg{type=T}) -> P#arg{type=T#type{single=Opt}};
 handle_arg_opt({base,{Opt, Sz}},  P=#arg{type=T}) -> P#arg{type=T#type{base=Opt, size=Sz}};
 handle_arg_opt({base,Opt},  P=#arg{type=T}) -> P#arg{type=T#type{base=Opt}};
 handle_arg_opt({c_only,Opt},P) -> P#arg{where=c, alt=Opt};
+handle_arg_opt(list_binary, P) -> P#arg{alt=list_binary};
 handle_arg_opt(string,  P=#arg{type=T}) -> P#arg{type=T#type{base=string}};
 handle_arg_opt({string,Max,Sz}, P=#arg{type=T}) ->
     P#arg{type=T#type{base=string, size={Max,Sz}}}.
@@ -374,17 +386,21 @@ extract_type_info(What,Acc) ->
     ?error({parse_error,What,Acc}).
 
 extract_type_info2("const",Acc) -> [const|Acc];
+extract_type_info2("*const",Acc) ->
+    extract_type_info2("*",Acc);
 extract_type_info2("*", [{by_ref,{pointer,N}}|Acc]) -> 
     [{by_ref,{pointer,N+1}}|Acc];
 extract_type_info2("*",   Acc) -> [{by_ref,{pointer,1}}|Acc];
 extract_type_info2("**",  Acc) -> [{by_ref,{pointer,2}}|Acc];
 extract_type_info2(Type,  Acc) -> [Type|Acc].
 
-parse_type2(["void"],  _T, _Opts) ->  void;
 parse_type2([N="void", const|R], T, Opts) ->
     parse_type2([const|R],T#type{name=N, base=idx_binary},Opts);
 parse_type2([N="void"|R],  T, Opts) ->
-    parse_type2(R,T#type{name=N},Opts);
+    case #type{} of
+        T -> void;
+        _ -> parse_type2(R,T#type{name=N},Opts)
+    end;
 parse_type2([const|R],T=#type{mod=Mod},Opts) -> 
     parse_type2(R,T#type{mod=[const|Mod]},Opts);
 parse_type2(["unsigned"|R],T=#type{mod=Mod},Opts) -> 
@@ -578,7 +594,7 @@ lookup(Name,[_|R],Def) ->
     lookup(Name,R,Def);
 lookup(_,[], Def) -> Def.
     
-setup_idx_binary(Name,Ext,_Opts) ->
+setup_idx_binary(Name,Ext, _Opts) ->
     FuncName = Name ++ Ext,
     Func = #func{params=Args} = get(FuncName),
     Id = next_id(function),
@@ -597,8 +613,7 @@ setup_idx_binary(Name,Ext,_Opts) ->
 			  ok;
 		     (_) -> ok
 		  end, Args),
-
-    case setup_idx_binary(Args, []) of
+    case setup_idx_binary_1(Args, []) of
 	ignore -> 
 	    put(FuncName, Func#func{id=Id}),
 	    Name++Ext;
@@ -614,30 +629,41 @@ setup_idx_binary(Name,Ext,_Opts) ->
 	    [FuncName,Extra]
     end.
 
-setup_idx_binary([A=#arg{in=true,type=T=#type{base=idx_binary}}|R], Acc) ->
+setup_idx_binary_1([A=#arg{in=true,type=T=#type{base=idx_binary}}|R], Acc) ->
     A1 = A#arg{type=T#type{base=guard_int,size=4}},
     A2 = A#arg{type=T#type{base=binary}},
     Head = reverse(Acc),
-    case setup_idx_binary(R, []) of
+    case setup_idx_binary_1(R, []) of
 	ignore -> 
 	    {bin, Head ++ [A1|R], Head ++ [A2|R]};
 	{bin, R1,R2} ->
 	    {bin, Head ++ [A1|R1], Head ++ [A2|R2]}
     end;
-setup_idx_binary([A=#arg{in=true,type=T=#type{single={tuple,matrix}}}|R], Acc) ->
+setup_idx_binary_1([A=#arg{in=true,type=T=#type{base=int,size=4},alt=list_binary}|R], Acc) ->
+    A1 = A#arg{type=T#type{base=guard_int}},
+    A2 = A#arg{type=T#type{base=binary}},
+    Head = reverse(Acc),
+    case setup_idx_binary_1(R, []) of
+	ignore ->
+	    {bin, Head ++ [A1|R], Head ++ [A2|R]};
+	{bin, R1,R2} ->
+	    {bin, Head ++ [A1|R1], Head ++ [A2|R2]}
+    end;
+
+setup_idx_binary_1([A=#arg{in=true,type=T=#type{single={tuple,matrix}}}|R], Acc) ->
     A1 = A#arg{type=T#type{single={tuple, matrix12}}},
     A2 = A#arg{type=T#type{single={tuple, 16}}},
     Head = reverse(Acc),
-    case setup_idx_binary(R, []) of
+    case setup_idx_binary_1(R, []) of
 	ignore -> 
 	    {matrix, Head ++ [A1|R], Head ++ [A2|R]};
 	{matrix, R1,R2} ->
 	    {matrix, Head ++ [A1|R1], Head ++ [A2|R2]}
     end;
-setup_idx_binary([H|R],Acc) -> 
-    setup_idx_binary(R,[H|Acc]);
-setup_idx_binary([],_) -> ignore.
-    
+setup_idx_binary_1([H|R],Acc) ->
+    setup_idx_binary_1(R,[H|Acc]);
+setup_idx_binary_1([],_) -> ignore.
+
 is_equal(F1=#func{type=T1,params=A1},F2=#func{type=T2,params=A2}) ->
     Equal = is_equal_type(T1,T2) andalso is_equal_args(A1,A2),
     case Equal of
@@ -686,6 +712,7 @@ get_extension(ExtName,_Opts) ->
 	"ITA"  ++ Name -> {reverse(Name),"ATI"};
 	"DMA"  ++ Name -> {reverse(Name),"AMD"};
 	"VN"   ++ Name -> {reverse(Name),"NV"}; %Nvidia
+        "XVN"   ++ Name -> {reverse(Name),"NVX"}; %Nvidia
 	"ELPPA"++ Name -> {reverse(Name),"APPLE"};
 	"LETNI"++ Name -> {reverse(Name),"INTEL"};
 	"NUS"  ++ Name -> {reverse(Name),"SUN"};
@@ -700,6 +727,7 @@ get_extension(ExtName,_Opts) ->
 	"PH"   ++ Name -> {reverse(Name),"HP"};
 	"YDEMERG" ++ Name -> {reverse(Name),"GREMEDY"};
 	"SEO" ++ Name -> {reverse(Name),"OES"};
+        "RVO" ++ Name -> {reverse(Name),"OVR"};
 	%%["" ++ Name] ->     {Name;  %%
 	_ -> {ExtName, ""}
     end.

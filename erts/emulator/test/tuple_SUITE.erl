@@ -1,7 +1,7 @@
 %%
 %% %CopyrightBegin%
 %% 
-%% Copyright Ericsson AB 1997-2013. All Rights Reserved.
+%% Copyright Ericsson AB 1997-2018. All Rights Reserved.
 %% 
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -25,8 +25,9 @@
 	 t_list_to_tuple/1, t_list_to_upper_boundry_tuple/1, t_tuple_to_list/1,
 	 t_make_tuple_2/1, t_make_upper_boundry_tuple_2/1, t_make_tuple_3/1,
 	 t_append_element/1, t_append_element_upper_boundry/1,
-	 build_and_match/1, tuple_with_case/1, tuple_in_guard/1]).
--include_lib("test_server/include/test_server.hrl").
+         build_and_match/1, tuple_with_case/1, tuple_in_guard/1,
+         get_two_tuple_elements/1]).
+-include_lib("common_test/include/ct.hrl").
 
 %% Tests tuples and the BIFs:
 %%
@@ -47,7 +48,8 @@ all() ->
      t_make_tuple_2, t_make_upper_boundry_tuple_2, t_make_tuple_3,
      t_append_element, t_append_element_upper_boundry,
      t_insert_element, t_delete_element,
-     tuple_with_case, tuple_in_guard].
+     tuple_with_case, tuple_in_guard,
+     get_two_tuple_elements].
 
 groups() -> 
     [].
@@ -64,7 +66,7 @@ init_per_suite(Config) ->
     [{started_apps, A}|Config].
 
 end_per_suite(Config) ->
-    As = ?config(started_apps, Config),
+    As = proplists:get_value(started_apps, Config),
     lists:foreach(fun (A) -> application:stop(A) end, As),
     Config.
 
@@ -133,6 +135,13 @@ t_element(Config) when is_list(Config) ->
     {'EXIT', {badarg, _}} = (catch element(1, id([a,b]))),
     {'EXIT', {badarg, _}} = (catch element(1, id(42))),
     {'EXIT', {badarg, _}} = (catch element(id(1.5), id({a,b}))),
+
+    %% Make sure that the loader does not reject the module when
+    %% huge literal index values are used.
+    {'EXIT', {badarg, _}} = (catch element((1 bsl 24)-1, id({a,b,c}))),
+    {'EXIT', {badarg, _}} = (catch element(1 bsl 24, id({a,b,c}))),
+    {'EXIT', {badarg, _}} = (catch element(1 bsl 32, id({a,b,c}))),
+    {'EXIT', {badarg, _}} = (catch element(1 bsl 64, id({a,b,c}))),
 
     ok.
 
@@ -259,7 +268,7 @@ t_make_tuple(Size, Element) ->
     lists:foreach(fun(El) when El =:= Element ->
 			  ok;
 		     (Other) ->
-			  test_server:fail({got, Other, expected, Element})
+			  ct:fail({got, Other, expected, Element})
 		  end, tuple_to_list(Tuple)).
 
 %% Tests the erlang:make_tuple/3 BIF.
@@ -385,15 +394,39 @@ tuple_in_guard(Config) when is_list(Config) ->
 	Tuple1 == {element(1, Tuple2),element(2, Tuple2)} ->
 	    ok;
 	true ->
-	    test_server:fail()
+	    ct:fail("failed")
     end,
     if
 	Tuple2 == {element(1, Tuple2),element(2, Tuple2),
 	    element(3, Tuple2)} ->
 	    ok;
 	true ->
-	    test_server:fail()
+	    ct:fail("failed")
     end,
+    ok.
+
+%% For BeamAsm, test that the tuple pointer is correctly reloaded after
+%% a get_two_tuple_elements instruction that ovewrites the register holding
+%% the tuple.
+get_two_tuple_elements(Config) ->
+    DataDir = proplists:get_value(data_dir, Config),
+    GTTETestsFile = filename:join(DataDir, "get_two_tuple_elements"),
+
+    %% Compile from Erlang source code.
+    {ok,GTTEMod,Code1} = compile:file(GTTETestsFile, [no_ssa_opt_sink,binary,report,time]),
+    {module,GTTEMod} = code:load_binary(GTTEMod, GTTEMod, Code1),
+    GTTEMod:GTTEMod(),
+    true = code:delete(GTTEMod),
+    code:purge(GTTEMod),
+
+    %% Compile from the pre-generated BEAM assmebly code file. (In case that the
+    %% compiler's code generation has changed.)
+    {ok,GTTEMod,Code2} = compile:file(GTTETestsFile, [from_asm,binary,report,time]),
+    {module,GTTEMod} = code:load_binary(GTTEMod, GTTEMod, Code2),
+    GTTEMod:GTTEMod(),
+    true = code:delete(GTTEMod),
+    code:purge(GTTEMod),
+
     ok.
 
 %% Use this function to avoid compile-time evaluation of an expression.

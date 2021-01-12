@@ -1,7 +1,7 @@
 %%
 %% %CopyrightBegin%
 %% 
-%% Copyright Ericsson AB 1996-2014. All Rights Reserved.
+%% Copyright Ericsson AB 1996-2020. All Rights Reserved.
 %% 
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -19,7 +19,7 @@
 %%
 -module(application_SUITE).
 
--include_lib("test_server/include/test_server.hrl").
+-include_lib("common_test/include/ct.hrl").
 
 -export([all/0, suite/0,groups/0,init_per_suite/1, end_per_suite/1, 
 	 init_per_group/2,end_per_group/2
@@ -31,38 +31,44 @@
 	 otp_3002/1, otp_3184/1, otp_4066/1, otp_4227/1, otp_5363/1,
 	 otp_5606/1,
 	 start_phases/1, get_key/1, get_env/1,
+	 set_env/1, set_env_persistent/1, set_env_errors/1,
 	 permit_false_start_local/1, permit_false_start_dist/1, script_start/1, 
-	 nodedown_start/1, init2973/0, loop2973/0, loop5606/1]).
+	 nodedown_start/1, init2973/0, loop2973/0, loop5606/1, otp_16504/1]).
 
 -export([config_change/1, persistent_env/1,
 	 distr_changed_tc1/1, distr_changed_tc2/1,
 	 ensure_started/1, ensure_all_started/1,
-	 shutdown_func/1, do_shutdown/1, shutdown_timeout/1, shutdown_deadlock/1]).
+	 shutdown_func/1, do_shutdown/1, shutdown_timeout/1, shutdown_deadlock/1,
+         config_relative_paths/1, handle_many_config_files/1,
+         format_log_1/1, format_log_2/1,
+         configfd_bash/1, configfd_port_program/1]).
 
 -define(TESTCASE, testcase_name).
--define(testcase, ?config(?TESTCASE, Config)).
+-define(testcase, proplists:get_value(?TESTCASE, Config)).
 
 -export([init_per_testcase/2, end_per_testcase/2, start_type/0, 
 	 start_phase/0, conf_change/0]).
-% Default timetrap timeout (set in init_per_testcase).
--define(default_timeout, ?t:minutes(2)).
 
-suite() -> [{ct_hooks,[ts_install_cth]}].
+suite() ->
+    [{ct_hooks,[ts_install_cth]},
+     {timetrap,{minutes,2}}].
 
 all() -> 
     [failover, failover_comp, permissions, load,
      load_use_cache, ensure_started, {group, reported_bugs}, start_phases,
      script_start, nodedown_start, permit_false_start_local,
      permit_false_start_dist, get_key, get_env, ensure_all_started,
+     set_env, set_env_persistent, set_env_errors,
      {group, distr_changed}, config_change, shutdown_func, shutdown_timeout,
-     shutdown_deadlock,
-     persistent_env].
+     shutdown_deadlock, config_relative_paths,
+     persistent_env, handle_many_config_files, format_log_1, format_log_2,
+     configfd_bash, configfd_port_program].
 
 groups() -> 
     [{reported_bugs, [],
       [otp_1586, otp_2078, otp_2012, otp_2718, otp_2973,
        otp_3002, otp_3184, otp_4066, otp_4227, otp_5363,
-       otp_5606]},
+       otp_5606, otp_16504]},
      {distr_changed, [],
       [distr_changed_tc1, distr_changed_tc2]}].
 
@@ -81,21 +87,15 @@ end_per_group(_GroupName, Config) ->
 
 
 init_per_testcase(otp_2973=Case, Config) ->
-    code:add_path(?config(data_dir,Config)),
-    Dog = test_server:timetrap(?default_timeout),
-    [{?TESTCASE, Case}, {watchdog, Dog}|Config];
+    code:add_path(proplists:get_value(data_dir,Config)),
+    [{?TESTCASE, Case}|Config];
 init_per_testcase(Case, Config) ->
-    Dog = test_server:timetrap(?default_timeout),
-    [{?TESTCASE, Case}, {watchdog, Dog}|Config].
+    [{?TESTCASE, Case}|Config].
 
 end_per_testcase(otp_2973, Config) ->
-    code:del_path(?config(data_dir,Config)),
-    Dog=?config(watchdog, Config),
-    test_server:timetrap_cancel(Dog),
+    code:del_path(proplists:get_value(data_dir,Config)),
     ok;
-end_per_testcase(_Case, Config) ->
-    Dog=?config(watchdog, Config),
-    test_server:timetrap_cancel(Dog),
+end_per_testcase(_Case, _Config) ->
     ok.
 
 -define(UNTIL(Seq), loop_until_true(fun() -> Seq end)).
@@ -120,10 +120,8 @@ loop_until_true(Fun) ->
 %% Should be started in a CC view with:
 %% erl -sname XXX -rsh ctrsh where XX not in [cp1, cp2, cp3]
 %%-----------------------------------------------------------------
-failover(suite) -> [];
-failover(doc) ->
-    ["Tests failover and takeover for distributed applications.  Tests",
-     "start, load etc implicitly."];
+%% Tests failover and takeover for distributed applications.  Tests
+%% start, load etc implicitly.
 failover(Conf) when is_list(Conf) ->
     %% start a help process to check the start type
     StPid = spawn_link(?MODULE, start_type, []),
@@ -133,14 +131,14 @@ failover(Conf) when is_list(Conf) ->
     NoSyncTime = config_fun_fast(config_fo(NodeNames)),
     WithSyncTime = config_fun(config_fo(NodeNames)),
 
-    % Test [cp1, cp2, cp3]
+    %% Test [cp1, cp2, cp3]
     {ok, Cp1} = start_node_config(Ncp1, NoSyncTime, Conf),
     {ok, Cp2} = start_node_config(Ncp2, NoSyncTime, Conf),
     {ok, Cp3} = start_node_config(Ncp3, WithSyncTime, Conf),
     Cps = [Cp1, Cp2, Cp3],
     wait_for_ready_net(),
 
-    % Start app1 and make sure cp1 starts it
+    %% Start app1 and make sure cp1 starts it
     {[ok,ok,ok],[]} = 
         rpc:multicall(Cps, application, load, [app1()]),
     ?UNTIL(is_loaded(app1, Cps)),
@@ -150,12 +148,12 @@ failover(Conf) when is_list(Conf) ->
     false = is_started(app1, Cp2),
     ok = get_start_type(#st{normal = 3}),
 
-    % Stop cp1 and make sure cp2 starts app1
+    %% Stop cp1 and make sure cp2 starts app1
     stop_node_nice(Cp1),
     ?UNTIL(is_started(app1, Cp2)),
     ok = get_start_type(#st{normal = 3}),
 
-    % Restart cp1 and make sure it restarts app1
+    %% Restart cp1 and make sure it restarts app1
     {ok, Cp1_2} = start_node_config(Ncp1, NoSyncTime, Conf),
     global:sync(),
     ok = rpc:call(Cp1_2, application, load, [app1()]),
@@ -164,8 +162,8 @@ failover(Conf) when is_list(Conf) ->
     ?UNTIL(not is_started(app1, Cp2)),
     ok = get_start_type(#st{takeover = 3}),
 
-    % Test [{cp1, cp2}, cp3]
-    % Start app_sp and make sure cp2 starts it (cp1 has more apps started)
+    %% Test [{cp1, cp2}, cp3]
+    %% Start app_sp and make sure cp2 starts it (cp1 has more apps started)
     {[ok,ok,ok],[]} =
         rpc:multicall([Cp1_2, Cp2, Cp3], application, load, [app_sp()]),
     {[ok,ok,ok],[]} = 
@@ -175,17 +173,17 @@ failover(Conf) when is_list(Conf) ->
     false = is_started(app_sp, Cp3),
     ok = get_start_type(#st{normal = 3}),
 	
-    % Stop cp2 and make sure cp1 starts app_sp
+    %% Stop cp2 and make sure cp1 starts app_sp
     stop_node_nice(Cp2),
     ?UNTIL(is_started(app_sp, Cp1_2)),
     ok = get_start_type(#st{failover = 3}),
 	
-    % Stop cp1 and make sure cp3 starts app_sp
+    %% Stop cp1 and make sure cp3 starts app_sp
     stop_node_nice(Cp1_2),
     ?UNTIL(is_started(app_sp, Cp3)),
     ok = get_start_type(#st{normal = 3, failover = 3}),
 
-    % Restart cp2 and make sure it restarts app_sp
+    %% Restart cp2 and make sure it restarts app_sp
     {ok, Cp2_2} = start_node_config(Ncp2, NoSyncTime, Conf),
     global:sync(),
     ok = rpc:call(Cp2_2, application, load, [app_sp()]),
@@ -194,16 +192,16 @@ failover(Conf) when is_list(Conf) ->
     ?UNTIL(not is_started(app_sp, Cp3)),
     ok = get_start_type(#st{takeover = 3}),
 
-    % Restart cp1 and make sure it doesn't restart app_sp
+    %% Restart cp1 and make sure it doesn't restart app_sp
     {ok, Cp1_3} = start_node_config(Ncp1, NoSyncTime, Conf),
     global:sync(),
     ok = rpc:call(Cp1_3, application, load, [app_sp()]),
     ok = rpc:call(Cp1_3, application, start, [app_sp, permanent]),
-    test_server:sleep(500),
+    ct:sleep(500),
     false = is_started(app_sp, Cp1_3),
     true = is_started(app_sp, Cp2_2),
 
-    % Force takeover to cp1
+    %% Force takeover to cp1
     ok = rpc:call(Cp1_3, application, takeover, [app_sp, permanent]),
     ?UNTIL(is_started(app_sp, Cp1_3)),
     ?UNTIL(not is_started(app_sp, Cp2_2)),
@@ -225,11 +223,9 @@ failover(Conf) when is_list(Conf) ->
 %% Should be started in a CC view with:
 %% erl -sname XXX -rsh ctrsh where XX not in [cp1, cp2, cp3]
 %%-----------------------------------------------------------------
-failover_comp(suite) -> [];
-failover_comp(doc) ->
-    ["Tests failover and takeover for distributed applications.  Tests",
-     "start, load etc implicitly. The applications do not use start_phases,"
-     "i.e the failover should be trasfered to normal start type."];
+%% Tests failover and takeover for distributed applications.  Tests
+%% start, load etc implicitly. The applications do not use start_phases
+%% i.e. the failover should be transfered to normal start type.
 failover_comp(Conf) when is_list(Conf) ->
     %% start a help process to check the start type
     StPid = spawn_link(?MODULE, start_type, []),
@@ -239,14 +235,14 @@ failover_comp(Conf) when is_list(Conf) ->
     NoSyncTime = config_fun_fast(config(NodeNames)),
     WithSyncTime = config_fun(config(NodeNames)),
 
-    % Test [cp1, cp2, cp3]
+    %% Test [cp1, cp2, cp3]
     {ok, Cp1} = start_node_config(Ncp1, NoSyncTime, Conf),
     {ok, Cp2} = start_node_config(Ncp2, NoSyncTime, Conf),
     {ok, Cp3} = start_node_config(Ncp3, WithSyncTime, Conf),
     Cps = [Cp1, Cp2, Cp3],
     wait_for_ready_net(),
 
-    % Start app1 and make sure cp1 starts it
+    %% Start app1 and make sure cp1 starts it
     {[ok,ok,ok],[]} = 
         rpc:multicall(Cps, application, load, [app1()]),
     ?UNTIL(is_loaded(app1, Cps)),
@@ -256,12 +252,12 @@ failover_comp(Conf) when is_list(Conf) ->
     false = is_started(app1, Cp2),
     ok = get_start_type(#st{normal = 3}),
 
-    % Stop cp1 and make sure cp2 starts app1
+    %% Stop cp1 and make sure cp2 starts app1
     stop_node_nice(Cp1),
     ?UNTIL(is_started(app1, Cp2)),
     ok = get_start_type(#st{normal = 3}),
 
-    % Restart cp1 and make sure it restarts app1
+    %% Restart cp1 and make sure it restarts app1
     {ok, Cp1_2} = start_node_config(Ncp1, NoSyncTime, Conf),
     global:sync(),
     ok = rpc:call(Cp1_2, application, load, [app1()]),
@@ -271,8 +267,8 @@ failover_comp(Conf) when is_list(Conf) ->
     ?UNTIL(not is_started(app1, Cp2)),
     ok = get_start_type(#st{takeover = 3}),
 
-    % Test [{cp1, cp2}, cp3]
-    % Start app3 and make sure cp2 starts it (cp1 has more apps started)
+    %% Test [{cp1, cp2}, cp3]
+    %% Start app3 and make sure cp2 starts it (cp1 has more apps started)
     {[ok,ok,ok],[]} =
         rpc:multicall([Cp1_2, Cp2, Cp3], application, load, [app3()]),
     ?UNTIL(is_loaded(app3, [Cp1_2, Cp2, Cp3])),
@@ -283,17 +279,17 @@ failover_comp(Conf) when is_list(Conf) ->
     false = is_started(app3, Cp3),
     ok = get_start_type(#st{normal = 3}),
 	
-    % Stop cp2 and make sure cp1 starts app3
+    %% Stop cp2 and make sure cp1 starts app3
     stop_node_nice(Cp2),
     ?UNTIL(is_started(app3, Cp1_2)),
     ok = get_start_type(#st{normal = 3}),
 	
-    % Stop cp1 and make sure cp3 starts app3
+    %% Stop cp1 and make sure cp3 starts app3
     stop_node_nice(Cp1_2),
     ?UNTIL(is_started(app3, Cp3)),
     ok = get_start_type(#st{normal = 6}),
 
-    % Restart cp2 and make sure it restarts app3
+    %% Restart cp2 and make sure it restarts app3
     {ok, Cp2_2} = start_node_config(Ncp2, NoSyncTime, Conf),
     global:sync(),
     ok = rpc:call(Cp2_2, application, load, [app3()]),
@@ -303,17 +299,17 @@ failover_comp(Conf) when is_list(Conf) ->
     ?UNTIL(not is_started(app3, Cp3)),
     ok = get_start_type(#st{takeover = 3}),
 
-    % Restart cp1 and make sure it doesn't restart app3
+    %% Restart cp1 and make sure it doesn't restart app3
     {ok, Cp1_3} = start_node_config(Ncp1, NoSyncTime, Conf),
     global:sync(),
     ok = rpc:call(Cp1_3, application, load, [app3()]),
     true = is_loaded(app3, Cp1_3),
     ok = rpc:call(Cp1_3, application, start, [app3, permanent]),
-    test_server:sleep(5000),
+    ct:sleep(5000),
     false = is_started(app3, Cp1_3),
     true = is_started(app3, Cp2_2),
 
-    % Force takeover to cp1
+    %% Force takeover to cp1
     ok = rpc:call(Cp1_3, application, takeover, [app3, permanent]),
     ?UNTIL(is_started(app3, Cp1_3)),
     ?UNTIL(not is_started(app3, Cp2_2)),
@@ -335,23 +331,21 @@ failover_comp(Conf) when is_list(Conf) ->
 %% Should be started in a CC view with:
 %% erl -sname XXX -rsh ctrsh where XX not in [cp1, cp2, cp3]
 %%-----------------------------------------------------------------
-permissions(suite) -> [];
-permissions(doc) ->
-    ["Tests permissions for distributed applications."];
+%% Tests permissions for distributed applications.
 permissions(Conf) when is_list(Conf) ->
 
     NodeNames = [Ncp1, Ncp2, Ncp3] = node_names([cp1, cp2, cp3], Conf),
     NoSyncTime = config_fun_fast(config2(NodeNames)),
     WithSyncTime = config_fun(config2(NodeNames)),
 
-    % Test [cp1, cp2, cp3]
+    %% Test [cp1, cp2, cp3]
     {ok, Cp1} = start_node_config(Ncp1, NoSyncTime, Conf),
     {ok, Cp2} = start_node_config(Ncp2, NoSyncTime, Conf),
     {ok, Cp3} = start_node_config(Ncp3, WithSyncTime, Conf),
     Cps = [Cp1, Cp2, Cp3],
     wait_for_ready_net(),
 
-    % Start app1 and make sure cp1 starts it
+    %% Start app1 and make sure cp1 starts it
     {[ok,ok,ok],[]} =
         rpc:multicall(Cps, application, load, [app1()]),
     ?UNTIL(is_loaded(app1, Cps)),
@@ -360,50 +354,50 @@ permissions(Conf) when is_list(Conf) ->
     ?UNTIL(is_started(app1, Cp1)),
     false = is_started(app1, Cp2),
 
-    % Unpermit app1 on cp1, make sure cp2 starts it
+    %% Unpermit app1 on cp1, make sure cp2 starts it
     ok = rpc:call(Cp1, application, permit, [app1, false]),
     false = is_started(app1, Cp1),
     true = is_started(app1, Cp2),
 
-    % Unpermit app1 on cp2, make sure cp3 starts it
+    %% Unpermit app1 on cp2, make sure cp3 starts it
     ok = rpc:call(Cp2, application, permit, [app1, false]),
     false = is_started(app1, Cp1),
     false = is_started(app1, Cp2),
     true = is_started(app1, Cp3),
 
-    % Permit cp2 again
+    %% Permit cp2 again
     ok = rpc:call(Cp2, application, permit, [app1, true]),
     false = is_started(app1, Cp1),
     false = is_started(app1, Cp3),
     true = is_started(app1, Cp2),
 
-    % Start app3, make sure noone starts it
+    %% Start app3, make sure noone starts it
     {[ok,ok,ok],[]} = 
         rpc:multicall(Cps, application, load, [app3()]),
     ?UNTIL(is_loaded(app3, Cps)),
     {[ok,ok,ok],[]} = 
         rpc:multicall(Cps, application, start, [app3, permanent]),
-    test_server:sleep(1000),
+    ct:sleep(1000),
     false = is_started(app3, Cp1),
     false = is_started(app3, Cp2),
     false = is_started(app3, Cp3),
 
-    % Permit app3 on Cp3
+    %% Permit app3 on Cp3
     ok = rpc:call(Cp3, application, permit, [app3, true]),
     true = is_started(app3, Cp3),
 
-    % Permit app3 on Cp2, make sure it starts it
+    %% Permit app3 on Cp2, make sure it starts it
     ok = rpc:call(Cp2, application, permit, [app3, true]),
     true = is_started(app3, Cp2),
     false = is_started(app3, Cp3),
 
-    % Permit app3 on Cp1, make sure it doesn't start it
+    %% Permit app3 on Cp1, make sure it doesn't start it
     ok = rpc:call(Cp1, application, permit, [app3, true]),
     false = is_started(app3, Cp1),
     true = is_started(app3, Cp2),
     false = is_started(app3, Cp3),
 
-    % Stop Cp2, make sure Cp1 starts app3
+    %% Stop Cp2, make sure Cp1 starts app3
     stop_node_nice(Cp2),
     ?UNTIL(is_started(app3, Cp1)),
 
@@ -415,15 +409,13 @@ permissions(Conf) when is_list(Conf) ->
 %% Should be started in a CC view with:
 %% erl -sname XXX -rsh ctrsh where XX not in [cp1, cp2, cp3]
 %%-----------------------------------------------------------------
-load(suite) -> [];
-load(doc) ->
-    ["Tests loading of distributed applications."];
+%% Tests loading of distributed applications.
 load(Conf) when is_list(Conf) ->
     NodeNames = [Ncp1, Ncp2, Ncp3] = node_names([cp1, cp2, cp3], Conf),
     NoSyncTime = config_fun_fast(config3(NodeNames)),
     WithSyncTime = config_fun(config3(NodeNames)),
 
-    % Test [cp1, cp2, cp3]
+    %% Test [cp1, cp2, cp3]
     {ok, Cp1} = start_node_config(Ncp1, NoSyncTime, Conf),
     {ok, Cp2} = start_node_config(Ncp2, NoSyncTime, Conf),
     {ok, Cp3} = start_node_config(Ncp3, WithSyncTime, Conf),
@@ -439,7 +431,7 @@ load(Conf) when is_list(Conf) ->
     false = is_started(app1, Cp2),
     false = is_started(app1, Cp3),
 
-    % Load app1 with different specs and make sure we get an error
+    %% Load app1 with different specs and make sure we get an error
     {[{error,_},{error,_}],[]} = 
         rpc:multicall([Cp1, Cp2], application, load, [app1(), d1(NodeNames)]),
     {error, _} = rpc:call(Cp3, application, load, [app1(), d2(NodeNames)]),
@@ -452,15 +444,13 @@ load(Conf) when is_list(Conf) ->
 %%-----------------------------------------------------------------
 %% Same test as load/1, only with code path cache enabled.
 %%-----------------------------------------------------------------
-load_use_cache(suite) -> [];
-load_use_cache(doc) ->
-    ["Tests loading of distributed applications. Code path cache enabled."];
+%% Tests loading of distributed applications. Code path cache enabled.
 load_use_cache(Conf) when is_list(Conf) ->
     NodeNames = [Ncp1, Ncp2, Ncp3] = node_names([cp1, cp2, cp3], Conf),
     NoSyncTime = config_fun_fast(config3(NodeNames)),
     WithSyncTime = config_fun(config3(NodeNames)),
 
-    % Test [cp1, cp2, cp3]
+    %% Test [cp1, cp2, cp3]
     {ok, Cp1} = start_node_with_cache(Ncp1, NoSyncTime, Conf),
     {ok, Cp2} = start_node_with_cache(Ncp2, NoSyncTime, Conf),
     {ok, Cp3} = start_node_with_cache(Ncp3, WithSyncTime, Conf),
@@ -475,7 +465,7 @@ load_use_cache(Conf) when is_list(Conf) ->
     ?UNTIL(is_started(app1, Cp1)),
     false = is_started(app1, Cp2),
 
-    % Load app1 with different specs and make sure we get an error
+    %% Load app1 with different specs and make sure we get an error
     {[{error,_},{error,_}],[]} = 
         rpc:multicall([Cp1, Cp2], application, load, [app1(), d1(NodeNames)]),
     {error, _} = rpc:call(Cp3, application, load, [app1(), d2(NodeNames)]),
@@ -489,9 +479,7 @@ load_use_cache(Conf) when is_list(Conf) ->
 %% Should be started in a CC view with:
 %% erl -sname XXX -rsh ctrsh where XX not in [cp1, cp2, cp3]
 %%-----------------------------------------------------------------
-start_phases(suite) -> [];
-start_phases(doc) ->
-    ["Tests new start phases and failover."];
+%% Tests new start phases and failover.
 start_phases(Conf) when is_list(Conf) ->
     %% start a help process to check the start type
     SpPid = spawn_link(?MODULE, start_phase, []),
@@ -553,17 +541,15 @@ start_phases(Conf) when is_list(Conf) ->
     ok.
 
 
-script_start(doc) ->
-    ["Start distributed applications from within a boot script.  Test ",
-     "same as failover."];
-script_start(suite) -> [];
+%% Start distributed applications from within a boot script.  Test
+%%  same as failover.
 script_start(Conf) when is_list(Conf) ->
     %% start a help process to check the start type
     StPid = spawn_link(?MODULE, start_type, []),
     yes = global:register_name(st_type, StPid),
 
 
-    % Create the .app files and the boot script
+    %% Create the .app files and the boot script
     ok = create_app(),
     {{KernelVer,StdlibVer}, _} = create_script("latest"),
     case is_real_system(KernelVer, StdlibVer) of
@@ -578,7 +564,7 @@ script_start(Conf) when is_list(Conf) ->
     NoSyncTime = config_fun_fast(config_fo(NodeNames)),
     WithSyncTime = config_fun(config_fo(NodeNames)),
 
-    % Test [cp1, cp2, cp3]
+    %% Test [cp1, cp2, cp3]
     {ok, Cp1} = start_node_boot_config(Ncp1, NoSyncTime, Conf, latest),
     {ok, Cp2} = start_node_boot_config(Ncp2, NoSyncTime, Conf, latest),
     {ok, Cp3} = start_node_boot_config(Ncp3, WithSyncTime, Conf, latest),
@@ -590,16 +576,16 @@ script_start(Conf) when is_list(Conf) ->
     false = is_started(app1, Cp2),
     ok = get_start_type(#st{normal = 9}),
 
-    % Stop cp1 and make sure cp2 starts app1, app2 normally (no
-    % start_phases defined) and app_sp as failover (start_phases
-    % defined)
+    %% Stop cp1 and make sure cp2 starts app1, app2 normally (no
+    %% start_phases defined) and app_sp as failover (start_phases
+    %% defined)
     stop_node_nice(Cp1),
     ?UNTIL(is_started(app1, Cp2)),
     ?UNTIL(is_started(app2, Cp2)),
     ?UNTIL(is_started(app_sp, Cp2)),
     ok = get_start_type(#st{normal = 6, failover = 3}),
 	
-    % Restart cp1, Cp1 takesover app1 and app2
+    %% Restart cp1, Cp1 takesover app1 and app2
     {ok, Cp1_2} = start_node_boot_config(Ncp1, NoSyncTime, Conf, latest),
     global:sync(),
     ?UNTIL(is_started(app1, Cp1_2)),
@@ -610,20 +596,20 @@ script_start(Conf) when is_list(Conf) ->
     ?UNTIL(not is_started(app2, Cp2)),
     ok = get_start_type(#st{takeover = 6}),
 	
-    % Stop cp2 and make sure cp1 starts app_sp.
+    %% Stop cp2 and make sure cp1 starts app_sp.
     false = is_started(app_sp, Cp1_2),
     stop_node_nice(Cp2),
     ?UNTIL(is_started(app_sp, Cp1_2)),
     ok = get_start_type(#st{failover = 3}),
 	
-    % Stop cp1 and make sure cp3 starts app1, app2 and app_sp
+    %% Stop cp1 and make sure cp3 starts app1, app2 and app_sp
     stop_node_nice(Cp1_2),
     ?UNTIL(is_started(app_sp, Cp3)),
     ?UNTIL(is_started(app1, Cp3)),
     ?UNTIL(is_started(app2, Cp3)),
     ok = get_start_type(#st{normal = 6, failover = 3}),
 	
-    % Restart cp2 and make sure it takesover app1, app2 and app_sp
+    %% Restart cp2 and make sure it takesover app1, app2 and app_sp
     {ok, Cp2_2} = start_node_boot_config(Ncp2, NoSyncTime, Conf, latest),
     global:sync(),
     ?UNTIL(is_started(app_sp, Cp2_2)),
@@ -634,7 +620,7 @@ script_start(Conf) when is_list(Conf) ->
     ?UNTIL(not is_started(app2, Cp3)),
     ok = get_start_type(#st{takeover = 9}),
 
-    % Restart cp1 and make sure it takesover app1, app2
+    %% Restart cp1 and make sure it takesover app1, app2
     {ok, Cp1_3} = start_node_boot_config(Ncp1, NoSyncTime, Conf, latest),
     global:sync(),
     ?UNTIL(is_started(app1, Cp1_3)),
@@ -645,7 +631,7 @@ script_start(Conf) when is_list(Conf) ->
     ?UNTIL(not is_started(app2, Cp2_2)),
     ok = get_start_type(#st{takeover = 6}),
 
-    % Force takeover to cp1
+    %% Force takeover to cp1
     ok = rpc:call(Cp1_3, application, takeover, [app_sp, permanent]),
     ?UNTIL(is_started(app_sp, Cp1_3)),
     ?UNTIL(not is_started(app_sp, Cp2_2)),
@@ -668,15 +654,13 @@ script_start(Conf) when is_list(Conf) ->
 
     ok.
 
-permit_false_start_local(doc) ->
-    ["Start local applications with permission false.  Set",
-     "permit true on different nodes."];
-permit_false_start_local(suite) -> [];
+%% Start local applications with permission false.  Set
+%% permit true on different nodes.
 permit_false_start_local(Conf) when is_list(Conf) ->
     %% This configuration does not start dist_ac.
     Config = write_config_file(fun config_perm/1, Conf),
 
-    % Test [cp1, cp2, cp3]
+    %% Test [cp1, cp2, cp3]
     [Ncp1, Ncp2, Ncp3] = node_names([cp1, cp2, cp3], Conf),
     {ok, Cp1} = start_node(Ncp1, Config),
     {ok, Cp2} = start_node(Ncp2, Config),
@@ -694,99 +678,99 @@ permit_false_start_local(Conf) when is_list(Conf) ->
     {[ok,ok,ok],[]} = 
         rpc:multicall([Cp1, Cp2, Cp3], application, load, [app3()]),
 
-    test_server:sleep(1000),
+    ct:sleep(1000),
     false = is_started(app1, Cp1),
     false = is_started(app1, Cp2),
     false = is_started(app1, Cp3),
 
-    %Permit a not started application
+    %% Permit a not started application
     ok = rpc:call(Cp1, application, permit, [app3, true]),
-    test_server:sleep(1000),
+    ct:sleep(1000),
     false = is_started(app3, Cp1),
     false = is_started(app3, Cp2),
     false = is_started(app3, Cp3),
 
-    %Permit a not loaded application
+    %% Permit a not loaded application
     {error,{not_loaded,app_notloaded}} = 
 	rpc:call(Cp1, application, permit, [app_notloaded, true]),
-    test_server:sleep(1000),
+    ct:sleep(1000),
     false = is_started(app_notloaded, Cp1),
     false = is_started(app_notloaded, Cp2),
     false = is_started(app_notloaded, Cp3),
 
-    %Unpermit a not started application
+    %% Unpermit a not started application
     ok = rpc:call(Cp1, application, permit, [app3, false]),
-    test_server:sleep(1000),
+    ct:sleep(1000),
     false = is_started(app3, Cp1),
     false = is_started(app3, Cp2),
     false = is_started(app3, Cp3),
 
-    %Unpermit a not loaded application
+    %% Unpermit a not loaded application
     {error,{not_loaded,app_notloaded}} = 
 	rpc:call(Cp1, application, permit, [app_notloaded, false]),
-    test_server:sleep(1000),
+    ct:sleep(1000),
     false = is_started(app_notloaded, Cp1),
     false = is_started(app_notloaded, Cp2),
     false = is_started(app_notloaded, Cp3),
 
-    % Permit app1 on CP1 and make sure it is started
+    %% Permit app1 on CP1 and make sure it is started
     ok = rpc:call(Cp1, application, permit, [app1, true]),
     ?UNTIL(is_started(app1, Cp1)),
     false = is_started(app1, Cp2),
     false = is_started(app1, Cp3),
 
-    % Permit it again
+    %% Permit it again
     ok = rpc:call(Cp1, application, permit, [app1, true]),
-    test_server:sleep(1000),
+    ct:sleep(1000),
     true = is_started(app1, Cp1),
     false = is_started(app1, Cp2),
     false = is_started(app1, Cp3),
 
-    % Permit app2 on CP1 and make sure it is started
+    %% Permit app2 on CP1 and make sure it is started
     ok = rpc:call(Cp1, application, permit, [app2, true]),
     ?UNTIL(is_started(app2, Cp1)),
     false = is_started(app2, Cp2),
     false = is_started(app2, Cp3),
 
-    % Permit app1 on CP2 and make sure it is started
+    %% Permit app1 on CP2 and make sure it is started
     ok = rpc:call(Cp2, application, permit, [app1, true]),
     ?UNTIL(is_started(app1, Cp2)),
     true = is_started(app1, Cp1),
     false = is_started(app1, Cp3),
 
-    % Unpermit app1 on CP1 and make sure it is stopped
+    %% Unpermit app1 on CP1 and make sure it is stopped
     ok = rpc:call(Cp1, application, permit, [app1, false]),
     ?UNTIL(false =:= is_started(app1, Cp1)),
     true = is_started(app1, Cp2),
     false = is_started(app1, Cp3),
 
-    % Unpermit it agin
+    %% Unpermit it agin
     ok = rpc:call(Cp1, application, permit, [app1, false]),
-    test_server:sleep(1000),
+    ct:sleep(1000),
     false = is_started(app1, Cp1),
     true = is_started(app1, Cp2),
     false = is_started(app1, Cp3),
 
-    % Permit app1 on CP1 and make sure it is started
+    %% Permit app1 on CP1 and make sure it is started
     ok = rpc:call(Cp1, application, permit, [app1, true]),
     ?UNTIL(is_started(app1, Cp1)),
     true = is_started(app1, Cp2),
     false = is_started(app1, Cp3),
 
-    % Unpermit app1 on CP1 and make sure it is stopped
+    %% Unpermit app1 on CP1 and make sure it is stopped
     ok = rpc:call(Cp1, application, permit, [app1, false]),
     ?UNTIL(false =:= is_started(app1, Cp1)),
     true = is_started(app1, Cp2),
     false = is_started(app1, Cp3),
 
-    % Unpermit app1 on CP2 and make sure it is stopped
+    %% Unpermit app1 on CP2 and make sure it is stopped
     ok = rpc:call(Cp2, application, permit, [app1, false]),
-    test_server:sleep(1000),
+    ct:sleep(1000),
     ?UNTIL(false =:= is_started(app1, Cp2)),
     false = is_started(app1, Cp1),
     false = is_started(app1, Cp3),
 
-    % Unpermit app2 on CP1 and make sure it is stopped
+    %% Unpermit app2 on CP1 and make sure it is stopped
     ok = rpc:call(Cp1, application, permit, [app2, false]),
     ?UNTIL(false =:= is_started(app2, Cp2)),
     false = is_started(app2, Cp1),
@@ -798,16 +782,14 @@ permit_false_start_local(Conf) when is_list(Conf) ->
     ok.
     
 
-permit_false_start_dist(doc) ->
-    ["Start distributed applications with permission false.  Set",
-     "permit true on different nodes."];
-permit_false_start_dist(suite) -> [];
+%% Start distributed applications with permission false.  Set
+%% permit true on different nodes.
 permit_false_start_dist(Conf) when is_list(Conf) ->
     NodeNames = [Ncp1, Ncp2, Ncp3] = node_names([cp1, cp2, cp3], Conf),
     NoSyncTime = config_fun_fast(config_perm2(NodeNames)),
     WithSyncTime = config_fun(config_perm2(NodeNames)),
 
-    % Test [cp1, cp2, cp3]
+    %% Test [cp1, cp2, cp3]
     {ok, Cp1} = start_node_config(Ncp1, NoSyncTime, Conf),
     {ok, Cp2} = start_node_config(Ncp2, NoSyncTime, Conf),
     {ok, Cp3} = start_node_config(Ncp3, WithSyncTime, Conf),
@@ -822,36 +804,36 @@ permit_false_start_dist(Conf) when is_list(Conf) ->
     {[ok,ok,ok],[]} = 
         rpc:multicall(Cps, application, load, [app2()]),
 
-    test_server:sleep(1000),
+    ct:sleep(1000),
     false = is_started(app1, Cp1),
     false = is_started(app1, Cp2),
     false = is_started(app1, Cp3),
 
-    %Permit a not started application
+    %% Permit a not started application
     ok = rpc:call(Cp1, application, permit, [app2, true]),
-    test_server:sleep(1000),
+    ct:sleep(1000),
     false = is_started(app2, Cp1),
     false = is_started(app2, Cp2),
     false = is_started(app2, Cp3),
 
-    %Permit a not loaded application
+    %% Permit a not loaded application
     {error,{not_loaded,app3}} = 
 	rpc:call(Cp1, application, permit, [app3, true]),
-    test_server:sleep(1000),
+    ct:sleep(1000),
     false = is_started(app3, Cp1),
     false = is_started(app3, Cp2),
     false = is_started(app3, Cp3),
 
-    %Unpermit a not started application
+    %% Unpermit a not started application
     ok = rpc:call(Cp1, application, permit, [app2, false]),
     {[ok,ok,ok],[]} = 
         rpc:multicall([Cp1, Cp2, Cp3], application, start, [app2, permanent]),
-    test_server:sleep(1000),
+    ct:sleep(1000),
     false = is_started(app2, Cp1),
     false = is_started(app2, Cp2),
     false = is_started(app2, Cp3),
 
-    %Unpermit a not loaded application
+    %% Unpermit a not loaded application
     {error,{not_loaded,app3}} = 
 	rpc:call(Cp1, application, permit, [app3, false]),
     {[ok,ok,ok],[]} = 
@@ -859,42 +841,42 @@ permit_false_start_dist(Conf) when is_list(Conf) ->
     ?UNTIL(is_loaded(app3, Cps)),
     {[ok,ok,ok],[]} = 
         rpc:multicall(Cps, application, start, [app3, permanent]),
-    test_server:sleep(1000),
+    ct:sleep(1000),
     false = is_started(app3, Cp1),
     false = is_started(app3, Cp2),
     false = is_started(app3, Cp3),
 
-    % Permit app1 on CP1 and make sure it is started
+    %% Permit app1 on CP1 and make sure it is started
     ok = rpc:call(Cp1, application, permit, [app1, true]),
     ?UNTIL(is_started(app1, Cp1)),
     false = is_started(app1, Cp2),
     false = is_started(app1, Cp3),
 
-    % Permit it again
+    %% Permit it again
     ok = rpc:call(Cp1, application, permit, [app1, true]),
     ?UNTIL(is_started(app1, Cp1)),
     false = is_started(app1, Cp2),
     false = is_started(app1, Cp3),
 
-    % Permit app2 on CP1 and make sure it is started
+    %% Permit app2 on CP1 and make sure it is started
     ok = rpc:call(Cp1, application, permit, [app2, true]),
     ?UNTIL(is_started(app2, Cp1)),
     false = is_started(app2, Cp2),
     false = is_started(app2, Cp3),
 
-    % Permit app1 on CP2 and make sure it is not started
+    %% Permit app1 on CP2 and make sure it is not started
     ok = rpc:call(Cp2, application, permit, [app1, true]),
-    test_server:sleep(1000),
+    ct:sleep(1000),
     true = is_started(app1, Cp1),
     false = is_started(app1, Cp2),
     false = is_started(app1, Cp3),
 
-    % Crash CP1 and make sure app1, but not app2, is started on CP2
+    %% Crash CP1 and make sure app1, but not app2, is started on CP2
     stop_node_nice(Cp1),
     ?UNTIL(is_started(app1, Cp2)),
     false = is_started(app2, Cp2),
 
-    % Restart CP1 again, check nothing is running on it
+    %% Restart CP1 again, check nothing is running on it
     {ok, Cp1_2} = start_node_config(Ncp1, NoSyncTime, Conf),
     global:sync(),
     ok = rpc:call(Cp1_2, application, load, [app1()]),
@@ -909,19 +891,19 @@ permit_false_start_dist(Conf) when is_list(Conf) ->
     false = is_started(app1, Cp1_2),
     false = is_started(app2, Cp1_2),
 
-    % Permit app3 on CP3 and make sure it is started
+    %% Permit app3 on CP3 and make sure it is started
     ok = rpc:call(Cp3, application, permit, [app3, true]),
     ?UNTIL(is_started(app3, Cp3)),
     false = is_started(app3, Cp1_2),
     false = is_started(app3, Cp2),
 
-    % Permit app3 on CP1 and make sure it is moved there from CP3
+    %% Permit app3 on CP1 and make sure it is moved there from CP3
     ok = rpc:call(Cp1_2, application, permit, [app3, true]),
     ?UNTIL(is_started(app3, Cp1_2)),
     false = is_started(app3, Cp2),
     false = is_started(app3, Cp3),
 
-    % Unpermit app3 on CP3 and CP1 and make sure it is stopped
+    %% Unpermit app3 on CP3 and CP1 and make sure it is stopped
     ok = rpc:call(Cp3, application, permit, [app3, false]),
     ok = rpc:call(Cp1_2, application, permit, [app3, false]),
     ?UNTIL(false =:= is_started(app3, Cp1_2)),
@@ -933,27 +915,25 @@ permit_false_start_dist(Conf) when is_list(Conf) ->
     stop_node_nice(Cp3),
     ok.
 
-nodedown_start(doc) ->
-    ["app1 distributed as [cp1, cp2].  Call application:start(app1) on",
-     "cp2, but not on cp1.  Kill cp1.  Make sure app1 is started on cp2."];
-nodedown_start(suite) -> [];
+%% app1 distributed as [cp1, cp2].  Call application:start(app1) on
+%% cp2, but not on cp1.  Kill cp1.  Make sure app1 is started on cp2.
 nodedown_start(Conf) when is_list(Conf) ->
     NodeNames = [Ncp1, Ncp2] = node_names([cp1, cp2], Conf),
     NoSyncTime = config_fun_fast(config4(NodeNames)),
     WithSyncTime = config_fun(config4(NodeNames)),
 
-    % Test [cp1, cp2]
+    %% Test [cp1, cp2]
     {ok, Cp1} = start_node_config(Ncp1, NoSyncTime, Conf),
     {ok, Cp2} = start_node_config(Ncp2, WithSyncTime, Conf),
     wait_for_ready_net(),
 
-    % Start app1 and make sure cp1 starts it
+    %% Start app1 and make sure cp1 starts it
     {[ok,ok],[]} = 
         rpc:multicall([Cp1, Cp2], application, load, [app1()]),
     _ = rpc:cast(Cp2, application, start, [app1, permanent]),
-    test_server:sleep(1000),
+    ct:sleep(1000),
 
-    % Crash CP1 and make sure app1 is started on CP2
+    %% Crash CP1 and make sure app1 is started on CP2
     stop_node_nice(Cp1),
     ?UNTIL(is_started(app1, Cp2)),
     
@@ -961,8 +941,7 @@ nodedown_start(Conf) when is_list(Conf) ->
     ok.
 
 
-ensure_started(suite) -> [];
-ensure_started(doc) -> ["Test application:ensure_started/1."];
+%% Test application:ensure_started/1.
 ensure_started(_Conf) ->
 
     {ok, Fd} = file:open("app1.app", [write]),
@@ -981,8 +960,7 @@ ensure_started(_Conf) ->
     ok = application:unload(app1),
     ok.
 
-ensure_all_started(suite) -> [];
-ensure_all_started(doc) -> ["Test application:ensure_all_started/1-2."];
+%% Test application:ensure_all_started/1-2.
 ensure_all_started(_Conf) ->
 
     {ok, Fd1} = file:open("app1.app", [write]),
@@ -1069,11 +1047,9 @@ ensure_all_started(_Conf) ->
 %% Ticket: OTP-1586
 %% Slogan: recursive load of applications fails
 %%-----------------------------------------------------------------
-otp_1586(suite) -> [];
-otp_1586(doc) ->
-    ["Test recursive load of applications."];
+%% Test recursive load of applications.
 otp_1586(Conf) when is_list(Conf) ->
-    Dir = ?config(priv_dir,Conf),
+    Dir = proplists:get_value(priv_dir,Conf),
     {ok, Fd} = file:open(filename:join(Dir, "app5.app"), [write]),
     w_app5(Fd),
     file:close(Fd),
@@ -1090,21 +1066,19 @@ otp_1586(Conf) when is_list(Conf) ->
 %% Slogan: start of distrib apps fails when the nodes start
 %%         simultaneously
 %%-----------------------------------------------------------------
-otp_2078(suite) -> [];
-otp_2078(doc) ->
-    ["Test start of distrib apps fails when the nodes start simultaneously."];
+%% Test start of distrib apps fails when the nodes start simultaneously.
 otp_2078(Conf) when is_list(Conf) ->
     NodeNames = [Ncp1, Ncp2] = node_names([cp1, cp2], Conf),
     NoSyncTime = config_fun_fast(config4(NodeNames)),
     WithSyncTime = config_fun(config4(NodeNames)),
 
-    % Test [cp1, cp2]
+    %% Test [cp1, cp2]
     {ok, Cp1} = start_node_config(Ncp1, NoSyncTime, Conf),
     {ok, Cp2} = start_node_config(Ncp2, WithSyncTime, Conf),
     Cps = [Cp1, Cp2],
     wait_for_ready_net(),
 
-    % Start app1 and make sure cp1 starts it
+    %% Start app1 and make sure cp1 starts it
     {[ok,ok],[]} = 
         rpc:multicall(Cps, application, load, [app1()]),
     ?UNTIL(is_loaded(app1, Cps)),
@@ -1112,8 +1086,8 @@ otp_2078(Conf) when is_list(Conf) ->
     ?UNTIL(is_started(app1, Cp1)),
     false = is_started(app1, Cp2),
 
-    % Start app1 on cp2; make sure it works (the bug was that this start
-    % returned error)
+    %% Start app1 on cp2; make sure it works (the bug was that this start
+    %% returned error)
     ok = rpc:call(Cp2, application, start, [app1, permanent]),
     true = is_started(app1, Cp1),
     false = is_started(app1, Cp2),
@@ -1122,15 +1096,13 @@ otp_2078(Conf) when is_list(Conf) ->
     stop_node_nice(Cp2),
     ok.
 
-otp_2012(suite) -> [];
-otp_2012(doc) ->
-    ["Test change of configuration parameters without changing code."];
+%% Test change of configuration parameters without changing code.
 otp_2012(Conf) when is_list(Conf) ->
     %% start a help process to check the config change
     CcPid = spawn_link(?MODULE, conf_change, []),
     yes = global:register_name(conf_change, CcPid),
 
-    % Write a .app file
+    %% Write a .app file
     {ok, Fd} = file:open("app1.app", [write]),
     w_app1(Fd),
     file:close(Fd),
@@ -1138,7 +1110,7 @@ otp_2012(Conf) when is_list(Conf) ->
     w_app1(Fd2),
     file:close(Fd2),
 
-    % Start app1 
+    %% Start app1
     ok = application:load(app1()),
     ok = application:start(app1, permanent),
 
@@ -1149,7 +1121,7 @@ otp_2012(Conf) when is_list(Conf) ->
     ok = application_controller:config_change(EnvBefore),
     ok = get_conf_change([{[], [{new1, hi}, {new2, moi}], []}]),
     
-    % Start app2
+    %% Start app2
     ok = application:load(app2()),
     ok = application:start(app2, permanent),
 
@@ -1173,11 +1145,9 @@ otp_2012(Conf) when is_list(Conf) ->
 %% Ticket: OTP-2718
 %% Slogan: transient app which fails during start is ignored
 %%-----------------------------------------------------------------
-otp_2718(suite) -> [];
-otp_2718(doc) ->
-    ["Test fail of transient app at start."];
+%% Test fail of transient app at start.
 otp_2718(Conf) when is_list(Conf) ->
-    {ok, Cp1} = start_node_args(cp1, "-pa " ++ ?config(data_dir,Conf)),
+    {ok, Cp1} = start_node_args(cp1, "-pa " ++ proplists:get_value(data_dir,Conf)),
     wait_for_ready_net(),
 
     %% normal exit from the application
@@ -1185,7 +1155,7 @@ otp_2718(Conf) when is_list(Conf) ->
     ?UNTIL(is_loaded(trans_normal, Cp1)),
     {error, {{'EXIT',normal},_}} =
 	rpc:call(Cp1, application, start, [trans_normal, transient]),
-    test_server:sleep(2000),
+    ct:sleep(2000),
     false = is_started(trans_normal, Cp1),
 
     %% abnormal exit from the application
@@ -1193,7 +1163,7 @@ otp_2718(Conf) when is_list(Conf) ->
     {error, {bad_return,{{trans_abnormal_sup,start,[normal,[]]},
 			       {'EXIT',abnormal}}}} =
 	rpc:call(Cp1, application, start, [trans_abnormal, transient]),
-    test_server:sleep(3000),
+    ct:sleep(3000),
     {badrpc,nodedown} = which_applications(Cp1),
     ok.
 
@@ -1201,11 +1171,9 @@ otp_2718(Conf) when is_list(Conf) ->
 %% Ticket: OTP-2973
 %% Slogan: application:start does not test if an appl is already starting...
 %%-----------------------------------------------------------------
-otp_2973(suite) -> [];
-otp_2973(doc) ->
-    ["Test of two processes simultanously starting the same application."];
+%% Test of two processes simultanously starting the same application.
 otp_2973(Conf) when is_list(Conf) ->
-    % Write a .app file
+    %% Write a .app file
     {ok, Fd} = file:open("app0.app", [write]),
     w_app(Fd, app0()),
     file:close(Fd),
@@ -1222,14 +1190,14 @@ otp_2973(Conf) when is_list(Conf) ->
 				     {Pid2, res, Res2x} ->
 					 {Res1x, Res2x}
 				   after 2000 ->
-					   test_server:fail(timeout_pid2)
+					   ct:fail(timeout_pid2)
 				   end;
 			     {Pid2, res, Res2x} ->
 				 receive 
 				     {Pid1, res, Res1x} ->
 					 {Res1x, Res2x}
 				 after 2000 ->
-					 test_server:fail(timeout_pid1)
+					 ct:fail(timeout_pid1)
 				 end
 			 end,
 
@@ -1243,11 +1211,11 @@ otp_2973(Conf) when is_list(Conf) ->
 	_ ->
 	    Txt = io_lib:format("Illegal results from start: ~p ~p ",
 				      [Res1, Res2]),
-	    test_server:fail(lists:flatten(Txt))
+	    ct:fail(lists:flatten(Txt))
     end,
 
 
-    % Write a .app file
+    %% Write a .app file
     {ok, Fda} = file:open("app_start_error.app", [write]),
     w_app_start_error(Fda),
     file:close(Fda),
@@ -1261,14 +1229,14 @@ otp_2973(Conf) when is_list(Conf) ->
 				       {Pid2, res, Res2y} ->
 					   {Res1y, Res2y}
 				   after 2000 ->
-					   test_server:fail(timeout_pid2)
+					   ct:fail(timeout_pid2)
 				   end;
 			       {Pid2, res, Res2y} ->
 				   receive 
 				       {Pid1, res, Res1y} ->
 					   {Res1y, Res2y}
 				   after 2000 ->
-					   test_server:fail(timeout_pid1)
+					   ct:fail(timeout_pid1)
 				   end
 			   end,
 
@@ -1278,7 +1246,7 @@ otp_2973(Conf) when is_list(Conf) ->
 	    ok;
 	_ ->
 	    Txta = io_lib:format("Illegal results from start ~p ~p ",[Res1a, Res2a]),
-	    test_server:fail(lists:flatten(Txta))
+	    ct:fail(lists:flatten(Txta))
     end,
 
     ok.
@@ -1289,36 +1257,34 @@ otp_2973(Conf) when is_list(Conf) ->
 %% Ticket: OTP-3184
 %% Slogan: crash the node if permanent appl has illegal env parameter values
 %%-----------------------------------------------------------------
-otp_3184(suite) -> [];
-otp_3184(doc) ->
-    ["When a distributed application is started the permit flag is checked "
-     "that the permit flag is not changed during the start. "
-     "Te check must only be made if the application is started on the own node"];
+%% When a distributed application is started the permit flag is checked
+%% that the permit flag is not changed during the start.
+%% The check must only be made if the application is started on the own node.
 otp_3184(Conf) when is_list(Conf) ->
     NodeNames = [Ncp1, Ncp2] = node_names([cp1, cp2], Conf),
     NoSyncTime = config_fun_fast(config3184(NodeNames)),
     WithSyncTime = config_fun(config3184(NodeNames)),
 
-    % Test [cp1, cp2]
+    %% Test [cp1, cp2]
     {ok, Cp1} = start_node_config(Ncp1, NoSyncTime, Conf),
     {ok, Cp2} = start_node_config(Ncp2, WithSyncTime, Conf),
     wait_for_ready_net(),
 
-    % Start app1 and make sure it is not started
+    %% Start app1 and make sure it is not started
     {[ok,ok],[]} = 
         rpc:multicall([Cp1, Cp2], application, load, [app1()]),
-    test_server:sleep(3000),
+    ct:sleep(3000),
     false = is_started(app1, Cp1),
     false = is_started(app1, Cp2),
 
-    % Start app1 on cp1
+    %% Start app1 on cp1
     ok = rpc:call(Cp1, application, permit, [app1, true]),
     ok = rpc:call(Cp1, application, start, [app1, permanent]),
     ok = rpc:call(Cp2, application, start, [app1, permanent]),
     ?UNTIL(is_started(app1, Cp1)),
     false = is_started(app1, Cp2),
     
-    % Check that the application is marked as running in application_controller
+    %% Check that the application is marked as running in application_controller
     X = rpc:call(Cp1, application_controller, info, []),
     {value, {running, Xrunning}} = lists:keysearch(running, 1, X),
     {value, Xapp1} = lists:keysearch(app1, 1, Xrunning),
@@ -1337,15 +1303,13 @@ otp_3184(Conf) when is_list(Conf) ->
 %% Ticket: OTP-3002
 %% Slogan: crash the node if permanent appl has illegal env parameter values
 %%-----------------------------------------------------------------
-otp_3002(suite) -> [];
-otp_3002(doc) ->
-    ["crash the node if permanent appl has illegal env parameter values."];
+%% crash the node if permanent appl has illegal env parameter values.
 otp_3002(Conf) when is_list(Conf) ->
-    % Create the boot script
+    %% Create the boot script
     {{KernelVer,StdlibVer}, {LatestDir, LatestName}} =
 	create_script_3002("script_3002"),
-    ?t:format(0, "LatestDir = ~p~n", [LatestDir]),
-    ?t:format(0, "LatestName = ~p~n", [LatestName]),
+    ct:pal(?HI_VERBOSITY, "LatestDir = ~p~n", [LatestDir]),
+    ct:pal(?HI_VERBOSITY, "LatestName = ~p~n", [LatestName]),
 
     case is_real_system(KernelVer, StdlibVer) of
 	      true ->
@@ -1371,10 +1335,9 @@ otp_3002(Conf) when is_list(Conf) ->
 %%         when it received dist_ac_app_stopped).
 %%-----------------------------------------------------------------
 
-otp_4066(suite) -> [];
-otp_4066(doc) -> ["Check that application stop don't cause dist_ac crash"];
+%% Check that application stop don't cause dist_ac crash.
 otp_4066(Conf) when is_list(Conf) ->
-    % Write config files
+    %% Write config files
     [Ncp1, Ncp2] = node_names([cp1, cp2], Conf),
     Host = from($@, atom_to_list(node())),
     Cp1 = list_to_atom(Ncp1 ++ "@" ++ Host),
@@ -1382,12 +1345,12 @@ otp_4066(Conf) when is_list(Conf) ->
     AllNodes = [Cp1, Cp2],
     App1Nodes = {app1, AllNodes},
 
-    Dir = ?config(priv_dir,Conf),
+    Dir = proplists:get_value(priv_dir,Conf),
     {ok, FdC} = file:open(filename:join(Dir, "otp_4066.config"), [write]),
     write_config(FdC, config_4066(AllNodes, 5000, [App1Nodes])),
     file:close(FdC),
 
-    % Write the app1.app file
+    %% Write the app1.app file
     {ok, FdA12} = file:open(filename:join(Dir, "app1.app"), [write]),
     w_app1(FdA12),
     file:close(FdA12),
@@ -1402,29 +1365,29 @@ otp_4066(Conf) when is_list(Conf) ->
 
     ok = rpc:call(Cp1, application, start, [app1]),
     wait_until_started(app1, [Cp1]),
-    test_server:format("--- App1 started at Cp1 ---~n", []),
+    io:format("--- App1 started at Cp1 ---~n", []),
     print_dac_state(AllNodes),
 
-    % Cp2 previously crashed on this stop
+    %% Cp2 previously crashed on this stop
     ok = rpc:call(Cp1, application, stop, [app1]),
     wait_until_stopped(app1, [Cp1]),
-    test_server:format("--- App1 stopped at Cp1 ---~n", []),
+    io:format("--- App1 stopped at Cp1 ---~n", []),
     print_dac_state(AllNodes),
 
     ok = rpc:call(Cp1, application, start, [app1]),
     wait_until_started(app1, [Cp1]),
-    test_server:format("--- App1 started at Cp1 ---~n", []),
+    io:format("--- App1 started at Cp1 ---~n", []),
     print_dac_state(AllNodes),
 
     ok = rpc:call(Cp2, application, load, [app1, App1Nodes]),
     ok = rpc:call(Cp2, application, start, [app1]),
-    test_server:format("--- App1 started at Cp2 ---~n", []),
+    io:format("--- App1 started at Cp2 ---~n", []),
     print_dac_state(AllNodes),
 
 
     stop_node_nice(Cp1),
     wait_until_started(app1, [Cp2]),
-    test_server:format("--- Cp1 crashed; failover to Cp2  ---~n", []),
+    io:format("--- Cp1 crashed; failover to Cp2  ---~n", []),
     print_dac_state(Cp2),
 
     stop_node_nice(Cp2),
@@ -1440,7 +1403,7 @@ write_config(Fd, Config) ->
 
 print_dac_state(Node) when is_atom(Node) ->
     State = gen_server:call({dist_ac, Node}, info),
-    test_server:format(" * dist_ac state on node ~p:~n    ~p~n",
+    io:format(" * dist_ac state on node ~p:~n    ~p~n",
                        [Node, State]);
 print_dac_state(Nodes) when is_list(Nodes) ->
     lists:foreach(fun (N) -> print_dac_state(N) end, Nodes).
@@ -1450,9 +1413,7 @@ print_dac_state(Nodes) when is_list(Nodes) ->
 %% Ticket: OTP-4227
 %% Slogan: Bad return value from application.
 %%-----------------------------------------------------------------
-otp_4227(suite) -> [];
-otp_4227(doc) ->
-    ["Test start of depending app when required app crashed."];
+%% Test start of depending app when required app crashed.
 otp_4227(Conf) when is_list(Conf) ->
     NodeNames = [Ncp1, Ncp2] = node_names([cp1, cp2], Conf),
     NoSyncTime = config_fun_fast(config_4227(NodeNames)),
@@ -1475,11 +1436,11 @@ otp_4227(Conf) when is_list(Conf) ->
 
     %% Start app9 and brutally kill it, then try to start app10
     ok = rpc:call(Cp1, application, start, [app9]),
-    test_server:sleep(1000),
+    ct:sleep(1000),
     Pid9 = rpc:call(Cp1, erlang, whereis, [ch_sup19]),
     true = erlang:is_pid(Pid9),
     true = erlang:exit(Pid9, kill),
-    test_server:sleep(1000),
+    ct:sleep(1000),
 
     %% This gave {error, no_report} before the patch
     {error, {not_running, app9}} = 
@@ -1518,7 +1479,7 @@ otp_5363(Conf) when is_list(Conf) ->
     %% the code, but only that the correct processes ARE killed.
 
     OldPath = code:get_path(),
-    code:add_patha(?config(data_dir,Conf)),
+    code:add_patha(proplists:get_value(data_dir,Conf)),
     try
 	ok = application:load(app_group_leader()),
 	ok = application:start(group_leader),
@@ -1532,7 +1493,7 @@ otp_5363(Conf) when is_list(Conf) ->
 		      undefined = whereis(nisse);
 		  Bad ->
 		      io:format("~p\n", [Bad]),
-		      ?t:fail()
+		      ct:fail(failed)
 	      end
     after
         code:set_path(OldPath)
@@ -1543,14 +1504,12 @@ otp_5363(Conf) when is_list(Conf) ->
 %% Ticket: OTP-5606
 %% Slogan: Problems with starting a distributed application
 %%-----------------------------------------------------------------
-otp_5606(suite) -> [];
-otp_5606(doc) ->
-    ["Test of several processes simultanously starting the same "
-     "distributed application."];
+%% Test of several processes simultaneously starting the same
+%% distributed application.
 otp_5606(Conf) when is_list(Conf) ->
 
     %% Write a config file
-    Dir = ?config(priv_dir, Conf),
+    Dir = proplists:get_value(priv_dir, Conf),
     {ok, Fd} = file:open(filename:join(Dir, "sys.config"), [write]),
     NodeNames = [Ncp1, Ncp2] = node_names([cp1, cp2], Conf),
     (config4(NodeNames))(Fd, 10000),
@@ -1586,7 +1545,7 @@ otp_5606(Conf) when is_list(Conf) ->
 	[Res1, Res2, Res3, Res4] ->
 	    Txt = io_lib:format("Illegal results from start ~p ~p ~p ~p",
 				[Res1, Res2, Res3, Res4]),
-	    test_server:fail(lists:flatten(Txt))
+	    ct:fail(lists:flatten(Txt))
     end,
 
     {error, {already_started, app1}} = 
@@ -1601,7 +1560,7 @@ otp_5606_loop(ResL) when length(ResL)<4 ->
 	{_Pid, Res} ->
 	    otp_5606_loop([Res|ResL])
     after 5000 ->
-	    test_server:fail(timeout_waiting_for_res)
+	    ct:fail(timeout_waiting_for_res)
     end;
 otp_5606_loop(ResL) ->
     ResL.
@@ -1612,12 +1571,28 @@ loop5606(Pid) ->
 	    Res = application:start(app1),
 	    Pid ! {self(), Res}
     end.
-	    
-get_env(suite) -> [];
-get_env(doc) ->
-    ["Tests get_env/* functions"];
+
+otp_16504(Config) when is_list(Config) ->
+    {ok, Fd} = file:open("app1.app", [write]),
+    w_app1(Fd),
+    file:close(Fd),
+    register(test_application_stop_called, self()),
+
+    ok = application:ensure_started(app1),
+    Master = application_controller:get_master(app1),
+    exit(Master, kill),
+    receive
+        {stop_called, _} ->
+            ok
+    after 3000 ->
+            ct:fail(stop_not_called)
+    end,
+    ok.
+
+%% Tests get_env/* functions.
 get_env(Conf) when is_list(Conf) ->
-    {ok, _}   = application:get_env(kernel, error_logger),
+    ok = application:set_env(kernel, new_var, new_val),
+    {ok, new_val} = application:get_env(kernel, new_var),
     undefined = application:get_env(undefined_app, a),
     undefined = application:get_env(kernel, error_logger_xyz),
     default   = application:get_env(kernel, error_logger_xyz, default),
@@ -1627,14 +1602,12 @@ get_env(Conf) when is_list(Conf) ->
 %% Should be started in a CC view with:
 %% erl -sname XXX -rsh ctrsh where XX not in [cp1, cp2, cp3]
 %%-----------------------------------------------------------------
-get_key(suite) -> [];
-get_key(doc) ->
-    ["Tests read the .app keys."];
+%% Tests read the .app keys.
 get_key(Conf) when is_list(Conf) ->
     NodeNames = [Ncp1, _Ncp2, _Ncp3] = node_names([cp1, cp2, cp3], Conf),
     WithSyncTime = config_fun(config_inc(NodeNames)),
 
-    % Test [cp1, cp2, cp3]
+    %% Test [cp1, cp2, cp3]
     {ok, Cp1} = start_node_config(Ncp1, WithSyncTime, Conf),
 
     ok = rpc:call(Cp1, application, load, [appinc(), d3(NodeNames)]),
@@ -1653,8 +1626,7 @@ get_key(Conf) when is_list(Conf) ->
     {ok, [{init, [kalle]}, {takeover, []}, {go, [sune]}]} =
 	rpc:call(Cp1, application, get_key, [appinc, start_phases]),
     {ok, Env} = rpc:call(Cp1, application, get_key, [appinc ,env]),
-    [{included_applications,[appinc1,appinc2]},
-	   {own2,val2},{own_env1,value1}] = lists:sort(Env),
+    [{own2,val2},{own_env1,value1}] = lists:sort(Env),
     {ok, []} = rpc:call(Cp1, application, get_key, [appinc, modules]),
     {ok, {application_starter, [ch_sup, {appinc, 41, 43}] }} = 
 	rpc:call(Cp1, application, get_key, [appinc, mod]),
@@ -1675,8 +1647,7 @@ get_key(Conf) when is_list(Conf) ->
 		{mod, {application_starter, [ch_sup, {appinc, 41, 43}] }}, 
 		{start_phases, [{init, [kalle]}, {takeover, []}, {go, [sune]}]}]} = 
 	rpc:call(Cp1, application, get_all_key, [appinc]),
-    [{included_applications,[appinc1,appinc2]},
-	   {own2,val2},{own_env1,value1}] = lists:sort(Env),
+    [{own2,val2},{own_env1,value1}] = lists:sort(Env),
 
     {ok, "Test of new app file, including appnew"} =
 	gen_server:call({global, {ch,41}}, {get_pid_key, description}),
@@ -1693,8 +1664,7 @@ get_key(Conf) when is_list(Conf) ->
     {ok, [{init, [kalle]}, {takeover, []}, {go, [sune]}]} =
 	gen_server:call({global, {ch,41}}, {get_pid_key, start_phases}),
     {ok, Env} = gen_server:call({global, {ch,41}}, {get_pid_key, env}),
-    [{included_applications,[appinc1,appinc2]},
-	   {own2,val2},{own_env1,value1}] = lists:sort(Env),
+    [{own2,val2},{own_env1,value1}] = lists:sort(Env),
     {ok, []} = 
 	gen_server:call({global, {ch,41}}, {get_pid_key, modules}),
     {ok, {application_starter, [ch_sup, {appinc, 41, 43}] }} = 
@@ -1721,8 +1691,7 @@ get_key(Conf) when is_list(Conf) ->
 		{mod, {application_starter, [ch_sup, {appinc, 41, 43}] }}, 
 		{start_phases, [{init, [kalle]}, {takeover, []}, {go, [sune]}]}]} = 
 	gen_server:call({global, {ch,41}}, get_pid_all_key),
-    [{included_applications,[appinc1,appinc2]},
-	   {own2,val2},{own_env1,value1}] = lists:sort(Env),
+    [{own2,val2},{own_env1,value1}] = lists:sort(Env),
     
     stop_node_nice(Cp1),
     ok.
@@ -1731,8 +1700,7 @@ get_key(Conf) when is_list(Conf) ->
 %%% Testing of change of distributed parameter.
 %%%-----------------------------------------------------------------
 
-distr_changed_tc1(suite) -> [];
-distr_changed_tc1(doc) -> ["Test change of distributed parameter."];
+%% Test change of distributed parameter.
 distr_changed_tc1(Conf) when is_list(Conf) ->
 
     {OldKernel, OldEnv, {Cp1, Cp2, Cp3}, {_Ncp1, _Ncp2, _Ncp3}, _Config2} = 
@@ -1757,7 +1725,7 @@ distr_changed_tc1(Conf) when is_list(Conf) ->
 	rpc:multicall([Cp1, Cp2, Cp3], 
 		      application_controller, config_change, [OldEnv]),
     
-    test_server:sleep(7000),
+    ct:sleep(7000),
     
     DcInfo1 = rpc:call(Cp1, dist_ac, info, []),
     DcInfo2 = rpc:call(Cp2, dist_ac, info, []),
@@ -1778,7 +1746,7 @@ distr_changed_tc1(Conf) when is_list(Conf) ->
 		  ok;
 	      EWa1 ->
 		  X1 = io_lib:format("distribution error: Cp1 ~p ",[EWa1]),
-		  test_server:fail(lists:flatten(X1))
+		  ct:fail(lists:flatten(X1))
 	  end,
 		  
     case lists:sort(Wa2) of
@@ -1786,7 +1754,7 @@ distr_changed_tc1(Conf) when is_list(Conf) ->
 		  ok;
 	      EWa2 ->
 		  X2 = io_lib:format("distribution error: Cp2 ~p ",[EWa2]),
-		  test_server:fail(lists:flatten(X2))
+		  ct:fail(lists:flatten(X2))
 	  end,
 		  
     case lists:sort(Wa3) of
@@ -1794,7 +1762,7 @@ distr_changed_tc1(Conf) when is_list(Conf) ->
 		  ok;
 	      EWa3 ->
 		  X3 = io_lib:format("distribution error: Cp3 ~p ",[EWa3]),
-		  test_server:fail(lists:flatten(X3))
+		  ct:fail(lists:flatten(X3))
 	  end,
 		  
     DcInfo1n = rpc:call(Cp1, dist_ac, info, []),
@@ -1816,9 +1784,7 @@ distr_changed_tc1(Conf) when is_list(Conf) ->
 
     ok.
 
-distr_changed_tc2(suite) -> [];
-distr_changed_tc2(doc) -> ["Test change of distributed parameter, "
-			   "move appls by crashing a node."];
+%% Test change of distributed parameter, move appls by crashing a node.
 distr_changed_tc2(Conf) when is_list(Conf) ->
 
     {OldKernel, OldEnv, {Cp1, Cp2, Cp3}, {Ncp1, _Ncp2, _Ncp3}, Config2} = 
@@ -1843,21 +1809,16 @@ distr_changed_tc2(Conf) when is_list(Conf) ->
 	rpc:multicall([Cp1, Cp2, Cp3], 
 		      application_controller, config_change, [OldEnv]),
     
-    test_server:sleep(4000),
+    ct:sleep(4000),
     stop_node_nice(Cp1),   
-    test_server:sleep(10000),
+    ct:sleep(10000),
 
-%    _DcInfo1 = rpc:call(Cp1, dist_ac, info, []),
     _DcInfo2 = rpc:call(Cp2, dist_ac, info, []),
     _DcInfo3 = rpc:call(Cp3, dist_ac, info, []),
-%    ?t:format(0,"#### DcInfo1 ~n~p~n",[_DcInfo1]),
 
-%    DcWa1 = which_applications(Cp1),
     DcWa2 = which_applications(Cp2),
     DcWa3 = which_applications(Cp3),
     
-%    Wa1 = lists:foldl(fun({A1, _N1, _V1}, AccIn) -> [A1 | AccIn] end,
-%			    [], DcWa1),
     Wa2 = lists:foldl(fun({A2, _N2, _V2}, AccIn) -> [A2 | AccIn] end,
 			    [], DcWa2),
     Wa3 = lists:foldl(fun({A3, _N3, _V3}, AccIn) -> [A3 | AccIn] end,
@@ -1869,7 +1830,7 @@ distr_changed_tc2(Conf) when is_list(Conf) ->
 		  ok;
 	      EWa2 ->
 		  X2 = io_lib:format("distribution error: Cp2 ~p ",[EWa2]),
-		  test_server:fail(lists:flatten(X2))
+		  ct:fail(lists:flatten(X2))
 	  end,
 		  
     case lists:sort(Wa3) of
@@ -1877,12 +1838,12 @@ distr_changed_tc2(Conf) when is_list(Conf) ->
 		  ok;
 	      EWa3 ->
 		  X3 = io_lib:format("distribution error: Cp3 ~p ",[EWa3]),
-		  test_server:fail(lists:flatten(X3))
+		  ct:fail(lists:flatten(X3))
 	  end,
 
 
     {ok, Cp1} = start_node_boot(Ncp1, Config2, dc),
-    test_server:sleep(10000),
+    ct:sleep(10000),
 
     _DcInfo1rs = rpc:call(Cp1, dist_ac, info, []),
     _DcInfo2rs = rpc:call(Cp2, dist_ac, info, []),
@@ -1904,7 +1865,7 @@ distr_changed_tc2(Conf) when is_list(Conf) ->
 		  ok;
 	      EWa1rs ->
 		  X1rs = io_lib:format("distribution error: Cp1 ~p ",[EWa1rs]),
-		  test_server:fail(lists:flatten(X1rs))
+		  ct:fail(lists:flatten(X1rs))
 	  end,
 		  
     case lists:sort(Wa2rs) of
@@ -1912,7 +1873,7 @@ distr_changed_tc2(Conf) when is_list(Conf) ->
 		  ok;
 	      EWa2rs ->
 		  X2rs = io_lib:format("distribution error: Cp2 ~p ",[EWa2rs]),
-		  test_server:fail(lists:flatten(X2rs))
+		  ct:fail(lists:flatten(X2rs))
 	  end,
 		  
     case lists:sort(Wa3rs) of
@@ -1920,7 +1881,7 @@ distr_changed_tc2(Conf) when is_list(Conf) ->
 		  ok;
 	      EWa3rs ->
 		  X3rs = io_lib:format("distribution error: Cp3 ~p ",[EWa3rs]),
-		  test_server:fail(lists:flatten(X3rs))
+		  ct:fail(lists:flatten(X3rs))
 	  end,
 
 
@@ -1934,20 +1895,304 @@ distr_changed_tc2(Conf) when is_list(Conf) ->
 
     ok.
 
+get_relative_path(AbsolutePath, RelativeTo) ->
+    AbsolutePathList = filename:split(AbsolutePath),
+    RelativeToList = filename:split(RelativeTo),
+    CommonPath =
+        (fun GetCommonPath([], _, Acc) ->
+                 lists:reverse(Acc);
+             GetCommonPath(_, [], Acc) ->
+                 lists:reverse(Acc);
+             GetCommonPath([A | _], [B | _], Acc)
+               when A =/= B ->
+                 lists:reverse(Acc);
+             GetCommonPath([N | Rest1], [N | Rest2], Acc) ->
+                 GetCommonPath(Rest1, Rest2, [N | Acc])
+         end)(AbsolutePathList, RelativeToList, []),
+    CommonPathLength = length(CommonPath),
+    RelPathEnd = lists:nthtail(CommonPathLength, AbsolutePathList),
+    NrOfDowns = length(RelativeToList) - CommonPathLength,
+    filename:join(lists:duplicate(NrOfDowns, "..") ++ RelPathEnd).
+
+do_configfd_test_port_program(ErlProgram) ->
+    PrintLogLevelString =
+        "io_lib:format(\"~p\",[element(2, application:get_env(kernel, logger_level))])",
+    DataDir = filename:join(filename:dirname(code:which(?MODULE)), "application_SUITE_data"),
+    OutFilePath = filename:join(DataDir, "do_configfd_test_port.out"),
+    ToEval =
+        lists:flatten(
+          io_lib:format("file:write_file(\"~s\", ~s),erlang:halt()",
+                        [OutFilePath,
+                         PrintLogLevelString])),
+    Port = erlang:open_port(
+             {spawn_executable, ErlProgram},
+             [{args, ["-configfd",
+                      "0",
+                      "-eval",
+                      ToEval]},
+              use_stdio,
+              stderr_to_stdout]),
+    Port ! {self(),{command,"[{kernel, [{logger_level, warning}]}]."}},
+    Port ! {self(),close},
+    (fun Read() ->
+             receive
+                 {Port,closed} -> ok;
+                 {Port, Message} ->
+                     io:format("Got unexpected message: ~p", Message),
+                     Read()
+             end
+     end)(),
+    %% Check that the config file was read correctly in the port
+    %% program
+    ok =
+        (fun TryRead(0) ->
+                 cannot_find_file;
+             TryRead(TriesLeft) ->
+                 case file:read_file(OutFilePath) of
+                     {ok, <<"warning">>} -> ok;
+                     Error ->
+                         %% It might take some time for the file to be
+                         %% written to disk after we have closed the
+                         %% config file descriptor
+                         io:format("INFO: File not written yet, trying again (~p)", [Error]),
+                         timer:sleep(250),
+                         TryRead(TriesLeft -1)
+                 end
+         end)(40),
+    ok = file:delete(OutFilePath).
+
+quote_sub_strings(String) ->
+    lists:flatmap(
+      fun($") ->
+              "\\\"";
+         (C) -> [C]
+      end,
+      lists:flatten(String)).
+
+do_configfd_test_bash() ->
+    DataDir = filename:join(filename:dirname(code:which(?MODULE)), "application_SUITE_data"),
+    TestConfigPath1 = filename:join(DataDir, "testconfigfd1.config"),
+    TestConfigPath2 = filename:join(DataDir, "testconfigfd2.config"),
+    RunInBash =
+        fun(String) ->
+                Command =
+                    lists:flatten(io_lib:format("bash -c \"~s\"",
+                                                [quote_sub_strings(String)])),
+                Res = os:cmd(Command),
+                io:format("Command:~n"),
+                io:format("~s~n", [Command]),
+                io:format("Result:~n"),
+                io:format("~s~n", [Res]),
+                Res
+        end,
+    PrintLogLevelString =
+        "io:format(\"~p\",[element(2, application:get_env(kernel, logger_level))])",
+    %% Single config from file descriptor
+    "warning" =
+        RunInBash(
+          io_lib:format(
+            "erl "
+            "-noshell "
+            "-configfd 3 "
+            "-eval "
+            "'~s,erlang:halt()' "
+            "3< \"~s\"",
+            [PrintLogLevelString,
+             TestConfigPath1])),
+    %% Single config with .config sufix
+    "warning" =
+        RunInBash(
+          io_lib:format(
+            "erl "
+            "-noshell "
+            "-configfd 3.config "
+            "-eval "
+            "'~s,erlang:halt()' "
+            "3< \"~s\"",
+            [PrintLogLevelString,
+             TestConfigPath1])),
+    %% Single config from file descriptor (stdin)
+    %% This should automatically turn on -noinput
+    "warning" =
+        RunInBash(
+          io_lib:format(
+            "erl "
+            "-configfd 0 "
+            "-eval "
+            "'~s,erlang:halt()' "
+            "0< \"~s\"",
+            [PrintLogLevelString,
+             TestConfigPath1])),
+    %% Configs from two different file descriptors
+    "error" =
+        RunInBash(
+          io_lib:format(
+            "erl "
+            "-noshell "
+            "-configfd 4 "
+            "-configfd 5 "
+            "-eval "
+            "'~s,erlang:halt()' "
+            "4< \"~s\" "
+            "5< \"~s\" ",
+            [PrintLogLevelString,
+             TestConfigPath1,
+             TestConfigPath2])),
+    %% Configs from two different file descriptors single parameter
+    "error" =
+        RunInBash(
+          io_lib:format(
+            "erl "
+            "-noshell "
+            "-configfd 4 5 "
+            "-eval "
+            "'~s,erlang:halt()' "
+            "4< \"~s\" "
+            "5< \"~s\" ",
+            [PrintLogLevelString,
+             TestConfigPath1,
+             TestConfigPath2])),
+    lists:foreach(
+      fun(Path) ->
+              "warning" =
+                  RunInBash(
+                    io_lib:format(
+                      "erl "
+                      "-noshell "
+                      "-configfd 3 "
+                      "-eval "
+                      "'~s,erlang:halt()' "
+                      "3< <(echo '[\"~s\"].') ",
+                      [PrintLogLevelString,
+                       Path]))
+      end,
+      [%% Absolute paths
+       TestConfigPath1,
+       %% Without suffix
+       filename:join(filename:dirname(TestConfigPath1),
+                     filename:basename(TestConfigPath1, ".config")),
+       %% Relative To CWD
+       get_relative_path(TestConfigPath1, erlang:element(2, file:get_cwd()))
+      ] ++
+          case filename:pathtype(init:script_name()) of
+              absolute ->
+                  %% Relative to the boot script directory
+                  [get_relative_path(TestConfigPath1,
+                                     filename:dirname(init:script_name()))];
+              _ ->
+                  io:format("Skip include relative to boot script dir test. "
+                            "init:script_name() returned a relative path."
+                            "init:script_name() can return a relative path if"
+                            "prim_file:get_pwd() fails during boot."),
+                  []
+          end
+     ),
+    %% init:restart() should work
+    "errorerror" =
+        RunInBash(
+          io_lib:format(
+            "erl "
+            "-noshell "
+            "-configfd 3 "
+            "-eval "
+            "'~s,init:restart(),~s,erlang:halt()' "
+            "3< \"~s\" ",
+            [PrintLogLevelString,
+             PrintLogLevelString,
+             TestConfigPath2])),
+    %% Check that invalid file descriptor gives error
+    true =
+        ("magic42" =/=
+             RunInBash(
+               "erl "
+               "-noshell "
+               "-configfd invalid "
+               "-eval "
+               "'io:format(\"magic42\"),erlang:halt()' ")),
+    %% Check that an incorrect suffix gives error
+    true =
+        ("magic42" =/=
+             RunInBash(
+               io_lib:format(
+                 "erl "
+                 "-noshell "
+                 "-configfd 3.badsuffix "
+                 "-eval "
+                 "'io:format(\"magic42\"),erlang:halt()' "
+                 "3< \"~s\"",
+                 [TestConfigPath1]))),
+    %% Check that an output only file descriptor gives error
+    true =
+        ("magic42" =/=
+             RunInBash("erl "
+                       "-noshell "
+                       "-configfd 3 "
+                       "-eval "
+                       "'io:format(\"magic42\"),erlang:halt()' "
+                       "3> /dev/null ")),
+    %% Check that file descriptor with a huge amount of data fails
+    case application:start(os_mon) of
+        ok -> case proplists:get_value(system_total_memory,
+                                       memsup:get_system_memory_data()) of
+                  Memory when is_integer(Memory),
+                              Memory > 16*1024*1024*1024 ->
+                      application:stop(os_mon),
+                      true =
+                          ("magic42" =/=
+                               RunInBash(
+                                 "erl "
+                                 "-noshell "
+                                 "-configfd 3 "
+                                 "-eval "
+                                 "'io:format(\"magic42\"),erlang:halt()' "
+                                 "3< <(erl -noshell -eval '(fun W(D) -> io:put_chars(D), W([D,D]) end)(<<\"00000000000000000\">>)') "));
+                  _ ->
+                      io:format("Skipped huge file check to avoid flaky test on machine with less than 8GB of memory")
+              end;
+        _ ->
+            io:format("Skipped because we could not start os_mon")
+    end,
+    ok.
+
+%% Test that one can get configuration from file descriptor with the
+%% -configfd option
+configfd_bash(Conf) when is_list(Conf) ->
+    case os:type() of
+    	{unix,_} ->
+            case os:cmd("bash -c \"echo -n yes_bash_shell_exists\"") of
+                "yes_bash_shell_exists" ->
+                    do_configfd_test_bash();
+                _ ->
+                    {skip,"Runs only when there is a bash shell"}
+            end;
+        _ -> {skip,"Runs only on UNIX systems"}
+    end.
+
+%% This test should work on all platforms
+configfd_port_program(Conf) when is_list(Conf) ->
+    ErlProgram =
+        case os:find_executable("erl") of
+            false -> os:find_executable("erl.exe");
+            Path -> Path
+        end,
+    case ErlProgram of
+        false ->
+            {skip,"Cannot find erl program"};
+        ErlProgramPath ->
+            do_configfd_test_port_program(ErlProgramPath)
+    end.
+
 
 
 %%%-----------------------------------------------------------------
 %%% Testing of application configuration change
 %%%-----------------------------------------------------------------
-config_change(suite) ->
-    [];
-config_change(doc) ->
-    ["Test change of application configuration"];
+%% Test change of application configuration.
 config_change(Conf) when is_list(Conf) ->
 
     %% Change to data_dir
     {ok, CWD} = file:get_cwd(),
-    DataDir = ?config(data_dir, Conf),
+    DataDir = proplists:get_value(data_dir, Conf),
     ok = file:set_cwd(DataDir),
 
     %% Find out application data from boot script
@@ -2008,11 +2253,96 @@ get_appls([_ | T], Res) ->
 get_appls([], Res) ->
     Res.
 
+%% Test set_env/1.
+set_env(Conf) when is_list(Conf) ->
+    ok = application:set_env([{appinc, [{own2, persist}, {not_in_app, persist}]},
+			      {unknown_app, [{key, persist}]}]),
 
-persistent_env(suite) ->
-    [];
-persistent_env(doc) ->
-    ["Test set_env/4 and unset_env/3 with persistent true"];
+    %% own_env1 and own2 are set in appinc
+    undefined = application:get_env(appinc, own_env1),
+    {ok, persist} = application:get_env(appinc, own2),
+    {ok, persist} = application:get_env(appinc, not_in_app),
+    {ok, persist} = application:get_env(unknown_app, key),
+
+    ok = application:load(appinc()),
+    {ok, value1} = application:get_env(appinc, own_env1),
+    {ok, val2} = application:get_env(appinc, own2),
+    {ok, persist} = application:get_env(appinc, not_in_app),
+    {ok, persist} = application:get_env(unknown_app, key),
+
+    %% On reload, values are lost
+    ok = application:unload(appinc),
+    ok = application:load(appinc()),
+    {ok, value1} = application:get_env(appinc, own_env1),
+    {ok, val2} = application:get_env(appinc, own2),
+    undefined = application:get_env(appinc, not_in_app),
+
+    %% Clean up
+    ok = application:unload(appinc).
+
+%% Test set_env/2 with persistent true.
+set_env_persistent(Conf) when is_list(Conf) ->
+    Opts = [{persistent, true}],
+    ok = application:set_env([{appinc, [{own2, persist}, {not_in_app, persist}]},
+			      {unknown_app, [{key, persist}]}], Opts),
+
+    %% own_env1 and own2 are set in appinc
+    undefined = application:get_env(appinc, own_env1),
+    {ok, persist} = application:get_env(appinc, own2),
+    {ok, persist} = application:get_env(appinc, not_in_app),
+    {ok, persist} = application:get_env(unknown_app, key),
+
+    ok = application:load(appinc()),
+    {ok, value1} = application:get_env(appinc, own_env1),
+    {ok, persist} = application:get_env(appinc, own2),
+    {ok, persist} = application:get_env(appinc, not_in_app),
+    {ok, persist} = application:get_env(unknown_app, key),
+
+    %% On reload, values are not lost
+    ok = application:unload(appinc),
+    ok = application:load(appinc()),
+    {ok, value1} = application:get_env(appinc, own_env1),
+    {ok, persist} = application:get_env(appinc, own2),
+    {ok, persist} = application:get_env(appinc, not_in_app),
+
+    %% Clean up
+    ok = application:unload(appinc).
+
+set_env_errors(Conf) when is_list(Conf) ->
+    "application: 1; application name must be an atom" =
+	badarg_msg(fun() -> application:set_env([{1, []}]) end),
+
+    "application: foo; parameters must be a list" =
+	badarg_msg(fun() -> application:set_env([{foo, bar}]) end),
+
+    "invalid application config: foo_bar" =
+	badarg_msg(fun() -> application:set_env([foo_bar]) end),
+
+    "application: foo; invalid parameter name: 1" =
+	badarg_msg(fun() -> application:set_env([{foo, [{1, 2}]}]) end),
+
+    "application: foo; invalid parameter: config" =
+	badarg_msg(fun() -> application:set_env([{foo, [config]}]) end),
+
+    "application: kernel; erroneous parameter: distributed" =
+	badarg_msg(fun() -> application:set_env([{kernel, [{distributed, config}]}]) end),
+
+    "duplicate application config: foo" =
+	badarg_msg(fun() -> application:set_env([{foo, []}, {foo, []}]) end),
+
+    "application: foo; duplicate parameter: bar" =
+	badarg_msg(fun() -> application:set_env([{foo, [{bar, baz}, {bar, bat}]}]) end),
+
+    ok.
+
+badarg_msg(Fun) ->
+    try Fun() of
+	_ -> ct:fail(try_succeeded)
+    catch
+	error:{badarg, Msg} -> Msg
+    end.
+
+%% Test set_env/4 and unset_env/3 with persistent true.
 persistent_env(Conf) when is_list(Conf) ->
     ok = application:set_env(appinc, own2, persist, [{persistent, true}]),
     ok = application:set_env(appinc, key1, persist, [{persistent, true}]),
@@ -2053,13 +2383,35 @@ persistent_env(Conf) when is_list(Conf) ->
     %% Clean up
     ok = application:unload(appinc).
 
+
+%% Test more than one config file defined by one -config parameter:
+handle_many_config_files(Conf) when is_list(Conf) ->
+
+    %% Write a config file
+    Dir = proplists:get_value(priv_dir, Conf),
+    {ok, Fd} = file:open(filename:join(Dir, "sys.config"), [write]),
+    io:format(Fd, "[].~n", []),
+    file:close(Fd),
+    NodeName = node_name(n1, Conf),
+    Config = filename:join(Dir, "sys"),
+
+    %% Node will be started with two -config
+    %% First one has one argument and second one has two arguments.
+    {ok, Node} = start_node(
+        NodeName,
+        Config,
+        " -config " ++ Config ++ " " ++ Config
+    ),
+    case rpc:call(Node, init, get_argument, [config]) of
+        {ok, [[Config], [Config, Config]]} -> ok;
+        {ok, [[Config], [Config], [Config]]} -> ok %% This happens on windows
+    end,
+    stop_node_nice(Node).
+
 %%%-----------------------------------------------------------------
 %%% Tests the 'shutdown_func' kernel config parameter
 %%%-----------------------------------------------------------------
-shutdown_func(suite) ->
-    [];
-shutdown_func(doc) ->
-    ["Tests the 'shutdown_func' kernel config parameter"];
+%% Tests the 'shutdown_func' kernel config parameter.
 shutdown_func(Config) when is_list(Config) ->
     {ok,Cp1} = start_node(?MODULE_STRING++"_shutdown_func"),
     wait_for_ready_net(),
@@ -2077,10 +2429,10 @@ shutdown_func(Config) when is_list(Config) ->
 		      {'DOWN', Mref, _, Pid, noconnection} ->
 			  ok
 		  after 10000 ->
-			  test_server:fail(timeout)
+			  ct:fail(timeout)
 		  end
 	  after 10000 ->
-		  test_server:fail(timeout)
+		  ct:fail(timeout)
 	  end.
 
 
@@ -2098,7 +2450,7 @@ do_shutdown(Reason) ->
 %%% Tests the 'shutdown_timeout' kernel config parameter
 %%%-----------------------------------------------------------------
 shutdown_timeout(Config) when is_list(Config) ->
-    DataDir = ?config(data_dir,Config),
+    DataDir = proplists:get_value(data_dir,Config),
     {ok,Cp1} = start_node(?MODULE_STRING++"_shutdown_timeout"),
     wait_for_ready_net(),
     ok = rpc:call(Cp1, application, set_env, [kernel, shutdown_timeout, 1000]),
@@ -2121,7 +2473,7 @@ shutdown_timeout(Config) when is_list(Config) ->
 %%% Provokes a (previous) application shutdown deadlock
 %%%-----------------------------------------------------------------
 shutdown_deadlock(Config) when is_list(Config) ->
-    DataDir = ?config(data_dir,Config),
+    DataDir = proplists:get_value(data_dir,Config),
     code:add_path(filename:join([DataDir,deadlock])),
     %% ok = rpc:call(Cp1, application, start, [sasl]),
     ok = application:start(deadlock),
@@ -2144,6 +2496,42 @@ shutdown_deadlock(Config) when is_list(Config) ->
     application:unload(deadlock), % clean up!
     ok.
 
+
+%%-----------------------------------------------------------------
+%% Relative paths in sys.config
+%%-----------------------------------------------------------------
+config_relative_paths(Config) ->
+    Dir = ?config(priv_dir,Config),
+    SubDir = filename:join(Dir,"subdir"),
+    Sys = filename:join(SubDir,"sys.config"),
+    ok = filelib:ensure_dir(Sys),
+    ok = file:write_file(Sys,"[\"../up.config\",\"current\"].\n"),
+
+    Up = filename:join(Dir,"up.config"),
+    ok = file:write_file(Up,"[{app1,[{key1,value}]}].\n"),
+
+    {ok,Cwd} = file:get_cwd(),
+    Current1 = filename:join(Cwd,"current.config"),
+    ok = file:write_file(Current1,"[{app1,[{key2,value1}]}].\n"),
+
+    N1 = list_to_atom(lists:concat([?FUNCTION_NAME,"_1"])),
+    {ok,Node1} = start_node(N1,filename:rootname(Sys)),
+    ok = rpc:call(Node1, application, load, [app1()]),
+    {ok, value} = rpc:call(Node1, application, get_env,[app1,key1]),
+    {ok, value1} = rpc:call(Node1, application, get_env,[app1,key2]),
+
+    Current2 = filename:join(SubDir,"current.config"),
+    ok = file:write_file(Current2,"[{app1,[{key2,value2}]}].\n"),
+
+    N2 = list_to_atom(lists:concat([?FUNCTION_NAME,"_2"])),
+    {ok, Node2} = start_node(N2,filename:rootname(Sys)),
+    ok = rpc:call(Node2, application, load, [app1()]),
+    {ok, value} = rpc:call(Node2, application, get_env,[app1,key1]),
+    {ok, value2} = rpc:call(Node2, application, get_env,[app1,key2]),
+
+    stop_node_nice([Node1,Node2]),
+
+    ok.
 
 %%-----------------------------------------------------------------
 %% Utility functions
@@ -2596,7 +2984,7 @@ is_started(Name, Node) ->
 	false -> false
     end.
 
-% Waits until application Name is started on at least one node.
+%% Waits until application Name is started on at least one node.
 wait_until_started(Name, Nodes) ->
     case lists:member(true,
 		      lists:map(fun (N) ->
@@ -2606,11 +2994,11 @@ wait_until_started(Name, Nodes) ->
 	true ->
 	    true;
 	false ->
-	    test_server:sleep(500),
+	    ct:sleep(500),
 	    wait_until_started(Name, Nodes)
     end.
 
-% Waits until application Name is stopped on all nodes.
+%% Waits until application Name is stopped on all nodes.
 wait_until_stopped(Name, Nodes) ->
     case lists:member(true,
 		      lists:map(fun (N) ->
@@ -2620,7 +3008,7 @@ wait_until_stopped(Name, Nodes) ->
 	false ->
 	    true;
 	true ->
-	    test_server:sleep(500),
+	    ct:sleep(500),
 	    wait_until_stopped(Name, Nodes)
     end.
 
@@ -2662,13 +3050,13 @@ start_node_args(Name, Args) ->
 
 start_node_boot_3002(Name, Boot) ->
     Pa = filename:dirname(code:which(?MODULE)),
-    ?t:format(0, "start_node_boot ~p~n",
-	      [" -pa " ++ Pa ++ " -env ERL_CRASH_DUMP erl_crash_dump." ++ 
-	       atom_to_list(Name) ++ " -boot " ++ Boot ++ 
-	       " -sasl dummy \"missing "]),
+    ct:pal(?HI_VERBOSITY, "start_node_boot ~p~n",
+	   [" -pa " ++ Pa ++ " -env ERL_CRASH_DUMP erl_crash_dump." ++
+		atom_to_list(Name) ++ " -boot " ++ Boot ++
+		" -sasl dummy \"missing "]),
     test_server:start_node(Name, slave, 
                            [{args, " -pa " ++ Pa ++
-                             " -env ERL_CRASH_DUMP erl_crash_dump." ++ 
+                             " -env ERL_CRASH_DUMP erl_crash_dump." ++
                              atom_to_list(Name) ++ " -boot " ++ Boot ++ 
                              " -sasl dummy \"missing "}]).
 
@@ -2678,18 +3066,20 @@ start_node_boot_config(Name, SysConfigFun, Conf, Boot) ->
 
 start_node_boot(Name, Config, Boot) ->
     Pa = filename:dirname(code:which(?MODULE)),
-    ?t:format(0, "start_node_boot ~p~n",[" -pa " ++ Pa ++ " -config " ++ Config ++
-						" -boot " ++ atom_to_list(Boot)]),
-    test_server:start_node(Name, slave, [{args, " -pa " ++ Pa ++ " -config " ++ Config ++
-						" -boot " ++ atom_to_list(Boot)}]).
+    ct:pal(?HI_VERBOSITY,
+	   "start_node_boot ~p~n",[" -pa " ++ Pa ++ " -config " ++ Config ++
+				       " -boot " ++ atom_to_list(Boot)]),
+    test_server:start_node(Name, slave,
+			   [{args, " -pa " ++ Pa ++ " -config " ++ Config ++
+				 " -boot " ++ atom_to_list(Boot)}]).
 
 start_node_config_sf(Name, SysConfigFun, Conf) ->
     ConfigFile = write_config_file(SysConfigFun, Conf),
-    DataDir = ?config(data_dir, Conf), % is it used?
+    DataDir = proplists:get_value(data_dir, Conf), % is it used?
     start_node(Name, ConfigFile, " -pa " ++ DataDir).
 
 write_config_file(SysConfigFun, Conf) ->
-    Dir = ?config(priv_dir, Conf),
+    Dir = proplists:get_value(priv_dir, Conf),
     {ok, Fd} = file:open(filename:join(Dir, "sys.config"), [write]),
     SysConfigFun(Fd),
     file:close(Fd),
@@ -2713,8 +3103,8 @@ get_start_type(Expected) ->
     get_start_type(Expected, 30*5, #st{}).
 
 get_start_type(_Expected, 0, Ack) ->
-    test_server:format("====== ~p ======~n", [Ack]),
-    test_server:fail(not_valid_start_type);
+    io:format("====== ~p ======~n", [Ack]),
+    ct:fail(not_valid_start_type);
 get_start_type(Expected, Times, Ack0) ->
     #st{normal = N0, local = L0, takeover = T0, failover = F0} = Ack0,
     global:send(st_type, {st, read, self()}),
@@ -2760,13 +3150,13 @@ get_start_phase(Expected) ->
 	Expected ->
 	    ok;
 	{sp, T1, I1, So1, Sp1, G1} ->
-           test_server:format("=============== {sp,T,I,So,Sp,G} ~p ~n",[" "]),
-           test_server:format("=========== got ~p ~n",
+           io:format("=============== {sp,T,I,So,Sp,G} ~p ~n",[" "]),
+           io:format("=========== got ~p ~n",
                               [{sp, T1, I1, So1, Sp1, G1}]),
-           test_server:format("====== expected ~p ~n", [Expected]),
-           test_server:fail(not_valid_start_phase)
+           io:format("====== expected ~p ~n", [Expected]),
+           ct:fail(not_valid_start_phase)
     after 5000 ->
-           test_server:fail(not_valid_start_phase)
+           ct:fail(not_valid_start_phase)
     end.
 
 start_phase() ->
@@ -2797,10 +3187,10 @@ get_conf_change(Expected) ->
 	{cc, Expected} ->
 	    ok;
 	{cc, List} ->
-	    test_server:format("====== ~p ======~n",[{cc, List}]),
-	    test_server:fail(not_valid_conf_change)
+	    io:format("====== ~p ======~n",[{cc, List}]),
+	    ct:fail(not_valid_conf_change)
     after 5000 ->
-	    test_server:fail(not_valid_conf_change_to)
+	    ct:fail(not_valid_conf_change_to)
     end.
 
 conf_change() ->
@@ -2896,7 +3286,7 @@ create_script_3002(ScriptName) ->
 
 distr_changed_prep(Conf) when is_list(Conf) ->
 
-    % Write .app files
+    %% Write .app files
     {ok, Fd1} = file:open("app1.app", [write]),
     w_app1(Fd1),
     file:close(Fd1),
@@ -2917,7 +3307,7 @@ distr_changed_prep(Conf) when is_list(Conf) ->
     file:close(Fd6),
 
 
-    % Create the .app files and the boot script
+    %% Create the .app files and the boot script
     {{KernelVer,StdlibVer}, _} = create_script_dc("dc"),
 
     case is_real_system(KernelVer, StdlibVer) of
@@ -2933,13 +3323,13 @@ distr_changed_prep(Conf) when is_list(Conf) ->
     NoSyncTime = config_fun_fast(config_dc(NodeNames)),
     WithSyncTime = config_fun(config_dc(NodeNames)),
 
-    Dir = ?config(priv_dir,Conf),
+    Dir = proplists:get_value(priv_dir,Conf),
     {ok, Fd_dc2} = file:open(filename:join(Dir, "sys2.config"), [write]),
     (config_dc2(NodeNames))(Fd_dc2),
     file:close(Fd_dc2),
     Config2 = filename:join(Dir, "sys2"),
     
-    % Test [cp1, cp2, cp3]
+    %% Test [cp1, cp2, cp3]
     {ok, Cp1} = start_node_boot_config(Ncp1, NoSyncTime, Conf, dc),
     {ok, Cp2} = start_node_boot_config(Ncp2, NoSyncTime, Conf, dc),
     {ok, Cp3} = start_node_boot_config(Ncp3, WithSyncTime, Conf, dc),
@@ -2950,6 +3340,188 @@ distr_changed_prep(Conf) when is_list(Conf) ->
     {value, {kernel, OldKernel}} = lists:keysearch(kernel, 1, OldEnv),
     {OldKernel, OldEnv, {Cp1, Cp2, Cp3}, {Ncp1, Ncp2, Ncp3}, Config2}.
 
+%% Test report callback for Logger handler error_logger
+format_log_1(_Config) ->
+    FD = application:get_env(kernel, error_logger_format_depth),
+    application:unset_env(kernel, error_logger_format_depth),
+    Term = lists:seq(1, 15),
+    Application = my_application,
+    Error = exit,
+    Node = Term,
+    Report = #{label=>{application_controller,Error},
+               report=>[{application,Application},
+                        {exited,Term},
+                        {type,Term}]},
+    {F1, A1} = application_controller:format_log(Report),
+    FExpected1 = "    application: ~tp~n"
+        "    exited: ~tp~n"
+        "    type: ~tp~n",
+    ct:log("F1: ~ts~nA1: ~tp", [F1,A1]),
+    FExpected1 = F1,
+    [Application,Term,Term] = A1,
+
+    Progress = #{label=>{application_controller,progress},
+                 report=>[{application,Application},{started_at,Node}]},
+    {PF1,PA1} = application_controller:format_log(Progress),
+    PFExpected1 = "    application: ~tp~n    started_at: ~tp~n",
+    ct:log("PF1: ~ts~nPA1: ~tp", [PF1,PA1]),
+    PFExpected1 = PF1,
+    [Application,Node] = PA1,
+
+    Depth = 10,
+    ok = application:set_env(kernel, error_logger_format_depth, Depth),
+    Limited = [1,2,3,4,5,6,7,8,9,'...'],
+    {F2,A2} = application_controller:format_log(Report),
+    FExpected2 = "    application: ~tP~n"
+        "    exited: ~tP~n"
+        "    type: ~tP~n",
+    ct:log("F2: ~ts~nA2: ~tp", [F2,A2]),
+    FExpected2 = F2,
+    Limited = [1,2,3,4,5,6,7,8,9,'...'],
+    [Application,Depth,Limited,Depth,Limited,Depth] = A2,
+
+    {PF2,PA2} = application_controller:format_log(Progress),
+    PFExpected2 = "    application: ~tP~n    started_at: ~tP~n",
+    ct:log("PF2: ~ts~nPA2: ~tp", [PF2,PA2]),
+    PFExpected2 = PF2,
+    [Application,Depth,Limited,Depth] = PA2,
+
+    case FD of
+        undefined ->
+            application:unset_env(kernel, error_logger_format_depth);
+        _ ->
+            application:set_env(kernel, error_logger_format_depth, FD)
+    end,
+    ok.
+
+%% Test report callback for any Logger handler
+format_log_2(_Config) ->
+    Term = lists:seq(1, 15),
+    Application = my_application,
+    Error = exit,
+    Node = Term,
+    Report = #{label=>{application_controller,Error},
+               report=>[{application,Application},
+                        {exited,Term},
+                        {type,Term}]},
+    FormatOpts1 = #{},
+    Str1 = flatten_format_log(Report, FormatOpts1),
+    L1 = length(Str1),
+    Expected1 = "    application: my_application\n"
+        "    exited: [1,2,3,4,5,6,7,8,9,10,11,12,13,14,15]\n"
+        "    type: [1,2,3,4,5,6,7,8,9,10,11,12,13,14,15]\n",
+    ct:log("Str1: ~ts", [Str1]),
+    ct:log("length(Str1): ~p", [L1]),
+    true = Expected1 =:= Str1,
+
+    Progress = #{label=>{application_controller,progress},
+                 report=>[{application,Application},{started_at,Node}]},
+    PStr1 = flatten_format_log(Progress, FormatOpts1),
+    PL1 = length(PStr1),
+    PExpected1 = "    application: my_application\n"
+        "    started_at: [1,2,3,4,5,6,7,8,9,10,11,12,13,14,15]\n",
+    ct:log("PStr1: ~ts", [PStr1]),
+    ct:log("length(PStr1): ~p", [PL1]),
+    true = PExpected1 =:= PStr1,
+
+    Depth = 10,
+    FormatOpts2 = #{depth=>Depth},
+    Str2 = flatten_format_log(Report, FormatOpts2),
+    L2 = length(Str2),
+    Expected2 = "    application: my_application\n"
+        "    exited: [1,2,3,4,5,6,7,8,9|...]\n"
+        "    type: [1,2,3,4,5,6,7,8,9|...]\n",
+    ct:log("Str2: ~ts", [Str2]),
+    ct:log("length(Str2): ~p", [L2]),
+    true = Expected2 =:= Str2,
+
+    PStr2 = flatten_format_log(Progress, FormatOpts2),
+    PL2 = length(PStr2),
+    PExpected2 = "    application: my_application\n"
+        "    started_at: [1,2,3,4,5,6,7,8,9|...]\n",
+    ct:log("PStr2: ~ts", [PStr2]),
+    ct:log("length(PStr2): ~p", [PL2]),
+    true = PExpected2 =:= PStr2,
+
+    FormatOpts3 = #{chars_limit=>200},
+    Str3 = flatten_format_log(Report, FormatOpts3),
+    L3 = length(Str3),
+    Expected3 = "    application: my_application\n"
+        "    exited: [1,2,3,4,5,6,7,8,9,10,11,12,13,14,15]\n"
+        "    type: [1,2,3,4,5,6,7,8,9,10,11,12,13,14,15]\n",
+    ct:log("Str3: ~ts", [Str3]),
+    ct:log("length(Str3): ~p", [L3]),
+    true = Expected3 =:= Str3,
+
+    PFormatOpts3 = #{chars_limit=>80},
+    PStr3 = flatten_format_log(Progress, PFormatOpts3),
+    PL3 = length(PStr3),
+    PExpected3 = "    application: my_application\n"
+        "    started_at:",
+    ct:log("PStr3: ~ts", [PStr3]),
+    ct:log("length(PStr3): ~p", [PL3]),
+    true = lists:prefix(PExpected3, PStr3),
+    true = PL3 < PL1,
+
+    FormatOpts4 = #{single_line=>true},
+    Str4 = flatten_format_log(Report, FormatOpts4),
+    L4 = length(Str4),
+
+    Expected4 = "Application: my_application. "
+        "Exited: [1,2,3,4,5,6,7,8,9,10,11,12,13,14,15]. "
+        "Type: [1,2,3,4,5,6,7,8,9,10,11,12,13,14,15].",
+    ct:log("Str4: ~ts", [Str4]),
+    ct:log("length(Str4): ~p", [L4]),
+    true = Expected4 =:= Str4,
+
+    PStr4 = flatten_format_log(Progress, FormatOpts4),
+    PL4 = length(PStr4),
+    PExpected4 = "Application: my_application. "
+        "Started at: [1,2,3,4,5,6,7,8,9,10,11,12,13,14,15].",
+    ct:log("PStr4: ~ts", [PStr4]),
+    ct:log("length(PStr4): ~p", [PL4]),
+    true = PExpected4 =:= PStr4,
+
+    FormatOpts5 = #{single_line=>true, depth=>Depth},
+    Str5 = flatten_format_log(Report, FormatOpts5),
+    L5 = length(Str5),
+    Expected5 = "Application: my_application. "
+        "Exited: [1,2,3,4,5,6,7,8,9|...]. "
+        "Type: [1,2,3,4,5,6,7,8,9|...].",
+    ct:log("Str5: ~ts", [Str5]),
+    ct:log("length(Str5): ~p", [L5]),
+    true = Expected5 =:= Str5,
+
+    PStr5 = flatten_format_log(Progress, FormatOpts5),
+    PL5 = length(PStr5),
+    PExpected5 = "Application: my_application. "
+        "Started at: [1,2,3,4,5,6,7,8,9|...].",
+    ct:log("PStr5: ~ts", [PStr5]),
+    ct:log("length(PStr5): ~p", [PL5]),
+    true = PExpected5 =:= PStr5,
+
+    FormatOpts6 = #{single_line=>true, chars_limit=>100},
+    Str6 = flatten_format_log(Report, FormatOpts6),
+    L6 = length(Str6),
+    Expected6 = "Application: my_application. Exited:",
+    ct:log("Str6: ~ts", [Str6]),
+    ct:log("length(Str6): ~p", [L6]),
+    true = lists:prefix(Expected6, Str6),
+    true = L6 < L4,
+
+    PFormatOpts6 = #{single_line=>true, chars_limit=>60},
+    PStr6 = flatten_format_log(Progress, PFormatOpts6),
+    PL6 = length(PStr6),
+    PExpected6 = "Application: my_application. Started at:",
+    ct:log("PStr6: ~ts", [PStr6]),
+    ct:log("length(PStr6): ~p", [PL6]),
+    true = lists:prefix(PExpected6, PStr6),
+    true = PL6 < PL4,
+
+    ok.
+
+flatten_format_log(Report, Format) ->
+    lists:flatten(application_controller:format_log(Report, Format)).
 
 %%% Copied from init_SUITE.erl.
 is_real_system(KernelVsn, StdlibVsn) ->

@@ -1,7 +1,7 @@
 #
 # %CopyrightBegin%
 #
-# Copyright Ericsson AB 2004-2012. All Rights Reserved.
+# Copyright Ericsson AB 2004-2017. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -55,7 +55,8 @@ SUITE_FILES= \
 	xmerl_xsd_SUITE.erl \
 	xmerl_xsd_MS2002-01-16_SUITE.erl \
 	xmerl_xsd_NIST2002-01-16_SUITE.erl \
-	xmerl_xsd_Sun2002-01-16_SUITE.erl
+	xmerl_xsd_Sun2002-01-16_SUITE.erl \
+        xmerl_sax_stream_SUITE.erl
 
 XML_FILES= \
 	testcases.dtd \
@@ -84,7 +85,7 @@ RELSYSDIR = $(RELEASE_PATH)/xmerl_test
 # FLAGS
 # ----------------------------------------------------
 
-#ERL_COMPILE_FLAGS += -I$(ERL_TOP)/lib/test_server/include -I$(ERL_TOP)/lib/xmerl/include/ $(XMERL_PRESERV_TEST_DIRS)
+ERL_COMPILE_FLAGS +=
 
 
 # ----------------------------------------------------
@@ -121,8 +122,11 @@ release_tests_spec: opt
 	cp $(XML_FILES) "$(RELSYSDIR)"
 	@tar cfh - xmerl_SUITE_data | (cd "$(RELSYSDIR)"; tar xf -)
 	@tar cfh - xmerl_std_SUITE_data | (cd "$(RELSYSDIR)"; tar xf -)
+	@tar cfh - xmerl_sax_std_SUITE_data | (cd "$(RELSYSDIR)"; tar xf -)
 	@tar cfh - xmerl_xsd_SUITE_data | (cd "$(RELSYSDIR)"; tar xf -)
 	@tar cfh - xmerl_xsd_MS2002-01-16_SUITE_data | (cd "$(RELSYSDIR)"; tar xf -)
 	@tar cfh - xmerl_xsd_NIST2002-01-16_SUITE_data | (cd "$(RELSYSDIR)"; tar xf -)
 	@tar cfh - xmerl_xsd_Sun2002-01-16_SUITE_data | (cd "$(RELSYSDIR)"; tar xf -)
+	@tar cfh - xmerl_sax_SUITE_data | (cd "$(RELSYSDIR)"; tar xf -)
+	@tar cfh - xmerl_sax_stream_SUITE_data | (cd "$(RELSYSDIR)"; tar xf -)
 	chmod -R u+w "$(RELSYSDIR)"

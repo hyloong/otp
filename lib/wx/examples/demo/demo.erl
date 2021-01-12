@@ -1,7 +1,7 @@
 %%
 %% %CopyrightBegin%
 %% 
-%% Copyright Ericsson AB 2009-2012. All Rights Reserved.
+%% Copyright Ericsson AB 2009-2017. All Rights Reserved.
 %% 
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -33,21 +33,6 @@
 
 -record(state, {win, demo, example, selector, log, code}).
 
-%% For wx-2.9 usage
--ifndef(wxSTC_ERLANG_COMMENT_FUNCTION).
--define(wxSTC_ERLANG_COMMENT_FUNCTION, 14).
--define(wxSTC_ERLANG_COMMENT_MODULE, 15).
--define(wxSTC_ERLANG_COMMENT_DOC, 16).
--define(wxSTC_ERLANG_COMMENT_DOC_MACRO, 17).
--define(wxSTC_ERLANG_ATOM_QUOTED, 18).
--define(wxSTC_ERLANG_MACRO_QUOTED, 19).
--define(wxSTC_ERLANG_RECORD_QUOTED, 20).
--define(wxSTC_ERLANG_NODE_NAME_QUOTED, 21).
--define(wxSTC_ERLANG_BIFS, 22).
--define(wxSTC_ERLANG_MODULES, 23).
--define(wxSTC_ERLANG_MODULES_ATT, 24).
--endif.
-
 start() ->
     start([]).
 
@@ -60,10 +45,14 @@ start_link() ->
 start_link(Debug) ->
     wx_object:start_link(?MODULE, Debug, []).
 
+format(#state{log=Log}, Str, Args) ->
+    wxTextCtrl:appendText(Log, io_lib:format(Str, Args)),
+    ok;
 format(Config,Str,Args) ->
     Log = proplists:get_value(log, Config),
     wxTextCtrl:appendText(Log, io_lib:format(Str, Args)),
     ok.
+
 
 -define(DEBUG_NONE, 101).
 -define(DEBUG_VERBOSE, 102).
@@ -97,7 +86,11 @@ init(Options) ->
     wxFrame:connect(Frame, close_window),
 
     _SB = wxFrame:createStatusBar(Frame,[]),
-    
+
+    %% Setup on toplevel because stc seems to steal this on linux
+    wxFrame:dragAcceptFiles(Frame, true),
+    wxFrame:connect(Frame, drop_files),
+
     %%   T        Uppersplitter
     %%   O        Left   |    Right
     %%   P  Widgets|Code |    Demo
@@ -201,15 +194,15 @@ handle_info({'EXIT',_, shutdown}, State) ->
 handle_info({'EXIT',_, normal}, State) ->
     {noreply,State};
 handle_info(Msg, State) ->
-    io:format("Got Info ~p~n",[Msg]),
+    format(State, "Got Info ~p~n",[Msg]),
     {noreply,State}.
 
 handle_call(Msg, _From, State) ->
-    io:format("Got Call ~p~n",[Msg]),
+    format(State, "Got Call ~p~n",[Msg]),
     {reply,ok,State}.
 
 handle_cast(Msg, State) ->
-    io:format("Got cast ~p~n",[Msg]),
+    format(State, "Got cast ~p~n",[Msg]),
     {noreply,State}.
 
 %% Async Events are handled in handle_event as in handle_info
@@ -235,6 +228,9 @@ handle_event(#wx{id = Id,
 	    %% If you are going to printout mainly text it is easier if
 	    %% you generate HTML code and use a wxHtmlEasyPrint
 	    %% instead of using DCs
+
+            %% Printpreview doesn't work in >2.9 without this
+            wxIdleEvent:setMode(?wxIDLE_PROCESS_ALL),
 	    Module = "ex_" ++ wxListBox:getStringSelection(State#state.selector) ++ ".erl",
 	    HEP = wxHtmlEasyPrinting:new([{name, "Print"},
 					  {parentWindow, State#state.win}]),
@@ -286,7 +282,7 @@ handle_event(#wx{event=#wxClose{}}, State = #state{win=Frame}) ->
     ok = wxFrame:setStatusText(Frame, "Closing...",[]),
     {stop, normal, State};
 handle_event(Ev,State) ->
-    io:format("~p Got event ~p ~n",[?MODULE, Ev]),
+    format(State, "~p Got event ~p ~n",[?MODULE, Ev]),
     {noreply, State}.
 
 code_change(_, _, State) ->
@@ -336,7 +332,6 @@ code_area(Parent) ->
 	       {?wxSTC_ERLANG_CHARACTER,{236,155,172}},
 	       {?wxSTC_ERLANG_MACRO,    {40,144,170}},
 	       {?wxSTC_ERLANG_RECORD,   {40,100,20}},
-	       {?wxSTC_ERLANG_SEPARATOR,{0,0,0}},
 	       {?wxSTC_ERLANG_NODE_NAME,{0,0,0}},
 	       %% Optional 2.9 stuff
 	       {?wxSTC_ERLANG_COMMENT_FUNCTION, {160,53,35}},
@@ -364,6 +359,7 @@ code_area(Parent) ->
     ?stc:setVisiblePolicy(Ed, Policy, 3),
 
     %% ?stc:connect(Ed, stc_doubleclick),
+    %% ?stc:connect(Ed, std_do_drop, fun(Ev, Obj) -> io:format("Ev ~p ~p~n",[Ev,Obj]) end),
     ?stc:setReadOnly(Ed, true),
     Ed.
 
@@ -399,7 +395,7 @@ find(Ed) ->
 
 keyWords() ->
     L = ["after","begin","case","try","cond","catch","andalso","orelse",
-	 "end","fun","if","let","of","query","receive","when","bnot","not",
+	 "end","fun","if","let","of","receive","when","bnot","not",
 	 "div","rem","band","and","bor","bxor","bsl","bsr","or","xor"],
     lists:flatten([K ++ " " || K <- L] ++ [0]).
 

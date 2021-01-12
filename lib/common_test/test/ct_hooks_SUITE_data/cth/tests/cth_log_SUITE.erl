@@ -1,7 +1,7 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2010-2011. All Rights Reserved.
+%% Copyright Ericsson AB 2010-2018. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -40,8 +40,9 @@ suite() ->
 %% @end
 %%--------------------------------------------------------------------
 init_per_suite(Config) ->
-    Gen = spawn(fun() -> gen() end),
-    [{gen,Gen}|Config].
+    application:start(sasl),
+    do_log(?FUNCTION_NAME),
+    Config.
 
 %%--------------------------------------------------------------------
 %% @spec end_per_suite(Config0) -> void() | {save_config,Config1}
@@ -49,9 +50,8 @@ init_per_suite(Config) ->
 %% @end
 %%--------------------------------------------------------------------
 end_per_suite(Config) ->
-    Gen = proplists:get_value(gen, Config),
-    exit(Gen, kill),
-    ct:sleep(100),
+    do_log(?FUNCTION_NAME),
+    application:stop(sasl),
     ok.
 
 %%--------------------------------------------------------------------
@@ -90,7 +90,7 @@ end_per_testcase(_TestCase, _Config) ->
 %% @end
 %%--------------------------------------------------------------------
 groups() ->
-    [{g1,[parallel,{repeat,10}],[tc1,tc2,tc3]}].
+    [{g1,[{repeat,10}],[tc1,tc2,tc3]}].
 
 %%--------------------------------------------------------------------
 %% @spec all() -> GroupsAndTestCases | {skip,Reason}
@@ -104,22 +104,21 @@ all() ->
     [{group,g1}].
 
 tc1(_) ->
-    ct:sleep(100),
+    do_log(?FUNCTION_NAME),
     ok.
 tc2(_) ->
-    ct:sleep(100),
+    do_log(?FUNCTION_NAME),
     ok.
 tc3(_) ->
-    ct:sleep(100),
+    do_log(?FUNCTION_NAME),
     ok.
 
 %%%-----------------------------------------------------------------
 
-gen() ->
-    gen_loop(1).
 
-gen_loop(N) ->
-    ct:log("Logger iteration: ~p", [N]),
-    error_logger:error_report(N),
-    ct:sleep(200),
-    gen_loop(N+1).
+do_log(What) ->
+    ct:log("Logger ~p", [What]),
+    error_logger:error_report(What),
+    error_logger:info_report(What),
+    logger:notice("~p",[What]),
+    timer:sleep(100).

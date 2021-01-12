@@ -1,7 +1,7 @@
 %%
 %% %CopyrightBegin%
 %% 
-%% Copyright Ericsson AB 1997-2010. All Rights Reserved.
+%% Copyright Ericsson AB 1997-2020. All Rights Reserved.
 %% 
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -116,7 +116,7 @@ do(Info) ->
 		
 		{_StatusCode, Response} ->
 		    transfer_log(Info, "-", AuthUser, Date, 200,
-				 httpd_util:flatlength(Response), LogFormat),
+				 erlang:iolist_size(Response), LogFormat),
 		    {proceed,Info#mod.data};
 		undefined ->
 		    transfer_log(Info, "-", AuthUser, Date, 200,
@@ -138,8 +138,8 @@ do(Info) ->
 %% Description: See httpd(3) ESWAPI CALLBACK FUNCTIONS
 %%-------------------------------------------------------------------------
 load("TransferDiskLogSize " ++ TransferDiskLogSize, []) ->
-    case inets_regexp:split(TransferDiskLogSize," ") of
-	{ok,[MaxBytes,MaxFiles]} ->
+    try re:split(TransferDiskLogSize, " ",  [{return, list}]) of
+	[MaxBytes, MaxFiles] ->
 	    case make_integer(MaxBytes) of
 		{ok,MaxBytesInteger} ->
 		    case make_integer(MaxFiles) of
@@ -151,17 +151,20 @@ load("TransferDiskLogSize " ++ TransferDiskLogSize, []) ->
 			     ?NICE(string:strip(TransferDiskLogSize)++
 				   " is an invalid TransferDiskLogSize")}
 		    end;
-		{error,_} ->
+		_ ->
 		    {error,?NICE(string:strip(TransferDiskLogSize)++
-				 " is an invalid TransferDiskLogSize")}
+				     " is an invalid TransferDiskLogSize")}
 	    end
+    catch _:_ ->
+	    {error,?NICE(string:strip(TransferDiskLogSize) ++
+			     " is an invalid TransferDiskLogSize")}   
     end;
 load("TransferDiskLog " ++ TransferDiskLog,[]) ->
     {ok,[],{transfer_disk_log,string:strip(TransferDiskLog)}};
  
 load("ErrorDiskLogSize " ++  ErrorDiskLogSize, []) ->
-    case inets_regexp:split(ErrorDiskLogSize," ") of
-	{ok,[MaxBytes,MaxFiles]} ->
+    try re:split(ErrorDiskLogSize," ", [{return, list}]) of
+	[MaxBytes,MaxFiles] ->
 	    case make_integer(MaxBytes) of
 		{ok,MaxBytesInteger} ->
 		    case make_integer(MaxFiles) of
@@ -176,13 +179,16 @@ load("ErrorDiskLogSize " ++  ErrorDiskLogSize, []) ->
 		    {error,?NICE(string:strip(ErrorDiskLogSize)++
 				 " is an invalid ErrorDiskLogSize")}
 	    end
+    catch _:_ ->
+	    {error,?NICE(string:strip(ErrorDiskLogSize) ++
+			     " is an invalid TransferDiskLogSize")}   
     end;
 load("ErrorDiskLog " ++ ErrorDiskLog, []) ->
     {ok, [], {error_disk_log, string:strip(ErrorDiskLog)}};
 
 load("SecurityDiskLogSize " ++ SecurityDiskLogSize, []) ->
-    case inets_regexp:split(SecurityDiskLogSize, " ") of
-	{ok, [MaxBytes, MaxFiles]} ->
+    try re:split(SecurityDiskLogSize, " ", [{return, list}]) of
+	[MaxBytes, MaxFiles] ->
 	    case make_integer(MaxBytes) of
 		{ok, MaxBytesInteger} ->
 		    case make_integer(MaxFiles) of
@@ -198,6 +204,9 @@ load("SecurityDiskLogSize " ++ SecurityDiskLogSize, []) ->
 		    {error, ?NICE(string:strip(SecurityDiskLogSize) ++
 				  " is an invalid SecurityDiskLogSize")}
 	    end
+    catch _:_ ->
+	    {error,?NICE(string:strip(SecurityDiskLogSize) ++
+			     " is an invalid SecurityDiskLogSize")}   	
     end;
 load("SecurityDiskLog " ++ SecurityDiskLog, []) ->
     {ok, [], {security_disk_log, string:strip(SecurityDiskLog)}};
@@ -354,30 +363,37 @@ create_disk_log(Filename, MaxBytes, MaxFiles, ConfigList) ->
 %%----------------------------------------------------------------------
 
 open(Filename, MaxBytes, MaxFiles, internal) ->
-    Opts = [{format, internal}, {repair, truncate}],
-    open1(Filename, MaxBytes, MaxFiles, Opts);
+    Opt0 = {format, internal},
+    Opts1 = [Opt0, {repair, true}],
+    Opts2 = [Opt0, {repair, truncate}],
+    open1(Filename, MaxBytes, MaxFiles, Opts1, Opts2);
 open(Filename, MaxBytes, MaxFiles, _) ->
     Opts = [{format, external}],
-    open1(Filename, MaxBytes, MaxFiles, Opts).
+    open1(Filename, MaxBytes, MaxFiles, Opts, Opts).
 
-open1(Filename, MaxBytes, MaxFiles, Opts0) ->
-    Opts1 = [{name, Filename}, {file, Filename}, {type, wrap}] ++ Opts0,
-    case open2(Opts1, {MaxBytes, MaxFiles}) of
+open1(Filename, MaxBytes, MaxFiles, Opts1, Opts2) ->
+    Opts0 = [{name, Filename}, {file, Filename}, {type, wrap}],
+    case open2(Opts0 ++ Opts1, Opts0 ++ Opts2, {MaxBytes, MaxFiles}) of
         {ok, LogDB} ->
+            {ok, LogDB};
+        {repaired, LogDB, {recovered, _}, {badbytes, _}} ->
             {ok, LogDB};
         {error, Reason} ->
             {error, 
              ?NICE("Can't create " ++ Filename ++ 
-                   lists:flatten(io_lib:format(", ~p",[Reason])))};
-        _ ->
-            {error, ?NICE("Can't create "++Filename)}
+                   lists:flatten(io_lib:format(", ~p",[Reason])))}
     end.
 
-open2(Opts, Size) ->
-    case disk_log:open(Opts) of
+open2(Opts1, Opts2, Size) ->
+    case disk_log:open(Opts1) of
         {error, {badarg, size}} ->
             %% File did not exist, add the size option and try again
-            disk_log:open([{size, Size} | Opts]);
+            disk_log:open([{size, Size} | Opts1]);
+        {error, {Reason, _}} when
+                Reason == not_a_log_file;
+                Reason == invalid_index_file ->
+            %% File was corrupt, add the truncate option and try again
+            disk_log:open([{size, Size} | Opts2]);
         Else ->
             Else
     end.

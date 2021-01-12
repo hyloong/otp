@@ -1,7 +1,7 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2004-2013. All Rights Reserved.
+%% Copyright Ericsson AB 2004-2020. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -18,17 +18,17 @@
 %% %CopyrightEnd%
 %%
 
-%%% @doc Common Test Framework callback module.
+%%% Common Test Framework callback module.
 %%%
-%%% <p>This module exports framework callback functions which are
-%%% called from the test_server.</p>
+%%% This module exports framework callback functions which are
+%%% called from the test_server.
 
 -module(ct_framework).
 
 -export([init_tc/3, end_tc/3, end_tc/4, get_suite/2, get_all_cases/1]).
 -export([report/2, warn/1, error_notification/4]).
 
--export([get_logopts/0, format_comment/1, get_html_wrapper/4]).
+-export([get_log_dir/0, get_logopts/0, format_comment/1, get_html_wrapper/4]).
 
 -export([error_in_suite/1, init_per_suite/1, end_per_suite/1,
 	 init_per_group/2, end_per_group/2]).
@@ -42,7 +42,7 @@
 -define(rev(L), lists:reverse(L)).
 
 %%%-----------------------------------------------------------------
-%%% @spec init_tc(Mod,Func,Args) -> {ok,NewArgs} | {error,Reason} |
+%%% -spec init_tc(Mod,Func,Args) -> {ok,NewArgs} | {error,Reason} |
 %%%         {skip,Reason} | {auto_skip,Reason}
 %%%      Mod = atom()
 %%%      Func = atom()
@@ -50,11 +50,29 @@
 %%%      NewArgs = list()
 %%%      Reason = term()
 %%%
-%%% @doc Test server framework callback, called by the test_server
+%%% Test server framework callback, called by the test_server
 %%% when a new test case is started.
-init_tc(Mod,Func,Config) ->
+init_tc(_,{end_per_testcase_not_run,_},[Config]) ->
+    %% Testcase is completed (skipped or failed), but end_per_testcase
+    %% is not run - don't call pre-hook.
+    {ok,[Config]};
+init_tc(Mod,EPTC={end_per_testcase,_},[Config]) ->
     %% in case Mod == ct_framework, lookup the suite name
     Suite = get_suite_name(Mod, Config),
+    case ct_hooks:init_tc(Suite,EPTC,Config) of
+	NewConfig when is_list(NewConfig) ->
+	    {ok,[NewConfig]};
+	Other->
+	    Other
+    end;
+
+init_tc(Mod,Func0,Args) ->
+    %% in case Mod == ct_framework, lookup the suite name
+    Suite = get_suite_name(Mod, Args),
+    {Func,HookFunc} = case Func0 of
+			  {init_per_testcase,F} -> {F,Func0};
+			  _                     -> {Func0,Func0}
+		      end,
 
     %% check if previous testcase was interpreted and has left
     %% a "dead" trace window behind - if so, kill it
@@ -70,12 +88,15 @@ init_tc(Mod,Func,Config) ->
 	andalso Func=/=end_per_group
 	andalso ct_util:get_testdata(skip_rest) of
 	true ->
+            initialize(false,Mod,Func,Args),
 	    {auto_skip,"Repeated test stopped by force_stop option"};
 	_ ->
 	    case ct_util:get_testdata(curr_tc) of
 		{Suite,{suite0_failed,{require,Reason}}} ->
+                    initialize(false,Mod,Func,Args),
 		    {auto_skip,{require_failed_in_suite0,Reason}};
 		{Suite,{suite0_failed,_}=Failure} ->
+                    initialize(false,Mod,Func,Args),
 		    {fail,Failure};
 		_ ->
 		    ct_util:update_testdata(curr_tc,
@@ -86,7 +107,7 @@ init_tc(Mod,Func,Config) ->
 					    end, [create]),
 		    case ct_util:read_suite_data({seq,Suite,Func}) of
 			undefined ->
-			    init_tc1(Mod,Suite,Func,Config);
+			    init_tc1(Mod,Suite,Func,HookFunc,Args);
 			Seq when is_atom(Seq) ->
 			    case ct_util:read_suite_data({seq,Suite,Seq}) of
 				[Func|TCs] -> % this is the 1st case in Seq
@@ -102,27 +123,25 @@ init_tc(Mod,Func,Config) ->
 				_ ->
 				    ok
 			    end,
-			    init_tc1(Mod,Suite,Func,Config);
+			    init_tc1(Mod,Suite,Func,HookFunc,Args);
 			{failed,Seq,BadFunc} ->
-			    {auto_skip,{sequence_failed,Seq,BadFunc}}
+                            initialize(false,Mod,Func,Args),
+                            {auto_skip,{sequence_failed,Seq,BadFunc}}
 		    end
 	    end
-    end.	    
+    end.
 
-init_tc1(?MODULE,_,error_in_suite,[Config0]) when is_list(Config0) ->
-    ct_logs:init_tc(false),
-    ct_event:notify(#event{name=tc_start,
-			   node=node(),
-			   data={?MODULE,error_in_suite}}),
-    ct_suite_init(?MODULE, error_in_suite, [], Config0),
-    case ?val(error, Config0) of
+init_tc1(?MODULE,_,error_in_suite,_,[Config0]) when is_list(Config0) ->
+    initialize(false,?MODULE,error_in_suite),
+    _ = ct_suite_init(?MODULE,error_in_suite,[],Config0),
+    case ?val(error,Config0) of
 	undefined ->
 	    {fail,"unknown_error_in_suite"};
 	Reason ->
 	    {fail,Reason}
     end;
 
-init_tc1(Mod,Suite,Func,[Config0]) when is_list(Config0) ->
+init_tc1(Mod,Suite,Func,HookFunc,[Config0]) when is_list(Config0) ->
     Config1 = 
 	case ct_util:read_suite_data(last_saved_config) of
 	    {{Suite,LastFunc},SavedConfig} ->	% last testcase
@@ -156,46 +175,43 @@ init_tc1(Mod,Suite,Func,[Config0]) when is_list(Config0) ->
     %% testcase info function (these should only survive the
     %% testcase, not the whole suite)
     FuncSpec = group_or_func(Func,Config0),
-    if is_tuple(FuncSpec) ->			% group
-	    ok;
-       true ->
-	    ct_config:delete_default_config(testcase)
-    end,
-    Initialize = fun() -> 
-			 ct_logs:init_tc(false),
-			 ct_event:notify(#event{name=tc_start,
-						node=node(),
-						data={Mod,FuncSpec}})
-		 end,
+    HookFunc1 =
+	if is_tuple(FuncSpec) ->		% group
+	    FuncSpec;
+	   true ->
+		ct_config:delete_default_config(testcase),
+		HookFunc
+	end,
     case add_defaults(Mod,Func,AllGroups) of
 	Error = {suite0_failed,_} ->
-	    Initialize(),
+	    initialize(false,Mod,FuncSpec),
 	    ct_util:set_testdata({curr_tc,{Suite,Error}}),
 	    {error,Error};
 	Error = {group0_failed,_} ->
-	    Initialize(),
+	    initialize(false,Mod,FuncSpec),
 	    {auto_skip,Error};
 	Error = {testcase0_failed,_} ->
-	    Initialize(),
+	    initialize(false,Mod,FuncSpec),
 	    {auto_skip,Error};
 	{SuiteInfo,MergeResult} ->
 	    case MergeResult of
 		{error,Reason} ->
-		    Initialize(),
+		    initialize(false,Mod,FuncSpec),
 		    {fail,Reason};
 		_ ->
-		    init_tc2(Mod,Suite,Func,SuiteInfo,MergeResult,Config)
+		    init_tc2(Mod,Suite,Func,HookFunc1,
+			     SuiteInfo,MergeResult,Config)
 	    end
     end;
 
-init_tc1(_Mod,_Suite,_Func,Args) ->
+init_tc1(_Mod,_Suite,_Func,_HookFunc,Args) ->
     {ok,Args}.
 
-init_tc2(Mod,Suite,Func,SuiteInfo,MergeResult,Config) ->
+init_tc2(Mod,Suite,Func,HookFunc,SuiteInfo,MergeResult,Config) ->
     %% timetrap must be handled before require
     MergedInfo = timetrap_first(MergeResult, [], []),
     %% tell logger to use specified style sheet
-    case lists:keysearch(stylesheet,1,MergeResult++Config) of
+    _ = case lists:keysearch(stylesheet,1,MergeResult++Config) of
 	{value,{stylesheet,SSFile}} ->
 	    ct_logs:set_stylesheet(Func,add_data_dir(SSFile,Config));
 	_ ->
@@ -219,11 +235,8 @@ init_tc2(Mod,Suite,Func,SuiteInfo,MergeResult,Config) ->
 	Conns ->
 	    ct_util:silence_connections(Conns)
     end,
-    ct_logs:init_tc(Func == init_per_suite),
     FuncSpec = group_or_func(Func,Config),
-    ct_event:notify(#event{name=tc_start,
-			   node=node(),
-			   data={Mod,FuncSpec}}),
+    initialize((Func==init_per_suite),Mod,FuncSpec),
 
     case catch configure(MergedInfo,MergedInfo,SuiteInfo,
 			 FuncSpec,[],Config) of
@@ -238,7 +251,7 @@ init_tc2(Mod,Suite,Func,SuiteInfo,MergeResult,Config) ->
 	{ok,PostInitHook,Config1} ->
 	    case get('$test_server_framework_test') of
 		undefined ->
-		    ct_suite_init(Suite, FuncSpec, PostInitHook, Config1);
+		    ct_suite_init(Suite,HookFunc,PostInitHook,Config1);
 		Fun ->
 		    PostInitHookResult = do_post_init_hook(PostInitHook,
 							   Config1),
@@ -251,16 +264,28 @@ init_tc2(Mod,Suite,Func,SuiteInfo,MergeResult,Config) ->
 	    end
     end.
 
-ct_suite_init(Suite, FuncSpec, PostInitHook, Config) when is_list(Config) ->
-    case ct_hooks:init_tc(Suite, FuncSpec, Config) of
+initialize(RefreshLogs,Mod,Func,[Config]) when is_list(Config) ->
+    initialize(RefreshLogs,Mod,group_or_func(Func,Config));
+initialize(RefreshLogs,Mod,Func,_) ->
+    initialize(RefreshLogs,Mod,Func).
+
+initialize(RefreshLogs,Mod,FuncSpec) ->
+    ct_logs:init_tc(RefreshLogs),
+    ct_event:notify(#event{name=tc_start,
+			   node=node(),
+			   data={Mod,FuncSpec}}).
+
+
+ct_suite_init(Suite,HookFunc,PostInitHook,Config) when is_list(Config) ->
+    case ct_hooks:init_tc(Suite,HookFunc,Config) of
 	NewConfig when is_list(NewConfig) ->
-	    PostInitHookResult = do_post_init_hook(PostInitHook, NewConfig),
+	    PostInitHookResult = do_post_init_hook(PostInitHook,NewConfig),
 	    {ok, [PostInitHookResult ++ NewConfig]};
 	Else ->
 	    Else
     end.
 
-do_post_init_hook(PostInitHook, Config) ->
+do_post_init_hook(PostInitHook,Config) ->
     lists:flatmap(fun({Tag,Fun}) ->
 			  case lists:keysearch(Tag,1,Config) of
 			      {value,_} ->
@@ -287,10 +312,10 @@ add_defaults(Mod,Func, GroupPath) ->
 	    end;
 	{'EXIT',Reason} ->
 	    ErrStr = io_lib:format("~n*** ERROR *** "
-				   "~w:suite/0 failed: ~p~n",
+				   "~w:suite/0 failed: ~tp~n",
 				   [Suite,Reason]),
-	    io:format(ErrStr, []),
-	    io:format(user, ErrStr, []),
+	    io:format("~ts", [ErrStr]),
+	    io:format(?def_gl, "~ts", [ErrStr]),
 	    {suite0_failed,{exited,Reason}};
 	SuiteInfo when is_list(SuiteInfo) ->
 	    case lists:all(fun(E) when is_tuple(E) -> true;
@@ -310,18 +335,18 @@ add_defaults(Mod,Func, GroupPath) ->
 		false ->
 		    ErrStr = io_lib:format("~n*** ERROR *** "
 					   "Invalid return value from "
-					   "~w:suite/0: ~p~n",
+					   "~w:suite/0: ~tp~n",
 					   [Suite,SuiteInfo]),
-		    io:format(ErrStr, []),
-		    io:format(user, ErrStr, []),
+		    io:format("~ts", [ErrStr]),
+		    io:format(?def_gl, "~ts", [ErrStr]),
 		    {suite0_failed,bad_return_value}
 	    end;
 	SuiteInfo ->
 	    ErrStr = io_lib:format("~n*** ERROR *** "
 				   "Invalid return value from "
-				   "~w:suite/0: ~p~n", [Suite,SuiteInfo]),
-	    io:format(ErrStr, []),
-	    io:format(user, ErrStr, []),
+				   "~w:suite/0: ~tp~n", [Suite,SuiteInfo]),
+	    io:format("~ts", [ErrStr]),
+	    io:format(?def_gl, "~ts", [ErrStr]),
 	    {suite0_failed,bad_return_value}
     end.
 
@@ -346,10 +371,10 @@ add_defaults1(Mod,Func, GroupPath, SuiteInfo) ->
 	{value,{error,BadGr0Val,GrName}} ->
 	    Gr0ErrStr = io_lib:format("~n*** ERROR *** "
 				      "Invalid return value from "
-				      "~w:group(~w): ~p~n",
+				      "~w:group(~tw): ~tp~n",
 				      [Mod,GrName,BadGr0Val]),
-	    io:format(Gr0ErrStr, []),
-	    io:format(user, Gr0ErrStr, []),
+	    io:format("~ts", [Gr0ErrStr]),
+	    io:format(?def_gl, "~ts", [Gr0ErrStr]),
 	    {group0_failed,bad_return_value};
 	_ ->
 	    Args = if Func == init_per_group ; Func == end_per_group ->
@@ -368,10 +393,10 @@ add_defaults1(Mod,Func, GroupPath, SuiteInfo) ->
 		{error,BadTC0Val} ->
 		    TC0ErrStr = io_lib:format("~n*** ERROR *** "
 					      "Invalid return value from "
-					      "~w:~w/0: ~p~n",
+					      "~w:~tw/0: ~tp~n",
 					      [Mod,Func,BadTC0Val]),
-		    io:format(TC0ErrStr, []),
-		    io:format(user, TC0ErrStr, []),
+		    io:format("~ts", [TC0ErrStr]),
+		    io:format(?def_gl, "~ts", [TC0ErrStr]),
 		    {testcase0_failed,bad_return_value};
 		_ ->
 		    %% let test case info (also for all config funcs) override
@@ -615,16 +640,16 @@ try_set_default(Name,Key,Info,Where) ->
 	{_,[]} -> 
 	    no_default;
 	{'_UNDEF',_} ->
-	    [ct_config:set_default_config([CfgVal],Where) || CfgVal <- CfgElems],
+	    _ = [ct_config:set_default_config([CfgVal],Where) || CfgVal <- CfgElems],
 	    ok;
 	_ ->
-	    [ct_config:set_default_config(Name,[CfgVal],Where) || CfgVal <- CfgElems],
+	    _ = [ct_config:set_default_config(Name,[CfgVal],Where) || CfgVal <- CfgElems],
 	    ok
     end.
 	    
 
 %%%-----------------------------------------------------------------
-%%% @spec end_tc(Mod,Func,Args) -> {ok,NewArgs}| {error,Reason} |
+%%% -spec end_tc(Mod,Func,Args) -> {ok,NewArgs}| {error,Reason} |
 %%%         {skip,Reason} | {auto_skip,Reason}
 %%%      Mod = atom()
 %%%      Func = atom()
@@ -632,7 +657,7 @@ try_set_default(Name,Key,Info,Where) ->
 %%%      NewArgs = list()
 %%%      Reason = term()
 %%%
-%%% @doc Test server framework callback, called by the test_server
+%%% Test server framework callback, called by the test_server
 %%% when a test case is finished.
 end_tc(Mod, Fun, Args) ->
     %% Have to keep end_tc/3 for backwards compatibility issues
@@ -657,9 +682,43 @@ end_tc(Mod,Func,{TCPid,Result,[Args]}, Return) when is_pid(TCPid) ->
 end_tc(Mod,Func,{Result,[Args]}, Return) ->
     end_tc(Mod,Func,self(),Result,Args,Return).
 
-end_tc(Mod,Func,TCPid,Result,Args,Return) ->
+end_tc(Mod,IPTC={init_per_testcase,_Func},_TCPid,Result,Args,Return) ->
+    case end_hook_func(IPTC,Return,IPTC) of
+        undefined -> ok;
+        _ ->
+            %% in case Mod == ct_framework, lookup the suite name
+            Suite = get_suite_name(Mod, Args),
+            case ct_hooks:end_tc(Suite,IPTC,Args,Result,Return) of
+                '$ct_no_change' ->
+                    ok;
+                HookResult ->
+                    HookResult
+            end
+    end;
+
+end_tc(Mod,Func00,TCPid,Result,Args,Return) ->
     %% in case Mod == ct_framework, lookup the suite name
     Suite = get_suite_name(Mod, Args),
+    {OnlyCleanup,Func0} =
+        case Func00 of
+            {cleanup,F0} ->
+                {true,F0};
+            _ ->
+                {false,Func00}
+        end,
+    {Func,FuncSpec,HookFunc} =
+        case Func0 of
+            {end_per_testcase_not_run,F} ->
+                %% Testcase is completed (skipped or failed), but
+                %% end_per_testcase is not run - don't call post-hook.
+                {F,F,undefined};
+            {end_per_testcase,F} ->
+                {F,F,Func0};
+            _ ->
+                FS = group_or_func(Func0,Args),
+                HF = end_hook_func(Func0,Return,FS),
+                {Func0,FS,HF}
+        end,
 
     test_server:timetrap_cancel(),
 
@@ -686,18 +745,24 @@ end_tc(Mod,Func,TCPid,Result,Args,Return) ->
     end,
     ct_util:delete_suite_data(last_saved_config),
 
-    FuncSpec = group_or_func(Func,Args),
-
     {Result1,FinalNotify} =
-	case ct_hooks:end_tc(
-	       Suite, FuncSpec, Args, Result, Return) of
-	    '$ct_no_change' ->
-		{ok,Result};
-	    HookResult ->
-		{HookResult,HookResult}
-	end,
+        case HookFunc of
+            undefined ->
+                {ok,Result};
+            _ when OnlyCleanup ->
+                {ok,Result};
+            _ ->
+                case ct_hooks:end_tc(Suite,HookFunc,Args,Result,Return) of
+                    '$ct_no_change' ->
+                        {ok,Result};
+                    HookResult ->
+                        {HookResult,HookResult}
+                end
+        end,
     FinalResult =
 	case get('$test_server_framework_test') of
+            _ when OnlyCleanup ->
+                Result1;
 	    undefined ->
 		%% send sync notification so that event handlers may print
 		%% in the log file before it gets closed
@@ -751,7 +816,7 @@ end_tc(Mod,Func,TCPid,Result,Args,Return) ->
 			  lists:keydelete(Func,2,Running);
 		     ({_,{suite0_failed,_}}) ->
 			  undefined;
-		     ([{_,CurrTC}]) when CurrTC == Func ->
+		     ([{_,_}]) ->
 			  undefined;
 		     (undefined) ->
 			  undefined;
@@ -785,6 +850,34 @@ end_tc(Mod,Func,TCPid,Result,Args,Return) ->
 	    ok
     end,
     FinalResult.	    
+
+%% This is to make sure that no post_init_per_* is ever called if the
+%% corresponding pre_init_per_* was not called.
+%% The skip or fail reasons are those that can be returned from
+%% init_tc above in situations where we never came to call
+%% ct_hooks:init_tc/3, e.g. if suite/0 fails, then we never call
+%% ct_hooks:init_tc for init_per_suite, and thus we must not call
+%% ct_hooks:end_tc for init_per_suite either.
+end_hook_func({init_per_testcase,_},{auto_skip,{sequence_failed,_,_}},_) ->
+    undefined;
+end_hook_func({init_per_testcase,_},{auto_skip,"Repeated test stopped by force_stop option"},_) ->
+    undefined;
+end_hook_func({init_per_testcase,_},{fail,{config_name_already_in_use,_}},_) ->
+    undefined;
+end_hook_func({init_per_testcase,_},{auto_skip,{InfoFuncError,_}},_)
+  when InfoFuncError==testcase0_failed;
+       InfoFuncError==require_failed ->
+    undefined;
+end_hook_func(init_per_group,{auto_skip,{InfoFuncError,_}},_)
+  when InfoFuncError==group0_failed;
+       InfoFuncError==require_failed ->
+    undefined;
+end_hook_func(init_per_suite,{auto_skip,{require_failed_in_suite0,_}},_) ->
+    undefined;
+end_hook_func(init_per_suite,{auto_skip,{failed,{error,{suite0_failed,_}}}},_) ->
+    undefined;
+end_hook_func(_,_,Default) ->
+    Default.
 
 %% {error,Reason} | {skip,Reason} | {timetrap_timeout,TVal} | 
 %% {testcase_aborted,Reason} | testcase_aborted_or_killed | 
@@ -821,27 +914,28 @@ tag(_Other) ->
     ok.
 
 %%%-----------------------------------------------------------------
-%%% @spec error_notification(Mod,Func,Args,Error) -> ok
+%%% -spec error_notification(Mod,Func,Args,Error) -> ok
 %%%      Mod = atom()
 %%%      Func = atom()
 %%%      Args = list()
 %%%      Error = term()
 %%%
-%%% @doc This function is called as the result of testcase 
-%%% <code>Func</code> in suite <code>Mod</code> crashing. 
-%%% <code>Error</code> specifies the reason for failing.
+%%% This function is called as the result of testcase
+%%% Func in suite Mod crashing.
+%%% Error specifies the reason for failing.
 error_notification(Mod,Func,_Args,{Error,Loc}) ->
-    ErrSpec = case Error of
+    ErrorSpec = case Error of
 		 {What={_E,_R},Trace} when is_list(Trace) ->
 		      What;
 		  What ->
 		      What
 	      end,
-    ErrStr = case ErrSpec of
+    ErrorStr = case ErrorSpec of
 		 {badmatch,Descr} ->
-		     Descr1 = lists:flatten(io_lib:format("~P",[Descr,10])),
-		     if length(Descr1) > 50 ->
-			     Descr2 = string:substr(Descr1,1,50),
+                     Descr1 = io_lib:format("~tP",[Descr,10]),
+                     DescrLength = string:length(Descr1),
+                     if DescrLength > 50 ->
+			     Descr2 = string:slice(Descr1,0,50),
 			     io_lib:format("{badmatch,~ts...}",[Descr2]);
 			true ->
 			     io_lib:format("{badmatch,~ts}",[Descr1])
@@ -849,17 +943,14 @@ error_notification(Mod,Func,_Args,{Error,Loc}) ->
 		 {test_case_failed,Reason} ->
 		     case (catch io_lib:format("{test_case_failed,~ts}", [Reason])) of
 			 {'EXIT',_} ->
-			     io_lib:format("{test_case_failed,~p}", [Reason]);
+			     io_lib:format("{test_case_failed,~tp}", [Reason]);
 			 Result -> Result
 		     end;
-		 {'EXIT',_Reason} = EXIT ->
-		     io_lib:format("~P", [EXIT,5]);
-		 {Spec,_Reason} when is_atom(Spec) ->
-		     io_lib:format("~w", [Spec]);
 		 Other ->
-		     io_lib:format("~P", [Other,5])
+		     io_lib:format("~tP", [Other,5])
 	     end,
-    ErrorHtml = "<font color=\"brown\">" ++ ErrStr ++ "</font>",
+    ErrorHtml =
+	"<font color=\"brown\">" ++ ct_logs:escape_chars(ErrorStr) ++ "</font>",
     case {Mod,Error} of
 	%% some notifications come from the main test_server process
 	%% and for these cases the existing comment may not be modified
@@ -887,41 +978,43 @@ error_notification(Mod,Func,_Args,{Error,Loc}) ->
 	    end
     end,
 
-    PrintErr = fun(ErrFormat, ErrArgs) ->
-		       Div = "~n- - - - - - - - - - - - - - - - - - - "
-			     "- - - - - - - - - - - - - - - - - - - - -~n",
-		       io:format(user, lists:concat([Div,ErrFormat,Div,"~n"]),
-				 ErrArgs),
+    PrintError = fun(ErrorFormat, ErrorArgs) ->
+                      Div = "\n- - - - - - - - - - - - - - - - - - - "
+                            "- - - - - - - - - - - - - - - - - - - - -\n",
+		       ErrorStr2 = io_lib:format(ErrorFormat, ErrorArgs),
+                      io:format(?def_gl, "~ts~n", [lists:concat([Div,ErrorStr2,Div])]),
 		       Link =
 			   "\n\n<a href=\"#end\">"
 			   "Full error description and stacktrace"
 			   "</a>",
+		       ErrorHtml2 = ct_logs:escape_chars(ErrorStr2),
 		       ct_logs:tc_log(ct_error_notify,
 				      ?MAX_IMPORTANCE,
 				      "CT Error Notification",
-				      ErrFormat++Link, ErrArgs)
+                                      "~ts", [ErrorHtml2++Link],
+                                      [])
 	       end,
     case Loc of
 	[{?MODULE,error_in_suite}] ->
-	    PrintErr("Error in suite detected: ~ts", [ErrStr]);
+	    PrintError("Error in suite detected: ~ts", [ErrorStr]);
 
 	R when R == unknown; R == undefined ->
-	    PrintErr("Error detected: ~ts", [ErrStr]);
+	    PrintError("Error detected: ~ts", [ErrorStr]);
 
 	%% if a function specified by all/0 does not exist, we
 	%% pick up undef here
-	[{LastMod,LastFunc}|_] when ErrStr == "undef" ->
-	    PrintErr("~w:~w could not be executed~nReason: ~ts",
-		     [LastMod,LastFunc,ErrStr]);
+	[{LastMod,LastFunc}|_] when ErrorStr == "undef" ->
+	    PrintError("~w:~tw could not be executed~nReason: ~ts",
+		     [LastMod,LastFunc,ErrorStr]);
 
 	[{LastMod,LastFunc}|_] ->
-	    PrintErr("~w:~w failed~nReason: ~ts", [LastMod,LastFunc,ErrStr]);
+	    PrintError("~w:~tw failed~nReason: ~ts", [LastMod,LastFunc,ErrorStr]);
 	    
 	[{LastMod,LastFunc,LastLine}|_] ->
 	    %% print error to console, we are only
 	    %% interested in the last executed expression
-	    PrintErr("~w:~w failed on line ~w~nReason: ~ts",
-		     [LastMod,LastFunc,LastLine,ErrStr]),
+	    PrintError("~w:~tw failed on line ~w~nReason: ~ts",
+		     [LastMod,LastFunc,LastLine,ErrorStr]),
 	    
 	    case ct_util:read_suite_data({seq,Mod,Func}) of
 		undefined ->
@@ -963,28 +1056,47 @@ group_or_func(Func, _Config) ->
     Func.
 
 %%%-----------------------------------------------------------------
-%%% @spec get_suite(Mod, Func) -> Tests
+%%% -spec get_suite(Mod, Func) -> Tests
 %%%
-%%% @doc Called from test_server for every suite (<code>Func==all</code>)
-%%%      and every test case. If the former, all test cases in the suite
-%%%      should be returned. 
+%%% Called from test_server for every suite (Func==all)
+%%% and every test case. If the former, all test cases in the suite
+%%% should be returned.
 
 get_suite(Mod, all) ->
-    case catch apply(Mod, groups, []) of
-	{'EXIT',_} ->
-	    get_all(Mod, []);
-	GroupDefs when is_list(GroupDefs) ->
-	    case catch ct_groups:find_groups(Mod, all, all, GroupDefs) of
-		{error,_} = Error ->
-		    %% this makes test_server call error_in_suite as first
-		    %% (and only) test case so we can report Error properly
-		    [{?MODULE,error_in_suite,[[Error]]}];
-		ConfTests ->
-		    get_all(Mod, ConfTests)
-	    end;
-	_ ->
+    case safe_apply_groups_0(Mod,{ok,[]}) of
+        {ok,GroupDefs} ->
+            try ct_groups:find_groups(Mod, all, all, GroupDefs) of
+                ConfTests when is_list(ConfTests) ->
+                    get_all(Mod, ConfTests)
+            catch
+                throw:{error,Error} ->
+                    [{?MODULE,error_in_suite,[[{error,Error}]]}];
+                _:Error:S ->
+                    [{?MODULE,error_in_suite,[[{error,{Error,S}}]]}]
+            end;
+        {error,{bad_return,_Bad}} ->
 	    E = "Bad return value from "++atom_to_list(Mod)++":groups/0",
-	    [{?MODULE,error_in_suite,[[{error,list_to_atom(E)}]]}]
+	    [{?MODULE,error_in_suite,[[{error,list_to_atom(E)}]]}];
+        {error,{bad_hook_return,Bad}} ->
+	    E = "Bad return value from post_groups/2 hook function",
+	    [{?MODULE,error_in_suite,[[{error,{list_to_atom(E),Bad}}]]}];
+        {error,{failed,ExitReason}} ->
+	    case ct_util:get_testdata({error_in_suite,Mod}) of
+		undefined ->
+		    ErrStr = io_lib:format("~n*** ERROR *** "
+					   "~w:groups/0 failed: ~p~n",
+					   [Mod,ExitReason]),
+		    io:format(?def_gl, ErrStr, []),
+		    %% save the error info so it doesn't get printed twice
+		    ct_util:set_testdata_async({{error_in_suite,Mod},
+						ExitReason});
+		_ExitReason ->
+		    ct_util:delete_testdata({error_in_suite,Mod})
+	    end,
+	    Reason = list_to_atom(atom_to_list(Mod)++":groups/0 failed"),
+	    [{?MODULE,error_in_suite,[[{error,Reason}]]}];
+        {error,What} ->
+            [{?MODULE,error_in_suite,[[{error,What}]]}]
     end;
 
 %%!============================================================
@@ -994,54 +1106,74 @@ get_suite(Mod, all) ->
 
 %% group
 get_suite(Mod, Group={conf,Props,_Init,TCs,_End}) ->
-    Name = ?val(name, Props),
-    case catch apply(Mod, groups, []) of
-	{'EXIT',_} ->
-	    [Group];
-	GroupDefs when is_list(GroupDefs) ->
-	    case catch ct_groups:find_groups(Mod, Name, TCs, GroupDefs) of
-		{error,_} = Error ->
-		    %% this makes test_server call error_in_suite as first
-		    %% (and only) test case so we can report Error properly
-		    [{?MODULE,error_in_suite,[[Error]]}];
-		[] ->
-		    [];
-		ConfTests ->
-		    case lists:member(skipped, Props) of
-			true ->
-			    %% a *subgroup* specified *only* as skipped (and not
-			    %% as an explicit test) should not be returned, or
-			    %% init/end functions for top groups will be executed
-			    case catch ?val(name, element(2, hd(ConfTests))) of
-				Name ->		% top group
-				    ct_groups:delete_subs(ConfTests, ConfTests);
-				_ ->
-				    []
-			    end;
-			false ->
-			    ConfTests1 = ct_groups:delete_subs(ConfTests,
-							       ConfTests),
-			    case ?val(override, Props) of
-				undefined ->
-				    ConfTests1;
-				[] ->
-				    ConfTests1;
-				ORSpec ->
-				    ORSpec1 = if is_tuple(ORSpec) -> [ORSpec];
-						 true -> ORSpec end,
-				    ct_groups:search_and_override(ConfTests1,
-								  ORSpec1, Mod)
-			    end
-		    end
-	    end;
-	_ ->
+    case safe_apply_groups_0(Mod,{ok,[Group]}) of
+        {ok,GroupDefs} ->
+            Name = ?val(name, Props),
+            try ct_groups:find_groups(Mod, Name, TCs, GroupDefs) of
+                [] ->
+                    [];
+                ConfTests when is_list(ConfTests) ->
+                    case lists:member(skipped, Props) of
+                        true ->
+                            %% a *subgroup* specified *only* as skipped (and not
+                            %% as an explicit test) should not be returned, or
+                            %% init/end functions for top groups will be executed
+                            try ?val(name, element(2, hd(ConfTests))) of
+                                Name ->		% top group
+                                    ct_groups:delete_subs(ConfTests, ConfTests);
+                                _ -> []
+                            catch
+                                _:_ -> []
+                            end;
+                        false ->
+                            ConfTests1 = ct_groups:delete_subs(ConfTests,
+                                                               ConfTests),
+                            case ?val(override, Props) of
+                                undefined ->
+                                    ConfTests1;
+                                [] ->
+                                    ConfTests1;
+                                ORSpec ->
+                                    ORSpec1 = if is_tuple(ORSpec) -> [ORSpec];
+                                                 true -> ORSpec end,
+                                    ct_groups:search_and_override(ConfTests1,
+                                                                  ORSpec1, Mod)
+                            end
+                    end
+            catch
+                throw:{error,Error} ->
+                    [{?MODULE,error_in_suite,[[{error,Error}]]}];
+                _:Error:S ->
+                    [{?MODULE,error_in_suite,[[{error,{Error,S}}]]}]
+            end;
+        {error,{bad_return,_Bad}} ->
 	    E = "Bad return value from "++atom_to_list(Mod)++":groups/0",
-	    [{?MODULE,error_in_suite,[[{error,list_to_atom(E)}]]}]
+	    [{?MODULE,error_in_suite,[[{error,list_to_atom(E)}]]}];
+        {error,{bad_hook_return,Bad}} ->
+            E = "Bad return value from post_groups/2 hook function",
+	    [{?MODULE,error_in_suite,[[{error,{list_to_atom(E),Bad}}]]}];
+        {error,{failed,ExitReason}} ->
+	    case ct_util:get_testdata({error_in_suite,Mod}) of
+		undefined ->
+		    ErrStr = io_lib:format("~n*** ERROR *** "
+					   "~w:groups/0 failed: ~p~n",
+					   [Mod,ExitReason]),
+		    io:format(?def_gl, ErrStr, []),
+		    %% save the error info so it doesn't get printed twice
+		    ct_util:set_testdata_async({{error_in_suite,Mod},
+						ExitReason});
+		_ExitReason ->
+		    ct_util:delete_testdata({error_in_suite,Mod})
+	    end,
+	    Reason = list_to_atom(atom_to_list(Mod)++":groups/0 failed"),
+	    [{?MODULE,error_in_suite,[[{error,Reason}]]}];
+         {error,What} ->
+            [{?MODULE,error_in_suite,[[{error,What}]]}]
     end;
 
 %% testcase
 get_suite(Mod, Name) ->
-     get_seq(Mod, Name).
+    get_seq(Mod, Name).
 
 %%%-----------------------------------------------------------------
 
@@ -1075,27 +1207,54 @@ get_all_cases1(_, []) ->
 
 %%%-----------------------------------------------------------------
 
-get_all(Mod, ConfTests) ->	
-    case catch apply(Mod, all, []) of
-	{'EXIT',{undef,[{Mod,all,[],_} | _]}} ->
+get_all(Mod, ConfTests) ->
+    case safe_apply_all_0(Mod) of
+        {ok,AllTCs} ->
+            %% expand group references using ConfTests
+            try ct_groups:expand_groups(AllTCs, ConfTests, Mod) of
+                {error,_} = Error ->
+                    [{?MODULE,error_in_suite,[[Error]]}];
+                Tests0 ->
+                    Tests = ct_groups:delete_subs(Tests0, Tests0),
+                    expand_tests(Mod, Tests)
+            catch
+                throw:{error,Error} ->
+                    [{?MODULE,error_in_suite,[[{error,Error}]]}];
+                _:Error:S ->
+                    [{?MODULE,error_in_suite,[[{error,{Error,S}}]]}]
+            end;
+        Skip = {skip,_Reason} ->
+	    Skip;
+        {error,undef} ->
+            Reason =
+                case code:which(Mod) of
+                    non_existing ->
+                        list_to_atom(
+                          atom_to_list(Mod)++
+                              " cannot be compiled or loaded");
+                    _ ->
+                        list_to_atom(
+                          atom_to_list(Mod)++":all/0 is missing")
+                end,
+            %% this makes test_server call error_in_suite as first
+            %% (and only) test case so we can report Reason properly
+            [{?MODULE,error_in_suite,[[{error,Reason}]]}];
+	{error,{bad_return,_Bad}} ->
 	    Reason =
-		case code:which(Mod) of
-		    non_existing ->
-			list_to_atom(atom_to_list(Mod)++
-					 " can not be compiled or loaded");
-		    _ ->
-			list_to_atom(atom_to_list(Mod)++":all/0 is missing")
-		end,
-	    %% this makes test_server call error_in_suite as first
-	    %% (and only) test case so we can report Reason properly
+		list_to_atom("Bad return value from "++
+				 atom_to_list(Mod)++":all/0"),
 	    [{?MODULE,error_in_suite,[[{error,Reason}]]}];
-	{'EXIT',ExitReason} ->
+        {error,{bad_hook_return,Bad}} ->
+	    Reason =
+		list_to_atom("Bad return value from post_all/3 hook function"),
+	    [{?MODULE,error_in_suite,[[{error,{Reason,Bad}}]]}];
+        {error,{failed,ExitReason}} ->
 	    case ct_util:get_testdata({error_in_suite,Mod}) of
 		undefined ->
 		    ErrStr = io_lib:format("~n*** ERROR *** "
-					   "~w:all/0 failed: ~p~n",
+					   "~w:all/0 failed: ~tp~n",
 					   [Mod,ExitReason]),
-		    io:format(user, ErrStr, []),
+		    io:format(?def_gl, "~ts", [ErrStr]),
 		    %% save the error info so it doesn't get printed twice
 		    ct_util:set_testdata_async({{error_in_suite,Mod},
 						ExitReason});
@@ -1106,28 +1265,8 @@ get_all(Mod, ConfTests) ->
 	    %% this makes test_server call error_in_suite as first
 	    %% (and only) test case so we can report Reason properly
 	    [{?MODULE,error_in_suite,[[{error,Reason}]]}];
-	AllTCs when is_list(AllTCs) ->
-	    case catch save_seqs(Mod,AllTCs) of
-		{error,What} ->
-		    [{?MODULE,error_in_suite,[[{error,What}]]}];
-		SeqsAndTCs ->
-		    %% expand group references in all() using ConfTests
-		    case catch ct_groups:expand_groups(SeqsAndTCs,
-						       ConfTests,
-						       Mod) of
-			{error,_} = Error ->
-			    [{?MODULE,error_in_suite,[[Error]]}];
-			Tests ->
-			    ct_groups:delete_subs(Tests, Tests)
-		    end
-	    end;
-	Skip = {skip,_Reason} ->
-	    Skip;
-	_ ->
-	    Reason = 
-		list_to_atom("Bad return value from "++
-				 atom_to_list(Mod)++":all/0"),
-	    [{?MODULE,error_in_suite,[[{error,Reason}]]}]
+        {error,What} ->
+            [{?MODULE,error_in_suite,[[{error,What}]]}]
     end.
 
 %%!============================================================
@@ -1209,8 +1348,8 @@ save_seq(Mod,Seq,SeqTCs,All) ->
 check_private(Seq,TCs,All) ->    
     Bad = lists:filter(fun(TC) -> lists:member(TC,All) end, TCs),
     if Bad /= [] ->
-	    Reason = io_lib:format("regular test cases not allowed in sequence ~p: "
-				   "~p",[Seq,Bad]),
+	    Reason = io_lib:format("regular test cases not allowed in sequence ~tp: "
+				   "~tp",[Seq,Bad]),
 	    throw({error,list_to_atom(lists:flatten(Reason))});
        true ->
 	    ok
@@ -1227,7 +1366,7 @@ check_multiple(Mod,Seq,TCs) ->
 		       end,TCs),
     if Bad /= [] ->
 	    Reason = io_lib:format("test cases found in multiple sequences: "
-				   "~p",[Bad]),
+				   "~tp",[Bad]),
 	    throw({error,list_to_atom(lists:flatten(Reason))});
        true ->
 	    ok
@@ -1255,21 +1394,21 @@ end_per_suite(_Config) ->
 %% if the group config functions are missing in the suite,
 %% use these instead
 init_per_group(GroupName, Config) ->
-    ct:comment(io_lib:format("start of ~p", [GroupName])),
-    ct_logs:log("TEST INFO", "init_per_group/2 for ~w missing "
+    ct:comment(io_lib:format("start of ~tp", [GroupName])),
+    ct_logs:log("TEST INFO", "init_per_group/2 for ~tw missing "
 		"in suite, using default.",
 		[GroupName]),
     Config.
 
 end_per_group(GroupName, _) ->
-    ct:comment(io_lib:format("end of ~p", [GroupName])),
-    ct_logs:log("TEST INFO", "end_per_group/2 for ~w missing "
+    ct:comment(io_lib:format("end of ~tp", [GroupName])),
+    ct_logs:log("TEST INFO", "end_per_group/2 for ~tw missing "
 		"in suite, using default.",
 		[GroupName]),
     ok.
     
 %%%-----------------------------------------------------------------
-%%% @spec report(What,Data) -> ok
+%%% -spec report(What,Data) -> ok
 report(What,Data) ->
     case What of
 	loginfo ->
@@ -1277,7 +1416,7 @@ report(What,Data) ->
 	    %% top level test index page needs to be refreshed
 	    TestName = filename:basename(?val(topdir, Data), ".logs"),
 	    RunDir = ?val(rundir, Data),
-	    ct_logs:make_all_suites_index({TestName,RunDir}),
+	    _ = ct_logs:make_all_suites_index({TestName,RunDir}),
 	    ok;
 	tests_start ->
 	    ok;
@@ -1301,25 +1440,25 @@ report(What,Data) ->
 	    ok;
 	tc_done ->
 	    {Suite,{Func,GrName},Result} = Data,
-	    Data1 = if GrName == undefined -> {Suite,Func,Result};
-		       true                -> Data
-	    end,
+            FuncSpec = if GrName == undefined -> Func;
+                          true                -> {Func,GrName}
+                       end,
 	    %% Register the group leader for the process calling the report
 	    %% function, making it possible for a hook function to print
 	    %% in the test case log file
 	    ReportingPid = self(),
 	    ct_logs:register_groupleader(ReportingPid, group_leader()),
 	    case Result of
-		{failed, _} ->
-		    ct_hooks:on_tc_fail(What, Data1);
-		{skipped,{failed,{_,init_per_testcase,_}}} ->
-		    ct_hooks:on_tc_skip(tc_auto_skip, Data1);
-		{skipped,{require_failed,_}} ->
-		    ct_hooks:on_tc_skip(tc_auto_skip, Data1);
-		{skipped,_} ->
-		    ct_hooks:on_tc_skip(tc_user_skip, Data1);
-		{auto_skipped,_} ->
-		    ct_hooks:on_tc_skip(tc_auto_skip, Data1);
+		{failed, Reason} ->
+		    ct_hooks:on_tc_fail(What, {Suite,FuncSpec,Reason});
+		{skipped,{failed,{_,init_per_testcase,_}}=Reason} ->
+		    ct_hooks:on_tc_skip(tc_auto_skip,  {Suite,FuncSpec,Reason});
+		{skipped,{require_failed,_}=Reason} ->
+		    ct_hooks:on_tc_skip(tc_auto_skip, {Suite,FuncSpec,Reason});
+		{skipped,Reason} ->
+		    ct_hooks:on_tc_skip(tc_user_skip, {Suite,FuncSpec,Reason});
+		{auto_skipped,Reason} ->
+		    ct_hooks:on_tc_skip(tc_auto_skip, {Suite,FuncSpec,Reason});
 		_Else ->
 		    ok
 	    end,
@@ -1407,8 +1546,7 @@ report(What,Data) ->
 	    end;
 	_ ->
 	    ok
-    end,
-    catch vts:report(What,Data).
+    end.
 
 add_to_stats(Result) ->
     Update = fun({Ok,Failed,Skipped={UserSkipped,AutoSkipped}}) ->
@@ -1433,14 +1571,14 @@ add_to_stats(Result) ->
     ct_util:update_testdata(stats, Update).
 
 %%%-----------------------------------------------------------------
-%%% @spec warn(What) -> true | false
+%%% -spec warn(What) -> true | false
 warn(What) when What==nodes; What==processes ->
     false;
 warn(_What) ->
     true.
 
 %%%-----------------------------------------------------------------
-%%% @spec add_data_dir(File0, Config) -> File1
+%%% -spec add_data_dir(File0, Config) -> File1
 add_data_dir(File,Config) when is_atom(File) ->
     add_data_dir(atom_to_list(File),Config);
 
@@ -1459,7 +1597,7 @@ add_data_dir(File,Config) when is_list(File) ->
     end.
 
 %%%-----------------------------------------------------------------
-%%% @spec get_logopts() -> [LogOpt]
+%%% -spec get_logopts() -> [LogOpt]
 get_logopts() ->
     case ct_util:get_testdata(logopts) of
 	undefined ->
@@ -1469,14 +1607,90 @@ get_logopts() ->
     end.
 
 %%%-----------------------------------------------------------------
-%%% @spec format_comment(Comment) -> HtmlComment
+%%% -spec format_comment(Comment) -> HtmlComment
 format_comment(Comment) ->
     "<font color=\"green\">" ++ Comment ++ "</font>".
 
 %%%-----------------------------------------------------------------
-%%% @spec get_html_wrapper(TestName, PrintLabel, Cwd) -> Header
+%%% -spec get_html_wrapper(TestName, PrintLabel, Cwd) -> Header
 get_html_wrapper(TestName, PrintLabel, Cwd, TableCols) ->
     get_html_wrapper(TestName, PrintLabel, Cwd, TableCols, utf8).
 
 get_html_wrapper(TestName, PrintLabel, Cwd, TableCols, Encoding) ->
     ct_logs:get_ts_html_wrapper(TestName, PrintLabel, Cwd, TableCols, Encoding).
+
+%%%-----------------------------------------------------------------
+%%% -spec get_log_dir() -> {ok,LogDir}
+get_log_dir() ->
+    ct_logs:get_log_dir(true).
+
+%%%-----------------------------------------------------------------
+%%% Call all and group callbacks and post_* hooks with error handling
+safe_apply_all_0(Mod) ->
+    try apply(Mod, all, []) of
+        AllTCs0 when is_list(AllTCs0) ->
+	    try save_seqs(Mod,AllTCs0) of
+		SeqsAndTCs when is_list(SeqsAndTCs) ->
+                    all_hook(Mod,SeqsAndTCs)
+            catch throw:{error,What} ->
+		    {error,What}
+            end;
+        {skip,_}=Skip ->
+            all_hook(Mod,Skip);
+        Bad ->
+            {error,{bad_return,Bad}}
+    catch
+        _:Reason:Stacktrace ->
+            handle_callback_crash(Reason,Stacktrace,Mod,all,{error,undef})
+    end.
+
+all_hook(Mod, All) ->
+    case ct_hooks:all(Mod, All) of
+        AllTCs when is_list(AllTCs) ->
+            {ok,AllTCs};
+        {skip,_}=Skip ->
+            Skip;
+        {fail,Reason} ->
+            {error,Reason};
+        Bad ->
+            {error,{bad_hook_return,Bad}}
+    end.
+
+safe_apply_groups_0(Mod,Default) ->
+    try apply(Mod, groups, []) of
+        GroupDefs when is_list(GroupDefs) ->
+            case ct_hooks:groups(Mod, GroupDefs) of
+                GroupDefs1 when is_list(GroupDefs1) ->
+                    {ok,GroupDefs1};
+                {fail,Reason} ->
+                    {error,Reason};
+                Bad ->
+                    {error,{bad_hook_return,Bad}}
+            end;
+        Bad ->
+            {error,{bad_return,Bad}}
+    catch
+        _:Reason:Stacktrace ->
+            handle_callback_crash(Reason,Stacktrace,Mod,groups,Default)
+    end.
+
+handle_callback_crash(undef,[{Mod,Func,[],_}|_],Mod,Func,Default) ->
+    case ct_hooks:Func(Mod, []) of
+        [] ->
+            Default;
+        List when is_list(List) ->
+            {ok,List};
+        {fail,Reason} ->
+            {error,Reason};
+        Bad ->
+            {error,{bad_hook_return,Bad}}
+    end;
+handle_callback_crash(Reason,Stacktrace,_Mod,_Func,_Default) ->
+    {error,{failed,{Reason,Stacktrace}}}.
+
+expand_tests(Mod, [{testcase,Case,[Prop]}|Tests]) ->
+    [{repeat,{Mod,Case},Prop}|expand_tests(Mod,Tests)];
+expand_tests(Mod,[Test|Tests]) ->
+    [Test|expand_tests(Mod,Tests)];
+expand_tests(_Mod,[]) ->
+    [].

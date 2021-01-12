@@ -1,7 +1,7 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2001-2013. All Rights Reserved.
+%% Copyright Ericsson AB 2001-2016. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -43,7 +43,8 @@ run(Erule) ->
 %% From X.691 (07/2002) A.4.
 encoded_ax(per) ->  "9E000180 010291A4";
 encoded_ax(uper) -> "9E000600 040A4690";
-encoded_ax(ber) ->  none.
+encoded_ax(ber) -> none;
+encoded_ax(jer) -> none. 
 
 hex_to_binary(none) ->
     none;
@@ -120,10 +121,10 @@ run3(Erule) ->
         asn1_NOVALUE,asn1_NOVALUE,asn1_NOVALUE},
        asn1_NOVALUE,asn1_NOVALUE}}}}}}},
         io:format("~p:~p~n",[Erule,Val]),
-    {ok,List}= asn1rt:encode('EUTRA-RRC-Definitions','DL-DCCH-Message',Val),
+    {ok,List}= 'EUTRA-RRC-Definitions':encode('DL-DCCH-Message',Val),
     Enc = iolist_to_binary(List),
     io:format("Result from encode:~n~p~n",[Enc]),
-    {ok,Val2} = asn1rt:decode('EUTRA-RRC-Definitions','DL-DCCH-Message',Enc),
+    {ok,Val2} = 'EUTRA-RRC-Definitions':decode('DL-DCCH-Message', Enc),
     io:format("Result from decode:~n~p~n",[Val2]),
     case Val2 of
 	Val -> ok;

@@ -1,7 +1,7 @@
 %%
 %% %CopyrightBegin%
 %% 
-%% Copyright Ericsson AB 1996-2014. All Rights Reserved.
+%% Copyright Ericsson AB 1996-2019. All Rights Reserved.
 %% 
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -413,20 +413,21 @@ table_check_status(NameDb, Col, ?'RowStatus_createAndGo', RowIndex, Cols) ->
 	false -> 
 	    % it's ok to use snmpa_local_db:table_construct_row since it's
 	    % side effect free and we only use the result temporary.
-	    case catch snmpa_local_db:table_construct_row(
+	    try snmpa_local_db:table_construct_row(
 			 NameDb, RowIndex, ?'RowStatus_createAndGo', Cols) of
-		{'EXIT', _Reason} ->
-		    ?vtrace(
-		       "failed construct row (createAndGo): "
-		       " n   Reason: ~p"
-		       " n   Stack:  ~p",
-		       [_Reason, erlang:get_stacktrace()]),
-		    {noCreation, Col}; % Bad RowIndex
 		Row ->
 		    case lists:member(noinit, tuple_to_list(Row)) of
 			false -> {noError, 0};
 			_Found -> {inconsistentValue, Col}
 		    end
+            catch
+                _:_E:_S ->
+		    ?vtrace(
+		       "failed construct row (createAndGo): "
+		       "~n   Error: ~p"
+		       "~n   Stack: ~p",
+		       [_E, _S]),
+		    {noCreation, Col}           % Bad RowIndex
 	    end;
 	true -> {inconsistentValue, Col}
     end;
@@ -435,17 +436,18 @@ table_check_status(NameDb, Col, ?'RowStatus_createAndGo', RowIndex, Cols) ->
 table_check_status(NameDb, Col, ?'RowStatus_createAndWait', RowIndex, Cols) ->
     case table_row_exists(NameDb, RowIndex) of
 	false ->
-	    case catch snmpa_local_db:table_construct_row(
+	    try snmpa_local_db:table_construct_row(
 			 NameDb, RowIndex, ?'RowStatus_createAndGo', Cols) of
-		{'EXIT', _Reason} ->
-		    ?vtrace(
-		       "failed construct row (createAndWait): "
-		       " n   Reason: ~p"
-		       " n   Stack:  ~p",
-		       [_Reason, erlang:get_stacktrace()]),
-		    {noCreation, Col}; % Bad RowIndex
 		_Row ->
 		    {noError, 0}
+            catch
+                _:_E:_S ->
+		    ?vtrace(
+		       "failed construct row (createAndWait): "
+		       "~n   Error: ~p"
+		       "~n   Stack: ~p",
+		       [_E, _S]),
+		    {noCreation, Col}           % Bad RowIndex
 	    end;
 	true -> {inconsistentValue, Col}
     end;

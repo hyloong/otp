@@ -1,8 +1,3 @@
-%%
-%% %CopyrightBegin%
-%%
-%% Copyright Ericsson AB 2001-2010. All Rights Reserved.
-%%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
 %% You may obtain a copy of the License at
@@ -15,9 +10,8 @@
 %% See the License for the specific language governing permissions and
 %% limitations under the License.
 %%
-%% %CopyrightEnd%
-
-%% =====================================================================
+%% @copyright 1999-2002 Richard Carlsson
+%% @author Richard Carlsson <carlsson.richard@gmail.com>
 %% @doc Core Erlang abstract syntax trees.
 %%
 %% <p> This module defines an abstract data type for representing Core
@@ -126,6 +120,7 @@
 	 %% keep map exports here for now
 	 c_map_pattern/1,
 	 is_c_map/1,
+	 is_c_map_pattern/1,
 	 map_es/1,
 	 map_arg/1,
 	 update_c_map/3,
@@ -134,7 +129,7 @@
 	 ann_c_map_pattern/2,
 	 map_pair_op/1,map_pair_key/1,map_pair_val/1,
 	 update_c_map_pair/4,
-	 c_map_pair/2,
+	 c_map_pair/2, c_map_pair_exact/2,
 	 ann_c_map_pair/4
      ]).
 
@@ -268,7 +263,7 @@
 %% @see subtrees/1
 %% @see meta/1
 
--type ctype() :: 'alias'   | 'apply'  | 'binary' | 'bitrst' | 'call' | 'case'
+-type ctype() :: 'alias'   | 'apply'  | 'binary' | 'bitstr' | 'call' | 'case'
                | 'catch'   | 'clause' | 'cons'   | 'fun'    | 'let'  | 'letrec'
                | 'literal' | 'map'  | 'map_pair' | 'module' | 'primop'
                | 'receive' | 'seq'    | 'try'    | 'tuple'  | 'values' | 'var'.
@@ -438,6 +433,8 @@ is_literal_term(T) when is_tuple(T) ->
 is_literal_term(B) when is_bitstring(B) -> true;
 is_literal_term(M) when is_map(M) ->
     is_literal_term_list(maps:to_list(M));
+is_literal_term(F) when is_function(F) ->
+    erlang:fun_info(F, type) =:= {type,external};
 is_literal_term(_) ->
     false.
 
@@ -1589,6 +1586,8 @@ ann_make_list(_, [], Node) ->
 %% @doc Returns <code>true</code> if <code>Node</code> is an abstract
 %% map constructor, otherwise <code>false</code>.
 
+-type map_op() :: #c_literal{val::'assoc'} | #c_literal{val::'exact'}.
+
 -spec is_c_map(cerl()) -> boolean().
 
 is_c_map(#c_map{}) ->
@@ -1598,13 +1597,20 @@ is_c_map(#c_literal{val = V}) when is_map(V) ->
 is_c_map(_) ->
     false.
 
--spec map_es(c_map()) -> [c_map_pair()].
+-spec map_es(c_map() | c_literal()) -> [c_map_pair()].
 
+map_es(#c_literal{anno=As,val=M}) when is_map(M) ->
+    [ann_c_map_pair(As,
+                    #c_literal{anno=As,val='assoc'},
+                    #c_literal{anno=As,val=K},
+                    #c_literal{anno=As,val=V}) || {K,V} <- maps:to_list(M)];
 map_es(#c_map{es = Es}) ->
     Es.
 
--spec map_arg(c_map()) -> c_map() | c_literal().
+-spec map_arg(c_map() | c_literal()) -> c_map() | c_literal().
 
+map_arg(#c_literal{anno=As,val=M}) when is_map(M) ->
+    #c_literal{anno=As,val=#{}};
 map_arg(#c_map{arg=M}) ->
     M.
 
@@ -1628,6 +1634,11 @@ ann_c_map_pattern(As, Pairs) ->
 is_c_map_empty(#c_map{ es=[] }) -> true;
 is_c_map_empty(#c_literal{val=M}) when is_map(M),map_size(M) =:= 0 -> true;
 is_c_map_empty(_) -> false.
+
+-spec is_c_map_pattern(c_map()) -> boolean().
+
+is_c_map_pattern(#c_map{is_pat=IsPat}) ->
+    IsPat.
 
 -spec ann_c_map([term()], [c_map_pair()]) -> c_map() | c_literal().
 
@@ -1672,8 +1683,16 @@ update_c_map(#c_map{is_pat=true}=Old, M, Es) ->
 update_c_map(#c_map{is_pat=false}=Old, M, Es) ->
     ann_c_map(get_ann(Old), M, Es).
 
+-spec map_pair_key(c_map_pair()) -> cerl().
+
 map_pair_key(#c_map_pair{key=K}) -> K.
+
+-spec map_pair_val(c_map_pair()) -> cerl().
+
 map_pair_val(#c_map_pair{val=V}) -> V.
+
+-spec map_pair_op(c_map_pair()) -> map_op().
+
 map_pair_op(#c_map_pair{op=Op}) -> Op.
 
 -spec c_map_pair(cerl(), cerl()) -> c_map_pair().
@@ -1681,11 +1700,18 @@ map_pair_op(#c_map_pair{op=Op}) -> Op.
 c_map_pair(Key,Val) ->
     #c_map_pair{op=#c_literal{val=assoc},key=Key,val=Val}.
 
+-spec c_map_pair_exact(cerl(), cerl()) -> c_map_pair().
+
+c_map_pair_exact(Key,Val) ->
+    #c_map_pair{op=#c_literal{val=exact},key=Key,val=Val}.
+
 -spec ann_c_map_pair([term()], cerl(), cerl(), cerl()) ->
         c_map_pair().
 
 ann_c_map_pair(As,Op,K,V) ->
     #c_map_pair{op=Op, key = K, val=V, anno = As}.
+
+-spec update_c_map_pair(c_map_pair(), map_op(), cerl(), cerl()) -> c_map_pair().
 
 update_c_map_pair(Old,Op,K,V) ->
     #c_map_pair{op=Op, key=K, val=V, anno = get_ann(Old)}.
@@ -1937,7 +1963,7 @@ is_c_var(_) ->
     false.
 
 
-%% @spec c_fname(Name::atom(), Arity::integer()) -> cerl()
+%% @spec c_fname(Name::atom(), Arity::arity()) -> cerl()
 %% @equiv c_var({Name, Arity})
 %% @see fname_id/1
 %% @see fname_arity/1
@@ -1945,18 +1971,18 @@ is_c_var(_) ->
 %% @see ann_c_fname/3
 %% @see update_c_fname/3
 
--spec c_fname(atom(), non_neg_integer()) -> c_var().
+-spec c_fname(atom(), arity()) -> c_var().
 
 c_fname(Atom, Arity) ->
     c_var({Atom, Arity}).
 
 
-%% @spec ann_c_fname(As::[term()], Name::atom(), Arity::integer()) ->
+%% @spec ann_c_fname(As::[term()], Name::atom(), Arity::arity()) ->
 %%           cerl()
 %% @equiv ann_c_var(As, {Atom, Arity})
 %% @see c_fname/2
 
--spec ann_c_fname([term()], atom(), non_neg_integer()) -> c_var().
+-spec ann_c_fname([term()], atom(), arity()) -> c_var().
 
 ann_c_fname(As, Atom, Arity) ->
     ann_c_var(As, {Atom, Arity}).
@@ -1974,13 +2000,13 @@ update_c_fname(#c_var{name = {_, Arity}, anno = As}, Atom) ->
     #c_var{name = {Atom, Arity}, anno = As}.
 
 
-%% @spec update_c_fname(Old::cerl(), Name::atom(), Arity::integer()) ->
+%% @spec update_c_fname(Old::cerl(), Name::atom(), Arity::arity()) ->
 %%           cerl()
 %% @equiv update_c_var(Old, {Atom, Arity})
 %% @see update_c_fname/2
 %% @see c_fname/2
 
--spec update_c_fname(c_var(), atom(), integer()) -> c_var().
+-spec update_c_fname(c_var(), atom(), arity()) -> c_var().
 
 update_c_fname(Node, Atom, Arity) ->
     update_c_var(Node, {Atom, Arity}).
@@ -2029,14 +2055,14 @@ fname_id(#c_var{name={A,_}}) ->
     A.
 
 
-%% @spec fname_arity(cerl()) -> byte()
+%% @spec fname_arity(cerl()) -> arity()
 %%
 %% @doc Returns the arity part of an abstract function name variable.
 %%
 %% @see fname_id/1
 %% @see c_fname/2
 
--spec fname_arity(c_var()) -> byte().
+-spec fname_arity(c_var()) -> arity().
 
 fname_arity(#c_var{name={_,N}}) ->
     N.
@@ -2131,12 +2157,16 @@ values_arity(Node) ->
 
 %% @spec c_binary(Segments::[cerl()]) -> cerl()
 %%
-%% @doc Creates an abstract binary-template. A binary object is a
-%% sequence of 8-bit bytes. It is specified by zero or more bit-string
-%% template <em>segments</em> of arbitrary lengths (in number of bits),
-%% such that the sum of the lengths is evenly divisible by 8. If
-%% <code>Segments</code> is <code>[S1, ..., Sn]</code>, the result
-%% represents "<code>#{<em>S1</em>, ..., <em>Sn</em>}#</code>". All the
+
+%% @doc Creates an abstract binary-template. A binary object is in
+%% this context a sequence of an arbitrary number of bits. (The number
+%% of bits used to be evenly divisible by 8, but after the
+%% introduction of bit strings in the Erlang language, the choice was
+%% made to use the binary template for all bit strings.) It is
+%% specified by zero or more bit-string template <em>segments</em> of
+%% arbitrary lengths (in number of bits). If <code>Segments</code> is
+%% <code>[S1, ..., Sn]</code>, the result represents
+%% "<code>#{<em>S1</em>, ..., <em>Sn</em>}#</code>". All the
 %% <code>Si</code> must have type <code>bitstr</code>.
 %%
 %% @see ann_c_binary/2
@@ -2482,7 +2512,7 @@ fun_body(Node) ->
     Node#c_fun.body.
 
 
-%% @spec fun_arity(Node::cerl()) -> integer()
+%% @spec fun_arity(Node::cerl()) -> arity()
 %%
 %% @doc Returns the number of parameter subtrees of an abstract
 %% fun-expression.
@@ -2493,7 +2523,7 @@ fun_body(Node) ->
 %% @see c_fun/2
 %% @see fun_vars/1
 
--spec fun_arity(c_fun()) -> non_neg_integer().
+-spec fun_arity(c_fun()) -> arity().
 
 fun_arity(Node) ->
     length(fun_vars(Node)).
@@ -3400,7 +3430,7 @@ apply_args(Node) ->
     Node#c_apply.args.
 
 
-%% @spec apply_arity(Node::cerl()) -> integer()
+%% @spec apply_arity(Node::cerl()) -> arity()
 %%
 %% @doc Returns the number of argument subtrees of an abstract
 %% function application.
@@ -3412,7 +3442,7 @@ apply_args(Node) ->
 %% @see c_apply/2
 %% @see apply_args/1
 
--spec apply_arity(c_apply()) -> non_neg_integer().
+-spec apply_arity(c_apply()) -> arity().
 
 apply_arity(Node) ->
     length(apply_args(Node)).
@@ -3518,7 +3548,7 @@ call_args(Node) ->
     Node#c_call.args.
 
 
-%% @spec call_arity(Node::cerl()) -> integer()
+%% @spec call_arity(Node::cerl()) -> arity()
 %%
 %% @doc Returns the number of argument subtrees of an abstract
 %% inter-module call.
@@ -3530,7 +3560,7 @@ call_args(Node) ->
 %% @see c_call/3
 %% @see call_args/1
 
--spec call_arity(c_call()) -> non_neg_integer().
+-spec call_arity(c_call()) -> arity().
 
 call_arity(Node) ->
     length(call_args(Node)).
@@ -3622,7 +3652,7 @@ primop_args(Node) ->
     Node#c_primop.args.
 
 
-%% @spec primop_arity(Node::cerl()) -> integer()
+%% @spec primop_arity(Node::cerl()) -> arity()
 %%
 %% @doc Returns the number of argument subtrees of an abstract
 %% primitive operation call.
@@ -3634,7 +3664,7 @@ primop_args(Node) ->
 %% @see c_primop/2
 %% @see primop_args/1
 
--spec primop_arity(c_primop()) -> non_neg_integer().
+-spec primop_arity(c_primop()) -> arity().
 
 primop_arity(Node) ->
     length(primop_args(Node)).

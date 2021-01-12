@@ -1,7 +1,7 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 1997-2015. All Rights Reserved.
+%% Copyright Ericsson AB 1997-2016. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -21,346 +21,48 @@
 -module(httpd_conf).
 
 %% Application internal API
--export([load/1, load/2, load_mime_types/1, store/1, store/2,
+-export([load_mime_types/1, store/1, store/2,
 	 remove/1, remove_all/1, get_config/3, get_config/4,
 	 lookup_socket_type/1, 
 	 lookup/2, lookup/3, lookup/4, 
 	 validate_properties/1, white_space_clean/1]).
-
-%% Deprecated 
--export([is_directory/1, is_file/1, make_integer/1, clean/1, 
-	 custom_clean/3, check_enum/2]).
-
--deprecated({is_directory, 1, next_major_release}).
--deprecated({is_file, 1, next_major_release}).
--deprecated({make_integer, 1, next_major_release}).
--deprecated({clean, 1, next_major_release}).
--deprecated({custom_clean, 3, next_major_release}).
--deprecated({check_enum, 2, next_major_release}).
 
 -define(VMODULE,"CONF").
 -include("httpd_internal.hrl").
 -include("httpd.hrl").
 -include_lib("inets/src/http_lib/http_internal.hrl").
 
+%% Removed functions
+
+-removed([{check_enum,2,"use lists:member/2 instead"},
+          {clean,1,"use sting:strip/1 instead or possibly the re module"},
+          {custom_clean,3,"use sting:strip/1 instead or possibly the re module"},
+          {is_directory,1,"use filelib:is_dir/1 instead"},
+          {is_file,1,"use filelib:is_file/1 instead"},
+          {make_integer,1,"use erlang:list_to_integer/1 instead"}]).
+
 %%%=========================================================================
 %%%  Application internal API
 %%%=========================================================================
-%% The configuration data is handled in three (3) phases:
-%% 1. Parse the config file and put all directives into a key-vale
-%%    tuple list (load/1). 
-%% 2. Traverse the key-value tuple list store it into an ETS table.
+%% The configuration data is handled in three (2) phases:
+%% 1. Traverse the key-value tuple list store it into an ETS table.
 %%    Directives depending on other directives are taken care of here
 %%    (store/1).
 %% 3. Traverse the ETS table and do a complete clean-up (remove/1).
 
-%% Phase 1: Load
-load(ConfigFile) ->
-    ?hdrv("load config", [{config_file, ConfigFile}]),
-    case read_config_file(ConfigFile) of
-	{ok, Config} ->
-	    ?hdrt("config read", []),
-	    case bootstrap(Config) of
-		{error, Reason} ->
-		    ?hdri("bootstrap failed", [{reason, Reason}]),
-		    {error, Reason};
-		{ok, Modules} ->
-                    ?hdrd("config bootstrapped", [{modules, Modules}]),
-		    load_config(Config, lists:append(Modules, [?MODULE]))
-	    end;
-	{error, Reason} ->
-	    ?hdri("failed reading config file", [{reason, Reason}]),
-	    {error, ?NICE("Error while reading config file: "++Reason)}
-    end.
-
-load(eof, []) ->
-    eof;
-
-load("MaxHeaderSize " ++ MaxHeaderSize, []) ->
-    case make_integer(MaxHeaderSize) of
-        {ok, Integer} ->
-            {ok, [], {max_header_size,Integer}};
-        {error, _} ->
-            {error, ?NICE(string:strip(MaxHeaderSize)++
-                          " is an invalid number of MaxHeaderSize")}
-    end;
-
-load("MaxURISize " ++ MaxHeaderSize, []) ->
-    case make_integer(MaxHeaderSize) of
-        {ok, Integer} ->
-            {ok, [], {max_uri_size, Integer}};
-        {error, _} ->
-            {error, ?NICE(string:strip(MaxHeaderSize)++
-                          " is an invalid number of MaxHeaderSize")}
-    end;
-
-load("MaxContentLength " ++ Max, []) ->
-    case make_integer(Max) of
-        {ok, Integer} ->
-            {ok, [], {max_content_length, Integer}};
-        {error, _} ->
-            {error, ?NICE(string:strip(Max) ++
-			      " is an invalid number of MaxContentLength")}
-    end;
-
-load("ServerName " ++ ServerName, []) ->
-    {ok,[], {server_name, string:strip(ServerName)}};
-
-load("ServerTokens " ++ ServerTokens, []) ->
-    %% These are the valid *plain* server tokens: 
-    %%     none, prod, major, minor, minimum, os, full
-    %% It can also be a "private" server token: private:<any string>
-    case string:tokens(ServerTokens, [$:]) of
-	["private", Private] ->
-	    {ok,[], {server_tokens, string:strip(Private)}};
-	[TokStr] ->
-	    Tok = list_to_atom(string:strip(TokStr)),
-	    case lists:member(Tok, [none, prod, major, minor, minimum, os, full]) of
-		true ->
-		    {ok,[], {server_tokens, Tok}};
-		false ->
-		    {error, ?NICE(string:strip(ServerTokens) ++ 
-				  " is an invalid ServerTokens")}
-	    end;
-	_ ->
-	    {error, ?NICE(string:strip(ServerTokens) ++ " is an invalid ServerTokens")}
-    end;
-
-load("SocketType " ++ SocketType, []) ->
-    %% ssl is the same as HTTP_DEFAULT_SSL_KIND
-    %% essl is the pure Erlang-based ssl (the "new" ssl)
-    case check_enum(string:strip(SocketType), ["ssl", "essl", "ip_comm"]) of
-	{ok, ValidSocketType} ->
-	    {ok, [], {socket_type, ValidSocketType}};
-	{error,_} ->
-	    {error, ?NICE(string:strip(SocketType) ++ " is an invalid SocketType")}
-    end;
-
-load("Port " ++ Port, []) ->
-    case make_integer(Port) of
-	{ok, Integer} ->
-	    {ok, [], {port, Integer}};
-	{error, _} ->
-	    {error, ?NICE(string:strip(Port)++" is an invalid Port")}
-    end;
-
-load("BindAddress " ++ Address0, []) ->
-    %% If an ipv6 address is provided in URL-syntax strip the
-    %% url specific part e.i. "[FEDC:BA98:7654:3210:FEDC:BA98:7654:3210]"
-    %% -> "FEDC:BA98:7654:3210:FEDC:BA98:7654:3210"
-
-    try
-	begin
-	    ?hdrv("load BindAddress", [{address0, Address0}]),
-	    {Address, IpFamily} = 
-		case string:tokens(Address0, [$|]) of
-		    [Address1] ->
-			?hdrv("load BindAddress", [{address1, Address1}]),
-			{clean_address(Address1), inet6fb4};
-		    [Address1, IpFamilyStr] ->
-			?hdrv("load BindAddress", 
-			      [{address1, Address1}, 
-			       {ipfamily_str, IpFamilyStr}]),
-			{clean_address(Address1), make_ipfamily(IpFamilyStr)};
-		    _Bad ->
-			?hdrv("load BindAddress - bad address", 
-			      [{bad_address, _Bad}]),
-			throw({error, {bad_bind_address, Address0}})
-		end,
-
-	    ?hdrv("load BindAddress - address and ipfamily separated", 
-		  [{address, Address}, {ipfamily, IpFamily}]),
-
-	    case Address of
-		"*" ->
-		    {ok, [], [{bind_address, any}, {ipfamily, IpFamily}]};
-		_ ->
-		    case httpd_util:ip_address(Address, IpFamily) of
-			{ok, IPAddr} ->
-			    ?hdrv("load BindAddress - checked", 
-				  [{ip_address, IPAddr}]),
-			    Entries = [{bind_address, IPAddr}, 
-				       {ipfamily,     IpFamily}], 
-			    {ok, [], Entries};
-			{error, _} ->
-			    {error, ?NICE(Address ++ " is an invalid address")}
-		    end
-	    end
-	end
-    catch
-	throw:{error, {bad_bind_address, _}} ->
-	    ?hdrv("load BindAddress - bad bind address", []),
-	    {error, ?NICE(Address0 ++ " is an invalid address")};
-	throw:{error, {bad_ipfamily, _}} ->
-	    ?hdrv("load BindAddress - bad ipfamily", []),
-	    {error, ?NICE(Address0 ++ " has an invalid ipfamily")}
-    end;
-
-load("KeepAlive " ++ OnorOff, []) ->
-    case list_to_atom(string:strip(OnorOff)) of
-	off ->
-	    {ok, [], {keep_alive, false}};
-	_ ->
-	    {ok, [], {keep_alive, true}}
-    end;
-
-load("MaxKeepAliveRequests " ++  MaxRequests, []) ->
-    case make_integer(MaxRequests) of
-	{ok, Integer} ->
-	    {ok, [], {max_keep_alive_request, Integer}};
-	{error, _} ->
-	    {error, ?NICE(string:strip(MaxRequests) ++
-			  " is an invalid MaxKeepAliveRequests")}
-    end;
-
-%% This clause is kept for backwards compatibility
-load("MaxKeepAliveRequest " ++  MaxRequests, []) ->
-    case make_integer(MaxRequests) of
-	{ok, Integer} ->
-	    {ok, [], {max_keep_alive_request, Integer}};
-	{error, _} ->
-	    {error, ?NICE(string:strip(MaxRequests) ++
-			  " is an invalid MaxKeepAliveRequest")}
-    end;
-
-load("KeepAliveTimeout " ++ Timeout, []) ->
-    case make_integer(Timeout) of
-	{ok, Integer} ->
-	    {ok, [], {keep_alive_timeout, Integer}};
-	{error, _} ->
-	    {error, ?NICE(string:strip(Timeout)++" is an invalid KeepAliveTimeout")}
-    end;
-
-load("Modules " ++ Modules, []) ->
-    {ok, ModuleList} = inets_regexp:split(Modules," "),
-    {ok, [], {modules,[list_to_atom(X) || X <- ModuleList]}};
-
-load("ServerAdmin " ++ ServerAdmin, []) ->
-    {ok, [], {server_admin,string:strip(ServerAdmin)}};
-
-load("ServerRoot " ++ ServerRoot, []) ->
-    case is_directory(string:strip(ServerRoot)) of
-	{ok, Directory} ->
-	    {ok, [], [{server_root,string:strip(Directory,right,$/)}]};
-	{error, _} ->
-	    {error, ?NICE(string:strip(ServerRoot)++" is an invalid ServerRoot")}
-    end;
-
-load("MimeTypes " ++ MimeTypes, []) ->
-    case load_mime_types(white_space_clean(MimeTypes)) of
-	{ok, MimeTypesList} ->
-	    {ok, [], [{mime_types, MimeTypesList}]};
-	{error, Reason} ->
-	    {error, Reason}
-    end;
-
-load("MaxClients " ++ MaxClients, []) ->
-    case make_integer(MaxClients) of
-	{ok, Integer} ->
-	    {ok, [], {max_clients,Integer}};
-	{error, _} ->
-	    {error, ?NICE(string:strip(MaxClients) ++
-			  " is an invalid number of MaxClients")}
-    end;
-load("DocumentRoot " ++ DocumentRoot,[]) ->
-    case is_directory(string:strip(DocumentRoot)) of
-	{ok, Directory} ->
-	    {ok, [], {document_root,string:strip(Directory,right,$/)}};
-	{error, _} ->
-	    {error, ?NICE(string:strip(DocumentRoot)++" is an invalid DocumentRoot")}
-    end;
-load("DefaultType " ++ DefaultType, []) ->
-    {ok, [], {default_type,string:strip(DefaultType)}};
-load("SSLCertificateFile " ++ SSLCertificateFile, []) ->
-    case is_file(string:strip(SSLCertificateFile)) of
-	{ok, File} ->
-	    {ok, [], {ssl_certificate_file,File}};
-    {error, _} ->
-	    {error, ?NICE(string:strip(SSLCertificateFile)++
-			  " is an invalid SSLCertificateFile")}
-    end;
-load("SSLLogLevel " ++ SSLLogAlert, []) ->
-    case SSLLogAlert of
-	"none" ->
-	    {ok, [], {ssl_log_alert, false}};
-	_ ->
-	    {ok, [], {ssl_log_alert, true}}
-    end;
-load("SSLCertificateKeyFile " ++ SSLCertificateKeyFile, []) ->
-    case is_file(string:strip(SSLCertificateKeyFile)) of
-	{ok, File} ->
-	    {ok, [], {ssl_certificate_key_file,File}};
-	{error, _} ->
-	    {error, ?NICE(string:strip(SSLCertificateKeyFile)++
-			  " is an invalid SSLCertificateKeyFile")}
-    end;
-load("SSLVerifyClient " ++ SSLVerifyClient, []) ->
-    case make_integer(string:strip(SSLVerifyClient)) of
-	{ok, Integer} when (Integer >=0) andalso (Integer =< 2) ->
-	    {ok, [], {ssl_verify_client,Integer}};
-	{ok, _Integer} ->
-	    {error,?NICE(string:strip(SSLVerifyClient) ++
-			 " is an invalid SSLVerifyClient")};
-	{error, nomatch} ->
-	    {error,?NICE(string:strip(SSLVerifyClient) ++ 
-			 " is an invalid SSLVerifyClient")}
-    end;
-load("SSLVerifyDepth " ++ SSLVerifyDepth, []) ->
-    case make_integer(string:strip(SSLVerifyDepth)) of
-	{ok, Integer} when Integer > 0 ->
-	    {ok, [], {ssl_verify_client_depth,Integer}};
-	{ok, _Integer} ->
-	    {error,?NICE(string:strip(SSLVerifyDepth) ++
-			 " is an invalid SSLVerifyDepth")};
-	{error, nomatch} ->
-	    {error,?NICE(string:strip(SSLVerifyDepth) ++
-			 " is an invalid SSLVerifyDepth")}
-    end;
-load("SSLCiphers " ++ SSLCiphers, []) ->
-    {ok, [], {ssl_ciphers, string:strip(SSLCiphers)}};
-load("SSLCACertificateFile " ++ SSLCACertificateFile, []) ->
-    case is_file(string:strip(SSLCACertificateFile)) of
-	{ok, File} ->
-	    {ok, [], {ssl_ca_certificate_file,File}};
-	{error, _} ->
-	    {error, ?NICE(string:strip(SSLCACertificateFile)++
-			  " is an invalid SSLCACertificateFile")}
-    end;
-load("SSLPasswordCallbackModule " ++ SSLPasswordCallbackModule, []) ->
-    {ok, [], {ssl_password_callback_module,
-	      list_to_atom(string:strip(SSLPasswordCallbackModule))}};
-load("SSLPasswordCallbackFunction " ++ SSLPasswordCallbackFunction, []) ->
-    {ok, [], {ssl_password_callback_function,
-	      list_to_atom(string:strip(SSLPasswordCallbackFunction))}};
-load("SSLPasswordCallbackArguments " ++ SSLPasswordCallbackArguments, []) ->
-    {ok, [], {ssl_password_callback_arguments, 
-	                         SSLPasswordCallbackArguments}};
-load("DisableChunkedTransferEncodingSend " ++ TrueOrFalse, []) ->
-    case list_to_atom(string:strip(TrueOrFalse)) of
-	true ->
-	    {ok, [], {disable_chunked_transfer_encoding_send, true}};
-	_ ->
-	    {ok, [], {disable_chunked_transfer_encoding_send, false}}
-    end;
-load("LogFormat " ++ LogFormat, []) ->
-    {ok,[],{log_format, list_to_atom(string:strip(LogFormat))}};
-load("ErrorLogFormat " ++ LogFormat, []) ->
-    {ok,[],{error_log_format, list_to_atom(string:strip(LogFormat))}}.
-
-
-clean_address(Addr) ->
-    string:strip(string:strip(string:strip(Addr), left, $[), right, $]).
-
-
-make_ipfamily(IpFamilyStr) ->
-    IpFamily = list_to_atom(IpFamilyStr),
-    case lists:member(IpFamily, [inet, inet6, inet6fb4]) of
-	true ->
-	    IpFamily;
-	false ->
-	    throw({error, {bad_ipfamily, IpFamilyStr}})
-    end.
-
+validate_ipfamily(inet) ->
+    inet;
+validate_ipfamily(inet6) ->
+    inet6;
+%% Backwards compatibility wrapper, 
+%% fallback to the default, IPV4,
+%% as it will most proably work.
+%% IPv6 standard moved away from 
+%% beeing able to fallback to ipv4
+validate_ipfamily(inet6fb4) ->
+    inet;
+validate_ipfamily(IpFamilyStr) ->
+    throw({error, {bad_ipfamily, IpFamilyStr}}).
 
 %%
 %% load_mime_types/1 -> {ok, MimeTypes} | {error, Reason}
@@ -388,25 +90,22 @@ validate_properties(Properties) ->
 %% That is, if property A depends on property B.
 %% The only sunch preperty at this time is bind_address that depends 
 %% on ipfamily.
-validate_properties2(Properties) ->
+validate_properties2(Properties0) ->
+    Properties = fix_ipfamily(Properties0),
     case proplists:get_value(bind_address, Properties) of
 	undefined ->
 	    case proplists:get_value(sock_type, Properties, ip_comm) of
 		ip_comm ->
-		    case proplists:get_value(ipfamily, Properties) of
-			undefined ->
-			    [{bind_address, any}, 
-			     {ipfamily, inet6fb4} | Properties];
-			_ ->
-			    [{bind_address, any} | Properties]
-		    end;
+		   add_inet_defaults(Properties);
+		{ip_comm, _} ->
+		    add_inet_defaults(Properties);
 		_ ->
 		    [{bind_address, any} | Properties]
 	    end;
 	any ->
 	    Properties;
 	Address0 ->
-	    IpFamily = proplists:get_value(ipfamily, Properties, inet6fb4),
+	    IpFamily = proplists:get_value(ipfamily, Properties, inet),
 	    case httpd_util:ip_address(Address0, IpFamily) of
 		{ok, Address} ->
 		    Properties1 = proplists:delete(bind_address, Properties),
@@ -418,6 +117,25 @@ validate_properties2(Properties) ->
 		    throw(Error)
 	    end
     end.
+
+fix_ipfamily(Properties) ->
+    case proplists:get_value(ipfamily, Properties) of
+	undefined ->
+	    Properties;
+	IpFamily ->
+	    NewProps = proplists:delete(ipfamily, Properties),
+	    [{ipfamily, validate_ipfamily(IpFamily)} | NewProps]
+    end.
+
+add_inet_defaults(Properties) ->
+    case proplists:get_value(ipfamily, Properties) of
+	undefined ->
+	    [{bind_address, any}, 
+	     {ipfamily, inet} | Properties];
+	_ ->
+	    [{bind_address, any} | Properties]
+    end.
+
 check_minimum_bytes_per_second(Properties) ->
     case proplists:get_value(minimum_bytes_per_second, Properties, false) of
 	false ->
@@ -487,12 +205,11 @@ validate_config_params([{server_tokens, Value} | _]) ->
 validate_config_params([{socket_type, ip_comm} | Rest]) ->
     validate_config_params(Rest);
 
-validate_config_params([{socket_type, Value} | Rest]) 
-  when Value == ssl; Value == essl ->
-    validate_config_params(Rest);
-
-validate_config_params([{socket_type, {Value, _}} | Rest])
-  when Value == essl orelse Value == ssl ->
+validate_config_params([{socket_type, {Value, Opts}} | Rest]) when Value == ip_comm; 
+								   Value == ssl; 
+								   Value == essl ->
+    %% Make sure not to set socket values used internaly
+    validate_config_params(Opts), 
     validate_config_params(Rest);
 
 validate_config_params([{socket_type, Value} | _]) ->
@@ -570,6 +287,12 @@ validate_config_params([{default_type, Value} | Rest]) when is_list(Value) ->
 validate_config_params([{default_type, Value} | _]) ->
     throw({default_type, Value});
 
+validate_config_params([{logger, Value} | Rest]) when is_list(Value) ->
+    true = validate_logger(Value),
+    validate_config_params(Rest);
+validate_config_params([{logger, Value} | _]) ->
+    throw({logger, Value});
+
 validate_config_params([{ssl_certificate_file = Key, Value} | Rest]) ->
     ok = httpd_util:file_validate(Key, Value),
     validate_config_params(Rest);
@@ -622,28 +345,37 @@ validate_config_params([{disable_chunked_transfer_encoding_send, Value} |
 validate_config_params([{disable_chunked_transfer_encoding_send, Value} |
 			_ ]) ->
     throw({disable_chunked_transfer_encoding_send, Value});
+validate_config_params([{Name, _} = Opt | _]) when Name == packet;
+						   Name == mode;
+						   Name == active;
+						   Name == reuseaddr ->
+    throw({internaly_handled_opt_can_not_be_set, Opt});
 validate_config_params([_| Rest]) ->
     validate_config_params(Rest).
 
-%% It is actually pointless to check bind_address in this way since
-%% we need ipfamily to do it properly...
 is_bind_address(any) ->
     true;
 is_bind_address(Value) ->
-    case httpd_util:ip_address(Value, inet6fb4) of
+    case is_bind_address(Value, inet) of
+	false ->
+	    is_bind_address(Value, inet6);
+	True ->
+	    True
+    end.
+
+is_bind_address(Value, IpFamily) ->
+    case httpd_util:ip_address(Value, IpFamily) of
 	{ok, _} ->
 	    true;
 	_ ->
 	    false
     end.
-
+ 
 store(ConfigList0) -> 
-    ?hdrd("store", []),
     try validate_config_params(ConfigList0) of
 	ok ->
 	    Modules = 
 		proplists:get_value(modules, ConfigList0, ?DEFAULT_MODS),
-	    ?hdrt("store", [{modules, Modules}]),
 	    Port = proplists:get_value(port, ConfigList0),
 	    Addr = proplists:get_value(bind_address, ConfigList0, any),
 	    Profile = proplists:get_value(profile, ConfigList0, default),
@@ -655,8 +387,6 @@ store(ConfigList0) ->
 		  ConfigList)
     catch
 	throw:Error ->
-	    ?hdri("store - config parameter validation failed", 
-		  [{error, Error}]),
 	    {error, {invalid_option, Error}}
     end.
 
@@ -776,28 +506,6 @@ remove(ConfigDB) ->
     ets:delete(ConfigDB),
     ok.
 
-%% config(ConfigDB) ->
-%%     case httpd_util:lookup(ConfigDB, socket_type, ip_comm) of
-%% 	ssl ->
-%% 	    case ssl_certificate_file(ConfigDB) of
-%% 		undefined ->
-%% 		    {error,
-%% 		     "Directive SSLCertificateFile "
-%% 		     "not found in the config file"};
-%% 		SSLCertificateFile ->
-%% 		    {ssl,
-%% 		     SSLCertificateFile++
-%% 		     ssl_certificate_key_file(ConfigDB)++
-%% 		     ssl_verify_client(ConfigDB)++
-%% 		     ssl_ciphers(ConfigDB)++
-%% 		     ssl_password(ConfigDB)++
-%% 		     ssl_verify_depth(ConfigDB)++
-%% 		     ssl_ca_certificate_file(ConfigDB)}
-%% 	    end;
-%% 	ip_comm ->
-%% 	    ip_comm
-%%     end.
-
 
 get_config(Address, Port, Profile) ->    
     Tab = httpd_util:make_name("httpd_conf", Address, Port, Profile),
@@ -836,6 +544,8 @@ lookup_socket_type(ConfigDB) ->
     case httpd_util:lookup(ConfigDB, socket_type, ip_comm) of
 	ip_comm ->
 	    ip_comm;
+	{ip_comm, _} = Type ->
+	    Type;
 	{Tag, Conf} ->
 	    {Tag, Conf};
 	SSL when (SSL =:= ssl) orelse (SSL =:= essl) ->
@@ -865,159 +575,16 @@ ssl_config(ConfigDB) ->
 	ssl_ca_certificate_file(ConfigDB) ++
 	ssl_log_level(ConfigDB).
 	    
-    
-
 %%%========================================================================
 %%% Internal functions
 %%%========================================================================
-%%% Phase 1 Load:
-bootstrap([]) ->
-    {ok, ?DEFAULT_MODS};
-bootstrap([Line|Config]) ->
-    case Line of
-	"Modules " ++ Modules ->
-	    {ok, ModuleList} = inets_regexp:split(Modules," "),
-	    TheMods = [list_to_atom(X) || X <- ModuleList],
-	    case verify_modules(TheMods) of
-		ok ->
-		    {ok, TheMods};
-		{error, Reason} ->
-		    {error, Reason}
-	    end;
-	_ ->
-	    bootstrap(Config)
-    end.
-
-load_config(Config, Modules) ->
-    %% Create default contexts for all modules
-    Contexts = lists:duplicate(length(Modules), []),
-    load_config(Config, Modules, Contexts, []).
-
-load_config([], _Modules, _Contexts, ConfigList) ->
-    ?hdrv("config loaded", []),
-    {ok, ConfigList};
-	
-load_config([Line|Config], Modules, Contexts, ConfigList) ->
-    ?hdrt("load config", [{config_line, Line}]),
-    case load_traverse(Line, Contexts, Modules, [], ConfigList, no) of
-	{ok, NewContexts, NewConfigList} ->
-	    load_config(Config, Modules, NewContexts, NewConfigList);
-	{error, Reason} -> 
-	    {error, Reason}
-    end.
-
-
-%% This loads the config file into each module specified by Modules
-%% Each module has its own context that is passed to and (optionally)
-%% returned by the modules load function. The module can also return
-%% a ConfigEntry, which will be added to the global configuration
-%% list.
-%% All configuration directives are guaranteed to be passed to all
-%% modules. Each module only implements the function clauses of
-%% the load function for the configuration directives it supports,
-%% it's ok if an apply returns {'EXIT', {function_clause, ..}}.
-load_traverse(Line, [], [], _NewContexts, _ConfigList, no) ->
-    {error, ?NICE("Configuration directive not recognized: "++Line)};
-load_traverse(_Line, [], [], NewContexts, ConfigList, yes) ->
-    {ok, lists:reverse(NewContexts), ConfigList};
-load_traverse(Line, [Context|Contexts], [Module|Modules], NewContexts,
-	      ConfigList, State) ->
-    ?hdrt("load config traverse",
-          [{context, Context}, {httpd_module, Module}, {state, State}]),
-    case catch apply(Module, load, [Line, Context]) of
-	{'EXIT', {function_clause, _FC}} ->
-	    ?hdrt("does not handle load config", 
-		  [{config_line, Line}, {fc, _FC}]),
-	    load_traverse(Line, Contexts, Modules, 
-			  [Context|NewContexts], ConfigList, State);
-
-	{'EXIT', {undef, _}} ->
-	    ?hdrt("does not implement load", []),
-	    load_traverse(Line, Contexts, Modules,
-			  [Context|NewContexts], ConfigList, yes);
-
-	{'EXIT', Reason} ->
-	    error_logger:error_report({'EXIT', Reason}),
-	    load_traverse(Line, Contexts, Modules, 
-			  [Context|NewContexts], ConfigList, State);
-
-	ok ->
-	    ?hdrt("line processed", []),
-	    load_traverse(Line, Contexts, Modules, 
-			  [Context|NewContexts], ConfigList, yes);
-
-	{ok, NewContext} ->
-	    ?hdrt("line processed", [{new_context, NewContext}]),
-	    load_traverse(Line, Contexts, Modules, 
-			  [NewContext|NewContexts], ConfigList, yes);
-
-	{ok, NewContext, ConfigEntry} when is_tuple(ConfigEntry) ->
-	     ?hdrt("line processed",
-                  [{new_context, NewContext}, {config_entry, ConfigEntry}]),
-	    load_traverse(Line, Contexts, 
-			  Modules, [NewContext|NewContexts],
-			  [ConfigEntry|ConfigList], yes);
-
-	{ok, NewContext, ConfigEntry} when is_list(ConfigEntry) ->
-	    ?hdrt("line processed",
-                  [{new_context, NewContext}, {config_entry, ConfigEntry}]),
-	    load_traverse(Line, Contexts, Modules, [NewContext|NewContexts],
-			  lists:append(ConfigEntry, ConfigList), yes);
-
-	{error, Reason} ->
-	    ?hdrv("line processing failed", [{reason, Reason}]),
-	    {error, Reason}
-    end.
-	
-%% Verifies that all specified modules are available.
-verify_modules([]) ->
-    ok;
-verify_modules([Mod|Rest]) ->
-    case code:which(Mod) of
-	non_existing ->
-	    {error, ?NICE(string:strip(atom_to_list(Mod), right, $\n) ++" does not exist")};
-	_Path ->
-	    verify_modules(Rest)
-    end.
-
-%% Reads the entire configuration file and returns list of strings or
-%% and error.
-read_config_file(FileName) ->
-    case file:open(FileName, [read]) of
-	{ok, Stream} ->
-	    read_config_file(Stream, []);
-	{error, _Reason} ->
-	    {error, ?NICE("Cannot open "++FileName)}
-    end.
-read_config_file(Stream, SoFar) ->
-    case io:get_line(Stream, []) of
-	eof ->
-	    file:close(Stream),
-	    {ok, lists:reverse(SoFar)};
-	{error, Reason} ->
-	    file:close(Stream),
-	    {error, Reason};
-	[$#|_Rest] ->
-	    %% Ignore commented lines for efficiency later ..
-	    read_config_file(Stream, SoFar);
-	Line ->
-	    {ok, NewLine, _}=inets_regexp:sub(clean(Line),"[\t\r\f ]"," "),
-	    case NewLine of
-		[] ->
-		    %% Also ignore empty lines ..
-		    read_config_file(Stream, SoFar);
-		_Other ->
-		    read_config_file(Stream, [NewLine|SoFar])
-	    end
-    end.
-
 parse_mime_types(Stream,MimeTypesList) ->
     Line=
 	case io:get_line(Stream,'') of
 	    eof ->
 		eof;
 	    String ->
-		white_space_clean(String)
+		re:replace(white_space_clean(String), "[\t\r\f ]"," ", [{return,list}, global])	
 	end,
     parse_mime_types(Stream, MimeTypesList, Line).
 parse_mime_types(Stream, MimeTypesList, eof) ->
@@ -1028,17 +595,19 @@ parse_mime_types(Stream, MimeTypesList, "") ->
 parse_mime_types(Stream, MimeTypesList, [$#|_]) ->
     parse_mime_types(Stream, MimeTypesList);
 parse_mime_types(Stream, MimeTypesList, Line) ->
-    case inets_regexp:split(Line, " ") of
-	{ok, [NewMimeType|Suffixes]} ->
+    case re:split(Line, " ", [{return, list}]) of
+	[NewMimeType|Suffixes] ->
 	    parse_mime_types(Stream,
 			     lists:append(suffixes(NewMimeType,Suffixes),
 					  MimeTypesList));
-	{ok, _} ->
+	_ ->
 	    {error, ?NICE(Line)}
     end.
 
 suffixes(_MimeType,[]) ->
     [];
+suffixes(MimeType,[""|Rest]) ->
+    suffixes(MimeType, Rest);
 suffixes(MimeType,[Suffix|Rest]) ->
     [{Suffix,MimeType}|suffixes(MimeType,Rest)].
 
@@ -1047,7 +616,6 @@ suffixes(MimeType,[Suffix|Rest]) ->
 store(ConfigDB, _ConfigList, _Modules, []) ->
     {ok, ConfigDB};
 store(ConfigDB, ConfigList, Modules, [ConfigListEntry|Rest]) ->
-    ?hdrt("store", [{entry, ConfigListEntry}]),
     case store_traverse(ConfigListEntry, ConfigList, Modules) of
 	{ok, ConfigDBEntry} when is_tuple(ConfigDBEntry) ->
 	    ets:insert(ConfigDB, ConfigDBEntry),
@@ -1064,20 +632,15 @@ store(ConfigDB, ConfigList, Modules, [ConfigListEntry|Rest]) ->
 store_traverse(_ConfigListEntry, _ConfigList,[]) ->
     {error, ?NICE("Unable to store configuration...")};
 store_traverse(ConfigListEntry, ConfigList, [Module|Rest]) ->
-    ?hdrt("store traverse",
-          [{httpd_module, Module}, {entry, ConfigListEntry}]),
     case catch apply(Module, store, [ConfigListEntry, ConfigList]) of
 	{'EXIT',{function_clause,_}} ->
-	    ?hdrt("does not handle store config", []),
 	    store_traverse(ConfigListEntry,ConfigList,Rest);
 	{'EXIT',{undef, _}} ->
-	    ?hdrt("does not implement store", []),
 	    store_traverse(ConfigListEntry,ConfigList,Rest);
 	{'EXIT', Reason} ->
 	    error_logger:error_report({'EXIT',Reason}),
 	    store_traverse(ConfigListEntry,ConfigList,Rest);
 	Result ->
-	    ?hdrt("config entry processed", [{result, Result}]),
 	    Result
     end.
 
@@ -1204,67 +767,15 @@ error_report(Where,M,F,Error) ->
     error_logger:error_report([{?MODULE, Where}, 
 			       {apply, {M, F, []}}, Error]).
 white_space_clean(String) ->
-    {ok,CleanedString,_} = 
-	inets_regexp:gsub(String, "^[ \t\n\r\f]*|[ \t\n\r\f]*\$",""),
-    CleanedString.
+    re:replace(String, "^[ \t\n\r\f]*|[ \t\n\r\f]*\$","", 
+	       [{return,list}, global]).
+
+validate_logger([{error, Domain}]) when is_atom(Domain) ->
+    true;
+validate_logger(List) ->
+    throw({logger, List}).
 
 
-%%%=========================================================================
-%%%  Deprecated remove in 19
-%%%=========================================================================
-is_directory(Directory) ->
-    case file:read_file_info(Directory) of
-	{ok,FileInfo} ->
-	    #file_info{type = Type, access = Access} = FileInfo,
-	    is_directory(Type,Access,FileInfo,Directory);
-	{error,Reason} ->
-	    {error,Reason}
-    end.
-is_directory(directory,read,_FileInfo,Directory) ->
-    {ok,Directory};
-is_directory(directory,read_write,_FileInfo,Directory) ->
-    {ok,Directory};
-is_directory(_Type,_Access,FileInfo,_Directory) ->
-    {error,FileInfo}.
 
-is_file(File) ->
-    case file:read_file_info(File) of
-	{ok,FileInfo} ->
-	    #file_info{type = Type, access = Access} = FileInfo,
-	    is_file(Type,Access,FileInfo,File);
-	{error,Reason} ->
-	    {error,Reason}
-    end.
-is_file(regular,read,_FileInfo,File) ->
-    {ok,File};
-is_file(regular,read_write,_FileInfo,File) ->
-    {ok,File};
-is_file(_Type,_Access,FileInfo,_File) ->
-    {error,FileInfo}.
-
-make_integer(String) ->
-    case inets_regexp:match(string:strip(String),"[0-9]+") of
-	{match, _, _} ->
-	    {ok, list_to_integer(string:strip(String))};
-	nomatch ->
-	    {error, nomatch}
-    end.
-
-clean(String) ->
-    {ok,CleanedString,_} = 
-	inets_regexp:gsub(String, "^[ \t\n\r\f]*|[ \t\n\r\f]*\$",""),
-    CleanedString.
-
-custom_clean(String,MoreBefore,MoreAfter) ->
-    {ok,CleanedString,_} = inets_regexp:gsub(String,"^[ \t\n\r\f"++MoreBefore++
-				       "]*|[ \t\n\r\f"++MoreAfter++"]*\$",""),
-    CleanedString.
-
-check_enum(_Enum,[]) ->
-    {error, not_valid};
-check_enum(Enum,[Enum|_Rest]) ->
-    {ok, list_to_atom(Enum)};
-check_enum(Enum, [_NotValid|Rest]) ->
-    check_enum(Enum, Rest).
 
 

@@ -1,7 +1,7 @@
 %%
 %% %CopyrightBegin%
 %% 
-%% Copyright Ericsson AB 2004-2015. All Rights Reserved.
+%% Copyright Ericsson AB 2004-2018. All Rights Reserved.
 %% 
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -20,26 +20,30 @@
 
 -module(sets_test_lib).
 
--export([new/2]).
+-export([new/2, new/4]).
 
 new(Mod, Eq) ->
+    new(Mod, Eq, fun Mod:new/0, fun Mod:from_list/1).
+
+new(Mod, Eq, New, FromList) ->
     fun	(add_element, {El,S}) -> add_element(Mod, El, S);
 	(del_element, {El,S}) -> del_element(Mod, El, S);
-	(empty, []) -> Mod:new();
+	(empty, []) -> New();
 	(equal, {S1,S2}) -> Eq(S1, S2);
 	(filter, {F,S}) -> filter(Mod, F, S);
 	(fold, {F,A,S}) -> fold(Mod, F, A, S);
-	(from_list, L) -> Mod:from_list(L);
+	(from_list, L) -> FromList(L);
 	(intersection, {S1,S2}) -> intersection(Mod, Eq, S1, S2);
 	(intersection, Ss) -> intersection(Mod, Eq, Ss);
-	(is_empty, S) -> is_empty(Mod, S);
+	(is_disjoint, {S,Set}) -> Mod:is_disjoint(S, Set);
+	(is_empty, S) -> Mod:is_empty(S);
 	(is_set, S) -> Mod:is_set(S);
 	(is_subset, {S,Set}) -> is_subset(Mod, Eq, S, Set);
         (iterator, S) -> Mod:iterator(S);
         (iterator_from, {Start, S}) -> Mod:iterator_from(Start, S);
 	(module, []) -> Mod;
         (next, I) -> Mod:next(I);
-	(singleton, E) -> singleton(Mod, E);
+	(singleton, E) -> singleton(Mod, FromList, E);
 	(size, S) -> Mod:size(S);
 	(subtract, {S1,S2}) -> subtract(Mod, S1, S2);
 	(to_list, S) -> Mod:to_list(S);
@@ -47,16 +51,16 @@ new(Mod, Eq) ->
 	(union, Ss) -> union(Mod, Eq, Ss)
     end.
 
-singleton(Mod, E) ->
+singleton(Mod, FromList, E) ->
     case erlang:function_exported(Mod, singleton, 1) of
 	true -> Mod:singleton(E);
-	false -> Mod:from_list([E])
+	false -> FromList([E])
     end.
 
 add_element(Mod, El, S0) ->
     S = Mod:add_element(El, S0),
     true = Mod:is_element(El, S),
-    false = is_empty(Mod, S),
+    false = Mod:is_empty(S),
     true = Mod:is_set(S),
     S.
 
@@ -66,17 +70,10 @@ del_element(Mod, El, S0) ->
     true = Mod:is_set(S),
     S.
 
-is_empty(Mod, S) ->
-    true = Mod:is_set(S),
-    case erlang:function_exported(Mod, is_empty, 1) of
-	true -> Mod:is_empty(S);
-	false -> Mod:size(S) == 0
-    end.
-
 intersection(Mod, Equal, S1, S2) ->
     S = Mod:intersection(S1, S2),
     true = Equal(S, Mod:intersection(S2, S1)),
-    Disjoint = is_empty(Mod, S),
+    Disjoint = Mod:is_empty(S),
     Disjoint = Mod:is_disjoint(S1, S2),
     Disjoint = Mod:is_disjoint(S2, S1),
     S.

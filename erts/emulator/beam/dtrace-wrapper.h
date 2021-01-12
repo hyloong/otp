@@ -1,7 +1,7 @@
 /*
  * %CopyrightBegin%
  *
- * Copyright Dustin Sallings, Michal Ptaszek, Scott Lystig Fritchie 2011-2012.
+ * Copyright Dustin Sallings, Michal Ptaszek, Scott Lystig Fritchie 2011-2017.
  * All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -47,7 +47,18 @@
 
 #if defined(USE_DYNAMIC_TRACE) && defined(USE_VM_PROBES) 
 
+#ifdef __cplusplus
+extern "C++" {
+/* Generated erlang_dtrace.h contains #include <sys/sdt.h>, which
+ * has C++ code requiring C++ linkage. However beam_asm.hpp includes
+ * global.h with C linkage, and compilation fails, because <sdt.h>
+ * uses C++ templates when __cplusplus is defined.
+*/
 #include "erlang_dtrace.h"
+}
+#else
+#include "erlang_dtrace.h"
+#endif
 
 #define DTRACE_ENABLED(name)                         \
     erlang_##name##_enabled()
@@ -74,7 +85,7 @@
 
 #if defined(_SDT_PROBE) && !defined(STAP_PROBE11)
 /* SLF: This is Ubuntu 11-style SystemTap hackery */
-/* work arround for missing STAP macro */
+/* workaround for missing STAP macro */
 #define STAP_PROBE11(provider,name,arg1,arg2,arg3,arg4,arg5,arg6,arg7,arg8,arg9,arg10,arg11) \
   _SDT_PROBE(provider, name, 11, \
              (arg1,arg2,arg3,arg4,arg5,arg6,arg7,arg8,arg9,arg10,arg11))

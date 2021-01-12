@@ -27,7 +27,8 @@ MODULES =  \
 	ttb_SUITE \
 	client \
 	server \
-	crashdump_helper
+	crashdump_helper \
+	crashdump_helper_unicode
 
 ERL_FILES= $(MODULES:%=%.erl)
 
@@ -45,8 +46,8 @@ RELSYSDIR = $(RELEASE_PATH)/observer_test
 # ----------------------------------------------------
 # FLAGS
 # ----------------------------------------------------
-ERL_MAKE_FLAGS += -pa $(ERL_TOP)/lib/test_server/ebin
-ERL_COMPILE_FLAGS += -I$(ERL_TOP)/lib/test_server/include
+ERL_MAKE_FLAGS +=
+ERL_COMPILE_FLAGS += +warnings_as_errors +nowarn_export_all
 
 EBIN = .
 
@@ -60,8 +61,6 @@ make_emakefile:
 		$(MODULES) > $(EMAKEFILE)
 
 tests debug opt: make_emakefile
-	cd $(ERL_TOP)/lib/test_server/src && \
-		$(MAKE) ../ebin/test_server_line.beam
 	erl $(ERL_MAKE_FLAGS) -make
 
 clean:

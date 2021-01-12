@@ -1,7 +1,7 @@
 %%
 %% %CopyrightBegin%
 %% 
-%% Copyright Ericsson AB 1997-2012. All Rights Reserved.
+%% Copyright Ericsson AB 1997-2020. All Rights Reserved.
 %% 
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -21,51 +21,30 @@
 -module(port_bif_SUITE).
 
 
--export([all/0, suite/0,groups/0,init_per_suite/1, end_per_suite/1, 
-	 init_per_group/2,end_per_group/2, command/1,
+-export([all/0, suite/0, groups/0,
+         command/1,
 	 command_e_1/1, command_e_2/1, command_e_3/1, command_e_4/1,
 	 port_info1/1, port_info2/1,
 	 port_info_os_pid/1, port_info_race/1,
-	 connect/1, control/1, echo_to_busy/1]).
+	 connect/1, control/1, echo_to_busy/1, busy_options/1]).
 
 -export([do_command_e_1/1, do_command_e_2/1, do_command_e_4/1]).
 
--export([init_per_testcase/2, end_per_testcase/2]).
+-include_lib("common_test/include/ct.hrl").
 
--include_lib("test_server/include/test_server.hrl").
-
-suite() -> [{ct_hooks,[ts_install_cth]}].
+suite() ->
+    [{ct_hooks,[ts_install_cth]},
+     {timetrap, {minutes, 10}}].
 
 all() -> 
     [command, {group, port_info}, connect, control,
-     echo_to_busy].
+     echo_to_busy, busy_options].
 
 groups() -> 
     [{command_e, [],
       [command_e_1, command_e_2, command_e_3, command_e_4]},
      {port_info, [],
       [port_info1, port_info2, port_info_os_pid, port_info_race]}].
-
-init_per_suite(Config) ->
-    Config.
-
-end_per_suite(_Config) ->
-    ok.
-
-init_per_group(_GroupName, Config) ->
-    Config.
-
-end_per_group(_GroupName, Config) ->
-    Config.
-
-
-
-init_per_testcase(_Func, Config) when is_list(Config) ->
-    Dog=test_server:timetrap(test_server:minutes(10)),
-    [{watchdog, Dog}|Config].
-end_per_testcase(_Func, Config) when is_list(Config) ->
-    Dog=?config(watchdog, Config),
-    test_server:timetrap_cancel(Dog).
 
 command(Config) when is_list(Config) ->
     load_control_drv(Config),
@@ -87,17 +66,17 @@ do_command(P, Data) ->
 	{P,{data,Data0}} ->
 	    case {list_to_binary(Data0),list_to_binary([Data])} of
 		{B,B} -> ok;
-		_ -> test_server:fail({unexpected_data,Data0})
+		_ -> ct:fail({unexpected_data,Data0})
 	    end;
 	Other ->
-	    test_server:fail({unexpected_message,Other})
+	    ct:fail({unexpected_message,Other})
     end.
 
 
 
 %% port_command/2: badarg 1st arg
 command_e_1(Config) when is_list(Config) ->
-    DataDir = ?config(data_dir, Config),
+    DataDir = proplists:get_value(data_dir, Config),
     Program = filename:join(DataDir, "port_test"),
 
     process_flag(trap_exit, true),
@@ -106,9 +85,9 @@ command_e_1(Config) when is_list(Config) ->
         {'EXIT', Pid, {badarg, _}} when is_pid(Pid) ->
             ok;
         Other ->
-            test_server:fail(Other)
+            ct:fail(Other)
     after 10000 ->
-            test_server:fail(timeout)
+            ct:fail(timeout)
     end,
     ok.
 
@@ -119,7 +98,7 @@ do_command_e_1(Program) ->
 
 %% port_command/2: badarg 2nd arg
 command_e_2(Config) when is_list(Config) ->
-    DataDir = ?config(data_dir, Config),
+    DataDir = proplists:get_value(data_dir, Config),
     Program = filename:join(DataDir, "port_test"),
 
     process_flag(trap_exit, true),
@@ -128,9 +107,9 @@ command_e_2(Config) when is_list(Config) ->
         {'EXIT', Pid, {badarg, _}} when is_pid(Pid) ->
             ok;
         Other ->
-            test_server:fail(Other)
+            ct:fail(Other)
     after 10000 ->
-            test_server:fail(timeout)
+            ct:fail(timeout)
     end,
     ok.
 
@@ -141,7 +120,7 @@ do_command_e_2(Program) ->
 
 %% port_command/2: Posix signals trapped
 command_e_3(Config) when is_list(Config) ->
-    DataDir = ?config(data_dir, Config),
+    DataDir = proplists:get_value(data_dir, Config),
     Program = filename:join(DataDir, "port_test"),
 
     process_flag(trap_exit, true),
@@ -152,15 +131,15 @@ command_e_3(Config) when is_list(Config) ->
         {'EXIT', Port, einval} when is_port(Port) ->
             ok;
         Other ->
-            test_server:fail(Other)
+            ct:fail(Other)
     after 10000 ->
-            test_server:fail(timeout)
+            ct:fail(timeout)
     end,
     ok.
 
 %% port_command/2: Posix exit signals not trapped
 command_e_4(Config) when is_list(Config) ->
-    DataDir = ?config(data_dir, Config),
+    DataDir = proplists:get_value(data_dir, Config),
     Program = filename:join(DataDir, "port_test"),
 
     process_flag(trap_exit, true),
@@ -169,9 +148,9 @@ command_e_4(Config) when is_list(Config) ->
         {'EXIT', Pid, {einval, _}} when is_pid(Pid) ->
             ok;
         Other ->
-            test_server:fail(Other)
+            ct:fail(Other)
     after 10000 ->
-            test_server:fail(timeout)
+            ct:fail(timeout)
     end,
     ok.
 
@@ -248,7 +227,7 @@ do_port_info_os_pid() ->
     {os_pid, InfoOSPid} = erlang:port_info(P, os_pid),
     EchoPidStr = receive
 	    {P, {data, EchoPidStr0}} -> EchoPidStr0
-	    after 10000 -> test_server:fail(timeout)
+	    after 10000 -> ct:fail(timeout)
     end,
     {ok, [EchoPid], []} = io_lib:fread("~u\n", EchoPidStr),
     {value,{os_pid, InfoOSPid}}=lists:keysearch(os_pid, 1, A),
@@ -257,7 +236,7 @@ do_port_info_os_pid() ->
     ok.
 
 port_info_race(Config) when is_list(Config) ->
-    DataDir = ?config(data_dir, Config),
+    DataDir = proplists:get_value(data_dir, Config),
     Program = filename:join(DataDir, "port_test"),
     Top = self(),
     P1 = open_port({spawn,Program}, [{packet,1}]),
@@ -283,10 +262,9 @@ output_test(_, _, Input, Output) when Output > 16#1fffffff ->
 output_test(P, Bin, Input0, Output0) ->
     erlang:port_command(P, Bin),
     receive
-	{P,{data,Bin}} -> ok;
-	Other ->
-	    io:format("~p", [Other]),
-	    ?t:fail()
+        {P,{data,Bin}} -> ok;
+        Other ->
+            ct:fail("~p", [Other])
     end,
     Input = Input0 + size(Bin),
     Output = Output0 + size(Bin),
@@ -296,8 +274,8 @@ output_test(P, Bin, Input0, Output0) ->
     %% We can't test much here, but hopefully a debug-built emulator will crasch
     %% if there is something wrong with the heap allocation.
     case erlang:statistics(io) of
-	{{input,In},{output,Out}} when is_integer(In), is_integer(Out) ->
-	    ok
+        {{input,In},{output,Out}} when is_integer(In), is_integer(Out) ->
+            ok
     end,
     output_test(P, Bin, Input, Output).
 
@@ -345,7 +323,7 @@ connect(Config) when is_list(Config) ->
     exit(P, you_should_die),
     receive
         {'EXIT',RecPid,you_should_die} -> ok;
-        Other -> ?line ?t:fail({bad_message,Other})
+        Other -> ct:fail({bad_message,Other})
     end,
 
     %% Done.
@@ -410,7 +388,7 @@ test_op(P, Op) ->
     <<Op:32>> = list_to_binary(R).
 
 echo_to_busy(Config) when is_list(Config) ->
-    Dog = test_server:timetrap(test_server:seconds(10)),
+    ct:timetrap({seconds, 10}),
     load_control_drv(Config),
     P = open_port({spawn, control_drv}, []),
     erlang:port_control(P, $b, [1]),	% Set to busy.
@@ -422,11 +400,10 @@ echo_to_busy(Config) when is_list(Config) ->
         {Echoer, done} ->
             ok;
         {Echoer, Other} ->
-            test_server:fail(Other);
+            ct:fail(Other);
         Other ->
-            test_server:fail({unexpected_message, Other})
+            ct:fail({unexpected_message, Other})
     end,
-    test_server:timetrap_cancel(Dog),
     ok.
 
 echoer(P, ReplyTo) ->
@@ -451,7 +428,7 @@ echo(P, Size) ->
     Packet = erlang:port_control(P, $e, [unaligned_sub_bin(Bin)]).
 
 load_control_drv(Config) when is_list(Config) ->
-    DataDir = ?config(data_dir, Config),
+    DataDir = proplists:get_value(data_dir, Config),
     erl_ddll:start(),
     ok = load_driver(DataDir, "control_drv").
 
@@ -485,14 +462,7 @@ random_char(Chars) ->
     lists:nth(uniform(length(Chars)), Chars).
 
 uniform(N) ->
-    case get(random_seed) of
-	undefined ->
-	    {X, Y, Z} = time(),
-	    random:seed(X, Y, Z);
-	_ ->
-	    ok
-    end,
-    random:uniform(N).
+    rand:uniform(N).
 
 unaligned_sub_bin(Bin0) ->
     Bin1 = <<0:3,Bin0/binary,31:5>>,
@@ -505,3 +475,173 @@ sub_bin(Bin) when is_binary(Bin) ->
     B.
 
 id(I) -> I.
+
+busy_options(Config) when is_list(Config) ->
+    SleepTime = 2000,
+    SleepTimeX = SleepTime + 100,
+    MinVal = 1,
+    MaxVal = (1 bsl (8*erlang:system_info(wordsize))) - 2,
+    DataDir = proplists:get_value(data_dir, Config),
+    Sleep = filename:join(DataDir, "sleeper") ++ " " ++ integer_to_list(SleepTime),
+    Data = "hej hopp! hej hopp! hej hopp! hej hopp! hej hopp! hej hopp! hej hopp! hej hopp! hej hopp! hej hopp!",
+
+    process_flag(trap_exit, true),
+    Tester = self(),
+
+    %% We want this loop to write enough data to tirgger the busy limits,
+    %% this means that it first has to fill the pipe buffer on Linux which
+    %% can be anything from 4k to 1 MB, so we make sure to fill it with
+    %% at least 2 MB of data here.
+    HejLoop = fun (Prt, _F, N) when N > (2 bsl 20) ->
+                      Prt;
+                  (Prt, F, N) ->
+                      Prt ! {Tester, {command, Data}},
+                      F(Prt, F, N + iolist_size(Data))
+              end,
+
+    io:format("Test1...~n", []),
+    Start1 = erlang:monotonic_time(millisecond),
+    Prt1 = open_port({spawn, Sleep},
+                     [{busy_limits_port, {MinVal, MinVal}},
+                      {busy_limits_msgq, {MinVal, MinVal}}]),
+    T1 = spawn_link(fun () ->
+                             HejLoop(Prt1, HejLoop, 0)
+                    end),
+    true = wait_until(fun () ->
+                              {status, suspended} == process_info(T1, status)
+                      end,
+                      SleepTimeX),
+    unlink(T1),
+    exit(T1, kill),
+    io:format("Test1 done: ~p ms~n", [erlang:monotonic_time(millisecond)-Start1]),
+
+    io:format("Test2...~n", []),
+    Start2 = erlang:monotonic_time(millisecond),
+    Prt2 = open_port({spawn, Sleep},
+                     [{busy_limits_port, {50, 100}},
+                      {busy_limits_msgq, {50, 100}}]),
+    T2 = spawn_link(fun () ->
+                            HejLoop(Prt2, HejLoop, 0)
+                    end),
+    true = wait_until(fun () ->
+                              {status, suspended} == process_info(T2, status)
+                      end,
+                      SleepTimeX),
+    unlink(T2),
+    exit(T2, kill),
+    io:format("Test2 done: ~p ms~n", [erlang:monotonic_time(millisecond)-Start2]),
+
+    io:format("Test3...~n", []),
+    Start3 = erlang:monotonic_time(millisecond),
+
+    Prt3 = open_port({spawn, Sleep},
+                     [{busy_limits_port, {MaxVal,MaxVal}},
+                      {busy_limits_msgq, {MaxVal,MaxVal}}]),
+    T3 = spawn_link(fun () ->
+                            HejLoop(Prt3, HejLoop, 0)
+                    end),
+    false = wait_until(fun () ->
+                              {status, suspended} == process_info(T3, status)
+                       end,
+                       SleepTimeX),
+    unlink(T3),
+    exit(T3, kill),
+    io:format("Test3 done: ~p ms~n", [erlang:monotonic_time(millisecond)-Start3]),
+
+    io:format("Test4...~n", []),
+    Start4 = erlang:monotonic_time(millisecond),
+
+    Prt4 = open_port({spawn, Sleep},
+                     [{busy_limits_port, disabled},
+                      {busy_limits_msgq, disabled}]),
+    T4 = spawn_link(fun () ->
+                            HejLoop(Prt4, HejLoop, 0)
+                    end),
+    false = wait_until(fun () ->
+                               {status, suspended} == process_info(T4, status)
+                       end,
+                       SleepTimeX),
+    unlink(T4),
+    exit(T4, kill),
+    io:format("Test4 done: ~p ms~n", [erlang:monotonic_time(millisecond)-Start4]),
+
+    try
+        open_port({spawn, Sleep},
+                  [{busy_limits_port, {MinVal-1,MinVal-1}}])
+    catch
+        error:badarg -> ok
+    end,
+
+    try
+        open_port({spawn, Sleep},
+                  [{busy_limits_msgq, {MinVal-1,MinVal-1}}])
+    catch
+        error:badarg -> ok
+    end,
+
+    try
+        open_port({spawn, Sleep},
+                  [{busy_limits_port, {MaxVal+1,MaxVal+1}}])
+    catch
+        error:badarg -> ok
+    end,
+
+    try
+        open_port({spawn, Sleep},
+                  [{busy_limits_msgq, {MaxVal+1,MaxVal+1}}])
+    catch
+        error:badarg -> ok
+    end,
+
+    load_control_drv(Config),
+
+    CtrlPort = open_port({spawn, "control_drv"},
+                         [{busy_limits_msgq, {50,100}}]),
+    unlink(CtrlPort),
+    exit(CtrlPort, kill),
+    
+    try
+        open_port({spawn, "control_drv"},
+                   [{busy_limits_port, {50,100}}])
+    catch
+        error:badarg -> ok
+    end,
+
+    receive {'EXIT', Prt1, _} -> ok end,
+    receive {'EXIT', Prt2, _} -> ok end,
+    receive {'EXIT', Prt3, _} -> ok end,
+    receive {'EXIT', Prt4, _} -> ok end,
+
+    ok.
+
+wait_until(Fun, infinity) ->
+    wait_until_aux(Fun, infinity);
+wait_until(Fun, MaxTime) ->
+    End = erlang:monotonic_time(millisecond) + MaxTime,
+    wait_until_aux(Fun, End).
+
+wait_until_aux(Fun, End) ->
+    case catch Fun() of
+        true ->
+            true;
+        _ ->
+            if End == infinity ->
+                    receive after 100 -> ok end,
+                    wait_until_aux(Fun, infinity);
+               true ->
+                    Now = erlang:monotonic_time(millisecond),
+                    case End =< Now of
+                        true ->
+                            false;
+                        _ ->
+                            Wait = case End - Now of
+                                       Short when End - Now < 100 ->
+                                           Short;
+                                       _ ->
+                                           100
+                                   end,
+                            receive after Wait -> ok end,
+                            wait_until_aux(Fun, End)
+                    end
+            end
+    end.

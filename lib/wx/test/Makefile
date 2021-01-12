@@ -1,7 +1,7 @@
 #
 # %CopyrightBegin%
 #
-# Copyright Ericsson AB 2008-2012. All Rights Reserved.
+# Copyright Ericsson AB 2008-2017. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -29,12 +29,14 @@ APPDIR = $(shell dirname $(PWD))
 ERL_COMPILE_FLAGS = -pa $(APPDIR)/ebin
 
 Mods =  wxt wx_test_lib wx_obj_test \
+	wx_oc_object \
 	wx_app_SUITE \
 	wx_basic_SUITE \
 	wx_event_SUITE \
 	wx_class_SUITE \
 	wx_xtra_SUITE \
-	wx_opengl_SUITE
+	wx_opengl_SUITE \
+	wx_test_enums
 
 ErlSrc          = $(Mods:%=%.erl)
 ErlTargets      = $(Mods:%=$(EBIN)/%.beam) 

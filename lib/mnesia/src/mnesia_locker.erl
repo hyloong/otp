@@ -1,7 +1,7 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 1996-2014. All Rights Reserved.
+%% Copyright Ericsson AB 1996-2020. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -22,7 +22,7 @@
 -module(mnesia_locker).
 
 -export([
-	 get_held_locks/0,
+	 get_held_locks/0, get_held_locks/1,
 	 get_lock_queue/0,
 	 global_lock/5,
 	 ixrlock/5,
@@ -97,10 +97,11 @@ init(Parent) ->
     end,
     loop(#state{supervisor = Parent}).
 
+%% Local function in order to avoid external function call
 val(Var) ->
-    case ?catch_val(Var) of
-	{'EXIT', _} -> mnesia_lib:other_val(Var);
-	_VaLuE_ -> _VaLuE_
+    case ?catch_val_and_stack(Var) of
+	{'EXIT', Stacktrace} -> mnesia_lib:other_val(Var, Stacktrace);
+	Value -> Value
     end.
 
 reply(From, R) ->
@@ -236,11 +237,16 @@ loop(State) ->
 	    From ! {Ref, ok},
 	    loop(State);
 
+	{From, {is_locked, Oid}} ->
+	    Held = ?ets_lookup(mnesia_held_locks, Oid),
+	    reply(From, Held),
+	    loop(State);
+
 	{'EXIT', Pid, _} when Pid == State#state.supervisor ->
 	    do_stop();
 
 	{system, From, Msg} ->
-	    verbose("~p got {system, ~p, ~p}~n", [?MODULE, From, Msg]),
+	    verbose("~p got {system, ~p, ~tp}~n", [?MODULE, From, Msg]),
 	    Parent = State#state.supervisor,
 	    sys:handle_system_msg(Msg, From, Parent, ?MODULE, [], State);
 
@@ -249,7 +255,7 @@ loop(State) ->
 	    loop(State);
 
 	Msg ->
-	    error("~p got unexpected message: ~p~n", [?MODULE, Msg]),
+	    error("~p got unexpected message: ~tp~n", [?MODULE, Msg]),
 	    loop(State)
     end.
 
@@ -768,10 +774,12 @@ do_sticky_lock(Tid, Store, {Tab, Key} = Oid, Lock) ->
     N = node(),
     receive
 	{?MODULE, N, granted} ->
+            ?ets_insert(Store, {sticky, true}),
 	    ?ets_insert(Store, {{locks, Tab, Key}, write}),
 	    [?ets_insert(Store, {nodes, Node}) || Node <- WNodes],
 	    granted;
 	{?MODULE, N, {granted, Val}} -> %% for rwlocks
+            ?ets_insert(Store, {sticky, true}),
 	    case opt_lookup_in_client(Val, Oid, write) of
 		C = #cyclic{} ->
 		    exit({aborted, C});
@@ -1150,6 +1158,19 @@ get_held_locks() ->
     ?MODULE ! {get_table, self(), mnesia_held_locks},
     Locks = receive {mnesia_held_locks, Ls} -> Ls after 5000 -> [] end,
     rewrite_locks(Locks, []).
+
+%% Mnesia internal usage only
+get_held_locks(Tab) when is_atom(Tab) ->
+    Oid = {Tab, ?ALL},
+    ?MODULE ! {self(), {is_locked, Oid}},
+    receive
+	{?MODULE, _Node, Locks} ->
+	    case Locks of
+		[] -> [];
+		[{Oid, _Prev, What}] -> What
+	    end
+    end.
+
 
 rewrite_locks([{Oid, _, Ls}|Locks], Acc0) ->
     Acc = rewrite_locks(Ls, Oid, Acc0),

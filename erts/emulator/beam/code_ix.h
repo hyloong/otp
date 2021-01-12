@@ -1,7 +1,7 @@
 /*
  * %CopyrightBegin%
  *
- * Copyright Ericsson AB 2012-2013. All Rights Reserved.
+ * Copyright Ericsson AB 2012-2017. All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -56,12 +56,51 @@
 #  endif
 #  include "sys.h"
 #endif
+
+#include "beam_opcodes.h"
+
 struct process;
 
 
 #define ERTS_NUM_CODE_IX 3
 typedef unsigned ErtsCodeIndex;
 
+typedef struct ErtsCodeMFA_ {
+    Eterm module;
+    Eterm function;
+    Uint  arity;
+} ErtsCodeMFA;
+
+/*
+ * The ErtsCodeInfo structure is used both in the Export entry
+ * and in the code as the function header.
+ */
+
+/* If you change the size of this, you also have to update the code
+   in ops.tab to reflect the new func_info size */
+typedef struct ErtsCodeInfo_ {
+    BeamInstr op;           /* OpCode(i_func_info) */
+    union {
+        struct generic_bp* gen_bp;     /* Trace breakpoint */
+    } u;
+    ErtsCodeMFA mfa;
+} ErtsCodeInfo;
+
+/* Get the code associated with a ErtsCodeInfo ptr. */
+ERTS_GLB_INLINE
+ErtsCodePtr erts_codeinfo_to_code(const ErtsCodeInfo *ci);
+
+/* Get the ErtsCodeInfo for from a code ptr. */
+ERTS_GLB_INLINE
+const ErtsCodeInfo *erts_code_to_codeinfo(ErtsCodePtr I);
+
+/* Get the code associated with a ErtsCodeMFA ptr. */
+ERTS_GLB_INLINE
+ErtsCodePtr erts_codemfa_to_code(const ErtsCodeMFA *mfa);
+
+/* Get the ErtsCodeMFA from a code ptr. */
+ERTS_GLB_INLINE
+const ErtsCodeMFA *erts_code_to_codemfa(ErtsCodePtr I);
 
 /* Called once at emulator initialization.
  */
@@ -90,6 +129,15 @@ ErtsCodeIndex erts_staging_code_ix(void);
  */
 int erts_try_seize_code_write_permission(struct process* c_p);
 
+/* Try seize exclusive code write permission for aux work.
+ * System thread progress must not be blocked.
+ * On success return true.
+ * On failure return false and aux work func(arg) will be scheduled when
+ * permission is released.                                                                             .
+ */
+int erts_try_seize_code_write_permission_aux(void (*func)(void *),
+                                             void *arg);
+
 /* Release code write permission.
  * Will resume any suspended waiters.
  */
@@ -100,7 +148,7 @@ void erts_release_code_write_permission(void);
  * Must be followed by calls to either "end" and "commit" or "abort" before
  * code write permission can be released.
  */
-void erts_start_staging_code_ix(void);
+void erts_start_staging_code_ix(int num_new);
 
 /* End the staging.
  * Preceded by "start" and must be followed by "commit".
@@ -121,20 +169,65 @@ void erts_abort_staging_code_ix(void);
 int erts_has_code_write_permission(void);
 #endif
 
+/* module/function/arity can be NIL/NIL/-1 when the MFA is pointing to some
+   invalid code, for instance unloaded_fun. */
+#define ASSERT_MFA(MFA)                                                 \
+    ASSERT((is_atom((MFA)->module) || is_nil((MFA)->module)) &&         \
+           (is_atom((MFA)->function) || is_nil((MFA)->function)) &&     \
+           (((MFA)->arity >= 0 && (MFA)->arity < 1024) || (MFA)->arity == -1))
 
+extern erts_atomic32_t the_active_code_index;
+extern erts_atomic32_t the_staging_code_index;
 
 #if ERTS_GLB_INLINE_INCL_FUNC_DEF
 
-extern erts_smp_atomic32_t the_active_code_index;
-extern erts_smp_atomic32_t the_staging_code_index;
+ERTS_GLB_INLINE
+ErtsCodePtr erts_codeinfo_to_code(const ErtsCodeInfo *ci)
+{
+#ifndef BEAMASM
+    ASSERT(BeamIsOpCode(ci->op, op_i_func_info_IaaI) || !ci->op);
+#endif
+    ASSERT_MFA(&ci->mfa);
+    return (ErtsCodePtr)&ci[1];
+}
+
+ERTS_GLB_INLINE
+const ErtsCodeInfo *erts_code_to_codeinfo(ErtsCodePtr I)
+{
+    const ErtsCodeInfo *ci = &((const ErtsCodeInfo *)I)[-1];
+
+#ifndef BEAMASM
+    ASSERT(BeamIsOpCode(ci->op, op_i_func_info_IaaI) || !ci->op);
+#endif
+    ASSERT_MFA(&ci->mfa);
+
+    return ci;
+}
+
+ERTS_GLB_INLINE
+ErtsCodePtr erts_codemfa_to_code(const ErtsCodeMFA *mfa)
+{
+    ASSERT_MFA(mfa);
+    return (ErtsCodePtr)&mfa[1];
+}
+
+ERTS_GLB_INLINE
+const ErtsCodeMFA *erts_code_to_codemfa(ErtsCodePtr I)
+{
+    const ErtsCodeMFA *mfa = &((const ErtsCodeMFA *)I)[-1];
+
+    ASSERT_MFA(mfa);
+
+    return mfa;
+}
 
 ERTS_GLB_INLINE ErtsCodeIndex erts_active_code_ix(void)
 {
-    return erts_smp_atomic32_read_nob(&the_active_code_index);
+    return erts_atomic32_read_nob(&the_active_code_index);
 }
 ERTS_GLB_INLINE ErtsCodeIndex erts_staging_code_ix(void)
 {
-    return erts_smp_atomic32_read_nob(&the_staging_code_index);
+    return erts_atomic32_read_nob(&the_staging_code_index);
 }
 
 #endif /* ERTS_GLB_INLINE_INCL_FUNC_DEF */

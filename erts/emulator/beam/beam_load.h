@@ -1,7 +1,7 @@
 /*
  * %CopyrightBegin%
  *
- * Copyright Ericsson AB 1999-2013. All Rights Reserved.
+ * Copyright Ericsson AB 1999-2017. All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -22,11 +22,18 @@
 #  define _BEAM_LOAD_H
 
 #include "beam_opcodes.h"
-#include "erl_process.h"
+#include "beam_file.h"
 
-int erts_is_module_native(BeamInstr* code);
+#include "erl_process.h"
+#include "erl_fun.h"
+#include "export.h"
+#include "bif.h"
+
+#include "erl_bif_table.h"
+#include "beam_code.h"
+
 Eterm beam_make_current_old(Process *c_p, ErtsProcLocks c_p_locks,
-			    Eterm module);
+                            Eterm module);
 
 typedef struct gen_op_entry {
    char* name;
@@ -34,110 +41,81 @@ typedef struct gen_op_entry {
    int specific;
    int num_specific;
    int transform;
-   int min_window;
 } GenOpEntry;
 
-extern GenOpEntry gen_opc[];
+extern const GenOpEntry gen_opc[];
 
-#ifdef NO_JUMP_TABLE 
-#define BeamOp(Op) (Op)
+typedef struct LoaderState_ LoaderState;
+
+#ifdef BEAMASM
+#include "jit/load.h"
 #else
-extern void** beam_ops;
-#define BeamOp(Op) beam_ops[(Op)]
+#include "emu/load.h"
 #endif
 
+int beam_load_prepared_dtor(Binary *magic);
+void beam_load_prepared_free(Binary *magic);
 
-extern BeamInstr beam_debug_apply[];
-extern BeamInstr* em_call_error_handler;
-extern BeamInstr* em_apply_bif;
-extern BeamInstr* em_call_nif;
+void beam_load_prepare_emit(LoaderState *stp);
+int beam_load_emit_op(LoaderState *stp, BeamOp *op);
+int beam_load_finish_emit(LoaderState *stp);
 
+struct erl_module_instance;
+void beam_load_finalize_code(LoaderState *stp,
+                             struct erl_module_instance* inst_p);
 
-/*
- * The following variables keep a sorted list of address ranges for
- * each module.  It allows us to quickly find a function given an
- * instruction pointer.
- */
+void beam_load_new_genop(LoaderState* stp);
 
-/* Total code size in bytes */
-extern Uint erts_total_code_size;
-/*
- * Index into start of code chunks which contains additional information
- * about the loaded module.
- *
- * First number of functions.
- */
+#ifndef BEAMASM
+int beam_load_new_label(LoaderState* stp);
+#endif
 
-#define MI_NUM_FUNCTIONS     0
+#define BeamLoadError0(Stp, Fmt) \
+    do { \
+        beam_load_report_error(__LINE__, Stp, Fmt); \
+        goto load_error; \
+    } while (0)
 
-/*
- * The attributes retrieved by Mod:module_info(attributes).
- */
+#define BeamLoadError1(Stp, Fmt, Arg1) \
+    do { \
+        beam_load_report_error(__LINE__, stp, Fmt, Arg1); \
+        goto load_error; \
+    } while (0)
 
-#define MI_ATTR_PTR          1
-#define MI_ATTR_SIZE	     2
-#define MI_ATTR_SIZE_ON_HEAP 3
+#define BeamLoadError2(Stp, Fmt, Arg1, Arg2) \
+    do { \
+        beam_load_report_error(__LINE__, Stp, Fmt, Arg1, Arg2); \
+        goto load_error; \
+    } while (0)
 
-/*
- * The compilation information retrieved by Mod:module_info(compile).
- */
+#define BeamLoadError3(Stp, Fmt, Arg1, Arg2, Arg3) \
+    do { \
+        beam_load_report_error(__LINE__, stp, Fmt, Arg1, Arg2, Arg3); \
+        goto load_error; \
+    } while (0)
 
-#define MI_COMPILE_PTR          4
-#define MI_COMPILE_SIZE         5
-#define MI_COMPILE_SIZE_ON_HEAP 6
+#define BeamLoadVerifyTag(Stp, Actual, Expected) \
+    if (Actual != Expected) { \
+       BeamLoadError2(Stp, "bad tag %d; expected %d", Actual, Expected); \
+    } else {}
 
-/*
- * Literal area (constant pool).
- */
-#define MI_LITERALS_START	7
-#define MI_LITERALS_END		8
-#define MI_LITERALS_OFF_HEAP	9
-
-/*
- * Pointer to the on_load function (or NULL if none).
- */
-#define MI_ON_LOAD_FUNCTION_PTR 10
+void beam_load_report_error(int line, LoaderState* context, char *fmt,...);
 
 /*
- * Pointer to the line table (or NULL if none).
- */
-#define MI_LINE_TABLE 11
-
-/*
- * Pointer to the module MD5 sum (16 bytes)
- */
-#define MI_MD5_PTR 12
-
-/*
- * Start of function pointer table.  This table contains pointers to
- * all functions in the module plus an additional pointer just beyond
- * the end of the last function.
- *
- * The actual loaded code (for the first function) start just beyond
- * this table.
+ * The transform engine.
  */
 
-#define MI_FUNCTIONS         13
+int erts_transform_engine(LoaderState* st);
 
-/*
- * Layout of the line table.
- */
+#define TE_OK 0
+#define TE_FAIL (-1)
+#define TE_SHORT_WINDOW (-2)
 
-#define MI_LINE_FNAME_PTR 0
-#define MI_LINE_LOC_TAB 1
-#define MI_LINE_LOC_SIZE 2
-#define MI_LINE_FUNC_TAB 3
+int erts_beam_eval_predicate(unsigned int op, LoaderState* st,
+                             BeamOpArg var[], BeamOpArg* rest_args);
+BeamOp* erts_beam_execute_transform(unsigned int op, LoaderState* st,
+                                    BeamOpArg var[], BeamOpArg* rest_args);
 
-#define LINE_INVALID_LOCATION (0)
-
-/*
- * Macros for manipulating locations.
- */
-
-#define IS_VALID_LOCATION(File, Line) \
-    ((unsigned) (File) < 255 && (unsigned) (Line) < ((1 << 24) - 1))
-#define MAKE_LOCATION(File, Line) (((File) << 24) | (Line))
-#define LOC_FILE(Loc) ((Loc) >> 24)
-#define LOC_LINE(Loc) ((Loc) & ((1 << 24)-1))
+void erts_beam_bif_load_init(void);
 
 #endif /* _BEAM_LOAD_H */

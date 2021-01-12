@@ -1,7 +1,7 @@
 /*
  * %CopyrightBegin%
  * 
- * Copyright Ericsson AB 2014. All Rights Reserved.
+ * Copyright Ericsson AB 2014-2017. All Rights Reserved.
  * 
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -57,16 +57,15 @@ typedef struct flatmap_s {
 
 
 #define hashmap_size(x)               (((hashmap_head_t*) hashmap_val(x))->size)
-#define hashmap_make_hash(Key)        make_internal_hash(Key)
+#define hashmap_make_hash(Key)        make_internal_hash(Key, 0)
 
 #define hashmap_restore_hash(Heap,Lvl,Key) \
     (((Lvl) < 8) ? hashmap_make_hash(Key) >> (4*(Lvl)) : hashmap_make_hash(CONS(Heap, make_small((Lvl)>>3), (Key))) >> (4*((Lvl) & 7)))
 #define hashmap_shift_hash(Heap,Hx,Lvl,Key) \
     (((++(Lvl)) & 7) ? (Hx) >> 4 : hashmap_make_hash(CONS(Heap, make_small((Lvl)>>3), Key)))
 
-
 /* erl_term.h stuff */
-#define flatmap_get_values(x)        (((Eterm *)(x)) + 3)
+#define flatmap_get_values(x)        (((Eterm *)(x)) + sizeof(flatmap_t)/sizeof(Eterm))
 #define flatmap_get_keys(x)          (((Eterm *)tuple_val(((flatmap_t *)(x))->keys)) + 1)
 #define flatmap_get_size(x)          (((flatmap_t*)(x))->size)
 
@@ -82,6 +81,7 @@ struct ErtsEStack_;
 Eterm  erts_maps_put(Process *p, Eterm key, Eterm value, Eterm map);
 int    erts_maps_update(Process *p, Eterm key, Eterm value, Eterm map, Eterm *res);
 int    erts_maps_remove(Process *p, Eterm key, Eterm map, Eterm *res);
+int    erts_maps_take(Process *p, Eterm key, Eterm map, Eterm *res, Eterm *value);
 
 Eterm  erts_hashmap_insert(Process *p, Uint32 hx, Eterm key, Eterm value,
 			   Eterm node, int is_update);
@@ -97,10 +97,12 @@ Eterm* hashmap_iterator_prev(struct ErtsWStack_* s);
 int    hashmap_key_hash_cmp(Eterm* ap, Eterm* bp);
 Eterm  erts_hashmap_from_array(ErtsHeapFactory*, Eterm *leafs, Uint n, int reject_dupkeys);
 
-#define erts_hashmap_from_ks_and_vs(P, KS, VS, N) \
-    erts_hashmap_from_ks_and_vs_extra((P), (KS), (VS), (N), THE_NON_VALUE, THE_NON_VALUE);
+#define erts_hashmap_from_ks_and_vs(F, KS, VS, N) \
+    erts_hashmap_from_ks_and_vs_extra((F), (KS), (VS), (N), THE_NON_VALUE, THE_NON_VALUE);
 
-Eterm  erts_hashmap_from_ks_and_vs_extra(Process *p, Eterm *ks, Eterm *vs, Uint n,
+Eterm erts_map_from_ks_and_vs(ErtsHeapFactory *factory, Eterm *ks, Eterm *vs, Uint n);
+Eterm  erts_hashmap_from_ks_and_vs_extra(ErtsHeapFactory *factory,
+                                         Eterm *ks, Eterm *vs, Uint n,
 					 Eterm k, Eterm v);
 
 const Eterm *erts_maps_get(Eterm key, Eterm map);
@@ -180,14 +182,17 @@ typedef struct hashmap_head_s {
    [one cons cell + one list term in parent node] per key
    [one header + one boxed term in parent node] per inner node
    [one header + one size word] for root node
+   Observed average number of nodes per key is about 0.35.
 */
-#define HASHMAP_HEAP_SIZE(KEYS,NODES) ((KEYS)*3 + (NODES)*2)
+#define HASHMAP_WORDS_PER_KEY 3
+#define HASHMAP_WORDS_PER_NODE 2
 #ifdef DEBUG
-#  define HASHMAP_ESTIMATED_NODE_COUNT(KEYS) (KEYS)
+#  define HASHMAP_ESTIMATED_TOT_NODE_SIZE(KEYS) \
+    (HASHMAP_WORDS_PER_NODE * (KEYS) * 3/10)   /* slightly under estimated */
 #else
-#  define HASHMAP_ESTIMATED_NODE_COUNT(KEYS) (2*(KEYS)/5)
+#  define HASHMAP_ESTIMATED_TOT_NODE_SIZE(KEYS) \
+    (HASHMAP_WORDS_PER_NODE * (KEYS) * 4/10)   /* slightly over estimated */
 #endif
 #define HASHMAP_ESTIMATED_HEAP_SIZE(KEYS) \
-        HASHMAP_HEAP_SIZE(KEYS,HASHMAP_ESTIMATED_NODE_COUNT(KEYS))
-
+        ((KEYS)*HASHMAP_WORDS_PER_KEY + HASHMAP_ESTIMATED_TOT_NODE_SIZE(KEYS))
 #endif

@@ -1,7 +1,7 @@
 #
 # %CopyrightBegin%
 #
-# Copyright Ericsson AB 2005-2015. All Rights Reserved.
+# Copyright Ericsson AB 2005-2018. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -47,10 +47,8 @@ MODULES = \
 	inets_service \
 	inets_app \
 	inets_sup \
-	inets_regexp \
 	inets_trace \
-	inets_lib \
-	inets_time_compat
+	inets_lib
 
 INTERNAL_HRL_FILES = inets_internal.hrl
 EXTERNAL_HRL_FILES = ../../include/httpd.hrl \

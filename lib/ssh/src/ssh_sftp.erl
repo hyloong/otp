@@ -1,7 +1,7 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2005-2014. All Rights Reserved.
+%% Copyright Ericsson AB 2005-2020. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -24,7 +24,7 @@
 
 -module(ssh_sftp).
 
--behaviour(ssh_channel).
+-behaviour(ssh_client_channel).
 
 -include_lib("kernel/include/file.hrl").
 -include("ssh.hrl").
@@ -37,7 +37,7 @@
 -export([open/3, open_tar/3, opendir/2, close/2, readdir/2, pread/4, read/3,
          open/4, open_tar/4, opendir/3, close/3, readdir/3, pread/5, read/4,
 	 apread/4, aread/3, pwrite/4, write/3, apwrite/4, awrite/3,
-	 pwrite/5, write/4, 
+	 pwrite/5, write/4,
 	 position/3, real_path/2, read_file_info/2, get_file_info/2,
 	 position/4, real_path/3, read_file_info/3, get_file_info/3,
 	 write_file_info/3, read_link_info/2, read_link/2, make_symlink/3,
@@ -47,12 +47,15 @@
 	 recv_window/1, list_dir/2, read_file/2, write_file/3,
 	 recv_window/2, list_dir/3, read_file/3, write_file/4]).
 
-%% ssh_channel callbacks
+%% ssh_client_channel callbacks
 -export([init/1, handle_call/3, handle_cast/2, code_change/3, handle_msg/2, handle_ssh_msg/2, terminate/2]).
 %% TODO: Should be placed elsewhere ssh_sftpd should not call functions in ssh_sftp!
 -export([info_to_attr/1, attr_to_info/1]).
 
--record(state, 
+-behaviour(ssh_dbg).
+-export([ssh_dbg_trace_points/0, ssh_dbg_flags/1, ssh_dbg_on/1, ssh_dbg_off/1, ssh_dbg_format/2]).
+
+-record(state,
 	{
 	  xf,
 	  rep_buf = <<>>,
@@ -64,7 +67,7 @@
 
 -record(fileinf,
 	{
-	  handle, 
+	  handle,
 	  offset,
 	  size,
 	  mode
@@ -81,7 +84,7 @@
 	  enc_text_buf = <<>>,	 % Encrypted text
 	  plain_text_buf = <<>>	 % Decrypted text
 	}).
-	  
+
 -define(FILEOP_TIMEOUT, infinity).
 
 -define(NEXT_REQID(S),
@@ -90,105 +93,221 @@
 -define(XF(S), S#state.xf).
 -define(REQID(S), S#state.req_id).
 
+-type sftp_option() :: {timeout, timeout()}
+                     | {sftp_vsn, pos_integer()}
+                     | {window_size, pos_integer()}
+                     | {packet_size, pos_integer()} .
+
+-type reason() :: atom() | string() | tuple() .
+
 %%====================================================================
 %% API
 %%====================================================================
+
+
+%%%================================================================
+%%%
+
+%%%----------------------------------------------------------------
+%%% start_channel/1
+
 start_channel(Cm) when is_pid(Cm) ->
     start_channel(Cm, []);
-start_channel(Host) when is_list(Host) ->
-    start_channel(Host, []).					 
-start_channel(Cm, Opts) when is_pid(Cm) ->
-    Timeout = proplists:get_value(timeout, Opts, infinity),
-    {_, SftpOpts} = handle_options(Opts, [], []),
-    case ssh_xfer:attach(Cm, []) of
-	{ok, ChannelId, Cm} -> 
-	    case ssh_channel:start(Cm, ChannelId, 
-				   ?MODULE, [Cm, ChannelId, SftpOpts]) of
+ 
+start_channel(Socket) when is_port(Socket) ->
+    start_channel(Socket, []);
+
+start_channel(Host) ->
+    start_channel(Host, []).
+
+
+%%%----------------------------------------------------------------
+%%% start_channel/2
+
+%%% -spec:s are as if Dialyzer handled signatures for separate
+%%% function clauses.
+
+-spec start_channel(ssh:open_socket(),
+                    [ssh:client_options() | sftp_option()]
+                   )
+                   -> {ok,pid(),ssh:connection_ref()} | {error,reason()};
+
+                   (ssh:connection_ref(),
+                    [sftp_option()]
+                   )
+                   -> {ok,pid()}  | {ok,pid(),ssh:connection_ref()} | {error,reason()};
+
+                   (ssh:host(),
+                    [ssh:client_options() | sftp_option()]
+                   )
+                   -> {ok,pid(),ssh:connection_ref()} | {error,reason()} .
+
+start_channel(Socket, UserOptions) when is_port(Socket) ->
+    {SshOpts, ChanOpts, SftpOpts} = handle_options(UserOptions),
+    Timeout =   % A mixture of ssh:connect and ssh_sftp:start_channel:
+        proplists:get_value(connect_timeout, SshOpts,
+                            proplists:get_value(timeout, SftpOpts, infinity)),
+    case ssh:connect(Socket, SshOpts, Timeout) of
+	{ok,Cm} ->
+	    case start_channel(Cm, ChanOpts ++ SftpOpts) of
+		{ok, Pid} ->
+		    {ok, Pid, Cm};
+		Error ->
+		    Error
+	    end;
+	Error ->
+	    Error
+    end;
+start_channel(Cm, UserOptions) when is_pid(Cm) ->
+    Timeout = proplists:get_value(timeout, UserOptions, infinity),
+    {_SshOpts, ChanOpts, SftpOpts} = handle_options(UserOptions),
+    WindowSize = proplists:get_value(window_size, ChanOpts, ?XFER_WINDOW_SIZE),
+    PacketSize = proplists:get_value(packet_size, ChanOpts, ?XFER_PACKET_SIZE),
+    case ssh_connection:session_channel(Cm, WindowSize, PacketSize, Timeout) of
+	{ok, ChannelId} ->
+            case ssh_connection_handler:start_channel(Cm, ?MODULE, ChannelId,
+                                                      [Cm,ChannelId,SftpOpts], undefined) of
 		{ok, Pid} ->
 		    case wait_for_version_negotiation(Pid, Timeout) of
 			ok ->
-			    {ok, Pid}; 
+			    {ok, Pid};
 			TimeOut ->
 			    TimeOut
 		    end;
 		{error, Reason} ->
-		    {error, format_channel_start_error(Reason)};
-		ignore ->
-		    {error, ignore}
+		    {error, format_channel_start_error(Reason)}
 	    end;
 	Error ->
 	    Error
     end;
 
-start_channel(Host, Opts) ->
-    start_channel(Host, 22, Opts).
-start_channel(Host, Port, Opts) ->
-    {SshOpts, SftpOpts} = handle_options(Opts, [], []),
-    Timeout = proplists:get_value(timeout, SftpOpts, infinity),
-    case ssh_xfer:connect(Host, Port, SshOpts, Timeout) of
-	{ok, ChannelId, Cm} ->
-	    case ssh_channel:start(Cm, ChannelId, ?MODULE, [Cm, 
-							    ChannelId, SftpOpts]) of
-		{ok, Pid} ->
-		    case wait_for_version_negotiation(Pid, Timeout) of
-			ok ->
-			    {ok, Pid, Cm};
-			TimeOut ->
-			    TimeOut
-		    end;
-		{error, Reason} ->
-		    {error, format_channel_start_error(Reason)};
-		ignore ->
-		    {error, ignore}
-	    end;
+start_channel(Host, UserOptions) ->
+    start_channel(Host, 22, UserOptions).
+
+
+%%%----------------------------------------------------------------
+%%% start_channel/3
+
+-spec start_channel(ssh:host(),
+                    inet:port_number(),
+                    [ssh:client_option() | sftp_option()]
+                   )
+                   -> {ok,pid(),ssh:connection_ref()} | {error,reason()}.
+
+start_channel(Host, Port, UserOptions) ->
+    {SshOpts, _ChanOpts, _SftpOpts} = handle_options(UserOptions),
+    Timeout =   % A mixture of ssh:connect and ssh_sftp:start_channel:
+        case proplists:get_value(connect_timeout, UserOptions) of
+            undefined ->
+                proplists:get_value(timeout, UserOptions, infinity);
+            TO ->
+                TO
+        end,
+    case ssh:connect(Host, Port, SshOpts, Timeout) of
+	{ok, Cm} ->
+            case start_channel(Cm, UserOptions) of
+                {ok, Pid} ->
+                    {ok, Pid, Cm};
+                Error ->
+                    Error
+            end;
+	{error, Timeout} ->
+            {error, timeout};
 	Error ->
-	    Error	    
+	    Error
     end.
 
-stop_channel(Pid) ->
-    case is_process_alive(Pid) of
-	true ->
-	    OldValue = process_flag(trap_exit, true),
-	    link(Pid),
-	    exit(Pid, ssh_sftp_stop_channel),
-	    receive 
-		{'EXIT', Pid, normal} ->
-		    ok
-	    after 5000 ->
-		    exit(Pid, kill),
-		    receive 
-			{'EXIT', Pid, killed} ->
-			    ok
-		    end
-	    end,
-	    process_flag(trap_exit, OldValue),
-	    ok;
-	false ->
-	    ok
-    end.
+%%% Helper for start_channel
 
 wait_for_version_negotiation(Pid, Timeout) ->
     call(Pid, wait_for_version_negotiation, Timeout).
 
+%%%----------------------------------------------------------------
+-spec stop_channel(ChannelPid) -> ok when
+      ChannelPid :: pid().
+
+stop_channel(Pid) ->
+    case is_process_alive(Pid) of
+	true ->
+            MonRef = erlang:monitor(process, Pid),
+            unlink(Pid),
+            exit(Pid, ssh_sftp_stop_channel),
+            receive {'DOWN',MonRef,_,_,_} -> ok
+            after
+                1000 ->
+                    exit(Pid, kill),
+                    erlang:demonitor(MonRef, [flush]),
+                    ok
+            end;
+	false ->
+	    ok
+    end.
+
+%%%----------------------------------------------------------------
+-spec open(ChannelPid, Name, Mode) -> {ok, Handle} | Error when
+      ChannelPid :: pid(),
+      Name :: string(),
+      Mode :: [read | write | append | binary | raw],
+      Handle :: term(),
+      Error :: {error, reason()} .
 open(Pid, File, Mode) ->
     open(Pid, File, Mode, ?FILEOP_TIMEOUT).
+-spec open(ChannelPid, Name, Mode, Timeout) -> {ok, Handle} | Error when
+      ChannelPid :: pid(),
+      Name :: string(),
+      Mode :: [read | write | append | binary | raw],
+      Timeout :: timeout(),
+      Handle :: term(),
+      Error :: {error, reason()} .
 open(Pid, File, Mode, FileOpTimeout) ->
     call(Pid, {open, false, File, Mode}, FileOpTimeout).
 
+
+-type tar_crypto_spec() :: encrypt_spec() | decrypt_spec() .
+
+-type encrypt_spec() :: {init_fun(), crypto_fun(), final_fun()} .
+-type decrypt_spec() :: {init_fun(), crypto_fun()} .
+
+-type init_fun() :: fun(() -> {ok,crypto_state()})
+                  | fun(() -> {ok,crypto_state(),chunk_size()}) .
+
+-type crypto_fun() :: fun((TextIn::binary(), crypto_state()) -> crypto_result()) .
+-type crypto_result() :: {ok,TextOut::binary(),crypto_state()}
+                       | {ok,TextOut::binary(),crypto_state(),chunk_size()} .
+
+-type final_fun() :: fun((FinalTextIn::binary(),crypto_state()) -> {ok,FinalTextOut::binary()}) .
+
+-type chunk_size() :: undefined | pos_integer().
+-type crypto_state() :: any() .
+
+
+-spec open_tar(ChannelPid, Path, Mode) -> {ok, Handle} | Error when
+      ChannelPid :: pid(),
+      Path :: string(),
+      Mode :: [read | write | {crypto, tar_crypto_spec()} ],
+      Handle :: term(),
+      Error :: {error, reason()} .
 open_tar(Pid, File, Mode) ->
     open_tar(Pid, File, Mode, ?FILEOP_TIMEOUT).
+-spec open_tar(ChannelPid, Path, Mode, Timeout) -> {ok, Handle} | Error when
+      ChannelPid :: pid(),
+      Path :: string(),
+      Mode :: [read | write | {crypto, tar_crypto_spec()} ],
+      Timeout :: timeout(),
+      Handle :: term(),
+      Error :: {error, reason()} .
 open_tar(Pid, File, Mode, FileOpTimeout) ->
     case {lists:member(write,Mode),
 	  lists:member(read,Mode),
-	  Mode -- [read,write]} of
+	  Mode -- [write,read]} of
 	{true,false,[]} ->
 	    {ok,Handle} = open(Pid, File, [write], FileOpTimeout),
 	    erl_tar:init(Pid, write,
 			 fun(write, {_,Data}) ->
 				 write_to_remote_tar(Pid, Handle, to_bin(Data), FileOpTimeout);
-			    (position, {_,Pos}) -> 
+			    (position, {_,Pos}) ->
 				 position(Pid, Handle, Pos, FileOpTimeout);
-			    (close, _) -> 
+			    (close, _) ->
 				 close(Pid, Handle, FileOpTimeout)
 			 end);
 	{true,false,[{crypto,{CryptoInitFun,CryptoEncryptFun,CryptoEndFun}}]} ->
@@ -222,9 +341,9 @@ open_tar(Pid, File, Mode, FileOpTimeout) ->
 	    erl_tar:init(Pid, read,
 			 fun(read2, {_,Len}) ->
 				 read_repeat(Pid, Handle, Len, FileOpTimeout);
-			    (position, {_,Pos}) -> 
+			    (position, {_,Pos}) ->
 				 position(Pid, Handle, Pos, FileOpTimeout);
-			    (close, _) -> 
+			    (close, _) ->
 				 close(Pid, Handle, FileOpTimeout)
 			 end);
 	{false,true,[{crypto,{CryptoInitFun,CryptoDecryptFun}}]} ->
@@ -235,9 +354,9 @@ open_tar(Pid, File, Mode, FileOpTimeout) ->
 	    erl_tar:init(Pid, read,
 			 fun(read2, {_,Len}) ->
 				 read_buf(Pid, SftpHandle, BufHandle, Len, FileOpTimeout);
-			    (position, {_,Pos}) -> 
+			    (position, {_,Pos}) ->
 				 position_buf(Pid, SftpHandle, BufHandle, Pos, FileOpTimeout);
-			    (close, _) -> 
+			    (close, _) ->
 				 call(Pid, {erase_bufinf,BufHandle}, FileOpTimeout),
 				 close(Pid, SftpHandle, FileOpTimeout)
                          end);
@@ -246,13 +365,33 @@ open_tar(Pid, File, Mode, FileOpTimeout) ->
     end.
 
 
+-spec opendir(ChannelPid, Path) -> {ok, Handle} | Error when
+      ChannelPid :: pid(),
+      Path :: string(),
+      Handle :: term(),
+      Error :: {error, reason()} .
 opendir(Pid, Path) ->
     opendir(Pid, Path, ?FILEOP_TIMEOUT).
+-spec opendir(ChannelPid, Path, Timeout) -> {ok, Handle} | Error when
+      ChannelPid :: pid(),
+      Path :: string(),
+      Timeout :: timeout(),
+      Handle :: term(),
+      Error :: {error, reason()} .
 opendir(Pid, Path, FileOpTimeout) ->
     call(Pid, {opendir, false, Path}, FileOpTimeout).
 
+-spec close(ChannelPid, Handle) -> ok | Error when
+      ChannelPid :: pid(),
+      Handle :: term(),
+      Error :: {error, reason()} .
 close(Pid, Handle) ->
     close(Pid, Handle, ?FILEOP_TIMEOUT).
+-spec close(ChannelPid, Handle, Timeout) -> ok | Error when
+      ChannelPid :: pid(),
+      Handle :: term(),
+      Timeout :: timeout(),
+      Error :: {error, reason()} .
 close(Pid, Handle, FileOpTimeout) ->
     call(Pid, {close,false,Handle}, FileOpTimeout).
 
@@ -261,47 +400,149 @@ readdir(Pid,Handle) ->
 readdir(Pid,Handle, FileOpTimeout) ->
     call(Pid, {readdir,false,Handle}, FileOpTimeout).
 
+-spec pread(ChannelPid, Handle, Position, Len) -> {ok, Data} | eof | Error when
+      ChannelPid :: pid(),
+      Handle :: term(),
+      Position :: integer(),
+      Len :: integer(),
+      Data :: string() | binary(),
+      Error :: {error, reason()}.
 pread(Pid, Handle, Offset, Len) ->
     pread(Pid, Handle, Offset, Len, ?FILEOP_TIMEOUT).
+
+-spec pread(ChannelPid, Handle, Position, Len, Timeout) -> {ok, Data} | eof | Error when
+      ChannelPid :: pid(),
+      Handle :: term(),
+      Position :: integer(),
+      Len :: integer(),
+      Timeout :: timeout(),
+      Data :: string() | binary(),
+      Error :: {error, reason()}.
 pread(Pid, Handle, Offset, Len, FileOpTimeout) ->
     call(Pid, {pread,false,Handle, Offset, Len}, FileOpTimeout).
 
+
+-spec read(ChannelPid, Handle, Len) -> {ok, Data} | eof | Error when
+      ChannelPid :: pid(),
+      Handle :: term(),
+      Len :: integer(),
+      Data :: string() | binary(),
+      Error :: {error, reason()}.
 read(Pid, Handle, Len) ->
     read(Pid, Handle, Len, ?FILEOP_TIMEOUT).
-read(Pid, Handle, Len, FileOpTimeout) ->
-    call(Pid, {read,false,Handle, Len}, FileOpTimeout).    
 
-%% TODO this ought to be a cast! Is so in all practial meaning
+-spec read(ChannelPid, Handle, Len, Timeout) -> {ok, Data} | eof | Error when
+      ChannelPid :: pid(),
+      Handle :: term(),
+      Len :: integer(),
+      Timeout :: timeout(),
+      Data :: string() | binary(),
+      Error :: {error, reason()}.
+read(Pid, Handle, Len, FileOpTimeout) ->
+    call(Pid, {read,false,Handle, Len}, FileOpTimeout).
+
+
+%% TODO this ought to be a cast! Is so in all practical meaning
 %% even if it is obscure!
+-spec apread(ChannelPid, Handle, Position, Len) -> {async, N} | Error when
+      ChannelPid :: pid(),
+      Handle :: term(),
+      Position :: integer(),
+      Len :: integer(),
+      Error :: {error, reason()},
+      N :: term() .
 apread(Pid, Handle, Offset, Len) ->
     call(Pid, {pread,true,Handle, Offset, Len}, infinity).
 
 %% TODO this ought to be a cast! 
+-spec aread(ChannelPid, Handle, Len) -> {async, N} | Error when
+      ChannelPid :: pid(),
+      Handle :: term(),
+      Len :: integer(),
+      Error :: {error, reason()},
+      N :: term() .
 aread(Pid, Handle, Len) ->
-    call(Pid, {read,true,Handle, Len}, infinity).    
+    call(Pid, {read,true,Handle, Len}, infinity).
 
+
+-spec pwrite(ChannelPid, Handle, Position, Data) -> ok | Error when
+      ChannelPid :: pid(),
+      Handle :: term(),
+      Position :: integer(),
+      Data :: iolist(),
+      Error :: {error, reason()}.
 pwrite(Pid, Handle, Offset, Data) ->
     pwrite(Pid, Handle, Offset, Data, ?FILEOP_TIMEOUT).
+
+-spec pwrite(ChannelPid, Handle, Position, Data, Timeout) -> ok | Error when
+      ChannelPid :: pid(),
+      Handle :: term(),
+      Position :: integer(),
+      Data :: iolist(),
+      Timeout :: timeout(),
+      Error :: {error, reason()}.
 pwrite(Pid, Handle, Offset, Data, FileOpTimeout) ->
     call(Pid, {pwrite,false,Handle,Offset,Data}, FileOpTimeout).
 
+
+-spec write(ChannelPid, Handle, Data) -> ok | Error when
+      ChannelPid :: pid(),
+      Handle :: term(),
+      Data :: iodata(),
+      Error :: {error, reason()}.
 write(Pid, Handle, Data) ->
     write(Pid, Handle, Data, ?FILEOP_TIMEOUT).
+
+-spec write(ChannelPid, Handle, Data, Timeout) -> ok | Error when
+      ChannelPid :: pid(),
+      Handle :: term(),
+      Data :: iodata(),
+      Timeout :: timeout(),
+      Error :: {error, reason()}.
 write(Pid, Handle, Data, FileOpTimeout) ->
     call(Pid, {write,false,Handle,Data}, FileOpTimeout).
 
-%% TODO this ought to be a cast! Is so in all practial meaning
+%% TODO this ought to be a cast! Is so in all practical meaning
 %% even if it is obscure!
+-spec apwrite(ChannelPid, Handle, Position, Data) -> {async, N} | Error when
+      ChannelPid :: pid(),
+      Handle :: term(),
+      Position :: integer(),
+      Data :: binary(),
+      Error :: {error, reason()},
+      N :: term() .
 apwrite(Pid, Handle, Offset, Data) ->
     call(Pid, {pwrite,true,Handle,Offset,Data}, infinity).
 
-%% TODO this ought to be a cast!  Is so in all practial meaning
+%% TODO this ought to be a cast!  Is so in all practical meaning
 %% even if it is obscure!
+-spec awrite(ChannelPid, Handle, Data) -> {async, N} | Error when
+      ChannelPid :: pid(),
+      Handle :: term(),
+      Data :: binary(),
+      Error :: {error, reason()},
+      N :: term() .
 awrite(Pid, Handle, Data) ->
     call(Pid, {write,true,Handle,Data}, infinity).
 
+-spec position(ChannelPid, Handle, Location) -> {ok, NewPosition} | Error when
+      ChannelPid :: pid(),
+      Handle :: term(),
+      Location :: Offset | {bof, Offset} | {cur, Offset} | {eof, Offset} | bof | cur | eof,
+      Offset :: integer(),
+      NewPosition :: integer(),
+      Error :: {error, reason()}.
 position(Pid, Handle, Pos) ->
     position(Pid, Handle, Pos, ?FILEOP_TIMEOUT).
+
+-spec position(ChannelPid, Handle, Location, Timeout) -> {ok, NewPosition} | Error when
+      ChannelPid :: pid(),
+      Handle :: term(),
+      Location :: Offset | {bof, Offset} | {cur, Offset} | {eof, Offset} | bof | cur | eof,
+      Timeout :: timeout(),
+      Offset :: integer(),
+      NewPosition :: integer(),
+      Error :: {error, reason()}.
 position(Pid, Handle, Pos, FileOpTimeout) ->
     call(Pid, {position, Handle, Pos}, FileOpTimeout).
 
@@ -310,8 +551,21 @@ real_path(Pid, Path) ->
 real_path(Pid, Path, FileOpTimeout) ->
     call(Pid, {real_path, false, Path}, FileOpTimeout).
 
+
+-spec read_file_info(ChannelPid, Name) -> {ok, FileInfo} | Error when
+      ChannelPid :: pid(),
+      Name :: string(),
+      FileInfo :: file:file_info(),
+      Error :: {error, reason()}.
 read_file_info(Pid, Name) ->
     read_file_info(Pid, Name, ?FILEOP_TIMEOUT).
+
+-spec read_file_info(ChannelPid, Name, Timeout) -> {ok, FileInfo} | Error when
+      ChannelPid :: pid(),
+      Name :: string(),
+      Timeout :: timeout(),
+      FileInfo :: file:file_info(),
+      Error :: {error, reason()}.
 read_file_info(Pid, Name, FileOpTimeout) ->
     call(Pid, {read_file_info,false,Name}, FileOpTimeout).
 
@@ -320,18 +574,57 @@ get_file_info(Pid, Handle) ->
 get_file_info(Pid, Handle, FileOpTimeout) ->
     call(Pid, {get_file_info,false,Handle}, FileOpTimeout).
 
+
+-spec write_file_info(ChannelPid, Name, FileInfo) -> ok | Error when
+      ChannelPid :: pid(),
+      Name :: string(),
+      FileInfo :: file:file_info(),
+      Error :: {error, reason()}.
 write_file_info(Pid, Name, Info) ->
     write_file_info(Pid, Name, Info, ?FILEOP_TIMEOUT).
+
+-spec write_file_info(ChannelPid, Name, FileInfo, Timeout) -> ok | Error when
+      ChannelPid :: pid(),
+      Name :: string(),
+      FileInfo :: file:file_info(),
+      Timeout :: timeout(),
+      Error :: {error, reason()}.
 write_file_info(Pid, Name, Info, FileOpTimeout) ->
     call(Pid, {write_file_info,false,Name, Info}, FileOpTimeout).
 
+
+-spec read_link_info(ChannelPid, Name) -> {ok, FileInfo} | Error when
+      ChannelPid :: pid(),
+      Name :: string(),
+      FileInfo :: file:file_info(),
+      Error :: {error, reason()}.
 read_link_info(Pid, Name) ->
     read_link_info(Pid, Name, ?FILEOP_TIMEOUT).
+
+-spec read_link_info(ChannelPid, Name, Timeout) -> {ok, FileInfo} | Error when
+      ChannelPid :: pid(),
+      Name :: string(),
+      FileInfo :: file:file_info(),
+      Timeout :: timeout(),
+      Error :: {error, reason()}.
 read_link_info(Pid, Name, FileOpTimeout) ->
     call(Pid, {read_link_info,false,Name}, FileOpTimeout).
 
+
+-spec read_link(ChannelPid, Name) -> {ok, Target} | Error when
+      ChannelPid :: pid(),
+      Name :: string(),
+      Target :: string(),
+      Error :: {error, reason()}.
 read_link(Pid, LinkName) ->
     read_link(Pid, LinkName, ?FILEOP_TIMEOUT).
+
+-spec read_link(ChannelPid, Name, Timeout) -> {ok, Target} | Error when
+      ChannelPid :: pid(),
+      Name :: string(),
+      Target :: string(),
+      Timeout :: timeout(),
+      Error :: {error, reason()}.
 read_link(Pid, LinkName, FileOpTimeout) ->
     case call(Pid, {read_link,false,LinkName}, FileOpTimeout) of
 	 {ok, [{Name, _Attrs}]} ->
@@ -340,28 +633,79 @@ read_link(Pid, LinkName, FileOpTimeout) ->
 	    ErrMsg
     end.
 
+-spec make_symlink(ChannelPid, Name, Target) -> ok | Error when
+      ChannelPid :: pid(),
+      Name :: string(),
+      Target :: string(),
+      Error :: {error, reason()} .
 make_symlink(Pid, Name, Target) ->
     make_symlink(Pid, Name, Target, ?FILEOP_TIMEOUT).
+-spec make_symlink(ChannelPid, Name, Target, Timeout) -> ok | Error when
+      ChannelPid :: pid(),
+      Name :: string(),
+      Target :: string(),
+      Timeout :: timeout(),
+      Error :: {error, reason()} .
 make_symlink(Pid, Name, Target, FileOpTimeout) ->
     call(Pid, {make_symlink,false, Name, Target}, FileOpTimeout).
- 
+
+
+-spec rename(ChannelPid, OldName, NewName) -> ok | Error when
+      ChannelPid :: pid(),
+      OldName :: string(),
+      NewName :: string(),
+      Error :: {error, reason()}.
 rename(Pid, FromFile, ToFile) ->
     rename(Pid, FromFile, ToFile, ?FILEOP_TIMEOUT).
+
+-spec rename(ChannelPid, OldName, NewName, Timeout) -> ok | Error when
+      ChannelPid :: pid(),
+      OldName :: string(),
+      NewName :: string(),
+      Timeout :: timeout(),
+      Error :: {error, reason()}.
 rename(Pid, FromFile, ToFile, FileOpTimeout) ->
     call(Pid, {rename,false,FromFile, ToFile}, FileOpTimeout).
 
+-spec delete(ChannelPid, Name) -> ok | Error when
+      ChannelPid :: pid(),
+      Name :: string(),
+      Error :: {error, reason()} .
 delete(Pid, Name) ->
     delete(Pid, Name, ?FILEOP_TIMEOUT).
+-spec delete(ChannelPid, Name, Timeout) -> ok | Error when
+      ChannelPid :: pid(),
+      Name :: string(),
+      Timeout :: timeout(),
+      Error :: {error, reason()} .
 delete(Pid, Name, FileOpTimeout) ->
     call(Pid, {delete,false,Name}, FileOpTimeout).
 
+-spec make_dir(ChannelPid, Name) -> ok | Error when
+      ChannelPid :: pid(),
+      Name :: string(),
+      Error :: {error, reason()} .
 make_dir(Pid, Name) ->
     make_dir(Pid, Name, ?FILEOP_TIMEOUT).
+-spec make_dir(ChannelPid, Name, Timeout) -> ok | Error when
+      ChannelPid :: pid(),
+      Name :: string(),
+      Timeout :: timeout(),
+      Error :: {error, reason()} .
 make_dir(Pid, Name, FileOpTimeout) ->
     call(Pid, {make_dir,false,Name}, FileOpTimeout).
 
+-spec del_dir(ChannelPid, Name) -> ok | Error when
+      ChannelPid :: pid(),
+      Name :: string(),
+      Error :: {error, reason()} .
 del_dir(Pid, Name) ->
     del_dir(Pid, Name, ?FILEOP_TIMEOUT).
+-spec del_dir(ChannelPid, Name, Timeout) -> ok | Error when
+      ChannelPid :: pid(),
+      Name :: string(),
+      Timeout :: timeout(),
+      Error :: {error, reason()} .
 del_dir(Pid, Name, FileOpTimeout) ->
     call(Pid, {del_dir,false,Name}, FileOpTimeout).
 
@@ -378,9 +722,21 @@ recv_window(Pid, FileOpTimeout) ->
     call(Pid, recv_window, FileOpTimeout).
 
 
+-spec list_dir(ChannelPid, Path) -> {ok,FileNames} | Error when
+      ChannelPid :: pid(),
+      Path :: string(),
+      FileNames :: [FileName],
+      FileName :: string(),
+      Error :: {error, reason()} .
 list_dir(Pid, Name) ->
     list_dir(Pid, Name, ?FILEOP_TIMEOUT).
-
+-spec list_dir(ChannelPid, Path, Timeout) -> {ok,FileNames} | Error when
+      ChannelPid :: pid(),
+      Path :: string(),
+      Timeout :: timeout(),
+      FileNames :: [FileName],
+      FileName :: string(),
+      Error :: {error, reason()} .
 list_dir(Pid, Name, FileOpTimeout) ->
     case opendir(Pid, Name, FileOpTimeout) of
 	{ok,Handle} ->
@@ -388,8 +744,8 @@ list_dir(Pid, Name, FileOpTimeout) ->
 	    close(Pid, Handle, FileOpTimeout),
 	    case Res of
 		{ok, List} ->
-		    NList = lists:foldl(fun({Nm, _Info},Acc) -> 
-					  [Nm|Acc] end, 
+		    NList = lists:foldl(fun({Nm, _Info},Acc) ->
+					  [Nm|Acc] end,
 				  [], List),
 		    {ok,NList};
 		Error -> Error
@@ -411,9 +767,20 @@ do_list_dir(Pid, Handle, FileOpTimeout, Acc) ->
     end.
 
 
+-spec read_file(ChannelPid, File) -> {ok, Data} | Error when
+      ChannelPid :: pid(),
+      File :: string(),
+      Data :: binary(),
+      Error :: {error, reason()}.
 read_file(Pid, Name) ->
     read_file(Pid, Name, ?FILEOP_TIMEOUT).
 
+-spec read_file(ChannelPid, File, Timeout) -> {ok, Data} | Error when
+      ChannelPid :: pid(),
+      File :: string(),
+      Data :: binary(),
+      Timeout :: timeout(),
+      Error :: {error, reason()}.
 read_file(Pid, Name, FileOpTimeout) ->
     case open(Pid, Name, [read, binary], FileOpTimeout) of
 	{ok, Handle} ->
@@ -435,11 +802,22 @@ read_file_loop(Pid, Handle, PacketSz, FileOpTimeout, Acc) ->
 	    Error
     end.
 
+-spec write_file(ChannelPid, File, Data) -> ok | Error when
+      ChannelPid :: pid(),
+      File :: string(),
+      Data :: iodata(),
+      Error :: {error, reason()}.
 write_file(Pid, Name, List) ->
     write_file(Pid, Name, List, ?FILEOP_TIMEOUT).
 
+-spec write_file(ChannelPid, File, Data, Timeout) -> ok | Error when
+      ChannelPid :: pid(),
+      File :: string(),
+      Data :: iodata(),
+      Timeout :: timeout(),
+      Error :: {error, reason()}.
 write_file(Pid, Name, List, FileOpTimeout) when is_list(List) ->
-    write_file(Pid, Name, list_to_binary(List), FileOpTimeout);
+    write_file(Pid, Name, to_bin(List), FileOpTimeout);
 write_file(Pid, Name, Bin, FileOpTimeout) ->
     case open(Pid, Name, [write, binary], FileOpTimeout) of
 	{ok, Handle} ->
@@ -459,7 +837,7 @@ write_file_loop(Pid, Handle, Pos, Bin, Remain, PacketSz, FileOpTimeout) ->
 	    <<_:Pos/binary, Data:PacketSz/binary, _/binary>> = Bin,
 	    case write(Pid, Handle, Data, FileOpTimeout) of
 		ok ->
-		    write_file_loop(Pid, Handle, 
+		    write_file_loop(Pid, Handle,
 				    Pos+PacketSz, Bin, Remain-PacketSz,
 				    PacketSz, FileOpTimeout);
 		Error ->
@@ -487,7 +865,7 @@ init([Cm, ChannelId, Options]) ->
 	    Xf = #ssh_xfer{cm = Cm,
 			       channel = ChannelId},
 	    {ok, #state{xf = Xf,
-			req_id = 0, 
+			req_id = 0,
 			rep_buf = <<>>,
 			inf = new_inf(),
 			opts = Options}};
@@ -496,7 +874,7 @@ init([Cm, ChannelId, Options]) ->
 	Error ->
 	    {stop, {shutdown, Error}}
     end.
-    
+
 %%--------------------------------------------------------------------
 %% Function: handle_call/3
 %% Description: Handling call messages
@@ -518,7 +896,7 @@ handle_call({{timeout, Timeout}, wait_for_version_negotiation}, From,
 
 handle_call({_, wait_for_version_negotiation}, _, State) ->
     {reply, ok, State};
-	    
+
 handle_call({{timeout, infinity}, Msg}, From, State) ->
     do_handle_call(Msg, From, State);
 handle_call({{timeout, Timeout}, Msg}, From,  #state{req_id = Id} = State) ->
@@ -532,13 +910,13 @@ code_change(_OldVsn, State, _Extra) ->
     {ok, State}.
 
 do_handle_call({get_bufinf,BufHandle}, _From, S=#state{inf=I0}) ->
-    {reply, dict:find(BufHandle,I0), S};
+    {reply, maps:find(BufHandle,I0), S};
 
 do_handle_call({put_bufinf,BufHandle,B}, _From, S=#state{inf=I0}) ->
-    {reply, ok, S#state{inf=dict:store(BufHandle,B,I0)}};
+    {reply, ok, S#state{inf=maps:put(BufHandle,B,I0)}};
 
 do_handle_call({erase_bufinf,BufHandle}, _From, S=#state{inf=I0}) ->
-    {reply, ok, S#state{inf=dict:erase(BufHandle,I0)}};
+    {reply, ok, S#state{inf=maps:remove(BufHandle,I0)}};
 
 do_handle_call({open, Async,FileName,Mode}, From, #state{xf = XF} = State) ->
     {Access,Flags,Attrs} = open_mode(XF#ssh_xfer.vsn, Mode),
@@ -613,7 +991,7 @@ do_handle_call({pread,Async,Handle,At,Length}, From, State) ->
 					binary -> {{ok,Data}, State2};
 					text -> {{ok,binary_to_list(Data)}, State2}
 				    end;
-			       (Rep, State2) -> 
+			       (Rep, State2) ->
 				    {Rep, State2}
 			    end);
 	Error ->
@@ -754,7 +1132,7 @@ do_handle_call(recv_window, _From, State) ->
 do_handle_call(stop, _From, State) ->
     {stop, shutdown, ok, State};
 
-do_handle_call(Call, _From, State) ->    
+do_handle_call(Call, _From, State) ->
     {reply, {error, bad_call, Call, State}, State}.
 
 %%--------------------------------------------------------------------
@@ -762,13 +1140,13 @@ do_handle_call(Call, _From, State) ->
 %%                        
 %% Description: Handles channel messages
 %%--------------------------------------------------------------------
-handle_ssh_msg({ssh_cm, _ConnectionManager, 
-		{data, _ChannelId, 0, Data}}, #state{rep_buf = Data0} = 
+handle_ssh_msg({ssh_cm, _ConnectionManager,
+		{data, _ChannelId, 0, Data}}, #state{rep_buf = Data0} =
 	       State0) ->
     State = handle_reply(State0, <<Data0/binary,Data/binary>>),
     {ok, State};
 
-handle_ssh_msg({ssh_cm, _ConnectionManager, 
+handle_ssh_msg({ssh_cm, _ConnectionManager,
 		{data, _ChannelId, 1, Data}}, State) ->
     error_logger:format("ssh: STDERR: ~s\n", [binary_to_list(Data)]),
     {ok, State};
@@ -780,13 +1158,22 @@ handle_ssh_msg({ssh_cm, _, {signal, _, _}}, State) ->
     %% Ignore signals according to RFC 4254 section 6.9.
     {ok, State};
 
-handle_ssh_msg({ssh_cm, _, {exit_signal, ChannelId, _, Error, _}}, 
+handle_ssh_msg({ssh_cm, _, {exit_signal, ChannelId, Signal, Error0, _}},
 	       State0) ->
+    Error =
+        case Error0 of
+            "" -> Signal;
+            _ -> Error0
+        end,
     State = reply_all(State0, {error, Error}),
     {stop, ChannelId,  State};
 
 handle_ssh_msg({ssh_cm, _, {exit_status, ChannelId, Status}}, State0) ->
-    State = reply_all(State0, {error, {exit_status, Status}}),
+    State = 
+        case State0 of
+            0 -> State0;
+            _ -> reply_all(State0, {error, {exit_status, Status}})
+        end,
     {stop, ChannelId, State}.
 
 %%--------------------------------------------------------------------
@@ -800,9 +1187,9 @@ handle_msg({ssh_channel_up, _, _}, #state{opts = Options, xf = Xf} = State) ->
     {ok, State};
 
 %% Version negotiation timed out
-handle_msg({timeout, undefined, From}, 
+handle_msg({timeout, undefined, From},
 	   #state{xf = #ssh_xfer{channel = ChannelId}} = State) ->
-    ssh_channel:reply(From, {error, timeout}),
+    ssh_client_channel:reply(From, {error, timeout}),
     {stop, ChannelId, State};
 
 handle_msg({timeout, Id, From}, #state{req_list = ReqList0} = State) ->
@@ -811,17 +1198,17 @@ handle_msg({timeout, Id, From}, #state{req_list = ReqList0} = State) ->
 	    {ok, State};
 	_ ->
 	    ReqList = lists:keydelete(Id, 1, ReqList0),
-	    ssh_channel:reply(From, {error, timeout}),
+	    ssh_client_channel:reply(From, {error, timeout}),
 	    {ok, State#state{req_list = ReqList}}
     end;
 
 %% Connection manager goes down
-handle_msg({'DOWN', _Ref, _Type, _Process, _},  
+handle_msg({'DOWN', _Ref, _Type, _Process, _},
 	   #state{xf = #ssh_xfer{channel = ChannelId}} = State) ->
     {stop, ChannelId, State};
- 
+
 %% Stopped by user
-handle_msg({'EXIT', _, ssh_sftp_stop_channel}, 
+handle_msg({'EXIT', _, ssh_sftp_stop_channel},
 	   #state{xf = #ssh_xfer{channel = ChannelId}} = State) ->
     {stop, ChannelId, State};
 
@@ -842,24 +1229,31 @@ terminate(_Reason, State) ->
 %%====================================================================
 %% Internal functions
 %%====================================================================
-handle_options([], Sftp, Ssh) ->
-    {Ssh, Sftp};
-handle_options([{timeout, _} = Opt | Rest], Sftp, Ssh) ->
-    handle_options(Rest, [Opt | Sftp], Ssh);
-handle_options([{sftp_vsn, _} = Opt| Rest], Sftp, Ssh) ->
-    handle_options(Rest, [Opt | Sftp], Ssh);
-handle_options([Opt | Rest], Sftp, Ssh) ->
-    handle_options(Rest, Sftp, [Opt | Ssh]).
+handle_options(UserOptions) ->
+    handle_options(UserOptions, [], [], []).
+
+handle_options([], Sftp, Chan, Ssh) ->
+    {Ssh, Chan, Sftp};
+handle_options([{timeout, _} = Opt | Rest], Sftp, Chan, Ssh) ->
+    handle_options(Rest, [Opt|Sftp], Chan, Ssh);
+handle_options([{sftp_vsn, _} = Opt| Rest], Sftp, Chan, Ssh) ->
+    handle_options(Rest, [Opt|Sftp], Chan, Ssh);
+handle_options([{window_size, _} = Opt| Rest], Sftp, Chan, Ssh) ->
+    handle_options(Rest, Sftp, [Opt|Chan], Ssh);
+handle_options([{packet_size, _} = Opt| Rest], Sftp, Chan, Ssh) ->
+    handle_options(Rest, Sftp, [Opt|Chan], Ssh);
+handle_options([Opt|Rest], Sftp, Chan, Ssh) ->
+    handle_options(Rest, Sftp, Chan, [Opt|Ssh]).
 
 call(Pid, Msg, TimeOut) ->
-    ssh_channel:call(Pid, {{timeout, TimeOut}, Msg}, infinity).
+    ssh_client_channel:call(Pid, {{timeout, TimeOut}, Msg}, infinity).
 
 handle_reply(State, <<?UINT32(Len),Reply:Len/binary,Rest/binary>>) ->
     do_handle_reply(State, Reply, Rest);
-handle_reply(State, Data) -> 
+handle_reply(State, Data) ->
      State#state{rep_buf = Data}.
 
-do_handle_reply(#state{xf = Xf} = State, 
+do_handle_reply(#state{xf = Xf} = State,
 		<<?SSH_FXP_VERSION, ?UINT32(Version), BinExt/binary>>, Rest) ->
     Ext = ssh_xfer:decode_ext(BinExt),
     case Xf#ssh_xfer.vsn of
@@ -871,8 +1265,8 @@ do_handle_reply(#state{xf = Xf} = State,
 	       true ->
 		    ok
 	    end,
-	    ssh_channel:reply(From, ok)
-    end,    
+	    ssh_client_channel:reply(From, ok)
+    end,
     State#state{xf = Xf#ssh_xfer{vsn = Version, ext = Ext}, rep_buf = Rest};
 
 do_handle_reply(State0, Data, Rest) ->
@@ -892,9 +1286,9 @@ handle_req_reply(State0, {_, ReqID, _} = XfReply) ->
 	    List = lists:keydelete(ReqID, 1, State0#state.req_list),
 	    State1 = State0#state { req_list = List },
 	    case catch Fun(xreply(XfReply),State1) of
-		{'EXIT', _} -> 
+		{'EXIT', _} ->
 		    State1;
-		State -> 
+		State ->
 		    State
 	    end
     end.
@@ -919,7 +1313,7 @@ async_reply(ReqID, Reply, _From={To,_}, State) ->
     State.
 
 sync_reply(Reply, From, State) ->
-    catch (ssh_channel:reply(From, Reply)),
+    catch (ssh_client_channel:reply(From, Reply)),
     State.
 
 open2(OrigReqID,FileName,Handle,Mode,Async,From,State) ->
@@ -971,15 +1365,15 @@ reply_all(State, Reply) ->
 make_reply(ReqID, true, From, State) ->
     {reply, {async, ReqID},
      update_request_info(ReqID, State,
-			 fun(Reply,State1) -> 
+			 fun(Reply,State1) ->
 				 async_reply(ReqID,Reply,From,State1)
 			 end)};
 
 make_reply(ReqID, false, From, State) ->
     {noreply, 
      update_request_info(ReqID, State,
-			 fun(Reply,State1) -> 
-				 sync_reply(Reply, From, State1) 
+			 fun(Reply,State1) ->
+				 sync_reply(Reply, From, State1)
 			 end)}.
 
 make_reply_post(ReqID, true, From, State, PostFun) ->
@@ -1022,7 +1416,7 @@ attr_to_info(A) when is_record(A, ssh_xfer_attr) ->
     #file_info{
       size   = A#ssh_xfer_attr.size,
       type   = A#ssh_xfer_attr.type,
-      access = read_write, %% FIXME: read/write/read_write/none
+      access = file_mode_to_owner_access(A#ssh_xfer_attr.permissions),
       atime  = unix_to_datetime(A#ssh_xfer_attr.atime),
       mtime  = unix_to_datetime(A#ssh_xfer_attr.mtime),
       ctime  = unix_to_datetime(A#ssh_xfer_attr.createtime),
@@ -1034,26 +1428,39 @@ attr_to_info(A) when is_record(A, ssh_xfer_attr) ->
       uid    = A#ssh_xfer_attr.owner,
       gid    = A#ssh_xfer_attr.group}.
 
+file_mode_to_owner_access(FileMode)
+  when is_integer(FileMode) ->
+    %% The file mode contains the access permissions.
+    %% The read and write access permission of file owner
+    %% are located in 8th and 7th bit of file mode respectively.
 
-%% Added workaround for sftp timestam problem. (Timestamps should be
-%% in UTC but they where not) .  The workaround uses a deprecated
-%% function i calandar.  This will work as expected most of the time
-%% but has problems for the same reason as
-%% calendar:local_time_to_universal_time/1. We consider it better that
-%% the timestamps work as expected most of the time instead of none of
-%% the time. Hopfully the file-api will be updated so that we can
-%% solve this problem in a better way in the future.
+    ReadPermission = ((FileMode bsr 8) band 1),
+    WritePermission =  ((FileMode bsr 7) band 1),
+    case {ReadPermission, WritePermission} of
+        {1, 1} ->
+            read_write;
+        {1, 0} ->
+            read;
+        {0, 1} ->
+            write;
+        {0, 0} ->
+            none;
+        _ ->
+            undefined
+    end;
+file_mode_to_owner_access(_) ->
+    undefined.
 
 unix_to_datetime(undefined) ->
     undefined;
 unix_to_datetime(UTCSecs) ->
-    UTCDateTime = 
+    UTCDateTime =
 	calendar:gregorian_seconds_to_datetime(UTCSecs + 62167219200),
     erlang:universaltime_to_localtime(UTCDateTime).
 
 datetime_to_unix(undefined) ->
     undefined;
-datetime_to_unix(LocalDateTime) ->    
+datetime_to_unix(LocalDateTime) ->
     UTCDateTime = erlang:localtime_to_universaltime(LocalDateTime),
     calendar:datetime_to_gregorian_seconds(UTCDateTime) - 62167219200.
 
@@ -1101,11 +1508,11 @@ open_mode3(Modes) ->
 	 end,
     {[], Fl, A}.
 
-%% accessors for inf dict
-new_inf() -> dict:new().
+%% accessors for inf map
+new_inf() -> #{}.
 
 add_new_handle(Handle, FileMode, Inf) ->
-    dict:store(Handle, #fileinf{offset=0, size=0, mode=FileMode}, Inf).
+    maps:put(Handle, #fileinf{offset=0, size=0, mode=FileMode}, Inf).
 
 update_size(Handle, NewSize, State) ->
     OldSize = get_size(Handle, State),
@@ -1125,27 +1532,24 @@ update_offset(Handle, NewOffset, State0) ->
 %% access size and offset for handle
 put_size(Handle, Size, State) ->
     Inf0 = State#state.inf,
-    case dict:find(Handle, Inf0) of
+    case maps:find(Handle, Inf0) of
 	{ok, FI} ->
-	    State#state{inf=dict:store(Handle, FI#fileinf{size=Size}, Inf0)};
+	    State#state{inf=maps:put(Handle, FI#fileinf{size=Size}, Inf0)};
 	_ ->
-	    State#state{inf=dict:store(Handle, #fileinf{size=Size,offset=0},
-				       Inf0)}
+	    State#state{inf=maps:put(Handle, #fileinf{size=Size,offset=0}, Inf0)}
     end.
 
 put_offset(Handle, Offset, State) ->
     Inf0 = State#state.inf,
-    case dict:find(Handle, Inf0) of
+    case maps:find(Handle, Inf0) of
 	{ok, FI} ->
-	    State#state{inf=dict:store(Handle, FI#fileinf{offset=Offset},
-				       Inf0)};
+	    State#state{inf=maps:put(Handle, FI#fileinf{offset=Offset}, Inf0)};
 	_ ->
-	    State#state{inf=dict:store(Handle, #fileinf{size=Offset,
-							offset=Offset}, Inf0)}
+	    State#state{inf=maps:put(Handle, #fileinf{size=Offset, offset=Offset}, Inf0)}
     end.
 
 get_size(Handle, State) ->
-    case dict:find(Handle, State#state.inf) of
+    case maps:find(Handle, State#state.inf) of
 	{ok, FI} ->
 	    FI#fileinf.size;
 	_ ->
@@ -1153,11 +1557,11 @@ get_size(Handle, State) ->
     end.
 
 %% get_offset(Handle, State) ->
-%%     {ok, FI} = dict:find(Handle, State#state.inf),
+%%     {ok, FI} = maps:find(Handle, State#state.inf),
 %%     FI#fileinf.offset.
 
 get_mode(Handle, State) ->
-    case dict:find(Handle, State#state.inf) of
+    case maps:find(Handle, State#state.inf) of
 	{ok, FI} ->
 	    FI#fileinf.mode;
 	_ ->
@@ -1165,14 +1569,14 @@ get_mode(Handle, State) ->
     end.
 
 erase_handle(Handle, State) ->
-    FI = dict:erase(Handle, State#state.inf),
+    FI = maps:remove(Handle, State#state.inf),
     State#state{inf = FI}.
 
 %%
 %% Caluclate a integer offset
 %%
 lseek_position(Handle, Pos, State) ->
-    case dict:find(Handle, State#state.inf) of
+    case maps:find(Handle, State#state.inf) of
 	{ok, #fileinf{offset=O, size=S}} ->
 	    lseek_pos(Pos, O, S);
 	_ ->
@@ -1202,7 +1606,7 @@ lseek_pos({cur, Offset}, CurOffset, _CurSize)
        true ->
 	    {ok, NewOffset}
     end;
-lseek_pos({eof, Offset}, _CurOffset, CurSize) 
+lseek_pos({eof, Offset}, _CurOffset, CurSize)
   when is_integer(Offset) andalso -(?SSH_FILEXFER_LARGEFILESIZE) =< Offset andalso
        Offset < ?SSH_FILEXFER_LARGEFILESIZE ->
     NewOffset = CurSize + Offset,
@@ -1212,11 +1616,11 @@ lseek_pos({eof, Offset}, _CurOffset, CurSize)
 	    {ok, NewOffset}
     end;
 lseek_pos(_, _, _) ->
-    {error, einval}. 
+    {error, einval}.
 
 %%%================================================================
 %%%
-to_bin(Data) when is_list(Data) -> list_to_binary(Data);
+to_bin(Data) when is_list(Data) -> ?to_binary(Data);
 to_bin(Data) when is_binary(Data) -> Data.
 
 
@@ -1250,13 +1654,13 @@ position_buf(Pid, SftpHandle, BufHandle, Pos, FileOpTimeout) ->
     case Pos of
 	{cur,0} when Mode==write ->
 	    {ok,Size+size(Buf0)};
-	
+
 	{cur,0} when Mode==read ->
 	    {ok,Size};
-	
+
 	_ when Mode==read, is_integer(Pos) ->
 	    Skip = Pos-Size,
-	    if 
+	    if
 		Skip < 0 ->
 		    {error, cannot_rewind};
 		Skip == 0 ->
@@ -1291,7 +1695,7 @@ read_buf(Pid, SftpHandle, BufHandle, WantedLen, FileOpTimeout) ->
 	    eof
       end.
 
-do_the_read_buf(_Pid, _SftpHandle, WantedLen, _Packet, _FileOpTimeout, 
+do_the_read_buf(_Pid, _SftpHandle, WantedLen, _Packet, _FileOpTimeout,
 		B=#bufinf{plain_text_buf=PlainBuf0,
 			  size = Size})
     when size(PlainBuf0) >= WantedLen ->
@@ -1300,7 +1704,7 @@ do_the_read_buf(_Pid, _SftpHandle, WantedLen, _Packet, _FileOpTimeout,
     {ok,ResultBin,B#bufinf{plain_text_buf=PlainBuf,
 			   size = Size + WantedLen}};
 
-do_the_read_buf(Pid, SftpHandle, WantedLen, Packet, FileOpTimeout, 
+do_the_read_buf(Pid, SftpHandle, WantedLen, Packet, FileOpTimeout,
 		B0=#bufinf{plain_text_buf = PlainBuf0,
 			   enc_text_buf = EncBuf0,
 			   chunksize = undefined
@@ -1308,12 +1712,12 @@ do_the_read_buf(Pid, SftpHandle, WantedLen, Packet, FileOpTimeout,
   when size(EncBuf0) > 0 ->
     %% We have (at least) one decodable byte waiting for decodeing.
     {ok,DecodedBin,B} = apply_crypto(EncBuf0, B0),
-    do_the_read_buf(Pid, SftpHandle, WantedLen, Packet, FileOpTimeout, 
+    do_the_read_buf(Pid, SftpHandle, WantedLen, Packet, FileOpTimeout,
 		    B#bufinf{plain_text_buf = <<PlainBuf0/binary, DecodedBin/binary>>,
 			     enc_text_buf = <<>>
 			    });
-    
-do_the_read_buf(Pid, SftpHandle, WantedLen, Packet, FileOpTimeout, 
+
+do_the_read_buf(Pid, SftpHandle, WantedLen, Packet, FileOpTimeout,
 		B0=#bufinf{plain_text_buf = PlainBuf0,
 			   enc_text_buf = EncBuf0,
 			   chunksize = ChunkSize0
@@ -1322,11 +1726,11 @@ do_the_read_buf(Pid, SftpHandle, WantedLen, Packet, FileOpTimeout,
     %% We have (at least) one chunk of decodable bytes waiting for decodeing.
     <<ToDecode:ChunkSize0/binary, EncBuf/binary>> = EncBuf0,
     {ok,DecodedBin,B} = apply_crypto(ToDecode, B0),
-    do_the_read_buf(Pid, SftpHandle, WantedLen, Packet, FileOpTimeout, 
+    do_the_read_buf(Pid, SftpHandle, WantedLen, Packet, FileOpTimeout,
 		    B#bufinf{plain_text_buf = <<PlainBuf0/binary, DecodedBin/binary>>,
 			     enc_text_buf = EncBuf
 			    });
-    
+
 do_the_read_buf(Pid, SftpHandle, WantedLen, Packet, FileOpTimeout, B=#bufinf{enc_text_buf = EncBuf0}) ->
     %% We must read more bytes and append to the buffer of encoded bytes.
     case read(Pid, SftpHandle, Packet, FileOpTimeout) of
@@ -1343,7 +1747,7 @@ do_the_read_buf(Pid, SftpHandle, WantedLen, Packet, FileOpTimeout, B=#bufinf{enc
 write_buf(Pid, SftpHandle, BufHandle, PlainBin, FileOpTimeout) ->
     {ok,{_Window,Packet}} = send_window(Pid, FileOpTimeout),
     {ok,B0=#bufinf{plain_text_buf=PTB}}  = call(Pid, {get_bufinf,BufHandle}, FileOpTimeout),
-    case do_the_write_buf(Pid, SftpHandle, Packet, FileOpTimeout, 
+    case do_the_write_buf(Pid, SftpHandle, Packet, FileOpTimeout,
 			  B0#bufinf{plain_text_buf = <<PTB/binary,PlainBin/binary>>}) of
 	{ok, B} ->
 	    call(Pid, {put_bufinf,BufHandle,B}, FileOpTimeout),
@@ -1352,7 +1756,7 @@ write_buf(Pid, SftpHandle, BufHandle, PlainBin, FileOpTimeout) ->
 	    {error,Error}
     end.
 
-do_the_write_buf(Pid, SftpHandle, Packet, FileOpTimeout, 
+do_the_write_buf(Pid, SftpHandle, Packet, FileOpTimeout,
 		 B=#bufinf{enc_text_buf = EncBuf0,
 			   size = Size})
   when size(EncBuf0) >= Packet ->
@@ -1394,9 +1798,9 @@ do_the_write_buf(_Pid, _SftpHandle, _Packet, _FileOpTimeout, B) ->
 apply_crypto(In, B=#bufinf{crypto_state = CState0,
 			   crypto_fun = F}) ->
     case F(In,CState0) of
-	{ok,EncodedBin,CState} -> 
+	{ok,EncodedBin,CState} ->
 	    {ok, EncodedBin, B#bufinf{crypto_state=CState}};
-	{ok,EncodedBin,CState,ChunkSize} -> 
+	{ok,EncodedBin,CState,ChunkSize} ->
 	    {ok, EncodedBin, B#bufinf{crypto_state=CState,
 				      chunksize=ChunkSize}}
     end.
@@ -1422,3 +1826,26 @@ format_channel_start_error({shutdown, Reason}) ->
     Reason;
 format_channel_start_error(Reason) ->
     Reason.
+
+%%%################################################################
+%%%#
+%%%# Tracing
+%%%#
+
+ssh_dbg_trace_points() -> [terminate].
+
+ssh_dbg_flags(terminate) -> [c].
+
+ssh_dbg_on(terminate) -> dbg:tp(?MODULE,  terminate, 2, x).
+
+ssh_dbg_off(terminate) -> dbg:ctpg(?MODULE, terminate, 2).
+
+ssh_dbg_format(terminate, {call, {?MODULE,terminate, [Reason, State]}}) ->
+    ["Sftp Terminating:\n",
+     io_lib:format("Reason: ~p,~nState:~n~s", [Reason, wr_record(State)])
+    ];
+ssh_dbg_format(terminate, {return_from, {?MODULE,terminate,2}, _Ret}) ->
+    skip.
+
+?wr_record(state).
+

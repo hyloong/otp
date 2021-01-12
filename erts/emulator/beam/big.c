@@ -1,7 +1,7 @@
 /*
  * %CopyrightBegin%
  *
- * Copyright Ericsson AB 1996-2014. All Rights Reserved.
+ * Copyright Ericsson AB 1996-2020. All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -48,7 +48,7 @@
 	    _t_dst = (dst)+((sz)-1);				\
 	    _t_src = (src)+((sz)-1);				\
 	    while(_t_sz--) *_t_dst-- = *_t_src--;		\
-	}							\
+        }							\
     } while(0)
 
 /* add a and b with carry in + out */
@@ -423,6 +423,30 @@
 
 #endif
 
+/* Forward declaration of lookup tables (See below in this file) used in list to
+ * integer conversions for different bases. Also used in bignum printing.
+ */
+static const byte digits_per_sint_lookup[36-1];
+static const byte digits_per_small_lookup[36-1];
+static const Sint largest_power_of_base_lookup[36-1];
+static const double lg2_lookup[36-1];
+
+static ERTS_INLINE byte get_digits_per_signed_int(Uint base) {
+    return digits_per_sint_lookup[base-2];
+}
+
+static ERTS_INLINE byte get_digits_per_small(Uint base) {
+    return digits_per_small_lookup[base-2];
+}
+
+static ERTS_INLINE Sint get_largest_power_of_base(Uint base) {
+    return largest_power_of_base_lookup[base-2];
+}
+
+static ERTS_INLINE double lookup_log2(Uint base) {
+    return lg2_lookup[base - 2];
+}
+
 /*
 ** compare two number vectors
 */
@@ -649,27 +673,25 @@ static dsize_t I_mul(ErtsDigit* x, dsize_t xl, ErtsDigit* y, dsize_t yl, ErtsDig
 
 static dsize_t I_sqr(ErtsDigit* x, dsize_t xl, ErtsDigit* r)
 {
-    ErtsDigit d_next = *x;
     ErtsDigit d;
     ErtsDigit* r0 = r;
     ErtsDigit* s = r;
 
     if ((r + xl) == x)	/* "Inline" operation */
 	*x = 0;
-    x++;
 	
     while(xl--) {
-	ErtsDigit* y = x;
+	ErtsDigit* y;
 	ErtsDigit y_0 = 0, y_1 = 0, y_2 = 0, y_3 = 0;
 	ErtsDigit b0, b1;
 	ErtsDigit z0, z1, z2;
 	ErtsDigit t;
 	dsize_t y_l = xl;
-		
+
+        d = *x;
+        x++;
+        y = x;
 	s = r;
-	d = d_next;
-	d_next = *x; 
-	x++;
 
 	DMUL(d, d, b1, b0);
 	DSUMc(*s, b0, y_3, t);
@@ -1140,8 +1162,11 @@ static dsize_t I_band(ErtsDigit* x, dsize_t xl, short xsgn,
 		*r++ = ~c1 & ~c2;
 		x++; y++;
 	    }
-	    while(xl--)
-		*r++ = ~*x++;
+	    while(xl--) {
+                DSUBb(*x,0,b1,c1);
+                *r++ = ~c1;
+		x++;
+            }
 	}
     }
     return I_btrail(r0, r, sign);
@@ -1274,8 +1299,11 @@ static dsize_t I_bxor(ErtsDigit* x, dsize_t xl, short xsgn,
 		*r++ = ~c ^ *y++;
 		x++;
 	    }
-	    while(xl--)
-		*r++ = ~*x++;
+	    while(xl--) {
+		DSUBb(*x,0,b,c);
+		*r++ = ~c;
+		x++;
+	    }
 	}
 	else {
 	    ErtsDigit b1, b2;
@@ -1293,7 +1321,9 @@ static dsize_t I_bxor(ErtsDigit* x, dsize_t xl, short xsgn,
 		x++; y++;
 	    }
 	    while(xl--) {
-		*r++ = *x++;
+                DSUBb(*x,0,b1,c1);
+		*r++ = c1;
+                x++;
 	    }
 	}
     }
@@ -1618,21 +1648,16 @@ big_to_double(Wterm x, double* resp)
     ErtsDigit* s = BIG_V(xp) + xl;
     short xsgn = BIG_SIGN(xp);
     double dbase = ((double)(D_MASK)+1);
-#ifndef NO_FPE_SIGNALS 
-    volatile unsigned long *fpexnp = erts_get_current_fp_exception();
-#endif
-    __ERTS_SAVE_FP_EXCEPTION(fpexnp);
 
-    __ERTS_FP_CHECK_INIT(fpexnp);
     while (xl--) {
-	d = d * dbase + *--s;
+        d = d * dbase + *--s;
 
-	__ERTS_FP_ERROR(fpexnp, d, __ERTS_RESTORE_FP_EXCEPTION(fpexnp); return -1);
+        if (!erts_isfinite(d)) {
+            return -1;
+        }
     }
 
     *resp = xsgn ? -d : d;
-    __ERTS_FP_ERROR(fpexnp,*resp,;);
-    __ERTS_RESTORE_FP_EXCEPTION(fpexnp);
     return 0;
 }
 
@@ -1695,23 +1720,23 @@ double_to_big(double x, Eterm *heap, Uint hsz)
 
 
 /*
- ** Estimate the number of decimal digits (include sign)
+ ** Estimate the number of digits in given base (include sign)
  */
-int big_decimal_estimate(Wterm x)
+int big_integer_estimate(Wterm x, Uint base)
 {
     Eterm* xp = big_val(x);
     int lg = I_lg(BIG_V(xp), BIG_SIZE(xp));
-    int lg10 = ((lg+1)*28/93)+1;
+    int lgBase = ((lg + 1) / lookup_log2(base)) + 1;
 
-    if (BIG_SIGN(xp)) lg10++;	/* add sign */
-    return lg10+1;		/* add null */
+    if (BIG_SIGN(xp)) lgBase++;	/* add sign */
+    return lgBase + 1;		/* add null */
 }
 
 /*
-** Convert a bignum into a string of decimal numbers
+** Convert a bignum into a string of numbers in given base
 */
-
-static Uint write_big(Wterm x, void (*write_func)(void *, char), void *arg)
+static Uint write_big(Wterm x, int base, void (*write_func)(void *, char),
+                      void *arg)
 {
     Eterm* xp = big_val(x);
     ErtsDigit* dx = BIG_V(xp);
@@ -1719,46 +1744,72 @@ static Uint write_big(Wterm x, void (*write_func)(void *, char), void *arg)
     short sign = BIG_SIGN(xp);
     ErtsDigit rem;
     Uint n = 0;
+    const Uint digits_per_Sint = get_digits_per_signed_int(base);
+    const Sint largest_pow_of_base = get_largest_power_of_base(base);
 
-    if (xl == 1 && *dx < D_DECIMAL_BASE) {
-	rem = *dx;
-	if (rem == 0) {
-	    (*write_func)(arg, '0'); n++;
-	} else {
-	    while(rem) {
-		(*write_func)(arg, (rem % 10) + '0'); n++;
-		rem /= 10;
-	    }
-	}
+    if (xl == 1 && *dx < largest_pow_of_base) {
+        rem = *dx;
+        if (rem == 0) {
+            (*write_func)(arg, '0'); n++;
+        } else {
+            while(rem) {
+                int digit = rem % base;
+
+                if (digit < 10) {
+                    (*write_func)(arg, digit + '0'); n++;
+                } else {
+                    (*write_func)(arg, 'A' + (digit - 10)); n++;
+                }
+
+                rem /= base;
+            }
+        }
     } else {
-	ErtsDigit* tmp  = (ErtsDigit*) erts_alloc(ERTS_ALC_T_TMP,
-					      sizeof(ErtsDigit)*xl);
-	dsize_t tmpl = xl;
+        ErtsDigit* tmp = (ErtsDigit*) erts_alloc(ERTS_ALC_T_TMP,
+                                                 sizeof(ErtsDigit) * xl);
+        dsize_t tmpl = xl;
 
-	MOVE_DIGITS(tmp, dx, xl);
+        MOVE_DIGITS(tmp, dx, xl);
 
-	while(1) {
-	    tmpl = D_div(tmp, tmpl, D_DECIMAL_BASE, tmp, &rem);
-	    if (tmpl == 1 && *tmp == 0) {
-		while(rem) {
-		    (*write_func)(arg, (rem % 10)+'0'); n++;
-		    rem /= 10;
-		}
-		break;
-	    } else {
-		int i = D_DECIMAL_EXP;
-		while(i--) {
-		    (*write_func)(arg, (rem % 10)+'0'); n++;
-		    rem /= 10;
-		}
-	    }
-	}
-	erts_free(ERTS_ALC_T_TMP, (void *) tmp);
+        while(1) {
+            tmpl = D_div(tmp, tmpl, largest_pow_of_base, tmp, &rem);
+
+            if (tmpl == 1 && *tmp == 0) {
+                while(rem) {
+                    int digit = rem % base;
+
+                    if (digit < 10) {
+                        (*write_func)(arg, digit + '0'); n++;
+                    } else {
+                        (*write_func)(arg, 'A' + (digit - 10)); n++;
+                    }
+
+                    rem /= base;
+                }
+                break;
+            } else {
+                Uint i = digits_per_Sint;
+
+                while(i--) {
+                    int digit = rem % base;
+
+                    if (digit < 10) {
+                        (*write_func)(arg, digit + '0'); n++;
+                    } else {
+                        (*write_func)(arg, 'A' + (digit - 10)); n++;
+                    }
+
+                    rem /= base;
+                }
+            }
+        }
+        erts_free(ERTS_ALC_T_TMP, (void *) tmp);
     }
 
     if (sign) {
-	(*write_func)(arg, '-'); n++;
+        (*write_func)(arg, '-'); n++;
     }
+
     return n;
 }
 
@@ -1775,12 +1826,12 @@ write_list(void *arg, char c)
     blp->hp += 2;
 }
 
-Eterm erts_big_to_list(Eterm x, Eterm **hpp)
+Eterm erts_big_to_list(Eterm x, int base, Eterm **hpp)
 {
     struct big_list__ bl;
     bl.hp = *hpp;
     bl.res = NIL;
-    write_big(x, write_list, (void *) &bl);
+    write_big(x, base, write_list, (void *) &bl);
     *hpp = bl.hp;
     return bl.res;
 }
@@ -1791,11 +1842,11 @@ write_string(void *arg, char c)
     *(--(*((char **) arg))) = c;
 }
 
-char *erts_big_to_string(Wterm x, char *buf, Uint buf_sz)
+char *erts_big_to_string(Wterm x, int base, char *buf, Uint buf_sz)
 {
     char *big_str = buf + buf_sz - 1;
     *big_str = '\0';
-    write_big(x, write_string, (void *) &big_str);
+    write_big(x, base, write_string, (void*)&big_str);
     ASSERT(buf <= big_str && big_str <= buf + buf_sz - 1);
     return big_str;
 }
@@ -1804,11 +1855,11 @@ char *erts_big_to_string(Wterm x, char *buf, Uint buf_sz)
  * e.g. 1 bsl 64 -> "18446744073709551616"
  */
 
-Uint erts_big_to_binary_bytes(Eterm x, char *buf, Uint buf_sz)
+Uint erts_big_to_binary_bytes(Eterm x, int base, char *buf, Uint buf_sz)
 {
     char *big_str = buf + buf_sz;
     Uint n;
-    n = write_big(x, write_string, (void *) &big_str);
+    n = write_big(x, base, write_string, (void *) &big_str);
     ASSERT(buf <= big_str && big_str <= buf + buf_sz);
     return n;
 }
@@ -1898,7 +1949,7 @@ dsize_t big_bytes(Eterm x)
 ** xsz is the number of bytes in xp
 ** *r is untouched if number fits in small
 */
-Eterm bytes_to_big(byte *xp, dsize_t xsz, int xsgn, Eterm *r)
+Eterm bytes_to_big(const byte *xp, dsize_t xsz, int xsgn, Eterm *r)
 {
     ErtsDigit* rwp = BIG_V(r);
     dsize_t rsz = 0;
@@ -2014,6 +2065,32 @@ term_to_Uint(Eterm term, Uint *up)
     }
 }
 
+/* same as term_to_Uint()
+   but also accept larger bignums by masking
+ */
+int
+term_to_Uint_mask(Eterm term, Uint *up)
+{
+    if (is_small(term)) {
+	Sint i = signed_val(term);
+	if (i < 0) {
+	    *up = BADARG;
+	    return 0;
+	}
+	*up = (Uint) i;
+	return 1;
+    } else if (is_big(term) && !big_sign(term)) {
+	ErtsDigit* xr = big_v(term);
+
+	ERTS_CT_ASSERT(sizeof(ErtsDigit) == sizeof(Uint));
+	*up = (Uint)*xr;  /* just pick first word */
+	return 1;
+    } else {
+	*up = BADARG;
+	return 0;
+    }
+}
+
 int
 term_to_UWord(Eterm term, UWord *up)
 {
@@ -2091,6 +2168,24 @@ term_to_Uint64(Eterm term, Uint64 *up)
 	*up = BADARG;
 	return 0;
     }
+#endif
+}
+
+int
+term_to_Uint32(Eterm term, Uint32 *up)
+{
+#if ERTS_SIZEOF_ETERM == 4
+    return term_to_Uint(term,up);
+#else
+    if (is_small(term)) {
+	Sint i = signed_val(term);
+	if (i >= 0) {
+            *up = (Uint32) i;
+            return 1;
+        }
+    }
+    *up = BADARG;
+    return 0;
 #endif
 }
 
@@ -2219,21 +2314,6 @@ Eterm big_minus(Eterm x, Eterm y, Eterm *r)
 }
 
 /*
-** Subtract a digit from big number
-*/
-Eterm big_minus_small(Eterm x, Eterm y, Eterm *r)
-{
-    Eterm* xp = big_val(x);
-
-    if (BIG_SIGN(xp))
-	return big_norm(r, D_add(BIG_V(xp),BIG_SIZE(xp), (ErtsDigit) y, BIG_V(r)), 
-			(short) BIG_SIGN(xp));
-    else
-	return big_norm(r, D_sub(BIG_V(xp),BIG_SIZE(xp), (ErtsDigit) y, BIG_V(r)), 
-			(short) BIG_SIGN(xp));
-}
-
-/*
 ** Multiply smallnums
 */
 
@@ -2299,11 +2379,55 @@ Eterm big_times(Eterm x, Eterm y, Eterm *r)
     return big_norm(r, rsz, sign);
 }
 
+/*
+** Fused div_rem for bignums
+*/
+int big_div_rem(Eterm lhs, Eterm rhs,
+                Eterm *q_hp, Eterm *q,
+                Eterm *r_hp, Eterm *r)
+{
+    Eterm *lhs_val = big_val(lhs);
+    Eterm *rhs_val = big_val(rhs);
 
-/* 
+    int div_sign = BIG_SIGN(lhs_val) != BIG_SIGN(rhs_val);
+    int rem_sign = BIG_SIGN(lhs_val);
+
+    dsize_t lhs_size = BIG_SIZE(lhs_val);
+    dsize_t rhs_size = BIG_SIZE(rhs_val);
+
+    dsize_t quotient_size, remainder_size;
+    Eterm quotient, remainder;
+
+    if (rhs_size == 1) {
+        quotient_size = D_div(BIG_V(lhs_val), lhs_size, BIG_DIGIT(rhs_val, 0),
+                              BIG_V(q_hp), BIG_V(r_hp));
+        remainder_size = 1;
+    } else {
+        quotient_size = I_div(BIG_V(lhs_val), lhs_size,
+                              BIG_V(rhs_val), rhs_size,
+                              BIG_V(q_hp), BIG_V(r_hp),
+                              &remainder_size);
+    }
+
+    quotient = big_norm(q_hp, quotient_size, div_sign);
+    if (quotient == NIL) {
+        return 0;
+    }
+
+    remainder = big_norm(r_hp, remainder_size, rem_sign);
+    if (remainder == NIL) {
+        return 0;
+    }
+
+    *q = quotient;
+    *r = remainder;
+
+    return 1;
+}
+
+/*
 ** Divide bignums
 */
-
 Eterm big_div(Eterm x, Eterm y, Eterm *q)
 {
     Eterm* xp = big_val(x);
@@ -2363,16 +2487,6 @@ Eterm big_rem(Eterm x, Eterm y, Eterm *r)
 	dsize_t rsz = I_rem(BIG_V(xp), xsz, BIG_V(yp), ysz, BIG_V(r));
 	return big_norm(r, rsz, sign);
     }
-}
-
-Eterm big_neg(Eterm x, Eterm *r)
-{
-    Eterm* xp = big_val(x);
-    dsize_t xsz = BIG_SIZE(xp);
-    short xsgn = BIG_SIGN(xp);
-    
-    MOVE_DIGITS(BIG_V(r), BIG_V(xp), xsz);
-    return big_norm(r, xsz, (short) !xsgn);
 }
 
 Eterm big_band(Eterm x, Eterm y, Eterm *r)
@@ -2522,63 +2636,102 @@ int term_equals_2pow32(Eterm x)
     }
 }
 
+static ERTS_INLINE int c2int_is_valid_char(byte ch, int base) {
+    if (base <= 10)
+        return (ch >= '0' && ch < ('0' + base));
+    else
+        return (ch >= '0' && ch <= '9')
+            || (ch >= 'A' && ch < ('A' + base - 10))
+            || (ch >= 'a' && ch < ('a' + base - 10));
+}
 
-#define IS_VALID_CHARACTER(CHAR,BASE) \
-  (CHAR < '0'				    \
-   || (CHAR > ('0' + BASE - 1)		    \
-       && !(BASE > 10							\
-	    && ((CHAR >= 'a' && CHAR < ('a' + BASE - 10))		\
-		|| (CHAR >= 'A' && CHAR < ('A' + BASE - 10))))))
-#define CHARACTER_FROM_BASE(CHAR)					\
-  ((CHAR <= '9') ? CHAR - '0' : 10 + ((CHAR <= 'Z') ? CHAR - 'A' : CHAR - 'a'))
-#define D_BASE_EXP(BASE) (d_base_exp_lookup[BASE-2])
-#define D_BASE_BASE(BASE) (d_base_base_lookup[BASE-2])
-#define LG2_LOOKUP(BASE)  (lg2_lookup[base-2])
+static ERTS_INLINE int c2int_is_invalid_char(byte ch, int base) {
+    return !c2int_is_valid_char(ch, base);
+}
 
-/*
- * for i in 2..64 do
- *   lg2_lookup[i-2] = log2(i)
- * end
- * How many bits are needed to store string of size n
- */
-const double lg2_lookup[] = { 1.0, 1.58496, 2, 2.32193, 2.58496, 2.80735, 3.0,
-	3.16993, 3.32193, 3.45943, 3.58496, 3.70044, 3.80735, 3.90689, 4.0,
-	4.08746, 4.16993, 4.24793, 4.32193, 4.39232, 4.45943, 4.52356, 4.58496,
-	4.64386, 4.70044, 4.75489, 4.80735, 4.85798, 4.90689, 4.9542, 5.0,
-	5.04439, 5.08746, 5.12928, 5.16993, 5.20945, 5.24793, 5.2854, 5.32193,
-	5.35755, 5.39232, 5.42626, 5.45943, 5.49185, 5.52356, 5.55459, 5.58496,
-	5.61471, 5.64386, 5.67243, 5.70044, 5.72792, 5.75489, 5.78136, 5.80735,
-	5.83289, 5.85798, 5.88264, 5.90689, 5.93074, 5.9542, 5.97728, 6.0 };
+static ERTS_INLINE byte c2int_digit_from_base(byte ch) {
+    return ch <= '9' ? ch - '0'
+            : (10 + (ch <= 'Z' ? ch - 'A' : ch - 'a'));
+}
 
 /*
- * for i in 2..64 do
- *   d_base_exp_lookup[i-2] = 31 / lg2_lookup[i-2];
- * end
- * How many characters can fit in 31 bits
+ * How many bits are needed to store 1 digit of given base in binary
+ * Wo.Alpha formula: Table [log2[n], {n,2,36}]
  */
-const byte d_base_exp_lookup[] = { 31, 19, 15, 13, 11, 11, 10, 9, 9, 8, 8, 8, 8,
-	7, 7, 7, 7, 7, 7, 7, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 5, 5, 5,
-	5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5,
-	5, 5 };
+static const double lg2_lookup[36-1] = {
+    1.0, 1.58496, 2.0, 2.32193, 2.58496, 2.80735, 3.0, 3.16993, 3.32193,
+    3.45943, 3.58496, 3.70044, 3.80735, 3.90689, 4.0, 4.08746, 4.16993, 4.24793,
+    4.32193, 4.39232, 4.45943, 4.52356, 4.58496, 4.64386, 4.70044, 4.75489,
+    4.80735, 4.85798, 4.90689, 4.9542, 5.0, 5.04439, 5.08746, 5.12928, 5.16993
+};
 
 /*
- * for i in 2..64 do
- *   d_base_base_lookup[i-2] = pow(i,d_base_exp_lookup[i-2]);
- * end
- * How much can the characters which fit in 31 bit represent
+ * How many digits can fit into a signed int (Sint) for given base, we take
+ * one digit away just to be on the safer side (some corner cases).
  */
-const Uint d_base_base_lookup[] = { 2147483648u, 1162261467u, 1073741824u,
-	1220703125u, 362797056u, 1977326743u, 1073741824u, 387420489u,
-	1000000000u, 214358881u, 429981696u, 815730721u, 1475789056u,
-	170859375u, 268435456u, 410338673u, 612220032u, 893871739u, 1280000000u,
-	1801088541u, 113379904u, 148035889u, 191102976u, 244140625u, 308915776u,
-	387420489u, 481890304u, 594823321u, 729000000u, 887503681u, 1073741824u,
-	1291467969u, 1544804416u, 1838265625u, 60466176u, 69343957u, 79235168u,
-	90224199u, 102400000u, 115856201u, 130691232u, 147008443u, 164916224u,
-	184528125u, 205962976u, 229345007u, 254803968u, 282475249u, 312500000u,
-	345025251u, 380204032u, 418195493u, 459165024u, 503284375u, 550731776u,
-	601692057u, 656356768u, 714924299u, 777600000u, 844596301u, 916132832u,
-	992436543u, 1073741824u };
+static const byte digits_per_sint_lookup[36-1] = {
+#if (SIZEOF_VOID_P == 4)
+    /* Wo.Alpha formula: Table [Trunc[31 / log[2,n]]-1, {n, 2, 36}] */
+    30, 18, 14, 12, 10, 10, 9, 8, 8, 7, 7, 7, 7, 6, 6, 6, 6, 6, 6, 6, 5, 5, 5,
+    5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 4
+#elif (SIZEOF_VOID_P == 8)
+    /* Wo.Alpha formula: Table [Trunc[63 / log[2,n]]-1, {n, 2, 36}] */
+    62, 38, 30, 26, 23, 21, 20, 18, 17, 17, 16, 16, 15, 15, 14, 14, 14, 13, 13,
+    13, 13, 12, 12, 12, 12, 12, 12, 11, 11, 11, 11, 11, 11, 11, 11
+#else
+    #error "Please produce a lookup table for the new architecture"
+#endif
+};
+
+/*
+ * How many digits can fit into Erlang Small (SMALL_BITS-1) counting sign bit
+ */
+static const byte digits_per_small_lookup[36-1] = {
+#if (SIZEOF_VOID_P == 4)
+    /* Wo.Alpha formula: Table [Trunc[27 / log[2,n]]-1, {n, 2, 36}] */
+    27, 17, 13, 11, 10, 9, 9, 8, 8, 7, 7, 7, 7, 6, 6, 6, 6, 6, 6, 6, 6, 5, 5, 5,
+    5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5
+#elif (SIZEOF_VOID_P == 8)
+    /* Wo.Alpha formula: Table [Trunc[59 / log[2,n]]-1, {n, 2, 36}] */
+    59, 37, 29, 25, 22, 21, 19, 18, 17, 17, 16, 15, 15, 15, 14, 14, 14, 13, 13,
+    13, 13, 13, 12, 12, 12, 12, 12, 12, 12, 11, 11, 11, 11, 11, 11
+#else
+    #error "Please produce a lookup table for the new architecture"
+#endif
+};
+
+/*
+ * Largest power of base which can be represented in a signed int (Sint).
+ * Calculated by base 2..36 to the power of corresponding element from
+ * digits_per_sint_lookup.
+ */
+static const Sint largest_power_of_base_lookup[36-1] = {
+#if (SIZEOF_VOID_P == 4)
+    /* Wo.Alpha formula: Table [Pow[n, Trunc[31 / log[2,n]]-1], {n, 2, 36}] */
+    1073741824, 387420489, 268435456, 244140625, 60466176, 282475249, 134217728,
+    43046721, 100000000, 19487171, 35831808, 62748517, 105413504, 11390625,
+    16777216, 24137569, 34012224, 47045881, 64000000, 85766121, 5153632,
+    6436343,7962624, 9765625, 11881376, 14348907, 17210368, 20511149, 24300000,
+    28629151, 33554432, 39135393, 45435424, 52521875, 1679616
+#elif (SIZEOF_VOID_P == 8)
+    /* Wo.Alpha formula: Table [Pow[n, Trunc[63 / log[2,n]]-1], {n, 2, 36}]
+     * with LL added after each element manually */
+    4611686018427387904LL, 1350851717672992089LL, 1152921504606846976LL,
+    1490116119384765625LL, 789730223053602816LL, 558545864083284007LL,
+    1152921504606846976LL, 150094635296999121LL, 100000000000000000LL,
+    505447028499293771LL, 184884258895036416LL, 665416609183179841LL,
+    155568095557812224LL, 437893890380859375LL, 72057594037927936LL,
+    168377826559400929LL, 374813367582081024LL, 42052983462257059LL,
+    81920000000000000LL, 154472377739119461LL, 282810057883082752LL,
+    21914624432020321LL, 36520347436056576LL, 59604644775390625LL,
+    95428956661682176LL, 150094635296999121LL, 232218265089212416LL,
+    12200509765705829LL, 17714700000000000LL, 25408476896404831LL,
+    36028797018963968LL, 50542106513726817LL, 70188843638032384LL,
+    96549157373046875LL, 131621703842267136LL
+#else
+    #error "Please produce a lookup table for the new architecture"
+#endif
+};
 
 Eterm erts_chars_to_integer(Process *BIF_P, char *bytes, 
 			   Uint size, const int base) {
@@ -2588,8 +2741,11 @@ Eterm erts_chars_to_integer(Process *BIF_P, char *bytes,
     int neg = 0;
     byte b;
     Eterm *hp, *hp_end;
-    int m;
+    Sint m;
     int lg2;
+    const Uint digits_per_small = get_digits_per_small(base);
+    const Uint digits_per_Sint = get_digits_per_signed_int(base);
+    const Sint largest_pow_of_base = get_largest_power_of_base(base);
 
     if (size == 0)
 	goto bytebuf_to_integer_1_error;
@@ -2604,54 +2760,68 @@ Eterm erts_chars_to_integer(Process *BIF_P, char *bytes,
 	size--;
     }
 
-    if (size < SMALL_DIGITS && base <= 10) {
-	/* *
-	 * Take shortcut if we know that all chars are '0' < b < '9' and
-	 * fit in a small. This improves speed by about 10% over the generic
-	 * small case.
-	 * */
-	while (size--) {
-	    b = *bytes++;
+    /* Trim leading zeroes */
+    if (size) {
+        while (*bytes == '0') {
+            bytes++;
+            size--;
+            if (!size) {
+                /* All zero! */
+                res = make_small(0);
+                goto bytebuf_to_integer_1_done;
+            }
+        }
+    }
 
-	    if (b < '0' || b > ('0'+base-1))
-		goto bytebuf_to_integer_1_error;
+    if (size == 0)
+	goto bytebuf_to_integer_1_error;
 
-	    i = i * base + b - '0';
-	}
+    if (size < digits_per_small) {
+        if (base <= 10) {
+            /* *
+         * Take shortcut if we know that all chars are '0' < b < '9' and
+         * fit in a small. This improves speed by about 10% over the generic
+         * small case.
+         * */
+            while (size--) {
+                b = *bytes++;
 
-	if (neg)
-	    i = -i;
-	res = make_small(i);
-	goto bytebuf_to_integer_1_done;
+                if (b < '0' || b > ('0'+base-1))
+                    goto bytebuf_to_integer_1_error;
+
+                i = i * base + b - '0';
+            }
+
+            if (neg)
+                i = -i;
+            res = make_small(i);
+            goto bytebuf_to_integer_1_done;
+        }
+
+        /* Take shortcut if we know it will fit in a small.
+         * This improves speed by about 30%.
+         */
+        while (size) {
+            b = *bytes++;
+            size--;
+
+            if (c2int_is_invalid_char(b, base))
+                goto bytebuf_to_integer_1_error;
+
+            i = i * base + c2int_digit_from_base(b);
+        }
+
+        if (neg)
+            i = -i;
+        res = make_small(i);
+        goto bytebuf_to_integer_1_done;
     }
 
     /*
      * Calculate the maximum number of bits which will
      * be needed to represent the binary
      */
-    lg2 = ((size+2)*LG2_LOOKUP(base)+1);
-
-    if (lg2 < SMALL_BITS) {
-	/* Take shortcut if we know it will fit in a small.
-	 * This improves speed by about 30%.
-	 */
-	while (size) {
-	    b = *bytes++;
-	    size--;
-
-	    if (IS_VALID_CHARACTER(b,base))
-		goto bytebuf_to_integer_1_error;
-
-	    i = i * base + CHARACTER_FROM_BASE(b);
-
-	}
-
-	if (neg)
-	    i = -i;
-	res = make_small(i);
-	goto bytebuf_to_integer_1_done;
-
-    }
+    lg2 = ((size+2)*lookup_log2(base)+1);
 
     /* Start calculating bignum */
     m = (lg2 + D_EXP-1)/D_EXP;
@@ -2660,8 +2830,8 @@ Eterm erts_chars_to_integer(Process *BIF_P, char *bytes,
     hp = HAlloc(BIF_P, m);
     hp_end = hp + m;
 
-    if ((i = (size % D_BASE_EXP(base))) == 0)
-	i = D_BASE_EXP(base);
+    if ((i = (size % digits_per_Sint)) == 0)
+        i = digits_per_Sint;
 
     n = size - i;
     m = 0;
@@ -2669,34 +2839,34 @@ Eterm erts_chars_to_integer(Process *BIF_P, char *bytes,
     while (i--) {
 	b = *bytes++;
 
-	if (IS_VALID_CHARACTER(b,base)) {
+        if (c2int_is_invalid_char(b,base)) {
 	    HRelease(BIF_P, hp_end, hp);
 	    goto bytebuf_to_integer_1_error;
 	}
 
-	m = base * m + CHARACTER_FROM_BASE(b);
+        m = base * m + c2int_digit_from_base(b);
     }
 
     res = small_to_big(m, hp);
 
     while (n) {
-	i = D_BASE_EXP(base);
-	n -= D_BASE_EXP(base);
+        i = digits_per_Sint;
+        n -= digits_per_Sint;
 	m = 0;
 	while (i--) {
 	    b = *bytes++;
 
-	    if (IS_VALID_CHARACTER(b,base)) {
+            if (c2int_is_invalid_char(b,base)) {
 	      HRelease(BIF_P, hp_end, hp);
 	      goto bytebuf_to_integer_1_error;
 	    }
 
-	    m = base * m + CHARACTER_FROM_BASE(b);
+            m = base * m + c2int_digit_from_base(b);
 	}
 	if (is_small(res)) {
 	    res = small_to_big(signed_val(res), hp);
 	}
-	res = big_times_small(res, D_BASE_BASE(base), hp);
+        res = big_times_small(res, largest_pow_of_base, hp);
 	if (is_small(res)) {
 	    res = small_to_big(signed_val(res), hp);
 	}
@@ -2727,5 +2897,166 @@ bytebuf_to_integer_1_error:
 
 bytebuf_to_integer_1_done:
     return res;
+}
 
+/* Converts list of digits with given 'base' to integer sequentially. Returns
+ * result in 'integer_out', remaining tail goes to 'tail_out' and returns result
+ * code if the list was consumed fully or partially or there was an error
+ */
+LTI_result_t erts_list_to_integer(Process *BIF_P, Eterm orig_list,
+                                  const Uint base,
+                                  Eterm *integer_out, Eterm *tail_out)
+{
+     Sint i = 0;
+     Uint ui = 0;
+     int skip = 0;
+     int neg = 0;
+     Sint n = 0;
+     Sint m;
+     int lg2;
+     Eterm res;
+     Eterm lst = orig_list;
+     Eterm tail = lst;
+     int error_res = LTI_BAD_STRUCTURE;
+     const Uint digits_per_small = get_digits_per_small(base);
+     const Uint digits_per_Sint = get_digits_per_signed_int(base);
+
+     if (is_nil(lst)) {
+       error_res = LTI_NO_INTEGER;
+     error:
+         *tail_out = tail;
+         *integer_out = make_small(0);
+         return error_res;
+     }
+     if (is_not_list(lst))
+       goto error;
+
+     /* if first char is a '-' then it is a negative integer */
+     if (CAR(list_val(lst)) == make_small('-')) {
+          neg = 1;
+          skip = 1;
+          lst = CDR(list_val(lst));
+          if (is_not_list(lst)) {
+              tail = lst;
+              error_res = LTI_NO_INTEGER;
+              goto error;
+          }
+     } else if (CAR(list_val(lst)) == make_small('+')) {
+         /* ignore plus */
+         skip = 1;
+         lst = CDR(list_val(lst));
+         if (is_not_list(lst)) {
+             tail = lst;
+             error_res = LTI_NO_INTEGER;
+             goto error;
+         }
+     }
+
+     /* Calculate size and do type check */
+
+     while(1) {
+         byte ch;
+         if (is_not_small(CAR(list_val(lst)))) {
+             break;
+         }
+         ch = unsigned_val(CAR(list_val(lst)));
+         if (c2int_is_invalid_char(ch, base)) {
+             break;
+         }
+         ui = ui * base;
+         ui = ui + c2int_digit_from_base(ch);
+         n++;
+         lst = CDR(list_val(lst));
+         if (is_nil(lst)) {
+             break;
+         }
+         if (is_not_list(lst)) {
+             break;
+         }
+     }
+
+     tail = lst;
+     if (!n) {
+         error_res = LTI_NO_INTEGER;
+         goto error;
+     }
+
+
+      /* If length fits inside Sint then we know it's a small int. Else we
+       * must construct a bignum and let that routine do the checking
+       */
+
+     if (n <= digits_per_small) {  /* It must be small */
+         i = neg ? -(Sint)ui : (Sint)ui;
+         res = make_small(i);
+     } else {
+         const Sint largest_pow_of_base = get_largest_power_of_base(base);
+         Eterm *hp;
+         Eterm *hp_end;
+
+         /* Convert from log_base to log2 using lookup table */
+         lg2 = ((n+2)*lookup_log2(base)+1);
+         m  = (lg2+D_EXP-1)/D_EXP; /* number of digits */
+         m  = BIG_NEED_SIZE(m);    /* number of words + thing */
+
+         hp = HAlloc(BIF_P, m);
+         hp_end = hp + m;
+
+         lst = orig_list;
+         if (skip)
+             lst = CDR(list_val(lst));
+
+         /* load first digits (at least one digit) */
+         if ((i = (n % digits_per_Sint)) == 0)
+             i = digits_per_Sint;
+         n -= i;
+         m = 0;
+         while(i--) {
+             m *= base;
+             m += c2int_digit_from_base(unsigned_val(CAR(list_val(lst))));
+             lst = CDR(list_val(lst));
+         }
+         res = small_to_big(m, hp);  /* load first digits */
+
+         while(n) {
+             i = digits_per_Sint;
+             n -= digits_per_Sint;
+             m = 0;
+             while(i--) {
+                 m *= base;
+                 m += c2int_digit_from_base(unsigned_val(CAR(list_val(lst))));
+                 lst = CDR(list_val(lst));
+             }
+             if (is_small(res))
+                 res = small_to_big(signed_val(res), hp);
+             res = big_times_small(res, largest_pow_of_base, hp);
+             if (is_small(res))
+                 res = small_to_big(signed_val(res), hp);
+             res = big_plus_small(res, m, hp);
+         }
+
+         if (neg) {
+             if (is_small(res))
+                 res = make_small(-signed_val(res));
+             else {
+                 Uint *big = big_val(res); /* point to thing */
+                 *big = bignum_header_neg(*big);
+             }
+         }
+
+         if (is_not_small(res)) {
+             res = big_plus_small(res, 0, hp); /* includes conversion to small */
+
+             if (is_not_small(res)) {
+                 hp += (big_arity(res)+1);
+             }
+         }
+         HRelease(BIF_P, hp_end, hp);
+     }
+     *integer_out = res;
+     *tail_out = tail;
+     if (tail != NIL) {
+         return LTI_SOME_INTEGER;
+     }
+     return LTI_ALL_INTEGER;
 }

@@ -1,7 +1,7 @@
 /*
  * %CopyrightBegin%
  *
- * Copyright Ericsson AB 2011-2013. All Rights Reserved.
+ * Copyright Ericsson AB 2011-2018. All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -80,7 +80,6 @@
 #include "erl_thr_progress.h"
 #include "global.h"
 
-#ifdef ERTS_SMP
 
 #define ERTS_THR_PRGR_DBG_CHK_WAKEUP_REQUEST_VALUE 0
 
@@ -95,9 +94,9 @@
 
 #define ERTS_THR_PRGR_FTL_ERR_BLCK_POLL_INTERVAL 100
 
-#define ERTS_THR_PRGR_LFLG_BLOCK	(((erts_aint32_t) 1) << 31)
-#define ERTS_THR_PRGR_LFLG_NO_LEADER	(((erts_aint32_t) 1) << 30)
-#define ERTS_THR_PRGR_LFLG_WAITING_UM	(((erts_aint32_t) 1) << 29)
+#define ERTS_THR_PRGR_LFLG_BLOCK	((erts_aint32_t) (1U << 31))
+#define ERTS_THR_PRGR_LFLG_NO_LEADER	((erts_aint32_t) (1U << 30))
+#define ERTS_THR_PRGR_LFLG_WAITING_UM	((erts_aint32_t) (1U << 29))
 #define ERTS_THR_PRGR_LFLG_ACTIVE_MASK	(~(ERTS_THR_PRGR_LFLG_NO_LEADER	\
 					   | ERTS_THR_PRGR_LFLG_BLOCK	\
 					   | ERTS_THR_PRGR_LFLG_WAITING_UM))
@@ -142,8 +141,8 @@ init_nob(ERTS_THR_PRGR_ATOMIC *atmc, ErtsThrPrgrVal val)
 #warning "Thread progress state debug is on"
 #endif
 
-#define ERTS_THR_PROGRESS_STATE_DEBUG_LEADER	(((erts_aint32_t) 1) << 0)
-#define ERTS_THR_PROGRESS_STATE_DEBUG_ACTIVE	(((erts_aint32_t) 1) << 1)
+#define ERTS_THR_PROGRESS_STATE_DEBUG_LEADER	((erts_aint32_t) (1U << 0))
+#define ERTS_THR_PROGRESS_STATE_DEBUG_ACTIVE	((erts_aint32_t) (1U << 1))
 
 #define ERTS_THR_PROGRESS_STATE_DEBUG_INIT(ID)						\
     erts_atomic32_init_nob(&intrnl->thr[(ID)].data.state_debug,				\
@@ -179,10 +178,10 @@ do {											\
 
 #endif /* ERTS_THR_PROGRESS_STATE_DEBUG */
 
-#define ERTS_THR_PRGR_BLCKR_INVALID (~((erts_aint32_t) 0))
-#define ERTS_THR_PRGR_BLCKR_UNMANAGED (((erts_aint32_t) 1) << 31)
+#define ERTS_THR_PRGR_BLCKR_INVALID        ((erts_aint32_t) (~0U))
+#define ERTS_THR_PRGR_BLCKR_UNMANAGED      ((erts_aint32_t) (1U << 31))
 
-#define ERTS_THR_PRGR_BC_FLG_NOT_BLOCKING (((erts_aint32_t) 1) << 31)
+#define ERTS_THR_PRGR_BC_FLG_NOT_BLOCKING  ((erts_aint32_t) (1U << 31))
 
 #define ERTS_THR_PRGR_BM_BITS 32
 #define ERTS_THR_PRGR_BM_SHIFT 5
@@ -321,13 +320,23 @@ tmp_thr_prgr_data(ErtsSchedulerData *esdp)
     ErtsThrPrgrData *tpd = perhaps_thr_prgr_data(esdp);
 
     if (!tpd) {
-	/*
-	 * We only allocate the part up to the wakeup_request field
-	 * which is the first field only used by registered threads
-	 */
-	tpd = erts_alloc(ERTS_ALC_T_T_THR_PRGR_DATA,
-			 offsetof(ErtsThrPrgrData, wakeup_request));
-	init_tmp_thr_prgr_data(tpd);
+        /*
+         * We only allocate the part up to the wakeup_request field which is
+         * the first field only used by registered threads
+         */
+        size_t alloc_size = offsetof(ErtsThrPrgrData, wakeup_request);
+
+        /* We may land here as a result of unmanaged_delay being called from
+         * the lock counting module, which in turn might be called from within
+         * the allocator, so we use plain malloc to avoid deadlocks. */
+        tpd =
+#ifdef ERTS_ENABLE_LOCK_COUNT
+            malloc(alloc_size);
+#else
+            erts_alloc(ERTS_ALC_T_T_THR_PRGR_DATA, alloc_size);
+#endif
+
+        init_tmp_thr_prgr_data(tpd);
     }
 
     return tpd;
@@ -337,8 +346,13 @@ static ERTS_INLINE void
 return_tmp_thr_prgr_data(ErtsThrPrgrData *tpd)
 {
     if (tpd->is_temporary) {
-	erts_tsd_set(erts_thr_prgr_data_key__, NULL);
-	erts_free(ERTS_ALC_T_T_THR_PRGR_DATA, tpd);
+        erts_tsd_set(erts_thr_prgr_data_key__, NULL);
+
+#ifdef ERTS_ENABLE_LOCK_COUNT
+        free(tpd);
+#else
+        erts_free(ERTS_ALC_T_T_THR_PRGR_DATA, tpd);
+#endif
     }
 }
 
@@ -494,6 +508,10 @@ init_wakeup_request_array(ErtsThrPrgrVal *w)
     }
 }
 
+ErtsThrPrgrData *erts_thr_progress_data(void) {
+    return erts_tsd_get(erts_thr_prgr_data_key__);
+}
+
 void
 erts_thr_progress_register_unmanaged_thread(ErtsThrPrgrCallbacks *callbacks)
 {
@@ -502,7 +520,7 @@ erts_thr_progress_register_unmanaged_thread(ErtsThrPrgrCallbacks *callbacks)
 
     if (tpd) {
 	if (!tpd->is_temporary)
-	    erl_exit(ERTS_ABORT_EXIT,
+	    erts_exit(ERTS_ABORT_EXIT,
 		     "%s:%d:%s(): Double register of thread\n",
 		     __FILE__, __LINE__, __func__);
 	is_blocking = tpd->is_blocking;
@@ -524,7 +542,7 @@ erts_thr_progress_register_unmanaged_thread(ErtsThrPrgrCallbacks *callbacks)
 #endif
     ASSERT(tpd->id >= 0);
     if (tpd->id >= intrnl->unmanaged.no)
-	erl_exit(ERTS_ABORT_EXIT,
+	erts_exit(ERTS_ABORT_EXIT,
 		 "%s:%d:%s(): Too many unmanaged registered threads\n",
 		 __FILE__, __LINE__, __func__);
 
@@ -537,17 +555,18 @@ erts_thr_progress_register_unmanaged_thread(ErtsThrPrgrCallbacks *callbacks)
 }
 
 
-void
+ErtsThrPrgrData *
 erts_thr_progress_register_managed_thread(ErtsSchedulerData *esdp,
 					  ErtsThrPrgrCallbacks *callbacks,
-					  int pref_wakeup)
+					  int pref_wakeup,
+                                          int deep_sleeper)
 {
     ErtsThrPrgrData *tpd = perhaps_thr_prgr_data(NULL);
     int is_blocking = 0, managed;
 
     if (tpd) {
 	if (!tpd->is_temporary)
-	    erl_exit(ERTS_ABORT_EXIT,
+	    erts_exit(ERTS_ABORT_EXIT,
 		     "%s:%d:%s(): Double register of thread\n",
 		     __FILE__, __LINE__, __func__);
 	is_blocking = tpd->is_blocking;
@@ -568,13 +587,14 @@ erts_thr_progress_register_managed_thread(ErtsSchedulerData *esdp,
 	tpd->id = erts_atomic32_inc_read_nob(&intrnl->misc.data.managed_id);
     ASSERT(tpd->id >= 0);
     if (tpd->id >= intrnl->managed.no)
-	erl_exit(ERTS_ABORT_EXIT,
+	erts_exit(ERTS_ABORT_EXIT,
 		 "%s:%d:%s(): Too many managed registered threads\n",
 		 __FILE__, __LINE__, __func__);
 
     tpd->is_managed = 1;
     tpd->is_blocking = is_blocking;
     tpd->is_temporary = 0;
+    tpd->is_deep_sleeper = deep_sleeper;
 #ifdef ERTS_ENABLE_LOCK_CHECK
     tpd->is_delaying = 1;
 #endif
@@ -616,6 +636,7 @@ erts_thr_progress_register_managed_thread(ErtsSchedulerData *esdp,
 		wakeup_managed(id);
     }
     callbacks->finalize_wait(callbacks->arg);
+    return tpd;
 }
 
 static ERTS_INLINE int
@@ -700,6 +721,7 @@ leader_update(ErtsThrPrgrData *tpd)
 	    tpd->leader_state.chk_next_ix = no_managed;
 	    erts_atomic32_set_nob(&intrnl->misc.data.umrefc_ix.current,
 				  (erts_aint32_t) new_umrefc_ix);
+	    tpd->leader_state.umrefc_ix.current = new_umrefc_ix;
 	    ETHR_MEMBAR(ETHR_StoreLoad);
 	    refc = erts_atomic_read_nob(&intrnl->umrefc[umrefc_ix].refc);
 	    ASSERT(refc >= 0);
@@ -743,7 +765,6 @@ leader_update(ErtsThrPrgrData *tpd)
 		(void) block_thread(tpd);
 	}
 	else {
-	    int force_wakeup_check = 0;
 	    erts_aint32_t set_flags = ERTS_THR_PRGR_LFLG_NO_LEADER;
 	    tpd->leader = 0;
 	    tpd->leader_state.current = ERTS_THR_PRGR_VAL_WAITING;
@@ -768,20 +789,10 @@ leader_update(ErtsThrPrgrData *tpd)
 		/* Need to check umrefc again */
 		ETHR_MEMBAR(ETHR_StoreLoad);
 		refc = erts_atomic_read_nob(&intrnl->umrefc[umrefc_ix].refc);
-		if (refc == 0) {
-		    /* Need to force wakeup check */
-		    force_wakeup_check = 1;
+		if (refc == 0 && got_sched_wakeups()) {
+                    /* Someone need to make progress */
+                    wakeup_managed(tpd->id);
 		}
-	    }
-
-	    if ((force_wakeup_check
-		 || ((lflgs & (ERTS_THR_PRGR_LFLG_NO_LEADER
-			       | ERTS_THR_PRGR_LFLG_WAITING_UM
-			       | ERTS_THR_PRGR_LFLG_ACTIVE_MASK))
-		     == ERTS_THR_PRGR_LFLG_NO_LEADER))
-		&& got_sched_wakeups()) {
-		/* Someone need to make progress */
-		wakeup_managed(0);
 	    }
 	}
     }
@@ -834,23 +845,22 @@ update(ErtsThrPrgrData *tpd)
 }
 
 int
-erts_thr_progress_update(ErtsSchedulerData *esdp)
+erts_thr_progress_update(ErtsThrPrgrData *tpd)
 {
-    return update(thr_prgr_data(esdp));
+    return update(tpd);
 }
 
 
 int
-erts_thr_progress_leader_update(ErtsSchedulerData *esdp)
+erts_thr_progress_leader_update(ErtsThrPrgrData *tpd)
 {
-    return leader_update(thr_prgr_data(esdp));
+    return leader_update(tpd);
 }
 
 void
-erts_thr_progress_prepare_wait(ErtsSchedulerData *esdp)
+erts_thr_progress_prepare_wait(ErtsThrPrgrData *tpd)
 {
     erts_aint32_t lflgs;
-    ErtsThrPrgrData *tpd = thr_prgr_data(esdp);
 
 #ifdef ERTS_ENABLE_LOCK_CHECK
     erts_lc_check_exact(NULL, 0);
@@ -869,14 +879,16 @@ erts_thr_progress_prepare_wait(ErtsSchedulerData *esdp)
 	== ERTS_THR_PRGR_LFLG_NO_LEADER 
 	&& got_sched_wakeups()) {
 	/* Someone need to make progress */
-	wakeup_managed(0);
+        if (tpd->is_deep_sleeper)
+            wakeup_managed(1);
+        else
+            wakeup_managed(tpd->id);
     }
 }
 
 void
-erts_thr_progress_finalize_wait(ErtsSchedulerData *esdp)
+erts_thr_progress_finalize_wait(ErtsThrPrgrData *tpd)
 {
-    ErtsThrPrgrData *tpd = thr_prgr_data(esdp);
     ErtsThrPrgrVal current, val;
 
 #ifdef ERTS_ENABLE_LOCK_CHECK
@@ -906,9 +918,8 @@ erts_thr_progress_finalize_wait(ErtsSchedulerData *esdp)
 }
 
 void
-erts_thr_progress_active(ErtsSchedulerData *esdp, int on)
+erts_thr_progress_active(ErtsThrPrgrData *tpd, int on)
 {
-    ErtsThrPrgrData *tpd = thr_prgr_data(esdp);
 
 #ifdef ERTS_ENABLE_LOCK_CHECK
     erts_lc_check_exact(NULL, 0);
@@ -958,7 +969,7 @@ unmanaged_continue(ErtsThrPrgrDelayHandle handle)
 	    == (ERTS_THR_PRGR_LFLG_NO_LEADER|ERTS_THR_PRGR_LFLG_WAITING_UM)
 	    && got_sched_wakeups()) {
 	    /* Others waiting for us... */
-	    wakeup_managed(0);
+	    wakeup_managed(1);
 	}
     }
 }
@@ -969,8 +980,10 @@ erts_thr_progress_unmanaged_continue__(ErtsThrPrgrDelayHandle handle)
 #ifdef ERTS_ENABLE_LOCK_CHECK
     ErtsThrPrgrData *tpd = perhaps_thr_prgr_data(NULL);
     ERTS_LC_ASSERT(tpd && tpd->is_delaying);
-    tpd->is_delaying = 0;
-    return_tmp_thr_prgr_data(tpd);
+    tpd->is_delaying--;
+    ASSERT(tpd->is_delaying >= 0);
+    if (!tpd->is_delaying)
+	return_tmp_thr_prgr_data(tpd);
 #endif
     ASSERT(!erts_thr_progress_is_managed_thread());
 
@@ -995,7 +1008,7 @@ erts_thr_progress_unmanaged_delay__(void)
 #ifdef ERTS_ENABLE_LOCK_CHECK
     {
 	ErtsThrPrgrData *tpd = tmp_thr_prgr_data(NULL);
-	tpd->is_delaying = 1;
+	tpd->is_delaying++;
     }
 #endif
     return (ErtsThrPrgrDelayHandle) umrefc_ix;
@@ -1033,7 +1046,7 @@ has_reached_wakeup(ErtsThrPrgrVal wakeup)
 	    limit += 1;
 
 	if (!erts_thr_progress_has_passed__(limit, wakeup))
-	    erl_exit(ERTS_ABORT_EXIT,
+	    erts_exit(ERTS_ABORT_EXIT,
 		     "Invalid wakeup request value found:"
 		     " current=%b64u, wakeup=%b64u, limit=%b64u",
 		     current, wakeup, limit);
@@ -1053,11 +1066,13 @@ request_wakeup_managed(ErtsThrPrgrData *tpd, ErtsThrPrgrVal value)
 
     /*
      * Only managed threads that aren't in waiting state
-     * are allowed to call this function.
+     * and aren't deep sleepers are allowed to call this
+     * function.
      */
 
     ASSERT(tpd->is_managed);
     ASSERT(tpd->confirmed != ERTS_THR_PRGR_VAL_WAITING);
+    ASSERT(!tpd->is_deep_sleeper);
 
     if (has_reached_wakeup(value)) {
 	wakeup_managed(tpd->id);
@@ -1102,7 +1117,7 @@ request_wakeup_managed(ErtsThrPrgrData *tpd, ErtsThrPrgrVal value)
     ix = erts_atomic32_inc_read_nob(&mwd->len) - 1;
 #if ERTS_THR_PRGR_DBG_CHK_WAKEUP_REQUEST_VALUE
     if (ix >= intrnl->managed.no)
-	erl_exit(ERTS_ABORT_EXIT, "Internal error: Too many wakeup requests\n");
+	erts_exit(ERTS_ABORT_EXIT, "Internal error: Too many wakeup requests\n");
 #endif
     mwd->id[ix] = tpd->id;
 
@@ -1165,10 +1180,10 @@ request_wakeup_unmanaged(ErtsThrPrgrData *tpd, ErtsThrPrgrVal value)
 }
 
 void
-erts_thr_progress_wakeup(ErtsSchedulerData *esdp,
+erts_thr_progress_wakeup(ErtsThrPrgrData *tpd,
 			 ErtsThrPrgrVal value)
 {
-    ErtsThrPrgrData *tpd = thr_prgr_data(esdp);
+
     ASSERT(!tpd->is_temporary);
     if (tpd->is_managed)
 	request_wakeup_managed(tpd, value);
@@ -1186,7 +1201,7 @@ wakeup_unmanaged_threads(ErtsThrPrgrUnmanagedWakeupData *umwd)
 	    int hbase = hix << ERTS_THR_PRGR_BM_SHIFT;
 	    int hbit;
 	    for (hbit = 0; hbit < ERTS_THR_PRGR_BM_BITS; hbit++) {
-		if (hmask & (1 << hbit)) {
+		if (hmask & (1U << hbit)) {
 		    erts_aint_t lmask;
 		    int lix = hbase + hbit;
 		    ASSERT(0 <= lix && lix < umwd->low_sz);
@@ -1195,7 +1210,7 @@ wakeup_unmanaged_threads(ErtsThrPrgrUnmanagedWakeupData *umwd)
 			int lbase = lix << ERTS_THR_PRGR_BM_SHIFT;
 			int lbit;
 			for (lbit = 0; lbit < ERTS_THR_PRGR_BM_BITS; lbit++) {
-			    if (lmask & (1 << lbit)) {
+			    if (lmask & (1U << lbit)) {
 				int id = lbase + lbit;
 				wakeup_unmanaged(id);
 			    }
@@ -1326,6 +1341,8 @@ thr_progress_block(ErtsThrPrgrData *tpd, int wait)
 	    bc = erts_atomic32_read_acqb(&intrnl->misc.data.block_count);
 	}
     }
+
+    /* tse event returned in erts_thr_progress_unblock() */
     return bc;
 
 }
@@ -1495,4 +1512,3 @@ void erts_thr_progress_dbg_print_state(void)
 
 }
 
-#endif

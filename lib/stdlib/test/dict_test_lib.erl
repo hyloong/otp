@@ -1,7 +1,7 @@
 %%
 %% %CopyrightBegin%
 %% 
-%% Copyright Ericsson AB 2008-2015. All Rights Reserved.
+%% Copyright Ericsson AB 2008-2017. All Rights Reserved.
 %% 
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -33,10 +33,15 @@ new(Mod, Eq) ->
         (iterator, S) -> Mod:iterator(S);
         (iterator_from, {Start, S}) -> Mod:iterator_from(Start, S);
         (next, I) -> Mod:next(I);
-	(to_list, D) -> to_list(Mod, D)
+	(to_list, D) -> to_list(Mod, D);
+	(erase, {K,D}) -> erase(Mod, K, D);
+	(take, {K,D}) -> take(Mod, K, D)
     end.
 
 empty(Mod) ->
+    %% The dict module might not be loaded since it not used by
+    %% anything in the core parts of Erlang/OTP.
+    {module,Mod} = code:ensure_loaded(Mod),
     case erlang:function_exported(Mod, new, 0) of
 	false -> Mod:empty();
 	true -> Mod:new()
@@ -46,6 +51,7 @@ to_list(Mod, D) ->
     Mod:to_list(D).
 
 from_list(Mod, L) ->
+    {module,Mod} = code:ensure_loaded(Mod),
     case erlang:function_exported(Mod, from_orddict, 1) of
 	false ->
 	    Mod:from_list(L);
@@ -61,9 +67,26 @@ from_list(Mod, L) ->
 
 %% Store new value into dictionary or update previous value in dictionary.
 enter(Mod, Key, Val, Dict) ->
+    {module,Mod} = code:ensure_loaded(Mod),
     case erlang:function_exported(Mod, store, 3) of
 	false ->
 	    Mod:enter(Key, Val, Dict);
 	true ->
 	    Mod:store(Key, Val, Dict)
     end.
+
+erase(Mod, Key, Val) when Mod =:= dict; Mod =:= orddict ->
+    Mod:erase(Key, Val);
+erase(gb_trees, Key, Val) ->
+    gb_trees:delete_any(Key, Val).
+
+take(gb_trees, Key, Val) ->
+    Res = try
+	      gb_trees:take(Key, Val)
+	  catch
+	      error:_ ->
+		  error
+	  end,
+    Res = gb_trees:take_any(Key, Val);
+take(Mod, Key, Val) ->
+    Mod:take(Key, Val).

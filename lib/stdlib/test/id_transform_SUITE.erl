@@ -1,7 +1,7 @@
 %%
 %% %CopyrightBegin%
 %% 
-%% Copyright Ericsson AB 2003-2012. All Rights Reserved.
+%% Copyright Ericsson AB 2003-2018. All Rights Reserved.
 %% 
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -29,11 +29,12 @@
 -export([check/2,check2/1,g/0,f/1,t/1,t1/1,t2/1,t3/1,t4/1,
 	 t5/1,apa/1,new_fun/0]).
 
-						% Serves as test...
+%% Serves as test...
 -hej(hopp).
--include_lib("test_server/include/test_server.hrl").
+-include_lib("common_test/include/ct.hrl").
 
-suite() -> [{ct_hooks,[ts_install_cth]}].
+suite() ->
+    [{ct_hooks,[ts_install_cth]}].
 
 all() -> 
     [id_transform].
@@ -54,49 +55,26 @@ end_per_group(_GroupName, Config) ->
     Config.
 
 
-id_transform(doc) -> "Test erl_id_trans.";
+%% Test erl_id_trans.
 id_transform(Config) when is_list(Config) ->
-    ?line File=filename:join([code:lib_dir(stdlib),"examples",
-			      "erl_id_trans.erl"]),
-    ?line {ok,erl_id_trans,Bin}=compile:file(File,[binary]),
-    ?line {module,erl_id_trans}=code:load_binary(erl_id_trans,File,Bin),
-    ?line case test_server:purify_is_running() of
-	      false ->
-		  Dog = ct:timetrap(?t:hours(1)),
-		  ?line Res = run_in_test_suite(),
-		  ?t:timetrap_cancel(Dog),
-		  Res;
-	      true ->
-		  {skip,"Purify (too slow)"}
-	  end.
-
-run_in_test_suite() ->
-    LibDir = code:lib_dir(),
-    SuperDir = filename:dirname(filename:dirname(code:which(?MODULE))),
-    TestDirs = filelib:wildcard(filename:join([SuperDir,"*_test"])),
-    {All,Res} = case LibDir of
-		    "/clearcase/otp/erts/lib" ->
-			%% Only test_suites 'cause clearcase is too slow...
-			{false,run_list(TestDirs)};
-		    _ ->
-			{true,run_codepath_and(TestDirs)}
-		end,
-    Comment0 = case All of
-		   true -> [];
-		   false -> "Only testsuite directories traversed"
-	       end,
-    case Res of
-	{error,Reason} when Comment0 =/= [] ->
-	    {failed,Comment0++"; "++Reason};
-	{error,Reason} ->
-	    {failed,Reason};
-	ok ->
-	    {comment,Comment0}
+    File = filename:join([code:lib_dir(stdlib),"examples",
+			"erl_id_trans.erl"]),
+    {ok,erl_id_trans,Bin} = compile:file(File,[binary]),
+    {module,erl_id_trans} = code:load_binary(erl_id_trans, File, Bin),
+    case test_server:is_valgrind() of
+	false ->
+	    ct:timetrap({hours,1}),
+	    run_in_test_suite();
+	true ->
+	    {skip,"Valgrind (too slow)"}
     end.
 
-run_codepath_and(DirList) ->
+run_in_test_suite() ->
+    SuperDir = filename:dirname(filename:dirname(code:which(?MODULE))),
+    TestDirs = filelib:wildcard(filename:join([SuperDir,"*_test"])),
     AbsDirs = [filename:absname(X) || X <- code:get_path()],
-    run_list(ordsets:from_list([X || X <- AbsDirs] ++ DirList)).
+    Dirs = ordsets:from_list(AbsDirs ++ TestDirs),
+    run_list(Dirs).
 
 run_list(PathL) ->
     io:format("Where to search for beam files:\n~p\n", [PathL]),
@@ -123,7 +101,7 @@ run_list(PathL) ->
     end,
     case length(SevereFailures) of
 	0 -> ok;
-	Len -> {error,integer_to_list(Len)++" failures"}
+	Len -> {failed,integer_to_list(Len)++" failures"}
     end.
     
 
@@ -160,9 +138,9 @@ do_trans_1(File, Tree0) ->
 	    {failed,{File,{transform,{unknown,Else}}}}
     end.
 
-% From here on there's only fake code to serve as test cases 
-% for the id_transform.
-% They need to be exported.
+%% From here on there's only fake code to serve as test cases
+%% for the id_transform.
+%% They need to be exported.
 
 check(X,_Y) when X ->   
     true;
@@ -213,7 +191,7 @@ f(X) ->
 	    nok
     end.
 
-% Stolen from erl_lint_SUITE.erl
+%% Stolen from erl_lint_SUITE.erl
 -record(apa, {}).
 
 t(A) when atom(A) ->

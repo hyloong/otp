@@ -5,7 +5,7 @@
   <header>
     <copyright>
       <year>2009</year>
-      <year>2013</year>
+      <year>2018</year>
       <holder>Ericsson AB, All Rights Reserved</holder>
     </copyright>
     <legalnotice>
@@ -33,7 +33,7 @@
     <date></date>
     <rev>%VSN%</rev>
   </header>
-  <module>reltool</module>
+  <module since="">reltool</module>
   <modulesummary>Main API of the Reltool application</modulesummary>
   <description>
     <p>This is an interface module for the Reltool application.</p>
@@ -47,7 +47,7 @@
 
     <p>The tool uses an installed Erlang/OTP system as input.
     <c>root_dir</c> is the root directory of the analysed system and
-    it defaults to the system executing <c>reltool</c>. Applications
+    it defaults to the system executing Reltool. Applications
     may also be located outside <c>root_dir</c>. <c>lib_dirs</c>
     defines library directories where additional applications
     may reside and it defaults to the directories
@@ -56,7 +56,7 @@
 
     <p>An application directory <c>AppDir</c> under a library
     directory is recognized by the existence of an <c>AppDir/ebin</c>
-    directory. If this does not exist, <c>reltool</c> will not
+    directory. If this does not exist, Reltool will not
     consider <c>AppDir</c> at all when looking for applications.</p>
 
     <p>It is recommended that application directories are named as the
@@ -81,14 +81,14 @@
       <tag><c>config</c></tag>
       <item>
         <p>This is the main option and it controls the configuration
-           of <c>reltool</c>.  It can either be a <c>sys</c> tuple or
+           of Reltool.  It can either be a <c>sys</c> tuple or
            a name of a <c>file</c> containing a sys tuple.</p>
       </item>
 
       <tag><c>trap_exit</c></tag>
       <item>
         <p>This option controls the error handling behavior of
-           <c>reltool</c>.  By default the window processes traps
+           Reltool.  By default the window processes traps
            exit, but this behavior can altered by setting
            <c>trap_exit</c> to <c>false</c>.</p>
       </item>
@@ -248,7 +248,7 @@
 
 	<p>When starting this release, three things must be specified:</p>
 	<taglist>
-	  <tag><b>Which <c>releases</c> directory to use</b></tag>
+	  <tag><em>Which <c>releases</c> directory to use</em></tag>
 	  <item>Tell the release handler to use the <c>releases</c>
 	  directory in our target structure instead of
 	  <c>$OTP_ROOT/releases</c>. This is done by setting the SASL
@@ -257,7 +257,7 @@
 	  &lt;target-dir&gt;/releases</c>) or in
 	  <c>sys.config</c>.</item>
 
-	  <tag><b>Which boot file to use</b></tag>
+	  <tag><em>Which boot file to use</em></tag>
 	  <item>The default boot file is <c>$OTP_ROOT/bin/start</c>,
 	  but in this case we need to specify a boot file from our
 	  target structure, typically
@@ -265,7 +265,7 @@
 	  is done with the <c>-boot</c> command line option to
 	  <c>erl</c></item>
 
-	  <tag><b>The location of our applications</b></tag>
+	  <tag><em>The location of our applications</em></tag>
 	  <item>The generated .script (and .boot) file uses the
 	  environment variable <c>$RELTOOL_EXT_LIB</c> as prefix for
 	  the paths to all applications. The <c>-boot_var</c> option
@@ -275,8 +275,8 @@
 	</taglist>
 
 	<p>Example:</p>
-	<p><code>erl -sasl releases_dir \"mytarget/releases\" -boot mytarget/releases/1.0/myrel\
- -boot_var RELTOOL_EXT_LIB mytarget/lib</code></p>
+	<code>erl -sasl releases_dir \"mytarget/releases\" -boot mytarget/releases/1.0/myrel\
+ -boot_var RELTOOL_EXT_LIB mytarget/lib</code>
       </item>
 
       <tag><c>incl_sys_filters</c></tag>
@@ -503,6 +503,7 @@ sys()               = {root_dir, root_dir()}
                     | {incl_cond, incl_cond()}
                     | {boot_rel, boot_rel()}
                     | {rel, rel_name(), rel_vsn(), [rel_app()]}
+                    | {rel, rel_name(), rel_vsn(), [rel_app()], [rel_opt()]}
                     | {relocatable, relocatable()}
                     | {app_file, app_file()}
                     | {debug_info, debug_info()}
@@ -534,6 +535,7 @@ rel_app()           = app_name()
                     | {app_name(), app_type()} 
                     | {app_name(), [incl_app()]}
                     | {app_name(), app_type(), [incl_app()]}
+rel_opt()           = {load_dot_erlang, boolean()}
 app_name()          = atom()
 app_type()          = permanent | transient | temporary | load | none
 app_vsn()           = string()
@@ -591,7 +593,7 @@ target_spec()       = [target_spec()]
 
   <funcs>
     <func>
-      <name>create_target(Server, TargetDir) -> ok | {error, Reason}</name>
+      <name since="">create_target(Server, TargetDir) -> ok | {error, Reason}</name>
       <fsummary>Create a target system</fsummary>
       <type>
         <v>Server     = server()</v>
@@ -604,7 +606,7 @@ target_spec()       = [target_spec()]
     </func>
     
     <func>
-      <name>eval_target_spec(TargetSpec, RootDir, TargetDir) -> ok | {error, Reason}</name>
+      <name since="">eval_target_spec(TargetSpec, RootDir, TargetDir) -> ok | {error, Reason}</name>
       <fsummary>Create a target system</fsummary>
       <type>
         <v>TargetSpec = target_spec()</v>
@@ -655,7 +657,7 @@ target_spec()       = [target_spec()]
     </func>
 
     <func>
-      <name>get_config(Server) -> {ok, Config} | {error, Reason}</name>
+      <name since="">get_config(Server) -> {ok, Config} | {error, Reason}</name>
       <fsummary>Get reltool configuration</fsummary>
       <type>
         <v>Server  = server()</v>
@@ -667,7 +669,7 @@ target_spec()       = [target_spec()]
     </func>
 
     <func>
-      <name>get_config(Server, InclDefaults, InclDerived) -> {ok, Config} | {error, Reason}</name>
+      <name since="">get_config(Server, InclDefaults, InclDerived) -> {ok, Config} | {error, Reason}</name>
       <fsummary>Get reltool configuration</fsummary>
       <type>
         <v>Server        = server()</v>
@@ -685,7 +687,7 @@ target_spec()       = [target_spec()]
     </func>
 
     <func>
-      <name>get_rel(Server, Relname) -> {ok, RelFile} | {error, Reason}</name>
+      <name since="">get_rel(Server, Relname) -> {ok, RelFile} | {error, Reason}</name>
       <fsummary>Get contents of a release file</fsummary>
       <type>
         <v>Server  = server()</v>
@@ -698,7 +700,7 @@ target_spec()       = [target_spec()]
     </func>
 
     <func>
-      <name>get_script(Server, Relname) -> {ok, ScriptFile | {error, Reason}</name>
+      <name since="">get_script(Server, Relname) -> {ok, ScriptFile | {error, Reason}</name>
       <fsummary>Get contents of a boot script file</fsummary>
       <type>
         <v>Server     = server()</v>
@@ -711,7 +713,7 @@ target_spec()       = [target_spec()]
     </func>
 
     <func>
-      <name>get_status(Server) -> {ok, [Warning]} | {error, Reason}</name>
+      <name since="OTP R14B">get_status(Server) -> {ok, [Warning]} | {error, Reason}</name>
       <fsummary>Get contents of a release file</fsummary>
       <type>
         <v>Server  = server()</v>
@@ -722,7 +724,7 @@ target_spec()       = [target_spec()]
     </func>
 
     <func>
-      <name>get_server(WindowPid) -> {ok, ServerPid} | {error, Reason}</name>
+      <name since="">get_server(WindowPid) -> {ok, ServerPid} | {error, Reason}</name>
       <fsummary>Start server process with options</fsummary>
       <type>
         <v>WindowPid   = window_pid()</v>
@@ -733,7 +735,7 @@ target_spec()       = [target_spec()]
     </func>
 
     <func>
-      <name>get_target_spec(Server) -> {ok, TargetSpec} | {error, Reason}</name>
+      <name since="">get_target_spec(Server) -> {ok, TargetSpec} | {error, Reason}</name>
       <fsummary>Return a specification of the target system</fsummary>
       <type>
         <v>Server     = server()</v>
@@ -747,7 +749,7 @@ target_spec()       = [target_spec()]
     </func>
 
     <func>
-      <name>install(RelName, TargetDir) -> ok | {error, Reason}</name>
+      <name since="">install(RelName, TargetDir) -> ok | {error, Reason}</name>
       <fsummary>Install a target system</fsummary>
       <type>
         <v>RelName    = rel_name()</v>
@@ -758,7 +760,7 @@ target_spec()       = [target_spec()]
     </func>
 
     <func>
-      <name>start() -> {ok, WindowPid} | {error, Reason}</name>
+      <name since="">start() -> {ok, WindowPid} | {error, Reason}</name>
       <fsummary>Start main window process</fsummary>
       <type>
         <v>WindowPid   = window_pid()</v>
@@ -768,7 +770,7 @@ target_spec()       = [target_spec()]
     </func>
   
     <func>
-      <name>start(Options) -> {ok, WindowPid} | {error, Reason}</name>
+      <name since="">start(Options) -> {ok, WindowPid} | {error, Reason}</name>
       <fsummary>Start main window process with options</fsummary>
       <type>
         <v>Options     = options()</v>
@@ -779,7 +781,7 @@ target_spec()       = [target_spec()]
     </func>
   
     <func>
-      <name>start_link(Options) -> {ok, WindowPid} | {error, Reason}</name>
+      <name since="">start_link(Options) -> {ok, WindowPid} | {error, Reason}</name>
       <fsummary>Start main window process with options</fsummary>
       <type>
         <v>Options     = options()</v>
@@ -790,7 +792,7 @@ target_spec()       = [target_spec()]
     </func>
   
     <func>
-      <name>start_server(Options) -> {ok, ServerPid} | {error, Reason}</name>
+      <name since="">start_server(Options) -> {ok, ServerPid} | {error, Reason}</name>
       <fsummary>Start server process with options</fsummary>
       <type>
         <v>Options     = options()</v>
@@ -803,10 +805,10 @@ target_spec()       = [target_spec()]
     </func>
 
     <func>
-      <name>stop(Pid) -> ok | {error, Reason}</name>
+      <name since="">stop(Pid) -> ok | {error, Reason}</name>
       <fsummary>Stop a server or window process</fsummary>
       <type>
-        <v>Pid     = server_pid() | window_pid()()</v>
+        <v>Pid     = server_pid() | window_pid()</v>
         <v>Reason  = reason()</v>
       </type>
       <desc><p>Stop a server or window process</p></desc>

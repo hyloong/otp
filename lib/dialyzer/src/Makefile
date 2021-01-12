@@ -1,7 +1,7 @@
 #
 # %CopyrightBegin%
 #
-# Copyright Ericsson AB 2006-2012. All Rights Reserved.
+# Copyright Ericsson AB 2006-2017. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -46,28 +46,39 @@ DIALYZER_DIR = $(ERL_TOP)/lib/dialyzer
 # ----------------------------------------------------
 # Target Specs
 # ----------------------------------------------------
-MODULES =  \
+MODULES = \
+	cerl_closurean \
+	cerl_lib \
+	cerl_pmatch \
+	cerl_prettypr \
+	cerl_typean \
 	dialyzer \
 	dialyzer_analysis_callgraph \
 	dialyzer_behaviours \
 	dialyzer_callgraph \
 	dialyzer_cl \
 	dialyzer_cl_parse \
+	dialyzer_clean_core \
 	dialyzer_codeserver \
 	dialyzer_contracts \
 	dialyzer_dataflow \
 	dialyzer_dep \
+	dialyzer_dot \
 	dialyzer_explanation \
 	dialyzer_gui_wx \
 	dialyzer_options \
 	dialyzer_plt \
+	dialyzer_race_data_server \
 	dialyzer_races \
 	dialyzer_succ_typings \
 	dialyzer_timing \
 	dialyzer_typesig \
 	dialyzer_coordinator \
 	dialyzer_worker \
-	dialyzer_utils
+	dialyzer_utils \
+	erl_bif_types \
+	erl_types \
+	typer
 
 HRL_FILES= dialyzer.hrl dialyzer_gui_wx.hrl
 ERL_FILES= $(MODULES:%=%.erl)
@@ -86,10 +97,8 @@ APPUP_TARGET= $(EBIN)/$(APPUP_FILE)
 # FLAGS
 # ----------------------------------------------------
 
-ifeq ($(NATIVE_LIBS_ENABLED),yes)
-ERL_COMPILE_FLAGS += +native
-endif
-ERL_COMPILE_FLAGS += +warn_export_vars +warn_unused_import +warn_untyped_record +warn_missing_spec +warnings_as_errors
+ERL_COMPILE_FLAGS += -Werror
+ERL_COMPILE_FLAGS += +warn_export_vars +warn_unused_import +warn_missing_spec
 
 # ----------------------------------------------------
 # Targets
@@ -116,6 +125,9 @@ $(EBIN)/dialyzer_plt.$(EMULATOR): dialyzer_plt.erl ../vsn.mk
 $(EBIN)/dialyzer_gui_wx.$(EMULATOR): dialyzer_gui_wx.erl ../vsn.mk
 	$(erlc_verbose)erlc -W  $(ERL_COMPILE_FLAGS) -DVSN="\"v$(VSN)\"" -o$(EBIN) dialyzer_gui_wx.erl
 
+$(EBIN)/typer.$(EMULATOR): typer.erl ../vsn.mk
+	$(erlc_verbose)erlc -W  $(ERL_COMPILE_FLAGS) -DVSN="\"v$(VSN)\"" -o$(EBIN) typer.erl
+
 $(APP_TARGET): $(APP_SRC) ../vsn.mk
 	$(vsn_verbose)sed -e 's;%VSN%;$(VSN);' $< > $@
 
@@ -140,6 +152,7 @@ $(EBIN)/dialyzer_explanation.beam: dialyzer.hrl
 $(EBIN)/dialyzer_gui_wx.beam: dialyzer.hrl dialyzer_gui_wx.hrl
 $(EBIN)/dialyzer_options.beam: dialyzer.hrl
 $(EBIN)/dialyzer_plt.beam: dialyzer.hrl
+$(EBIN)/dialyzer_race_data_server.beam: dialyzer.hrl
 $(EBIN)/dialyzer_races.beam: dialyzer.hrl
 $(EBIN)/dialyzer_succ_typings.beam: dialyzer.hrl
 $(EBIN)/dialyzer_typesig.beam: dialyzer.hrl

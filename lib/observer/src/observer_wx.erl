@@ -1,7 +1,7 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2011-2014. All Rights Reserved.
+%% Copyright Ericsson AB 2011-2017. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -21,8 +21,8 @@
 -behaviour(wx_object).
 
 -export([start/0, stop/0]).
--export([create_menus/2, get_attrib/1, get_tracer/0, set_status/1,
-	 create_txt_dialog/4, try_rpc/4, return_to_localnode/2]).
+-export([create_menus/2, get_attrib/1, get_tracer/0, get_active_node/0, get_menubar/0,
+     get_scale/0, set_status/1, create_txt_dialog/4, try_rpc/4, return_to_localnode/2]).
 
 -export([init/1, handle_event/2, handle_cast/2, terminate/2, code_change/3,
 	 handle_call/3, handle_info/2, check_page_title/1]).
@@ -54,18 +54,14 @@
 	 status_bar,
 	 notebook,
 	 main_panel,
-	 pro_panel,
-	 tv_panel,
-	 sys_panel,
-	 trace_panel,
-	 app_panel,
-	 perf_panel,
-	 allc_panel,
+         panels,
 	 active_tab,
 	 node,
 	 nodes,
 	 prev_node="",
-	 log = false
+	 log = false,
+	 reply_to=false,
+         config
 	}).
 
 start() ->
@@ -89,14 +85,30 @@ set_status(What) ->
 get_tracer() ->
     wx_object:call(observer, get_tracer).
 
+get_active_node() ->
+    wx_object:call(observer, get_active_node).
+
+get_menubar() ->
+    wx_object:call(observer, get_menubar).
+
+get_scale() ->
+    ScaleStr = os:getenv("OBSERVER_SCALE", "1"),
+    try list_to_integer(ScaleStr) of
+        Scale when Scale < 1 -> 1;
+        Scale -> Scale
+    catch _:_ ->
+        1
+    end.
+
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
 init(_Args) ->
     register(observer, self()),
     wx:new(),
     catch wxSystemOptions:setOption("mac.listctrl.always_use_generic", 1),
+    Scale = get_scale(),
     Frame = wxFrame:new(wx:null(), ?wxID_ANY, "Observer",
-			[{size, {850, 600}}, {style, ?wxDEFAULT_FRAME_STYLE}]),
+			[{size, {Scale * 850, Scale * 600}}, {style, ?wxDEFAULT_FRAME_STYLE}]),
     IconFile = filename:join(code:priv_dir(observer), "erlang_observer.png"),
     Icon = wxIcon:new(IconFile, [{type,?wxBITMAP_TYPE_PNG}]),
     wxFrame:setIcon(Frame, Icon),
@@ -110,6 +122,10 @@ init(_Args) ->
 
 setup(#state{frame = Frame} = State) ->
     %% Setup Menubar & Menus
+    Config = load_config(),
+    Cnf = fun(Who) ->
+                  proplists:get_value(Who, Config, #{})
+          end,
     MenuBar = wxMenuBar:new(),
 
     {Nodes, NodeMenus} = get_nodes(),
@@ -123,7 +139,7 @@ setup(#state{frame = Frame} = State) ->
     Notebook = wxNotebook:new(Panel, ?ID_NOTEBOOK, [{style, ?wxBK_DEFAULT}]),
 
     %% System Panel
-    SysPanel = observer_sys_wx:start_link(Notebook, self()),
+    SysPanel = observer_sys_wx:start_link(Notebook, self(), Cnf(sys_panel)),
     wxNotebook:addPage(Notebook, SysPanel, "System", []),
 
     %% Setup sizer create early to get it when window shows
@@ -137,39 +153,45 @@ setup(#state{frame = Frame} = State) ->
     wxFrame:setTitle(Frame, atom_to_list(node())),
     wxStatusBar:setStatusText(StatusBar, atom_to_list(node())),
 
-    wxNotebook:connect(Notebook, command_notebook_page_changing),
-    wxFrame:connect(Frame, close_window, [{skip, true}]),
+    wxNotebook:connect(Notebook, command_notebook_page_changed,
+                       [{skip, true}, {id, ?ID_NOTEBOOK}]),
+    wxFrame:connect(Frame, close_window, []),
     wxMenu:connect(Frame, command_menu_selected),
     wxFrame:show(Frame),
 
     %% Freeze and thaw is buggy currently
-    DoFreeze = [?wxMAJOR_VERSION,?wxMINOR_VERSION] < [2,9],
+    DoFreeze = [?wxMAJOR_VERSION,?wxMINOR_VERSION] < [2,9]
+        orelse element(1, os:type()) =:= win32,
     DoFreeze andalso wxWindow:freeze(Panel),
     %% I postpone the creation of the other tabs so they can query/use
     %% the window size
 
     %% Perf Viewer Panel
-    PerfPanel = observer_perf_wx:start_link(Notebook, self()),
+    PerfPanel = observer_perf_wx:start_link(Notebook, self(), Cnf(perf_panel)),
     wxNotebook:addPage(Notebook, PerfPanel, "Load Charts", []),
 
     %% Memory Allocator Viewer Panel
-    AllcPanel = observer_alloc_wx:start_link(Notebook, self()),
+    AllcPanel = observer_alloc_wx:start_link(Notebook, self(), Cnf(allc_panel)),
     wxNotebook:addPage(Notebook, AllcPanel, ?ALLOC_STR, []),
 
     %% App Viewer Panel
-    AppPanel = observer_app_wx:start_link(Notebook, self()),
+    AppPanel = observer_app_wx:start_link(Notebook, self(), Cnf(app_panel)),
     wxNotebook:addPage(Notebook, AppPanel, "Applications", []),
 
     %% Process Panel
-    ProPanel = observer_pro_wx:start_link(Notebook, self()),
+    ProPanel = observer_pro_wx:start_link(Notebook, self(), Cnf(pro_panel)),
     wxNotebook:addPage(Notebook, ProPanel, "Processes", []),
 
+    %% Port Panel
+    PortPanel = observer_port_wx:start_link(Notebook, self(), Cnf(port_panel)),
+    wxNotebook:addPage(Notebook, PortPanel, "Ports", []),
+
     %% Table Viewer Panel
-    TVPanel = observer_tv_wx:start_link(Notebook, self()),
+    TVPanel = observer_tv_wx:start_link(Notebook, self(), Cnf(tv_panel)),
     wxNotebook:addPage(Notebook, TVPanel, "Table Viewer", []),
 
     %% Trace Viewer Panel
-    TracePanel = observer_trace_wx:start_link(Notebook, self()),
+    TracePanel = observer_trace_wx:start_link(Notebook, self(), Cnf(trace_panel)),
     wxNotebook:addPage(Notebook, TracePanel, ?TRACE_STR, []),
 
     %% Force redraw (windows needs it)
@@ -181,23 +203,26 @@ setup(#state{frame = Frame} = State) ->
 
     SysPid = wx_object:get_pid(SysPanel),
     SysPid ! {active, node()},
+    Panels = [{sys_panel, SysPanel, "System"},   %% In order
+              {perf_panel, PerfPanel, "Load Charts"},
+              {allc_panel, AllcPanel, ?ALLOC_STR},
+              {app_panel,  AppPanel, "Applications"},
+              {pro_panel, ProPanel, "Processes"},
+              {port_panel, PortPanel, "Ports"},
+              {tv_panel, TVPanel, "Table Viewer"},
+              {trace_panel, TracePanel, ?TRACE_STR}],
+
     UpdState = State#state{main_panel = Panel,
 			   notebook = Notebook,
 			   menubar = MenuBar,
 			   status_bar = StatusBar,
-			   sys_panel = SysPanel,
-			   pro_panel = ProPanel,
-			   tv_panel  = TVPanel,
-			   trace_panel = TracePanel,
-			   app_panel = AppPanel,
-			   perf_panel = PerfPanel,
-			   allc_panel = AllcPanel,
 			   active_tab = SysPid,
+                           panels = Panels,
 			   node  = node(),
 			   nodes = Nodes
 			  },
     %% Create resources which we don't want to duplicate
-    SysFont = wxSystemSettings:getFont(?wxSYS_SYSTEM_FIXED_FONT),
+    SysFont = wxSystemSettings:getFont(?wxSYS_OEM_FIXED_FONT),
     %% OemFont = wxSystemSettings:getFont(?wxSYS_OEM_FIXED_FONT),
     %% io:format("Sz sys ~p(~p) oem ~p(~p)~n",
     %% 	      [wxFont:getPointSize(SysFont), wxFont:isFixedWidth(SysFont),
@@ -215,11 +240,14 @@ setup(#state{frame = Frame} = State) ->
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
 %%Callbacks
-handle_event(#wx{event=#wxNotebook{type=command_notebook_page_changing}},
-	     #state{active_tab=Previous, node=Node} = State) ->
-    case get_active_pid(State) of
-	Previous -> {noreply, State};
+handle_event(#wx{event=#wxBookCtrl{type=command_notebook_page_changed, nSel=Next}},
+	     #state{active_tab=Previous, node=Node, panels=Panels, status_bar=SB} = State) ->
+    {_, Obj, _} = lists:nth(Next+1, Panels),
+    case wx_object:get_pid(Obj) of
+	Previous ->
+            {noreply, State};
 	Pid ->
+            wxStatusBar:setStatusText(SB, ""),
 	    Previous ! not_active,
 	    Pid ! {active, Node},
 	    {noreply, State#state{active_tab=Pid}}
@@ -229,14 +257,13 @@ handle_event(#wx{id = ?ID_CDV, event = #wxCommand{type = command_menu_selected}}
     spawn(crashdump_viewer, start, []),
     {noreply, State};
 
-handle_event(#wx{event = #wxClose{}}, #state{log=LogOn} = State) ->
-    LogOn andalso rpc:block_call(State#state.node, rb, stop, []),
-    {stop, normal, State};
+handle_event(#wx{event = #wxClose{}}, State) ->
+    stop_servers(State),
+    {noreply, State};
 
-handle_event(#wx{id = ?wxID_EXIT, event = #wxCommand{type = command_menu_selected}},
-	     #state{log=LogOn} = State) ->
-    LogOn andalso rpc:block_call(State#state.node, rb, stop, []),
-    {stop, normal, State};
+handle_event(#wx{id = ?wxID_EXIT, event = #wxCommand{type = command_menu_selected}}, State) ->
+    stop_servers(State),
+    {noreply, State};
 
 handle_event(#wx{id = ?wxID_HELP, event = #wxCommand{type = command_menu_selected}}, State) ->
     External = "http://www.erlang.org/doc/apps/observer/index.html",
@@ -350,8 +377,7 @@ handle_event(#wx{id = Id, event = #wxCommand{type = command_menu_selected}},
              end,
     {noreply, change_node_view(Node, LState)};
 
-handle_event(Event, State) ->
-    Pid = get_active_pid(State),
+handle_event(Event, #state{active_tab=Pid} = State) ->
     Pid ! Event,
     {noreply, State}.
 
@@ -376,12 +402,19 @@ handle_call({create_menus, TabMenus}, _From,
 handle_call({get_attrib, Attrib}, _From, State) ->
     {reply, get(Attrib), State};
 
-handle_call(get_tracer, _From, State=#state{trace_panel=TraceP}) ->
+handle_call(get_tracer, _From, State=#state{panels=Panels}) ->
+    {_, TraceP, _} = lists:keyfind(trace_panel, 1, Panels),
     {reply, TraceP, State};
 
-handle_call(stop, _, State = #state{frame = Frame}) ->
-    wxFrame:destroy(Frame),
-    {stop, normal, ok, State};
+handle_call(get_active_node, _From, State=#state{node=Node}) ->
+    {reply, Node, State};
+
+handle_call(get_menubar, _From, State=#state{menubar=MenuBar}) ->
+    {reply, MenuBar, State};
+
+handle_call(stop, From, State) ->
+    stop_servers(State),
+    {noreply, State#state{reply_to=From}};
 
 handle_call(log_status, _From, State) ->
     {reply, State#state.log, State};
@@ -406,16 +439,21 @@ handle_info({nodedown, Node},
     create_txt_dialog(Frame, Msg, "Node down", ?wxICON_EXCLAMATION),
     {noreply, State3};
 
-handle_info({open_link, Pid0}, State = #state{pro_panel=ProcViewer, frame=Frame}) ->
-    Pid = case Pid0 of
-	      [_|_] -> try list_to_pid(Pid0) catch _:_ -> Pid0 end;
-	      _ -> Pid0
+handle_info({open_link, Id0}, State = #state{panels=Panels,frame=Frame}) ->
+    Id = case Id0 of
+	      [_|_] -> try list_to_pid(Id0) catch _:_ -> Id0 end;
+	      _ -> Id0
 	  end,
     %% Forward to process tab
-    case is_pid(Pid) of
-	true  -> wx_object:get_pid(ProcViewer) ! {procinfo_open, Pid};
-	false ->
-	    Msg = io_lib:format("Information about ~p is not available or implemented",[Pid]),
+    case Id of
+	Pid when is_pid(Pid) ->
+            {pro_panel, ProcViewer, _} = lists:keyfind(pro_panel, 1, Panels),
+	    wx_object:get_pid(ProcViewer) ! {procinfo_open, Pid};
+	"#Port" ++ _ = Port ->
+            {port_panel, PortViewer, _} = lists:keyfind(port_panel, 1, Panels),
+	    wx_object:get_pid(PortViewer) ! {portinfo_open, Port};
+	_ ->
+	    Msg = io_lib:format("Information about ~p is not available or implemented",[Id]),
 	    Info = wxMessageDialog:new(Frame, Msg),
 	    wxMessageDialog:showModal(Info),
 	    wxMessageDialog:destroy(Info)
@@ -426,18 +464,65 @@ handle_info({get_debug_info, From}, State = #state{notebook=Notebook, active_tab
     From ! {observer_debug, wx:get_env(), Notebook, Pid},
     {noreply, State};
 
-handle_info({'EXIT', Pid, _Reason}, State) ->
-    io:format("Child (~s) crashed exiting:  ~p ~p~n",
-	      [pid2panel(Pid, State), Pid,_Reason]),
+handle_info({'EXIT', Pid, Reason}, State) ->
+    case Reason of
+	normal ->
+	    {noreply, State};
+	_ ->
+	    io:format("Observer: Child (~s) crashed exiting:  ~p ~tp~n",
+		      [pid2panel(Pid, State), Pid, Reason]),
+	    {stop, normal, State}
+    end;
+
+handle_info({stop, Me}, State) when Me =:= self() ->
     {stop, normal, State};
 
 handle_info(_Info, State) ->
     {noreply, State}.
 
-terminate(_Reason, #state{frame = Frame}) ->
+stop_servers(#state{node=Node, log=LogOn, panels=Panels} = _State) ->
+    LogOn andalso rpc:block_call(Node, rb, stop, []),
+    Me = self(),
+    save_config(Panels),
+    Stop = fun() ->
+		   try
+		       _ = [wx_object:stop(Panel) || {_, Panel, _} <- Panels],
+		       ok
+		   catch _:_ -> ok
+		   end,
+		   Me ! {stop, Me}
+	   end,
+    spawn(Stop).
+
+terminate(_Reason, #state{frame = Frame, reply_to=From}) ->
     wxFrame:destroy(Frame),
     wx:destroy(),
+    case From of
+	false -> ignore;
+	_ -> gen_server:reply(From, ok)
+    end,
     ok.
+
+load_config() ->
+    case file:consult(config_file()) of
+        {ok, Config} -> Config;
+        _ -> []
+    end.
+
+save_config(Panels) ->
+    Configs = [{Name, wx_object:call(Panel, get_config)} || {Name, Panel, _} <- Panels],
+    File = config_file(),
+    case filelib:ensure_dir(File) of
+        ok ->
+            Format = [io_lib:format("~tp.~n",[Conf]) || Conf <- Configs],
+            _ = file:write_file(File, Format);
+        _ ->
+            ignore
+    end.
+
+config_file() ->
+    Dir = filename:basedir(user_config, "erl_observer"),
+    filename:join(Dir, "config.txt").
 
 code_change(_, _, State) ->
     {ok, State}.
@@ -498,8 +583,7 @@ connect2(NodeName, Opts, Cookie) ->
 	    {error, net_kernel, Reason}
     end.
 
-change_node_view(Node, State) ->
-    Tab = get_active_pid(State),
+change_node_view(Node, #state{active_tab=Tab} = State) ->
     Tab ! not_active,
     Tab ! {active, Node},
     StatusText = ["Observer - " | atom_to_list(Node)],
@@ -511,35 +595,12 @@ check_page_title(Notebook) ->
     Selection = wxNotebook:getSelection(Notebook),
     wxNotebook:getPageText(Notebook, Selection).
 
-get_active_pid(#state{notebook=Notebook, pro_panel=Pro, sys_panel=Sys,
-		      tv_panel=Tv, trace_panel=Trace, app_panel=App,
-		      perf_panel=Perf, allc_panel=Alloc
-		     }) ->
-    Panel = case check_page_title(Notebook) of
-		"Processes" -> Pro;
-		"System" -> Sys;
-		"Table Viewer" -> Tv;
-		?TRACE_STR -> Trace;
-		"Load Charts" -> Perf;
-		"Applications" -> App;
-		?ALLOC_STR -> Alloc
-	    end,
-    wx_object:get_pid(Panel).
-
-pid2panel(Pid, #state{pro_panel=Pro, sys_panel=Sys,
-		      tv_panel=Tv, trace_panel=Trace, app_panel=App,
-		      perf_panel=Perf, allc_panel=Alloc}) ->
-    case Pid of
-	Pro -> "Processes";
-	Sys -> "System";
-	Tv -> "Table Viewer" ;
-	Trace -> ?TRACE_STR;
-	Perf -> "Load Charts";
-	App -> "Applications";
-	Alloc -> ?ALLOC_STR;
-	_ -> "unknown"
+pid2panel(Pid, #state{panels=Panels}) ->
+    PanelPids = [{Name, wx_object:get_pid(Obj)} || {Name, Obj, _} <- Panels],
+    case lists:keyfind(Pid, 2, PanelPids) of
+        false -> "unknown";
+        {Name,_} -> Name
     end.
-
 
 create_connect_dialog(ping, #state{frame = Frame, prev_node=Prev}) ->
     Dialog = wxTextEntryDialog:new(Frame, "Connect to node", [{value, Prev}]),
@@ -583,7 +644,8 @@ create_connect_dialog(connect, #state{frame = Frame}) ->
 
     wxWindow:setSizerAndFit(Dialog, VSizer),
     wxSizer:setSizeHints(VSizer, Dialog),
-    CookiePath = filename:join(os:getenv("HOME"), ".erlang.cookie"),
+    {ok,[[HomeDir]]} = init:get_argument(home),
+    CookiePath = filename:join(HomeDir, ".erlang.cookie"),
     DefaultCookie = case filelib:is_file(CookiePath) of
 			true ->
 			    {ok, Bin} = file:read_file(CookiePath),
@@ -680,7 +742,7 @@ get_nodes() ->
     {Nodes, lists:reverse(Menues)}.
 
 epmd_nodes(Names) ->
-    [_, Host] = string:tokens(atom_to_list(node()),"@"),
+    [_, Host] = string:lexemes(atom_to_list(node()),"@"),
     [list_to_atom(Name ++ [$@|Host]) || {Name, _} <- Names].
 
 update_node_list(State = #state{menubar=MenuBar}) ->
@@ -719,7 +781,11 @@ ensure_sasl_started(Node) ->
 
 ensure_mf_h_handler_used(Node) ->
    %% is log_mf_h used ?
-   Handlers = rpc:block_call(Node, gen_event, which_handlers, [error_logger]),
+   Handlers =
+        case rpc:block_call(Node, gen_event, which_handlers, [error_logger]) of
+            {badrpc,{'EXIT',noproc}} -> []; % OTP-21+ and no event handler exists
+            Hs -> Hs
+        end,
    case lists:any(fun(L)-> L == log_mf_h end, Handlers) of
        false -> throw("Error: log_mf_h handler not used in sasl."),
                 error;
@@ -754,7 +820,7 @@ is_rb_compatible(Node) ->
 
 is_rb_server_running(Node, LogState) ->
    %% If already started, somebody else may use it.
-   %% We can not use it too, as far log file would be overriden. Not fair.
+   %% We cannot use it too, as far log file would be overriden. Not fair.
    case rpc:block_call(Node, erlang, whereis, [rb_server]) of
        Pid when is_pid(Pid), (LogState == false) ->
 	   throw("Error: rb_server is already started and maybe used by someone.");

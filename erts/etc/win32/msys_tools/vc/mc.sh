@@ -3,7 +3,7 @@
 # 
 # %CopyrightBegin%
 # 
-# Copyright Ericsson AB 2002-2011. All Rights Reserved.
+# Copyright Ericsson AB 2002-2016. All Rights Reserved.
 # 
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -80,9 +80,14 @@ if [ -n "$OUTPUT_DIRNAME" ]; then
 	exit $RES
     fi
 fi
+# MSYS2 (currently) converts the paths wrong, avoid it
+export MSYS2_ARG_CONV_EXCL=
 eval $MCC "$CMD"  >/tmp/mc.exe.${p}.1 2>/tmp/mc.exe.${p}.2
 RES=$?
-tail +2 /tmp/mc.exe.${p}.2 >&2
+if [ $RES != 0 ]; then
+    echo Failed: $MCC "$CMD" 
+fi
+tail -n +2 /tmp/mc.exe.${p}.2 >&2
 cat /tmp/mc.exe.${p}.1
 rm -f /tmp/mc.exe.${p}.2 /tmp/mc.exe.${p}.1
 exit $RES

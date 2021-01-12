@@ -1,7 +1,7 @@
 /*
  * %CopyrightBegin%
  *
- * Copyright Ericsson AB 1996-2014. All Rights Reserved.
+ * Copyright Ericsson AB 1996-2020. All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -21,17 +21,8 @@
 #ifndef __BIG_H__
 #define __BIG_H__
 
-#ifndef __SYS_H__
 #include "sys.h"
-#endif
-
-#ifndef __CONFIG_H__
-#include "erl_vm.h"
-#endif
-
-#ifndef __GLOBAL_H__
 #include "global.h"
-#endif
 
 typedef Uint     ErtsDigit;
 
@@ -51,11 +42,8 @@ typedef Uint16   ErtsHalfDigit;
 #undef  BIG_HAVE_DOUBLE_DIGIT
 typedef Uint32   ErtsHalfDigit;
 #else
-#error "can not determine machine size"
+#error "cannot determine machine size"
 #endif
-
-#define D_DECIMAL_EXP	9
-#define D_DECIMAL_BASE	1000000000
 
 typedef Uint  dsize_t;	 /* Vector size type */
 
@@ -82,7 +70,24 @@ typedef Uint  dsize_t;	 /* Vector size type */
 
 /* Check for small */
 #define IS_USMALL(sgn,x)  ((sgn) ? ((x) <= MAX_SMALL+1) : ((x) <= MAX_SMALL))
-#define IS_SSMALL(x)      (((x) >= MIN_SMALL) && ((x) <= MAX_SMALL))
+
+/*
+ * It seems that both clang and gcc will generate sub-optimal code
+ * for the more obvious way to write the range check:
+ *
+ *    #define IS_SSMALL(x)  (((x) >= MIN_SMALL) && ((x) <= MAX_SMALL))
+ *
+ * Note that IS_SSMALL() may be used in the 32-bit emulator with
+ * a Uint64 argument. Therefore, we must test the size of the argument
+ * to ensure that the cast does not discard the high-order 32 bits.
+ */
+#if defined(ARCH_32)
+#  define _IS_SSMALL32(x) (((Uint32) ((((x)) >> (SMALL_BITS-1)) + 1)) < 2)
+#else
+#  define _IS_SSMALL32(x) (1)
+#endif
+#define _IS_SSMALL64(x) (((Uint64) ((((x)) >> (SMALL_BITS-1)) + 1)) < 2)
+#define IS_SSMALL(x) (sizeof(x) == sizeof(Uint32) ? _IS_SSMALL32(x) : _IS_SSMALL64(x))
 
 /* The heap size needed for a bignum */
 #define BIG_NEED_SIZE(x)  ((x) + 1)
@@ -118,21 +123,23 @@ typedef Uint  dsize_t;	 /* Vector size type */
 
 #endif
 
-int big_decimal_estimate(Wterm);
-Eterm erts_big_to_list(Eterm, Eterm**);
-char *erts_big_to_string(Wterm x, char *buf, Uint buf_sz);
-Uint erts_big_to_binary_bytes(Eterm x, char *buf, Uint buf_sz);
+int big_integer_estimate(Wterm, Uint base);
+Eterm erts_big_to_list(Eterm, int base, Eterm**);
+char *erts_big_to_string(Wterm x, int base, char *buf, Uint buf_sz);
+Uint erts_big_to_binary_bytes(Eterm x, int base, char *buf, Uint buf_sz);
 
 Eterm small_times(Sint, Sint, Eterm*);
 
 Eterm big_plus(Wterm, Wterm, Eterm*);
 Eterm big_minus(Eterm, Eterm, Eterm*);
 Eterm big_times(Eterm, Eterm, Eterm*);
+
+int big_div_rem(Eterm lhs, Eterm rhs,
+                Eterm *q_hp, Eterm *q,
+                Eterm *r_hp, Eterm *r);
 Eterm big_div(Eterm, Eterm, Eterm*);
 Eterm big_rem(Eterm, Eterm, Eterm*);
-Eterm big_neg(Eterm, Eterm*);
 
-Eterm big_minus_small(Eterm, Uint, Eterm*);
 Eterm big_plus_small(Eterm, Uint, Eterm*);
 Eterm big_times_small(Eterm, Uint, Eterm*);
 
@@ -153,10 +160,11 @@ Eterm erts_make_integer(Uint, Process *);
 Eterm erts_make_integer_from_uword(UWord x, Process *p);
 
 dsize_t big_bytes(Eterm);
-Eterm bytes_to_big(byte*, dsize_t, int, Eterm*);
+Eterm bytes_to_big(const byte*, dsize_t, int, Eterm*);
 byte* big_to_bytes(Eterm, byte*);
 
 int term_to_Uint(Eterm, Uint*);
+int term_to_Uint_mask(Eterm, Uint*);
 int term_to_UWord(Eterm, UWord*);
 int term_to_Sint(Eterm, Sint*);
 #if HAVE_INT64
@@ -164,6 +172,8 @@ Eterm erts_uint64_array_to_big(Uint **, int, int, Uint64 *);
 int term_to_Uint64(Eterm, Uint64*);
 int term_to_Sint64(Eterm, Sint64*);
 #endif
+int term_to_Uint32(Eterm, Uint32*);
+
 
 Uint32 big_to_uint32(Eterm b);
 int term_equals_2pow32(Eterm);
@@ -173,4 +183,15 @@ Eterm erts_sint64_to_big(Sint64, Eterm **);
 
 Eterm erts_chars_to_integer(Process *, char*, Uint, const int);
 
+/* How list_to_integer classifies the input, was it even a string? */
+typedef enum {
+    LTI_BAD_STRUCTURE = 0,
+    LTI_NO_INTEGER    = 1,
+    LTI_SOME_INTEGER  = 2,
+    LTI_ALL_INTEGER   = 3
+} LTI_result_t;
+
+LTI_result_t erts_list_to_integer(Process *BIF_P, Eterm orig_list,
+                                  const Uint base,
+                                  Eterm *integer_out, Eterm *tail_out);
 #endif

@@ -2,7 +2,7 @@
 #
 # %CopyrightBegin%
 # 
-# Copyright Ericsson AB 2009-2011. All Rights Reserved.
+# Copyright Ericsson AB 2009-2016. All Rights Reserved.
 # 
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -57,7 +57,8 @@ while(<DATA>) {
 
 $" = ',';
 $\ = "\n";
-while( my ($Name, $r) = each(%Names)) {
+foreach my $Name (sort keys %Names) {
+    my $r = $Names{$Name};
     # Create substitutions for this Name
     my ($Record, @Fields) = @{ $r };
     my @FieldMatchValues;
@@ -110,7 +111,8 @@ while( my ($Name, $r) = each(%Names)) {
 for my $i ( 0 .. $#INDEX ) {
     my $line = $INDEX[$i];
     if ($line =~ s/^[*]//) {
-	while( my ($Name, $r) = each(%Names)) {
+	foreach my $Name (sort keys %Names) {
+	    my $r = $Names{$Name};
 	    my ($Record) = @{ $r };
 	    $_ = $line;
 	    s/Name\b/$Name/g;

@@ -1,7 +1,7 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2011-2014. All Rights Reserved.
+%% Copyright Ericsson AB 2011-2018. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -56,11 +56,12 @@ init([Pid, ParentFrame, Parent]) ->
 	Table = ets:new(observer_expand,[set,public]),
 	Title=case observer_wx:try_rpc(node(Pid), erlang, process_info, [Pid, registered_name]) of
 		  [] -> io_lib:format("~p",[Pid]);
-		  {registered_name, Registered} -> io_lib:format("~p (~p)",[Registered, Pid]);
+		  {registered_name, Registered} -> io_lib:format("~tp (~p)",[Registered, Pid]);
 		  undefined -> throw(process_undefined)
 	      end,
+    Scale = observer_wx:get_scale(),
 	Frame=wxFrame:new(ParentFrame, ?wxID_ANY, [atom_to_list(node(Pid)), $:, Title],
-			  [{style, ?wxDEFAULT_FRAME_STYLE}, {size, {850,600}}]),
+			  [{style, ?wxDEFAULT_FRAME_STYLE}, {size, {Scale * 850, Scale * 600}}]),
 	MenuBar = wxMenuBar:new(),
 	create_menus(MenuBar),
 	wxFrame:setMenuBar(Frame, MenuBar),
@@ -92,7 +93,7 @@ init([Pid, ParentFrame, Parent]) ->
 	    observer_wx:return_to_localnode(ParentFrame, node(Pid)),
 	    {stop, badrpc};
 	  process_undefined ->
-	    observer_lib:display_info_dialog("No such alive process"),
+	    observer_lib:display_info_dialog(ParentFrame,"No such alive process"),
 	    {stop, normal}
     end.
 
@@ -120,16 +121,20 @@ handle_event(#wx{id=?REFRESH}, #state{frame=Frame, pid=Pid, pages=Pages, expand_
     end,
     {noreply, State};
 
+handle_event(#wx{obj=MoreEntry,event=#wxMouse{type=left_down},userData={more,More}}, State) ->
+    observer_lib:add_scroll_entries(MoreEntry,More),
+    {noreply, State};
+
 handle_event(#wx{event=#wxMouse{type=left_down}, userData=TargetPid}, State) ->
     observer ! {open_link, TargetPid},
     {noreply, State};
 
 handle_event(#wx{obj=Obj, event=#wxMouse{type=enter_window}}, State) ->
-    wxTextCtrl:setForegroundColour(Obj,{0,0,100,255}),
+    wxStaticText:setForegroundColour(Obj,{0,0,100,255}),
     {noreply, State};
 
 handle_event(#wx{obj=Obj, event=#wxMouse{type=leave_window}}, State) ->
-    wxTextCtrl:setForegroundColour(Obj,?wxBLUE),
+    wxStaticText:setForegroundColour(Obj,?wxBLUE),
     {noreply, State};
 
 handle_event(#wx{event=#wxHtmlLink{linkInfo=#wxHtmlLinkInfo{href=Href}}},
@@ -144,14 +149,14 @@ handle_event(#wx{event=#wxHtmlLink{linkInfo=#wxHtmlLinkInfo{href=Href}}},
 	    observer ! {open_link, Href},
 	    {noreply, State};
 	Callback ->
-	    [{"key1",Key1},{"key2",Key2},{"key3",Key3}] = httpd:parse_query(Rest),
+	    [{"key1",Key1},{"key2",Key2},{"key3",Key3}] = uri_string:dissect_query(Rest),
 	    Id = {obs, {T,{list_to_integer(Key1),
 			   list_to_integer(Key2),
 			   list_to_integer(Key3)}}},
 	    Opened =
 		case lists:keyfind(Id,1,Opened0) of
 		    false ->
-			Win = cdv_detail_wx:start_link(Id,[],Frame,Callback),
+			Win = cdv_detail_wx:start_link(Id,[],Frame,Callback,obs),
 			[{Id,Win}|Opened0];
 		    {_,Win} ->
 			wxFrame:raise(Win),
@@ -171,7 +176,7 @@ handle_info({get_debug_info, From}, State = #state{notebook=Notebook}) ->
     From ! {procinfo_debug, Notebook},
     {noreply, State};
 handle_info(_Info, State) ->
-    %% io:format("~p: ~p, Handle info: ~p~n", [?MODULE, ?LINE, Info]),
+    %% io:format("~p: ~p, Handle info: ~tp~n", [?MODULE, ?LINE, Info]),
     {noreply, State}.
 
 handle_call(Call, From, _State) ->
@@ -198,22 +203,25 @@ code_change(_, _, State) ->
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 init_process_page(Panel, Pid) ->
-    Fields0 = process_info_fields(Pid),
+    WSz = observer_wx:try_rpc(node(Pid), erlang, system_info,[wordsize]),
+    Fields0 = process_info_fields(Pid, WSz),
     {FPanel, _, UpFields} = observer_lib:display_info(Panel, Fields0),
     {FPanel, fun() ->
-		     Fields = process_info_fields(Pid),
+		     Fields = process_info_fields(Pid, WSz),
 		     observer_lib:update_info(UpFields, Fields)
 	     end}.
 
 
 init_message_page(Parent, Pid, Table) ->
     Win = observer_lib:html_window(Parent),
+    Cs = observer_lib:colors(Parent),
     Update = fun() ->
 		     case observer_wx:try_rpc(node(Pid), erlang, process_info,
 					      [Pid, messages])
 		     of
 			 {messages, Messages} ->
-			     Html = observer_html_lib:expandable_term("Message Queue", Messages, Table),
+			     Html = observer_html_lib:expandable_term("Message Queue", Messages,
+                                                                      Table, Cs),
 			     wxHtmlWindow:setPage(Win, Html);
 			 _ ->
 			     throw(process_undefined)
@@ -224,11 +232,12 @@ init_message_page(Parent, Pid, Table) ->
 
 init_dict_page(Parent, Pid, Table) ->
     Win = observer_lib:html_window(Parent),
+    Cs = observer_lib:colors(Parent),
     Update = fun() ->
 		     case observer_wx:try_rpc(node(Pid), erlang, process_info, [Pid, dictionary])
 		     of
 			 {dictionary,Dict} ->
-			     Html = observer_html_lib:expandable_term("Dictionary", Dict, Table),
+			     Html = observer_html_lib:expandable_term("Dictionary", Dict, Table, Cs),
 			     wxHtmlWindow:setPage(Win, Html);
 			 _ ->
 			     throw(process_undefined)
@@ -240,29 +249,30 @@ init_dict_page(Parent, Pid, Table) ->
 init_stack_page(Parent, Pid) ->
     LCtrl = wxListCtrl:new(Parent, [{style, ?wxLC_REPORT bor ?wxLC_HRULES}]),
     Li = wxListItem:new(),
+    Scale = observer_wx:get_scale(),
     wxListItem:setText(Li, "Module:Function/Arg"),
     wxListCtrl:insertColumn(LCtrl, 0, Li),
-    wxListCtrl:setColumnWidth(LCtrl, 0, 300),
+    wxListCtrl:setColumnWidth(LCtrl, 0, Scale * 300),
     wxListItem:setText(Li, "File:LineNumber"),
     wxListCtrl:insertColumn(LCtrl, 1, Li),
-    wxListCtrl:setColumnWidth(LCtrl, 1, 300),
+    wxListCtrl:setColumnWidth(LCtrl, 1, Scale * 300),
     wxListItem:destroy(Li),
+    Even = wxSystemSettings:getColour(?wxSYS_COLOUR_LISTBOX),
+    Odd = observer_lib:mix(Even, wxSystemSettings:getColour(?wxSYS_COLOUR_HIGHLIGHT), 0.8),
     Update = fun() ->
 		     case observer_wx:try_rpc(node(Pid), erlang, process_info,
 					      [Pid, current_stacktrace])
 		     of
 			 {current_stacktrace,RawBt} ->
-			     observer_wx:try_rpc(node(Pid), erlang, process_info,
-						 [Pid, current_stacktrace]),
 			     wxListCtrl:deleteAllItems(LCtrl),
 			     wx:foldl(fun({M, F, A, Info}, Row) ->
 					      _Item = wxListCtrl:insertItem(LCtrl, Row, ""),
-					      ?EVEN(Row) andalso
-						  wxListCtrl:setItemBackgroundColour(LCtrl, Row, ?BG_EVEN),
+					      ?EVEN(Row) orelse
+						  wxListCtrl:setItemBackgroundColour(LCtrl, Row, Odd),
 					      wxListCtrl:setItem(LCtrl, Row, 0, observer_lib:to_str({M,F,A})),
 					      FileLine = case Info of
 							     [{file,File},{line,Line}] ->
-								 io_lib:format("~s:~w", [File,Line]);
+								 io_lib:format("~ts:~w", [File,Line]);
 							     _ ->
 								 []
 							 end,
@@ -283,9 +293,10 @@ init_stack_page(Parent, Pid) ->
 
 init_state_page(Parent, Pid, Table) ->
     Win = observer_lib:html_window(Parent),
+    Cs = observer_lib:colors(Parent),
     Update = fun() ->
 		     StateInfo = fetch_state_info(Pid),
-		     Html = observer_html_lib:expandable_term("ProcState", StateInfo, Table),
+		     Html = observer_html_lib:expandable_term("ProcState", StateInfo, Table, Cs),
 		     wxHtmlWindow:setPage(Win, Html)
 	     end,
     Update(),
@@ -317,7 +328,7 @@ fetch_state_info2(Pid, M) ->
     of
 	{status, _, {module, _},
 	 [_PDict, _SysState, _Parent, _Dbg,
-	  [Header,{data, First},{data, Second}]]} ->
+	  [Header,{data, First},{data, Second}|_]]} ->
 	    [{"Behaviour", B}, Header] ++ First ++ Second;
 	{status, _, {module, _},
 	 [_PDict, _SysState, _Parent, _Dbg,
@@ -336,6 +347,7 @@ fetch_state_info2(Pid, M) ->
 
 init_log_page(Parent, Pid, Table) ->
     Win = observer_lib:html_window(Parent),
+    Cs = observer_lib:colors(Parent),
     Update = fun() ->
 		     Fd = spawn_link(fun() -> io_server() end),
 		     rpc:call(node(Pid), rb, rescan, [[{start_log, Fd}]]),
@@ -348,7 +360,7 @@ init_log_page(Parent, Pid, Table) ->
 		     NbBlanks = length(Pref) - 1,
 		     Re = "(<" ++ Pref ++ "\.[^>]{1,}>)[ ]{"++ integer_to_list(NbBlanks) ++ "}",
 		     Look = re:replace(ExpPid, Re, "\\1", [global, {return, list}]),
-		     Html = observer_html_lib:expandable_term("SaslLog", Look, Table),
+		     Html = observer_html_lib:expandable_term("SaslLog", Look, Table, Cs),
 		     wxHtmlWindow:setPage(Win, Html)
 	     end,
     Update(),
@@ -359,7 +371,7 @@ create_menus(MenuBar) ->
 	     {"View", [#create_menu{id=?REFRESH, text="Refresh\tCtrl-R"}]}],
     observer_lib:create_menus(Menus, MenuBar, new_window).
 
-process_info_fields(Pid) ->
+process_info_fields(Pid, WSz) ->
     Struct = [{"Overview",
 	       [{"Initial Call",     initial_call},
 		{"Current Function", current_function},
@@ -370,7 +382,7 @@ process_info_fields(Pid) ->
 		{"Priority",         priority},
 		{"Trap Exit",        trap_exit},
 		{"Reductions",       reductions},
-		{"Binary",           binary},
+		{"Binary",           fun(Data) -> stringify_bins(Data) end},
 		{"Last Calls",       last_calls},
 		{"Catch Level",      catchlevel},
 		{"Trace",            trace},
@@ -383,10 +395,10 @@ process_info_fields(Pid) ->
 		{"Monitored by",     {click, monitored_by}}]},
 	      {"Memory and Garbage Collection", right,
 	       [{"Memory",           {bytes, memory}},
-		{"Stack and Heaps",  {bytes, total_heap_size}},
-		{"Heap Size",        {bytes, heap_size}},
-		{"Stack Size",       {bytes, stack_size}},
-		{"GC Min Heap Size", {bytes, get_gc_info(min_heap_size)}},
+		{"Stack and Heaps",  {{words,WSz}, total_heap_size}},
+		{"Heap Size",        {{words,WSz}, heap_size}},
+		{"Stack Size",       {{words,WSz}, stack_size}},
+		{"GC Min Heap Size", {{words,WSz}, get_gc_info(min_heap_size)}},
 		{"GC FullSweep After", get_gc_info(fullsweep_after)}
 	       ]}],
     case observer_wx:try_rpc(node(Pid), erlang, process_info, [Pid, item_list()]) of
@@ -434,8 +446,13 @@ get_gc_info(Arg) ->
 filter_monitor_info() ->
     fun(Data) ->
 	    Ms = proplists:get_value(monitors, Data),
-	    [Pid || {process, Pid} <- Ms]
+	    [Id || {_Type, Id} <- Ms] % Type is process or port
     end.
+
+stringify_bins(Data) ->
+    Bins = proplists:get_value(binary, Data),
+    [lists:flatten(io_lib:format("<< ~s, refc ~w>>", [observer_lib:to_str({bytes,Sz}),Refc]))
+     || {_Ptr, Sz, Refc} <- Bins].
 
 local_pid_str(Pid) ->
     %% observer can observe remote nodes
@@ -448,8 +465,8 @@ local_pid_str(Pid) ->
 
 global_pid_node_pref(Pid) ->
     %% Global PID node prefix : X of <X.Y.Z>
-    string:strip(string:sub_word(pid_to_list(Pid),1,$.),left,$<).
-    
+    [NodePrefix|_] = string:lexemes(pid_to_list(Pid),"<."),
+    NodePrefix.
 
 io_get_data(Pid) ->
     Pid ! {self(), get_data_and_close},
@@ -482,5 +499,5 @@ io_request({put_chars, Encoding, Module, Function, Args}, State) ->
 	    {error, {error, Function}, State}
     end;
 io_request(_Req, State) ->
-    %% io:format("~p: Unknown req: ~p ~n",[?LINE, _Req]),
+    %% io:format("~p: Unknown req: ~tp ~n",[?LINE, _Req]),
     {ok, {error, request}, State}.

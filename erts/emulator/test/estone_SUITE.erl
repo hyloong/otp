@@ -1,7 +1,7 @@
 %%
 %% %CopyrightBegin%
 %% 
-%% Copyright Ericsson AB 2002-2013. All Rights Reserved.
+%% Copyright Ericsson AB 2002-2017. All Rights Reserved.
 %% 
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -19,9 +19,8 @@
 
 -module(estone_SUITE).
 %% Test functions
--export([all/0, suite/0,groups/0,init_per_suite/1, end_per_suite/1, 
-	 init_per_group/2,end_per_group/2,estone/1,estone_bench/1]).
--export([init_per_testcase/2, end_per_testcase/2]).
+-export([all/0, suite/0, groups/0,
+	 estone/1, estone_bench/1, pgo/0]).
 
 %% Internal exports for EStone tests
 -export([lists/1,
@@ -45,12 +44,9 @@
 	 links/1,lproc/1,
 	 run_micro/3,p1/1,ppp/3,macro/2,micros/0]).
 
-
--include_lib("test_server/include/test_server.hrl").
+-ifndef(PGO).
 -include_lib("common_test/include/ct_event.hrl").
-
-%% Test suite defines
--define(default_timeout, ?t:minutes(10)).
+-endif.
 
 %% EStone defines
 -define(TOTAL, (3000 * 1000 * 100)).   %% 300 secs
@@ -66,17 +62,9 @@
 	 str}).    %% Header string
 
 
-
-
-init_per_testcase(_Case, Config) ->
-    ?line Dog=test_server:timetrap(?default_timeout),
-    [{watchdog, Dog}|Config].
-end_per_testcase(_Case, Config) ->
-    Dog=?config(watchdog, Config),
-    ?t:timetrap_cancel(Dog),
-    ok.
-
-suite() -> [{ct_hooks,[ts_install_cth]}].
+suite() ->
+    [{ct_hooks,[ts_install_cth]},
+     {timetrap, {minutes, 4}}].
 
 all() -> 
     [estone].
@@ -84,42 +72,44 @@ all() ->
 groups() -> 
     [{estone_bench, [{repeat,50}],[estone_bench]}].
 
-init_per_suite(Config) ->
-    Config.
 
-end_per_suite(_Config) ->
-    ok.
-
-init_per_group(_GroupName, Config) ->
-    Config.
-
-end_per_group(_GroupName, Config) ->
-    Config.
-
-
-estone(suite) ->
-    [];
-estone(doc) ->
-    ["EStone Test"];
+%% EStone Test
 estone(Config) when is_list(Config) ->
-    ?line DataDir = ?config(data_dir,Config),
-    ?line Mhz=get_cpu_speed(os:type(),DataDir),
-    ?line L = ?MODULE:macro(?MODULE:micros(),DataDir),
-    ?line {Total, Stones} = sum_micros(L, 0, 0),
-    ?line pp(Mhz,Total,Stones,L),
-    ?line {comment,Mhz ++ " MHz, " ++ 
-	   integer_to_list(Stones) ++ " ESTONES"}.
+    DataDir = proplists:get_value(data_dir,Config),
+    Mhz=get_cpu_speed(os:type(),DataDir),
+    L = ?MODULE:macro(?MODULE:micros(),DataDir),
+    {Total, Stones} = sum_micros(L, 0, 0),
+    pp(Mhz,Total,Stones,L),
+    {comment,Mhz ++ " MHz, " ++ integer_to_list(Stones) ++ " ESTONES"}.
 
 estone_bench(Config) ->
-    DataDir = ?config(data_dir,Config),
+    DataDir = proplists:get_value(data_dir,Config),
     L = ?MODULE:macro(?MODULE:micros(),DataDir),
-    [ct_event:notify(
-       #event{name = benchmark_data, 
-	      data = [{name,proplists:get_value(title,Mark)},
-		      {value,proplists:get_value(estones,Mark)}]})
-     || Mark <- L],
+    {Total, Stones} = sum_micros(L, 0, 0),
+    notify([[{title,"ESTONES"}, {estones, Stones}] | L]),
     L.
 
+-ifndef(PGO).
+notify(Marks) ->
+    [ct_event:notify(
+       #event{name = benchmark_data,
+	      data = [{name,proplists:get_value(title, Mark)},
+		      {value,proplists:get_value(estones, Mark)}]})
+     || Mark <- Marks].
+-else.
+notify(_) ->
+    ok.
+-endif.
+
+%% The benchmarks to run in order to guide PGO (profile guided optimisation)
+pgo() ->
+    %% We run all benchmarks except the port_io as we don't want to
+    %% have to build a custom port.
+    Micros = ?MODULE:micros() -- [micro(port_io)],
+    L = ?MODULE:macro(Micros,[]),
+    {Total, Stones} = sum_micros(L, 0, 0),
+    pp("UNKNOWN",Total,Stones,L),
+    {comment,"UNKNOWN" ++ " MHz, " ++ integer_to_list(Stones) ++ " ESTONES"}.
 
 %%
 %% Calculate CPU speed
@@ -266,8 +256,8 @@ micro(alloc) ->
 
 micro(bif_dispatch) ->
     #micro{function = bif_dispatch,
-	   weight = 5,
-	   loops = 1623,
+	   weight = 8,
+	   loops = 5623,
 	   str = "Bif dispatch"};
 
 micro(binary_h) ->
@@ -382,17 +372,17 @@ apply_micro(M) ->
      {weight_percentage, M#micro.weight},
      {loops, M#micro.loops},
      {microsecs,MicroSecs},
-     {estones, (M#micro.weight * M#micro.weight * ?STONEFACTOR) div MicroSecs},
+     {estones, (M#micro.weight * M#micro.weight * ?STONEFACTOR) div max(1,MicroSecs)},
      {gcs, GC1 - GC0},
      {kilo_word_reclaimed, (Words1 - Words0) div 1000},
      {kilo_reductions, Reds div 1000},
-     {gc_intensity, gci(Elapsed, GC1 - GC0, Words1 - Words0)}].
+     {gc_intensity, gci(max(1,Elapsed), GC1 - GC0, Words1 - Words0)}].
 
 monotonic_time() ->
     try erlang:monotonic_time() catch error:undef -> erlang:now() end.
 
 subtr(Before, After) when is_integer(Before), is_integer(After) ->
-    erlang:convert_time_unit(After-Before, native, micro_seconds);
+    erlang:convert_time_unit(After-Before, native, 1000000);
 subtr({_,_,_}=Before, {_,_,_}=After) ->
     timer:now_diff(After, Before).
 
@@ -735,56 +725,41 @@ alloc(I) ->
     alloc(I-1).
 
 %% Time to call bif's
-%% Lot's of element stuff which reflects the record code which
-%% is becomming more and more common
+%% This benchmark was updated in OTP-24. I've tried to keep the
+%% number of stones is creates the same, but that is impossible
+%% to achieve across all platforms.
 bif_dispatch(0) ->
     0;
 bif_dispatch(I) ->
+    put(mon,erlang:monitor(process,self())),
     disp(),    disp(),    disp(),    disp(),    disp(),    disp(),
     disp(),    disp(),    disp(),    disp(),    disp(),    disp(),
     bif_dispatch(I-1).
 
 disp() ->
-    Tup = {a},
-    L = [x],
-    self(),self(),self(),self(),self(),self(),self(),self(),self(),
-    make_ref(),
-    atom_to_list(''),
-    _X = list_to_atom([]),
-    tuple_to_list({}),
-    _X2 = list_to_tuple([]),
-    element(1, Tup),
-    element(1, Tup),
-    _Elem = element(1, Tup),element(1, Tup),element(1, Tup),element(1, Tup),
-    element(1, Tup),element(1, Tup),element(1, Tup),element(1, Tup),
-    element(1, Tup),element(1, Tup),element(1, Tup),element(1, Tup),
-    element(1, Tup),element(1, Tup),element(1, Tup),element(1, Tup),
-    setelement(1, Tup,k),
-    setelement(1, Tup,k),
-    setelement(1, Tup,k),setelement(1, Tup,k),setelement(1, Tup,k),
-    setelement(1, Tup,k),setelement(1, Tup,k),setelement(1, Tup,k),
-    setelement(1, Tup,k),
-    setelement(1, Tup,k),
-    setelement(1, Tup,k),
-    setelement(1, Tup,k),
-    _Y = setelement(1, Tup,k),
-    _Date = date(), time(),
-    put(a, 1),
-    get(a),
-    erase(a),
-    hd(L),
-    tl(L),
-    _Len = length(L),length(L),length(L),length(L),
-    node(),node(),node(),node(),node(),node(),node(),node(),
-    S=self(),
-    node(S),node(S),node(S),
-    size(Tup),
-    _W = whereis(code_server),whereis(code_server),
-    whereis(code_server),whereis(code_server),
-    whereis(code_server),whereis(code_server),
-    _W2 = whereis(code_server).
-    
-    
+    erts_debug:flat_size(true),
+    erts_debug:size_shared(true),
+    demonitor(get(mon)),
+    erts_debug:flat_size(true),
+    demonitor(get(mon)),
+    erts_debug:size_shared(true),
+    demonitor(get(mon)),
+    erts_debug:flat_size(true),
+    demonitor(get(mon)),
+    erts_debug:size_shared(true),
+    demonitor(get(mon)),
+    erts_debug:flat_size(true),
+    demonitor(get(mon)),
+    erts_debug:size_shared(true),
+    demonitor(get(mon)),
+    erts_debug:flat_size(true),
+    demonitor(get(mon)),
+    erts_debug:size_shared(true),
+    demonitor(get(mon)),
+    erts_debug:flat_size(true),
+    demonitor(get(mon)),
+    erts_debug:size_shared(true).
+
 %% Generic server like behaviour
 generic(I) ->
     register(funky, spawn(?MODULE, gserv, [funky, ?MODULE, [], []])),
@@ -1136,4 +1111,3 @@ wait_for_pids([P|Tail]) ->
 
 send_procs([P|Tail], Msg) -> P ! Msg, send_procs(Tail, Msg);
 send_procs([], _) -> ok.
-			     

@@ -1,7 +1,7 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 1996-2013. All Rights Reserved.
+%% Copyright Ericsson AB 1996-2018. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -38,8 +38,9 @@
 
 -export([all/2,any/2,map/2,flatmap/2,foldl/3,foldr/3,filter/2,
 	 partition/2,zf/2,filtermap/2,
-	 mapfoldl/3,mapfoldr/3,foreach/2,takewhile/2,dropwhile/2,splitwith/2,
-	 split/2]).
+	 mapfoldl/3,mapfoldr/3,foreach/2,takewhile/2,dropwhile/2,
+         search/2, splitwith/2,split/2,
+	 join/2]).
 
 %%% BIFs
 -export([keyfind/3, keymember/3, keysearch/3, member/2, reverse/2]).
@@ -340,8 +341,12 @@ max([],    Max)              -> Max.
       Len :: non_neg_integer(),
       T :: term().
 
-sublist(List, S, L) when is_integer(L), L >= 0 ->
-    sublist(nthtail(S-1, List), L).
+sublist(List, 1, L) when is_list(List), is_integer(L), L >= 0 ->
+    sublist(List, L);
+sublist([], S, _L) when is_integer(S), S >= 2 ->
+    [];
+sublist([_H|T], S, L) when is_integer(S), S >= 2 ->
+    sublist(T, S-1, L).
 
 -spec sublist(List1, Len) -> List2 when
       List1 :: [T],
@@ -1398,6 +1403,19 @@ dropwhile(Pred, [Hd|Tail]=Rest) ->
     end;
 dropwhile(Pred, []) when is_function(Pred, 1) -> [].
 
+-spec search(Pred, List) -> {value, Value} | false when
+      Pred :: fun((T) -> boolean()),
+      List :: [T],
+      Value :: T.
+
+search(Pred, [Hd|Tail]) ->
+    case Pred(Hd) of
+        true -> {value, Hd};
+        false -> search(Pred, Tail)
+    end;
+search(Pred, []) when is_function(Pred, 1) ->
+    false.
+
 -spec splitwith(Pred, List) -> {List1, List2} when
       Pred :: fun((T) -> boolean()),
       List :: [T],
@@ -1438,6 +1456,18 @@ split(N, [H|T], R) ->
     split(N-1, T, [H|R]);
 split(_, [], _) ->
     badarg.
+
+-spec join(Sep, List1) -> List2 when
+      Sep :: T,
+      List1 :: [T],
+      List2 :: [T],
+      T :: term().
+
+join(_Sep, []) -> [];
+join(Sep, [H|T]) -> [H|join_prepend(Sep, T)].
+
+join_prepend(_Sep, []) -> [];
+join_prepend(Sep, [H|T]) -> [Sep,H|join_prepend(Sep,T)].
 
 %%% =================================================================
 %%% Here follows the implementation of the sort functions.
@@ -2266,6 +2296,8 @@ ukeysplit_2(I, Y, EY, [Z | L], R) ->
     end;
 ukeysplit_2(_I, Y, _EY, [], R) ->
     [Y | R].
+
+-dialyzer({no_improper_lists, ukeymergel/3}).
 
 ukeymergel(I, [T1, [H2 | T2], [H3 | T3] | L], Acc) ->
     %% The fourth argument, [H2 | H3] (=HdM), may confuse type

@@ -1,7 +1,7 @@
 #
 # %CopyrightBegin%
 #
-# Copyright Ericsson AB 2003-2014. All Rights Reserved.
+# Copyright Ericsson AB 2003-2020. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -40,6 +40,9 @@ RELSYSDIR = $(RELEASE_PATH)/lib/common_test-$(VSN)
 # Target Specs
 # ----------------------------------------------------
 
+BEHAVIOUR_MODULES= \
+	ct_suite
+
 MODULES= \
 	ct \
 	ct_logs \
@@ -62,9 +65,6 @@ MODULES= \
 	ct_repeat \
 	ct_telnet_client \
 	ct_make \
-	vts \
-	ct_webtool \
-	ct_webtool_sup \
 	unix_telnet \
 	ct_config \
 	ct_config_plain \
@@ -79,18 +79,32 @@ MODULES= \
 	cth_conn_log \
 	ct_groups \
 	ct_property_test \
-	ct_release_test
+	ct_release_test \
+	ct_default_gl \
+	erl2html2 \
+	test_server_ctrl \
+	test_server_gl \
+	test_server_io \
+	test_server_node \
+	test_server \
+	test_server_sup
+
 
 TARGET_MODULES= $(MODULES:%=$(EBIN)/%)
-BEAM_FILES= $(MODULES:%=$(EBIN)/%.$(EMULATOR))
+BEAM_FILES= $(MODULES:%=$(EBIN)/%.$(EMULATOR)) \
+			$(BEHAVIOUR_MODULES:%=$(EBIN)/%.$(EMULATOR))
 
-ERL_FILES= $(MODULES:=.erl)
+ERL_FILES= \
+	$(MODULES:=.erl) \
+	$(BEHAVIOUR_MODULES:%=%.erl)
+
 HRL_FILES = \
 	ct_util.hrl \
 	ct_netconfc.hrl
 EXTERNAL_HRL_FILES = \
 	../include/ct.hrl \
-	../include/ct_event.hrl
+	../include/ct_event.hrl \
+	../include/ct_property_test.hrl
 
 EXTERNAL_INC_PATH = ../include
 
@@ -101,8 +115,7 @@ DTD_FILES = \
 # FLAGS
 # ----------------------------------------------------
 ERL_COMPILE_FLAGS += -pa ../ebin -I../include -I $(ERL_TOP)/lib/snmp/include/ \
-	-I../../test_server/include -I../../xmerl/inc/ \
-	-I $(ERL_TOP)/lib/kernel/include -Werror
+	-I../../xmerl/inc/ -I $(ERL_TOP)/lib/kernel/include -Werror
 
 # ----------------------------------------------------
 # Targets
@@ -157,3 +170,5 @@ release_tests_spec: opt
 
 release_docs_spec: docs
 
+# Include dependencies -- list below added by Kostis Sagonas
+$(EBIN)/cth_log_redirect.beam: ../../kernel/include/logger.hrl ../../kernel/src/logger_internal.hrl

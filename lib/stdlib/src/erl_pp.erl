@@ -1,7 +1,7 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 1996-2015. All Rights Reserved.
+%% Copyright Ericsson AB 1996-2020. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -26,12 +26,13 @@
          attribute/1,attribute/2,function/1,function/2,
          guard/1,guard/2,exprs/1,exprs/2,exprs/3,expr/1,expr/2,expr/3,expr/4]).
 
--import(lists, [append/1,foldr/3,mapfoldl/3,reverse/1,reverse/2]).
+-import(lists, [append/1,foldr/3,map/2,mapfoldl/3,reverse/1,reverse/2]).
 -import(io_lib, [write/1,format/2]).
 -import(erl_parse, [inop_prec/1,preop_prec/1,func_prec/0,max_prec/0,
                     type_inop_prec/1, type_preop_prec/1]).
 
--define(MAXLINE, 72).
+-define(DEFAULT_LINEWIDTH, 72).
+-define(DEFAULT_INDENT, 4).
 
 -type(hook_function() :: none
                        | fun((Expr :: erl_parse:abstract_expr(),
@@ -41,16 +42,29 @@
                                    io_lib:chars())).
 
 -type(option() :: {hook, hook_function()}
-                | {encoding, latin1 | unicode | utf8}).
+                | {encoding, latin1 | unicode | utf8}
+                | {quote_singleton_atom_types, boolean()}
+                | {linewidth, pos_integer()}
+                | {indent, pos_integer()}).
 -type(options() :: hook_function() | [option()]).
 
--record(pp, {string_fun, char_fun}).
+-record(pp, {value_fun, singleton_atom_type_fun, string_fun, char_fun,
+	     linewidth=?DEFAULT_LINEWIDTH, indent=?DEFAULT_INDENT}).
 
 -record(options, {hook, encoding, opts}).
 
 %-define(DEBUG, true).
 
 -ifdef(DEBUG).
+-define(FORM_TEST(T),
+        _ = case T of
+                {eof, _Line} -> ok;
+                {warning, _W} -> ok;
+                {error, _E} -> ok;
+                _ -> ?TEST(T)
+            end).
+-define(EXPRS_TEST(L),
+        _ = [?TEST(E) || E <- L]).
 -define(TEST(T),
         %% Assumes that erl_anno has been compiled with DEBUG=true.
         %% erl_pp does not use the annoations, but test it anyway.
@@ -62,6 +76,8 @@
                     erlang:error(badarg, [T])
             end).
 -else.
+-define(FORM_TEST(T), ok).
+-define(EXPRS_TEST(T), ok).
 -define(TEST(T), ok).
 -endif.
 
@@ -70,19 +86,19 @@
 %%%
 
 -spec(form(Form) -> io_lib:chars() when
-      Form :: erl_parse:abstract_form()).
+      Form :: erl_parse:abstract_form() | erl_parse:form_info()).
 
 form(Thing) ->
     form(Thing, none).
 
 -spec(form(Form, Options) -> io_lib:chars() when
-      Form :: erl_parse:abstract_form(),
+      Form :: erl_parse:abstract_form() | erl_parse:form_info(),
       Options :: options()).
 
 form(Thing, Options) ->
-    ?TEST(Thing),
+    ?FORM_TEST(Thing),
     State = state(Options),
-    frmt(lform(Thing, options(Options), State), State).
+    frmt(lform(Thing, options(Options)), State).
 
 -spec(attribute(Attribute) -> io_lib:chars() when
       Attribute :: erl_parse:abstract_form()).
@@ -97,7 +113,7 @@ attribute(Thing) ->
 attribute(Thing, Options) ->
     ?TEST(Thing),
     State = state(Options),
-    frmt(lattribute(Thing, options(Options), State), State).
+    frmt(lattribute(Thing, options(Options)), State).
 
 -spec(function(Function) -> io_lib:chars() when
       Function :: erl_parse:abstract_form()).
@@ -124,7 +140,7 @@ guard(Gs) ->
       Options :: options()).
 
 guard(Gs, Options) ->
-    ?TEST(Gs),
+    ?EXPRS_TEST(Gs),
     frmt(lguard(Gs, options(Options)), state(Options)).
 
 -spec(exprs(Expressions) -> io_lib:chars() when
@@ -146,7 +162,7 @@ exprs(Es, Options) ->
       Options :: options()).
 
 exprs(Es, I, Options) ->
-    ?TEST(Es),
+    ?EXPRS_TEST(Es),
     frmt({seq,[],[],[$,],lexprs(Es, options(Options))}, I, state(Options)).
 
 -spec(expr(Expression) -> io_lib:chars() when
@@ -195,19 +211,48 @@ options(Hook) ->
     #options{hook = Hook, encoding = encoding([]), opts = Hook}.
 
 state(Options) when is_list(Options) ->
-    case encoding(Options) of
-        latin1 -> state();
-        unicode -> unicode_state()
-    end;
+    Quote = proplists:get_bool(quote_singleton_atom_types, Options),
+    State =
+	case encoding(Options) of
+	    latin1 -> latin1_state(Quote);
+	    unicode -> unicode_state(Quote)
+	end,
+    Indent = proplists:get_value(indent, Options, ?DEFAULT_INDENT),
+    LineWidth = proplists:get_value(linewidth, Options, ?DEFAULT_LINEWIDTH),
+    State#pp{indent=Indent, linewidth=LineWidth};
 state(_Hook) ->
-    state().
+    latin1_state(false).
 
-state() ->
-    #pp{string_fun = fun io_lib:write_string_as_latin1/1,
+latin1_state(Quote) ->
+    Options = [{encoding,latin1}],
+    ValueFun = fun(V) -> io_lib_pretty:print(V, Options) end,
+    SingletonFun =
+        case Quote of
+            true ->
+                fun(A) ->
+                        io_lib:write_string_as_latin1(atom_to_list(A), $')
+                end; %'
+            false ->
+                ValueFun
+        end,
+    #pp{value_fun  = ValueFun,
+        singleton_atom_type_fun = SingletonFun,
+        string_fun = fun io_lib:write_string_as_latin1/1,
         char_fun   = fun io_lib:write_char_as_latin1/1}.
 
-unicode_state() ->
-    #pp{string_fun = fun io_lib:write_string/1,
+unicode_state(Quote) ->
+    Options = [{encoding,unicode}],
+    ValueFun = fun(V) -> io_lib_pretty:print(V, Options) end,
+    SingletonFun =
+        case Quote of
+            true ->
+                fun(A) -> io_lib:write_string(atom_to_list(A), $') end; %'
+            false ->
+                ValueFun
+        end,
+    #pp{value_fun = ValueFun,
+        singleton_atom_type_fun = SingletonFun,
+        string_fun = fun io_lib:write_string/1,
         char_fun   = fun io_lib:write_char/1}.
 
 encoding(Options) ->
@@ -217,54 +262,62 @@ encoding(Options) ->
         unicode -> unicode
     end.
 
-lform({attribute,Line,Name,Arg}, Opts, State) ->
-    lattribute({attribute,Line,Name,Arg}, Opts, State);
-lform({function,Line,Name,Arity,Clauses}, Opts, _State) ->
+lform({attribute,Line,Name,Arg}, Opts) ->
+    lattribute({attribute,Line,Name,Arg}, Opts);
+lform({function,Line,Name,Arity,Clauses}, Opts) ->
     lfunction({function,Line,Name,Arity,Clauses}, Opts);
 %% These are specials to make it easier for the compiler.
-lform({error,E}, _Opts, _State) ->
-    leaf(format("~p\n", [{error,E}]));
-lform({warning,W}, _Opts, _State) ->
-    leaf(format("~p\n", [{warning,W}]));
-lform({eof,_Line}, _Opts, _State) ->
+lform({error,_}=E, Opts) ->
+    message(E, Opts);
+lform({warning,_}=W, Opts) ->
+    message(W, Opts);
+lform({eof,_Line}, _Opts) ->
     $\n.
 
-lattribute({attribute,_Line,type,Type}, Opts, _State) ->
-    [typeattr(type, Type, Opts),leaf(".\n")];
-lattribute({attribute,_Line,opaque,Type}, Opts, _State) ->
-    [typeattr(opaque, Type, Opts),leaf(".\n")];
-lattribute({attribute,_Line,spec,Arg}, _Opts, _State) ->
-    [specattr(spec, Arg),leaf(".\n")];
-lattribute({attribute,_Line,callback,Arg}, _Opts, _State) ->
-    [specattr(callback, Arg),leaf(".\n")];
-lattribute({attribute,_Line,Name,Arg}, Opts, State) ->
-    [lattribute(Name, Arg, Opts, State),leaf(".\n")].
+message(M, #options{encoding = Encoding}) ->
+    F = case Encoding of
+            latin1 -> "~p\n";
+            unicode -> "~tp\n"
+        end,
+    leaf(format(F, [M])).
 
-lattribute(module, {M,Vs}, _Opts, _State) ->
+lattribute({attribute,_Line,type,Type}, Opts) ->
+    [typeattr(type, Type, Opts),leaf(".\n")];
+lattribute({attribute,_Line,opaque,Type}, Opts) ->
+    [typeattr(opaque, Type, Opts),leaf(".\n")];
+lattribute({attribute,_Line,spec,Arg}, _Opts) ->
+    [specattr(spec, Arg),leaf(".\n")];
+lattribute({attribute,_Line,callback,Arg}, _Opts) ->
+    [specattr(callback, Arg),leaf(".\n")];
+lattribute({attribute,_Line,Name,Arg}, Opts) ->
+    [lattribute(Name, Arg, Opts),leaf(".\n")].
+
+lattribute(module, {M,Vs}, _Opts) ->
     A = a0(),
-    attr("module",[{var,A,pname(M)},
-                   foldr(fun(V, C) -> {cons,A,{var,A,V},C}
-                         end, {nil,A}, Vs)]);
-lattribute(module, M, _Opts, _State) ->
-    attr("module", [{var,a0(),pname(M)}]);
-lattribute(export, Falist, _Opts, _State) ->
-    call({var,a0(),"-export"}, [falist(Falist)], 0, options(none));
-lattribute(import, Name, _Opts, _State) when is_list(Name) ->
-    attr("import", [{var,a0(),pname(Name)}]);
-lattribute(import, {From,Falist}, _Opts, _State) ->
-    attr("import",[{var,a0(),pname(From)},falist(Falist)]);
-lattribute(optional_callbacks, Falist, Opts, _State) ->
-    ArgL = try falist(Falist)
-           catch _:_ -> abstract(Falist, Opts)
-           end,
-    call({var,a0(),"-optional_callbacks"}, [ArgL], 0, options(none));
-lattribute(file, {Name,Line}, _Opts, State) ->
-    attr("file", [{var,a0(),(State#pp.string_fun)(Name)},{integer,a0(),Line}]);
-lattribute(record, {Name,Is}, Opts, _State) ->
-    Nl = leaf(format("-record(~w,", [Name])),
+    attr(module,[{var,A,pname(M)},
+                 foldr(fun(V, C) -> {cons,A,{var,A,V},C}
+                       end, {nil,A}, Vs)]);
+lattribute(module, M, _Opts) ->
+    attr(module, [{var,a0(),pname(M)}]);
+lattribute(export, Falist, _Opts) ->
+    attrib(export, falist(Falist));
+lattribute(import, Name, _Opts) when is_list(Name) ->
+    attr(import, [{var,a0(),pname(Name)}]);
+lattribute(import, {From,Falist}, _Opts) ->
+    attrib(import, [leaf(pname(From)),falist(Falist)]);
+lattribute(export_type, Talist, _Opts) ->
+    attrib(export_type, falist(Talist));
+lattribute(optional_callbacks, Falist, Opts) ->
+    try attrib(optional_callbacks, falist(Falist))
+    catch _:_ -> attr(optional_callbacks, [abstract(Falist, Opts)])
+    end;
+lattribute(file, {Name,Line}, _Opts) ->
+    attr(file, [{string,a0(),Name},{integer,a0(),Line}]);
+lattribute(record, {Name,Is}, Opts) ->
+    Nl = [leaf("-record("),{atom,Name},$,],
     [{first,Nl,record_fields(Is, Opts)},$)];
-lattribute(Name, Arg, Options, _State) ->
-    attr(write(Name), [abstract(Arg, Options)]).
+lattribute(Name, Arg, Options) ->
+    attr(Name, [abstract(Arg, Options)]).
 
 abstract(Arg, #options{encoding = Encoding}) ->
     erl_parse:abstract(Arg, [{encoding,Encoding}]).
@@ -277,9 +330,11 @@ ltype(T) ->
     ltype(T, 0).
 
 ltype({ann_type,_Line,[V,T]}, Prec) ->
-    {_L,P,_R} = type_inop_prec('::'),
-    E = typed(lexpr(V, options(none)), T),
-    maybe_paren(P, Prec, E);
+    {L,P,R} = type_inop_prec('::'),
+    Vl = ltype(V, L),
+    Tr = ltype(T, R),
+    El = {list,[{cstep,[Vl,' ::'],Tr}]},
+    maybe_paren(P, Prec, El);
 ltype({paren_type,_Line,[T]}, P) ->
     %% Generated before Erlang/OTP 18.
     ltype(T, P);
@@ -321,14 +376,13 @@ ltype({type,_,'fun',[{type,_,any},_]}=FunType, _) ->
 ltype({type,_Line,'fun',[{type,_,product,_},_]}=FunType, _) ->
     [fun_type(['fun',$(], FunType),$)];
 ltype({type,Line,T,Ts}, _) ->
-    %% Compatibility. Before 18.0.
     simple_type({atom,Line,T}, Ts);
 ltype({user_type,Line,T,Ts}, _) ->
     simple_type({atom,Line,T}, Ts);
 ltype({remote_type,Line,[M,F,Ts]}, _) ->
     simple_type({remote,Line,M,F}, Ts);
 ltype({atom,_,T}, _) ->
-    leaf(write(T));
+    {singleton_atom_type,T};
 ltype(E, P) ->
     lexpr(E, P, options(none)).
 
@@ -338,7 +392,12 @@ binary_type(I1, I2) ->
     P = max_prec(),
     E1 = [[leaf("_:"),lexpr(I1, P, options(none))] || B],
     E2 = [[leaf("_:_*"),lexpr(I2, P, options(none))] || U],
-    {seq,'<<','>>',[$,],E1++E2}.
+    case E1++E2 of
+        [] ->
+            leaf("<<>>");
+        Es ->
+            {seq,'<<','>>',[$,],Es}
+    end.
 
 map_type(Fs) ->
     {first,[$#],map_pair_types(Fs)}.
@@ -346,16 +405,10 @@ map_type(Fs) ->
 map_pair_types(Fs) ->
     tuple_type(Fs, fun map_pair_type/2).
 
-map_pair_type({type,_Line,map_field_assoc,[Ktype,Vtype]}, Prec) ->
-    map_assoc_typed(ltype(Ktype), Vtype, Prec).
-
-map_assoc_typed(B, {type,_,union,Ts}, Prec) ->
-    {first,[B,$\s],{seq,[],[],[],map_assoc_union_type(Ts, Prec)}};
-map_assoc_typed(B, Type, Prec) ->
-    {list,[{cstep,[B," =>"],ltype(Type, Prec)}]}.
-
-map_assoc_union_type([T|Ts], Prec) ->
-    [[leaf("=> "),ltype(T)] | ltypes(Ts, fun union_elem/2, Prec)].
+map_pair_type({type,_Line,map_field_assoc,[KType,VType]}, Prec) ->
+    {list,[{cstep,[ltype(KType, Prec),leaf(" =>")],ltype(VType, Prec)}]};
+map_pair_type({type,_Line,map_field_exact,[KType,VType]}, Prec) ->
+    {list,[{cstep,[ltype(KType, Prec),leaf(" :=")],ltype(VType, Prec)}]}.
 
 record_type(Name, Fields) ->
     {first,[record_name(Name)],field_types(Fields)}.
@@ -367,24 +420,22 @@ field_type({type,_Line,field_type,[Name,Type]}, _Prec) ->
     typed(lexpr(Name, options(none)), Type).
 
 typed(B, Type) ->
-    {_L,_P,R} = type_inop_prec('::'),
-    {list,[{cstep,[B,' ::'],ltype(Type, R)}]}.
+    {list,[{cstep,[B,' ::'],ltype(Type)}]}.
 
-union_elem(T, Prec) ->
-    [leaf(" | "),ltype(T, Prec)].
-
+tuple_type([], _) ->
+    leaf("{}");
 tuple_type(Ts, F) ->
     {seq,${,$},[$,],ltypes(Ts, F, 0)}.
 
 specattr(SpecKind, {FuncSpec,TypeSpecs}) ->
     Func = case FuncSpec of
                {F,_A} ->
-                   format("~w", [F]);
+                   {atom,F};
                {M,F,_A} ->
-                   format("~w:~w", [M, F])
+                   [{atom,M},$:,{atom,F}]
            end,
     {first,leaf(lists:concat(["-", SpecKind, " "])),
-     {list,[{first,leaf(Func),spec_clauses(TypeSpecs)}]}}.
+     {list,[{first,Func,spec_clauses(TypeSpecs)}]}}.
 
 spec_clauses(TypeSpecs) ->
     {prefer_nl,[$;],[sig_type(T) || T <- TypeSpecs]}.
@@ -399,6 +450,9 @@ guard_type(Before, Gs) ->
     Gl = {list,[{step,'when',expr_list(Gs, [$,], fun constraint/2, Opts)}]},
     {list,[{step,Before,Gl}]}.
 
+constraint({type,_Line,constraint,[{atom,_,is_subtype},[{var,_,_}=V,Type]]},
+           _Opts) ->
+    typed(lexpr(V, options(none)), Type);
 constraint({type,_Line,constraint,[Tag,As]}, _Opts) ->
     simple_type(Tag, As).
 
@@ -423,7 +477,10 @@ ltypes(Ts, F, Prec) ->
     [F(T, Prec) || T <- Ts].
 
 attr(Name, Args) ->
-    call({var,a0(),format("-~s", [Name])}, Args, 0, options(none)).
+    {first,[$-,{atom,Name}],args(Args, options(none))}.
+
+attrib(Name, Args) ->
+    {first,[$-,{atom,Name}],[{seq,$(,$),[$,],Args}]}.
 
 pname(['' | As]) ->
     [$. | pname(As)];
@@ -435,10 +492,13 @@ pname(A) when is_atom(A) ->
     write(A).
 
 falist([]) ->
-    {nil,a0()};
-falist([{Name,Arity}|Falist]) ->
-    A = a0(),
-    {cons,A,{var,A,format("~w/~w", [Name,Arity])},falist(Falist)}.
+    ['[]'];
+falist(Falist) ->
+    L = [begin
+             {Name,Arity} = Fa,
+             [{atom,Name},leaf(format("/~w", [Arity]))]
+         end || Fa <- Falist],
+    [{seq,$[,$],$,,L}].
 
 lfunction({function,_Line,Name,_Arity,Cs}, Opts) ->
     Cll = nl_clauses(fun (C, H) -> func_clause(Name, C, H) end, $;, Opts, Cs),
@@ -483,23 +543,23 @@ lexpr({var,_,V}, _, _) -> leaf(format("~ts", [V]));
 lexpr({char,_,C}, _, _) -> {char,C};
 lexpr({integer,_,N}, _, _) -> leaf(write(N));
 lexpr({float,_,F}, _, _) -> leaf(write(F));
-lexpr({atom,_,A}, _, _) -> leaf(write(A));
+lexpr({atom,_,A}, _, _) -> {atom,A};
 lexpr({string,_,S}, _, _) -> {string,S};
 lexpr({nil,_}, _, _) -> '[]';
 lexpr({cons,_,H,T}, _, Opts) ->
     list(T, [H], Opts);
 lexpr({lc,_,E,Qs}, _Prec, Opts) ->
-    Lcl = {list,[{step,[lexpr(E, Opts),leaf(" ||")],lc_quals(Qs, Opts)}]},
+    P = max_prec(),
+    Lcl = {list,[{step,[lexpr(E, P, Opts),leaf(" ||")],lc_quals(Qs, Opts)}]},
     {list,[{seq,$[,[],[[]],[{force_nl,leaf(" "),[Lcl]}]},$]]};
     %% {list,[{step,$[,Lcl},$]]};
 lexpr({bc,_,E,Qs}, _Prec, Opts) ->
-    Lcl = {list,[{step,[lexpr(E, Opts),leaf(" ||")],lc_quals(Qs, Opts)}]},
+    P = max_prec(),
+    Lcl = {list,[{step,[lexpr(E, P, Opts),leaf(" ||")],lc_quals(Qs, Opts)}]},
     {list,[{seq,'<<',[],[[]],[{force_nl,leaf(" "),[Lcl]}]},'>>']};
     %% {list,[{step,'<<',Lcl},'>>']};
 lexpr({tuple,_,Elts}, _, Opts) ->
     tuple(Elts, Opts);
-%%lexpr({struct,_,Tag,Elts}, _, Opts) ->
-%%  {first,format("~w", [Tag]),tuple(Elts, Opts)};
 lexpr({record_index, _, Name, F}, Prec, Opts) ->
     {P,R} = preop_prec('#'),
     Nl = record_name(Name),
@@ -513,14 +573,16 @@ lexpr({record, _, Name, Fs}, Prec, Opts) ->
 lexpr({record_field, _, Rec, Name, F}, Prec, Opts) ->
     {L,P,R} = inop_prec('#'),
     Rl = lexpr(Rec, L, Opts),
-    Nl = leaf(format("#~w.", [Name])),
+    Sep = hash_after_integer(Rec, [$#]),
+    Nl = [Sep,{atom,Name},$.],
     El = [Rl,Nl,lexpr(F, R, Opts)],
     maybe_paren(P, Prec, El);
 lexpr({record, _, Rec, Name, Fs}, Prec, Opts) ->
     {L,P,_R} = inop_prec('#'),
     Rl = lexpr(Rec, L, Opts),
+    Sep = hash_after_integer(Rec, []),
     Nl = record_name(Name),
-    El = {first,[Rl,Nl],record_fields(Fs, Opts)},
+    El = {first,[Rl,Sep,Nl],record_fields(Fs, Opts)},
     maybe_paren(P, Prec, El);
 lexpr({record_field, _, {atom,_,''}, F}, Prec, Opts) ->
     {_L,P,R} = inop_prec('.'),
@@ -532,60 +594,58 @@ lexpr({record_field, _, Rec, F}, Prec, Opts) ->
     maybe_paren(P, Prec, El);
 lexpr({map, _, Fs}, Prec, Opts) ->
     {P,_R} = preop_prec('#'),
-    El = {first,leaf("#"),map_fields(Fs, Opts)},
+    El = {first,$#,map_fields(Fs, Opts)},
     maybe_paren(P, Prec, El);
 lexpr({map, _, Map, Fs}, Prec, Opts) ->
     {L,P,_R} = inop_prec('#'),
     Rl = lexpr(Map, L, Opts),
-    El = {first,[Rl,leaf("#")],map_fields(Fs, Opts)},
+    Sep = hash_after_integer(Map, [$#]),
+    El = {first,[Rl|Sep],map_fields(Fs, Opts)},
     maybe_paren(P, Prec, El);
 lexpr({block,_,Es}, _, Opts) ->
-    {list,[{step,'begin',body(Es, Opts)},'end']};
+    {list,[{step,'begin',body(Es, Opts)},{reserved,'end'}]};
 lexpr({'if',_,Cs}, _, Opts) ->
-    {list,[{step,'if',if_clauses(Cs, Opts)},'end']};
+    {list,[{step,'if',if_clauses(Cs, Opts)},{reserved,'end'}]};
 lexpr({'case',_,Expr,Cs}, _, Opts) ->
-    {list,[{step,{list,[{step,'case',lexpr(Expr, Opts)},'of']},
+    {list,[{step,{list,[{step,'case',lexpr(Expr, Opts)},{reserved,'of'}]},
             cr_clauses(Cs, Opts)},
-           'end']};
+           {reserved,'end'}]};
 lexpr({'cond',_,Cs}, _, Opts) ->
-    {list,[{step,leaf("cond"),cond_clauses(Cs, Opts)},'end']};
+    {list,[{step,leaf("cond"),cond_clauses(Cs, Opts)},{reserved,'end'}]};
 lexpr({'receive',_,Cs}, _, Opts) ->
-    {list,[{step,'receive',cr_clauses(Cs, Opts)},'end']};
+    {list,[{step,'receive',cr_clauses(Cs, Opts)},{reserved,'end'}]};
 lexpr({'receive',_,Cs,To,ToOpt}, _, Opts) ->
     Al = {list,[{step,[lexpr(To, Opts),' ->'],body(ToOpt, Opts)}]},
     {list,[{step,'receive',cr_clauses(Cs, Opts)},
            {step,'after',Al},
-           'end']};
+           {reserved,'end'}]};
 lexpr({'fun',_,{function,F,A}}, _Prec, _Opts) ->
-    leaf(format("fun ~w/~w", [F,A]));
-lexpr({'fun',_,{function,F,A},Extra}, _Prec, _Opts) ->
-    {force_nl,fun_info(Extra),leaf(format("fun ~w/~w", [F,A]))};
-lexpr({'fun',_,{function,M,F,A}}, _Prec, _Opts)
-  when is_atom(M), is_atom(F), is_integer(A) ->
-    %% For backward compatibility with pre-R15 abstract format.
-    leaf(format("fun ~w:~w/~w", [M,F,A]));
+    [leaf("fun "),{atom,F},leaf(format("/~w", [A]))];
+lexpr({'fun',L,{function,_,_}=Func,Extra}, Prec, Opts) ->
+    {force_nl,fun_info(Extra),lexpr({'fun',L,Func}, Prec, Opts)};
 lexpr({'fun',_,{function,M,F,A}}, _Prec, Opts) ->
-    %% New format in R15.
     NameItem = lexpr(M, Opts),
     CallItem = lexpr(F, Opts),
     ArityItem = lexpr(A, Opts),
     ["fun ",NameItem,$:,CallItem,$/,ArityItem];
 lexpr({'fun',_,{clauses,Cs}}, _Prec, Opts) ->
-    {list,[{first,'fun',fun_clauses(Cs, Opts, unnamed)},'end']};
+    {list,[{first,'fun',fun_clauses(Cs, Opts, unnamed)},{reserved,'end'}]};
 lexpr({named_fun,_,Name,Cs}, _Prec, Opts) ->
-    {list,[{first,['fun', " "],fun_clauses(Cs, Opts, {named, Name})},'end']};
+    {list,[{first,['fun', " "],fun_clauses(Cs, Opts, {named, Name})},
+           {reserved,'end'}]};
 lexpr({'fun',_,{clauses,Cs},Extra}, _Prec, Opts) ->
     {force_nl,fun_info(Extra),
-     {list,[{first,'fun',fun_clauses(Cs, Opts, unnamed)},'end']}};
+     {list,[{first,'fun',fun_clauses(Cs, Opts, unnamed)},{reserved,'end'}]}};
 lexpr({named_fun,_,Name,Cs,Extra}, _Prec, Opts) ->
     {force_nl,fun_info(Extra),
-     {list,[{first,['fun', " "],fun_clauses(Cs, Opts, {named, Name})},'end']}};
-lexpr({'query',_,Lc}, _Prec, Opts) ->
-    {list,[{step,leaf("query"),lexpr(Lc, 0, Opts)},'end']};
+     {list,[{first,['fun', " "],fun_clauses(Cs, Opts, {named, Name})},
+            {reserved,'end'}]}};
 lexpr({call,_,{remote,_,{atom,_,M},{atom,_,F}=N}=Name,Args}, Prec, Opts) ->
     case erl_internal:bif(M, F, length(Args)) of
-        true ->
+        true when F =/= float ->
             call(N, Args, Prec, Opts);
+        true ->
+            call(Name, Args, Prec, Opts);
         false ->
             call(Name, Args, Prec, Opts)
     end;
@@ -596,22 +656,22 @@ lexpr({'try',_,Es,Scs,Ccs,As}, _, Opts) ->
                Scs =:= [] ->
                    {step,'try',body(Es, Opts)};
                true ->
-                   {step,{list,[{step,'try',body(Es, Opts)},'of']},
+                   {step,{list,[{step,'try',body(Es, Opts)},{reserved,'of'}]},
                     cr_clauses(Scs, Opts)}
-           end,
+           end] ++
            if
                Ccs =:= [] ->
                    [];
                true ->
-                   {step,'catch',try_clauses(Ccs, Opts)}
-           end,
+                   [{step,'catch',try_clauses(Ccs, Opts)}]
+           end ++
            if
                As =:= [] ->
                    [];
                true ->
-                   {step,'after',body(As, Opts)}
-           end,
-           'end']};
+                   [{step,'after',body(As, Opts)}]
+           end ++
+           [{reserved,'end'}]};
 lexpr({'catch',_,Expr}, Prec, Opts) ->
     {P,R} = preop_prec('catch'),
     El = {list,[{step,'catch',lexpr(Expr, R, Opts)}]},
@@ -624,7 +684,7 @@ lexpr({match,_,Lhs,Rhs}, Prec, Opts) ->
     maybe_paren(P, Prec, El);
 lexpr({op,_,Op,Arg}, Prec, Opts) ->
     {P,R} = preop_prec(Op),
-    Ol = leaf(format("~s ", [Op])),
+    Ol = {reserved, leaf(format("~s ", [Op]))},
     El = [Ol,lexpr(Arg, R, Opts)],
     maybe_paren(P, Prec, El);
 lexpr({op,_,Op,Larg,Rarg}, Prec, Opts)  when Op =:= 'orelse';
@@ -632,14 +692,14 @@ lexpr({op,_,Op,Larg,Rarg}, Prec, Opts)  when Op =:= 'orelse';
     %% Breaks lines since R12B.
     {L,P,R} = inop_prec(Op),
     Ll = lexpr(Larg, L, Opts),
-    Ol = leaf(format("~s", [Op])),
+    Ol = {reserved, leaf(format("~s", [Op]))},
     Lr = lexpr(Rarg, R, Opts),
     El = {prefer_nl,[[]],[Ll,Ol,Lr]},
     maybe_paren(P, Prec, El);
 lexpr({op,_,Op,Larg,Rarg}, Prec, Opts) ->
     {L,P,R} = inop_prec(Op),
     Ll = lexpr(Larg, L, Opts),
-    Ol = leaf(format("~s", [Op])),
+    Ol = {reserved, leaf(format("~s", [Op]))},
     Lr = lexpr(Rarg, R, Opts),
     El = {list,[Ll,Ol,Lr]},
     maybe_paren(P, Prec, El);
@@ -654,7 +714,7 @@ lexpr({bin,_,Fs}, _, Opts) ->
     bit_grp(Fs, Opts);
 %% Special case for straight values.
 lexpr({value,_,Val}, _,_) ->
-    leaf(write(Val));
+    {value,Val};
 %% Now do the hook.
 lexpr(Other, _Precedence, #options{hook = none}) ->
     leaf(format("INVALID-FORM:~w:",[Other]));
@@ -664,16 +724,29 @@ lexpr(HookExpr, Precedence, #options{hook = {Mod,Func,Eas}})
 lexpr(HookExpr, Precedence, #options{hook = Func, opts = Options}) ->
     {hook,HookExpr,Precedence,Func,Options}.
 
+%% An integer is separated from the following '#' by a space, which
+%% erl_scan can handle.
+hash_after_integer({integer, _, _}, C) ->
+    [$\s|C];
+hash_after_integer({'fun',_,{function, _, _}}, C) ->
+    [$\s|C];
+hash_after_integer({'fun',_,{function, _, _, _}}, C) ->
+    [$\s|C];
+hash_after_integer(_, C) ->
+    C.
+
 call(Name, Args, Prec, Opts) ->
     {F,P} = func_prec(),
     Item = {first,lexpr(Name, F, Opts),args(Args, Opts)},
     maybe_paren(P, Prec, Item).
 
 fun_info(Extra) ->
-    leaf(format("% fun-info: ~w", [Extra])).
+    [leaf("% fun-info: "),{value,Extra}].
 
 %% BITS:
 
+bit_grp([], _Opts) ->
+    leaf("<<>>");
 bit_grp(Fs, Opts) ->
     append([['<<'], [bit_elems(Fs, Opts)], ['>>']]).
 
@@ -711,7 +784,7 @@ bit_elem_type(T) ->
 %% end of BITS
 
 record_name(Name) ->
-    leaf(format("#~w", [Name])).
+    [$#,{atom,Name}].
 
 record_fields(Fs, Opts) ->
     tuple(Fs, fun record_field/2, Opts).
@@ -783,12 +856,6 @@ cr_clause({clause,_,[T],G,B}, Opts) ->
 try_clauses(Cs, Opts) ->
     clauses(fun try_clause/2, Opts, Cs).
 
-try_clause({clause,_,[{tuple,_,[{atom,_,throw},V,S]}],G,B}, Opts) ->
-    El = lexpr(V, 0, Opts),
-    Sl = stack_backtrace(S, [El], Opts),
-    Gl = guard_when(Sl, G, Opts),
-    Bl = body(B, Opts),
-    {step,Gl,Bl};
 try_clause({clause,_,[{tuple,_,[C,V,S]}],G,B}, Opts) ->
     Cs = lexpr(C, 0, Opts),
     El = lexpr(V, 0, Opts),
@@ -857,16 +924,18 @@ lc_qual(Q, Opts) ->
     lexpr(Q, 0, Opts).
 
 proper_list(Es, Opts) ->
-    {seq,$[,$],$,,lexprs(Es, Opts)}.
+    {seq,$[,$],[$,],lexprs(Es, Opts)}.
 
 improper_list(Es, Opts) ->
-    {seq,$[,$],{$,,$|},lexprs(Es, Opts)}.
+    {seq,$[,$],[{$,,' |'}],lexprs(Es, Opts)}.
 
 tuple(L, Opts) ->
     tuple(L, fun lexpr/2, Opts).
 
+tuple([], _F, _Opts) ->
+    leaf("{}");
 tuple(Es, F, Opts) ->
-    {seq,${,$},$,,lexprs(Es, F, Opts)}.
+    {seq,${,$},[$,],lexprs(Es, F, Opts)}.
 
 args(As, Opts) ->
     {seq,$(,$),[$,],lexprs(As, Opts)}.
@@ -886,7 +955,7 @@ maybe_paren(_P, _Prec, Expr) ->
     Expr.
 
 leaf(S) ->
-    {leaf,chars_size(S),S}.
+    {leaf,string:length(S),S}.
 
 %%% Do the formatting. Currently nothing fancy. Could probably have
 %%% done it in one single pass.
@@ -913,8 +982,11 @@ frmt(Item, I, PP) ->
 %%% - {force_nl,ExtraInfo,I}: fun-info (a comment) forces linebreak before I.
 %%% - {prefer_nl,Sep,IPs}: forces linebreak between Is unlesss negative
 %%%   indentation.
+%%% - {atom,A}: an atom
+%%% - {singleton_atom_type,A}: a singleton atom type
 %%% - {char,C}: a character
 %%% - {string,S}: a string.
+%%% - {value,T}: a term.
 %%% - {hook,...}, {ehook,...}: hook expressions.
 %%%
 %%% list, first, seq, force_nl, and prefer_nl all accept IPs, where each
@@ -944,11 +1016,11 @@ f({seq,Before,After,Sep,LItems}, I0, ST, WT, PP) ->
     Sizes = BSizeL ++ SizeL,
     NSepChars = if
                     is_list(Sep), Sep =/= [] ->
-                        erlang:max(0, length(CharsL)-1);
+                        erlang:max(0, length(CharsL)-1); % not string:length
                     true ->
                         0
                 end,
-    case same_line(I0, Sizes, NSepChars) of
+    case same_line(I0, Sizes, NSepChars, PP) of
         {yes,Size} ->
             Chars = if
                         NSepChars > 0 -> insert_sep(CharsL, $\s);
@@ -956,8 +1028,10 @@ f({seq,Before,After,Sep,LItems}, I0, ST, WT, PP) ->
                     end,
             {BCharsL++Chars,Size};
         no ->
-            {BCharsL++insert_newlines(CharsSizeL, I, ST),
-             nsz(lists:last(Sizes), I0)}
+            CharsList = handle_step(CharsSizeL, I, ST, PP),
+            {LChars, LSize} =
+                maybe_newlines(CharsList, LItems, I, NSepChars, ST, PP),
+            {[BCharsL,LChars],nsz(LSize, I0)}
     end;
 f({force_nl,_ExtraInfoItem,Item}, I, ST, WT, PP) when I < 0 ->
     %% Extra info is a comment; cannot have that on the same line
@@ -973,22 +1047,29 @@ f({prefer_nl,Sep,LItems}, I0, ST, WT, PP) ->
         Sizes =:= [] ->
             {[], 0};
         true ->
-            {insert_newlines(CharsSize2L, I0, ST),nsz(lists:last(Sizes), I0)}
+            {insert_newlines(CharsSize2L, I0, ST, PP),
+             nsz(lists:last(Sizes), I0)}
     end;
+f({value,V}, I, ST, WT, PP) ->
+    f(write_a_value(V, PP), I, ST, WT, PP);
+f({atom,A}, I, ST, WT, PP) ->
+    f(write_an_atom(A, PP), I, ST, WT, PP);
+f({singleton_atom_type,A}, I, ST, WT, PP) ->
+    f(write_a_singleton_atom_type(A, PP), I, ST, WT, PP);
 f({char,C}, I, ST, WT, PP) ->
     f(write_a_char(C, PP), I, ST, WT, PP);
 f({string,S}, I, ST, WT, PP) ->
     f(write_a_string(S, I, PP), I, ST, WT, PP);
+f({reserved,R}, I, ST, WT, PP) ->
+    f(R, I, ST, WT, PP);
 f({hook,HookExpr,Precedence,Func,Options}, I, _ST, _WT, _PP) ->
     Chars = Func(HookExpr, I, Precedence, Options),
     {Chars,indentation(Chars, I)};
 f({ehook,HookExpr,Precedence,{Mod,Func,Eas}=ModFuncEas}, I, _ST, _WT, _PP) ->
     Chars = apply(Mod, Func, [HookExpr,I,Precedence,ModFuncEas|Eas]),
     {Chars,indentation(Chars, I)};
-f(WordName, _I, _ST, WT, _PP) -> % when is_atom(WordName)
+f(WordName, _I, _ST, WT, _PP) when is_atom(WordName) ->
     word(WordName, WT).
-
--define(IND, 4).
 
 %% fl(ListItems, I0, ST, WT) -> [[CharsSize1,CharsSize2]]
 %% ListItems = [{Item,Items}|Item]
@@ -997,21 +1078,27 @@ fl([], _Sep, I0, After, ST, WT, PP) ->
 fl(CItems, Sep0, I0, After, ST, WT, PP) ->
     F = fun({step,Item1,Item2}, S) ->
                 [f(Item1, I0, ST, WT, PP),
-                 f([Item2,S], incr(I0, ?IND), ST, WT, PP)];
+                 f([Item2,S], incr(I0, PP#pp.indent), ST, WT, PP)];
            ({cstep,Item1,Item2}, S) ->
                 {_,Sz1} = CharSize1 = f(Item1, I0, ST, WT, PP),
                 if
-                    is_integer(Sz1), Sz1 < ?IND ->
+                    is_integer(Sz1), Sz1 < PP#pp.indent ->
                         Item2p = [leaf("\s"),Item2,S],
                         [consecutive(Item2p, CharSize1, I0, ST, WT, PP),{[],0}];
                     true ->
-                        [CharSize1,f([Item2,S], incr(I0, ?IND), ST, WT, PP)]
+                        [CharSize1,f([Item2,S], incr(I0, PP#pp.indent), ST, WT, PP)]
                 end;
+           ({reserved,Word}, S) ->
+                [f([Word,S], I0, ST, WT, PP),{[],0}];
            (Item, S) ->
                 [f([Item,S], I0, ST, WT, PP),{[],0}]
         end,
-    {Sep,LastSep}  = case Sep0 of {_,_} -> Sep0; _ -> {Sep0,Sep0} end,
+    {Sep,LastSep} = sep(Sep0),
     fl1(CItems, F, Sep, LastSep, After).
+
+sep([{S,LS}]) -> {[S],[LS]};
+sep({_,_}=Sep) -> Sep;
+sep(S) -> {S, S}.
 
 fl1([CItem], F, _Sep, _LastSep, After) ->
     [F(CItem,After)];
@@ -1038,20 +1125,64 @@ unz1(CharSizes) ->
 nonzero(CharSizes) ->
     lists:filter(fun({_,Sz}) -> Sz =/= 0 end, CharSizes).
 
-insert_newlines(CharsSizesL, I, ST) when I >= 0 ->
-    insert_nl(foldr(fun([{_C1,0},{_C2,0}], A) ->
-                            A;
-                       ([{C1,_Sz1},{_C2,0}], A) ->
-                            [C1|A];
-                       ([{C1,_Sz1},{C2,Sz2}], A) when Sz2 > 0 ->
-                            [insert_nl([C1,C2], I+?IND, ST)|A]
-                    end, [], CharsSizesL), I, ST).
+maybe_newlines([{Chars,Size}], [], _I, _NSepChars, _ST, _PP) ->
+    {Chars,Size};
+maybe_newlines(CharsSizeList, Items, I, NSepChars, ST, PP) when I >= 0 ->
+    maybe_sep(CharsSizeList, Items, I, NSepChars, nl_indent(I, ST), PP).
 
+maybe_sep([{Chars1,Size1}|CharsSizeL], [Item|Items], I0, NSepChars, Sep, PP) ->
+    I1 = case classify_item(Item) of
+             atomic ->
+                 I0 + Size1;
+             _ ->
+                 PP#pp.linewidth+1
+         end,
+    maybe_sep1(CharsSizeL, Items, I0, I1, Sep, NSepChars, Size1, [Chars1], PP).
+
+maybe_sep1([{Chars,Size}|CharsSizeL], [Item|Items],
+           I0, I, Sep, NSepChars, Sz0, A, PP) ->
+    case classify_item(Item) of
+        atomic when is_integer(Size) ->
+            Size1 = Size + 1,
+            I1 = I + Size1,
+            if
+                I1 =< PP#pp.linewidth ->
+                    A1 = if
+                             NSepChars > 0 -> [Chars,$\s|A];
+                             true -> [Chars|A]
+                         end,
+                    maybe_sep1(CharsSizeL, Items, I0, I1, Sep, NSepChars,
+                               Sz0 + Size1, A1, PP);
+                true ->
+                    A1 = [Chars,Sep|A],
+                    maybe_sep1(CharsSizeL, Items, I0, I0 + Size, Sep,
+                               NSepChars, Size1, A1, PP)
+            end;
+        _ ->
+            A1 = [Chars,Sep|A],
+            maybe_sep1(CharsSizeL, Items, I0, PP#pp.linewidth+1, Sep, NSepChars,
+                       0, A1, PP)
+    end;
+maybe_sep1(_CharsSizeL, _Items, _Io, _I, _Sep, _NSepChars, Sz, A, _PP) ->
+    {lists:reverse(A), Sz}.
+
+insert_newlines(CharsSizesL, I, ST, PP) when I >= 0 ->
+    {CharsL, _} = unz1(handle_step(CharsSizesL, I, ST, PP)),
+    insert_nl(CharsL, I, ST).
+
+handle_step(CharsSizesL, I, ST, PP) ->
+    map(fun([{_C1,0},{_C2,0}]) ->
+                {[], 0};
+           ([{C1,Sz1},{_C2,0}]) ->
+                {C1, Sz1};
+           ([{C1,Sz1},{C2,Sz2}]) when Sz2 > 0 ->
+                {insert_nl([C1,C2], I+PP#pp.indent, ST),line_size([Sz1,Sz2])}
+        end, CharsSizesL).
 
 insert_nl(CharsL, I, ST) ->
     insert_sep(CharsL, nl_indent(I, ST)).
 
-insert_sep([Chars1 | CharsL], Sep) ->
+insert_sep([Chars1|CharsL], Sep) ->
     [Chars1 | [[Sep,Chars] || Chars <- CharsL]].
 
 nl_indent(0, _T) ->
@@ -1059,10 +1190,16 @@ nl_indent(0, _T) ->
 nl_indent(I, T) when I > 0 ->
     [$\n|spaces(I, T)].
 
-same_line(I0, SizeL, NSepChars) ->
+classify_item({atom, _}) -> atomic;
+classify_item({singleton_atom_type, _}) -> atomic;
+classify_item(Atom) when is_atom(Atom) -> atomic;
+classify_item({leaf, _, _}) -> atomic;
+classify_item(_) -> complex.
+
+same_line(I0, SizeL, NSepChars, PP) ->
     try
         Size = lists:sum(SizeL) + NSepChars,
-        true = incr(I0, Size) =< ?MAXLINE,
+        true = incr(I0, Size) =< PP#pp.linewidth,
         {yes,Size}
     catch _:_ ->
         no
@@ -1096,7 +1233,7 @@ incr(I, Incr) ->
     I+Incr.
 
 indentation(E, I) when I < 0 ->
-    chars_size(E);
+    string:length(E);
 indentation(E, I0) ->
     I = io_lib_format:indentation(E, I0),
     case has_nl(E) of
@@ -1113,6 +1250,15 @@ has_nl([C|Cs]) ->
 has_nl([]) ->
     false.
 
+write_a_value(V, PP) ->
+    flat_leaf(write_value(V, PP)).
+
+write_an_atom(A, PP) ->
+    flat_leaf(write_atom(A, PP)).
+
+write_a_singleton_atom_type(A, PP) ->
+    flat_leaf(write_singleton_atom_type(A, PP)).
+
 write_a_char(C, PP) ->
     flat_leaf(write_char(C, PP)).
 
@@ -1121,31 +1267,40 @@ write_a_char(C, PP) ->
 write_a_string(S, I, PP) when I < 0; S =:= [] ->
     flat_leaf(write_string(S, PP));
 write_a_string(S, I, PP) ->
-    Len = erlang:max(?MAXLINE-I, ?MIN_SUBSTRING),
+    Len = erlang:max(PP#pp.linewidth-I, ?MIN_SUBSTRING),
     {list,write_a_string(S, Len, Len, PP)}.
 
 write_a_string([], _N, _Len, _PP) ->
     [];
 write_a_string(S, N, Len, PP) ->
-    SS = string:sub_string(S, 1, N),
+    SS = string:slice(S, 0, N),
     Sl = write_string(SS, PP),
-    case (length(Sl) > Len) and (N > ?MIN_SUBSTRING) of
+    case (string:length(Sl) > Len) and (N > ?MIN_SUBSTRING) of
         true ->
             write_a_string(S, N-1, Len, PP);
         false ->
             [flat_leaf(Sl) |
-             write_a_string(lists:nthtail(length(SS), S), Len, Len, PP)]
+             write_a_string(string:slice(S, string:length(SS)), Len, Len, PP)]
     end.
 
 flat_leaf(S) ->
     L = lists:flatten(S),
-    {leaf,length(L),L}.
+    {leaf,string:length(L),L}.
+
+write_value(V, PP) ->
+    (PP#pp.value_fun)(V).
+
+write_atom(A, PP) ->
+    (PP#pp.value_fun)(A).
+
+write_singleton_atom_type(A, PP) ->
+    (PP#pp.singleton_atom_type_fun)(A).
 
 write_string(S, PP) ->
-    lists:flatten((PP#pp.string_fun)(S)).
+    (PP#pp.string_fun)(S).
 
 write_char(C, PP) ->
-    lists:flatten((PP#pp.char_fun)(C)).
+    (PP#pp.char_fun)(C).
 
 %%
 %% Utilities
@@ -1153,15 +1308,6 @@ write_char(C, PP) ->
 
 a0() ->
     erl_anno:new(0).
-
-chars_size([C | Es]) when is_integer(C) ->
-    1 + chars_size(Es);
-chars_size([E | Es]) ->
-    chars_size(E) + chars_size(Es);
-chars_size([]) ->
-    0;
-chars_size(B) when is_binary(B) ->
-    byte_size(B).
 
 -define(N_SPACES, 30).
 

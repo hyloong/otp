@@ -1,7 +1,7 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2013-2015. All Rights Reserved.
+%% Copyright Ericsson AB 2013-2020. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -30,6 +30,7 @@
 -include("ssl_alert.hrl").
 -include("ssl_internal.hrl").
 -include("ssl_srp.hrl").
+-include("tls_handshake_1_3.hrl").
 -include_lib("public_key/include/public_key.hrl").
 
 -export_type([ssl_handshake/0, ssl_handshake_history/0,
@@ -38,51 +39,56 @@
 -type oid()               :: tuple().
 -type public_key_params() :: #'Dss-Parms'{} |  {namedCurve, oid()} | #'ECParameters'{} | term().
 -type public_key_info()   :: {oid(), #'RSAPublicKey'{} | integer() | #'ECPoint'{}, public_key_params()}.
--type ssl_handshake_history() :: {[binary()], [binary()]}.
+-type ssl_handshake_history() :: {iodata(), iodata()}.
 
 -type ssl_handshake() :: #server_hello{} | #server_hello_done{} | #certificate{} | #certificate_request{} |
 			 #client_key_exchange{} | #finished{} | #certificate_verify{} |
 			 #hello_request{} | #next_protocol{}.
 
-%% Handshake messages
+%% Create handshake messages
 -export([hello_request/0, server_hello/4, server_hello_done/0,
-	 certificate/4, certificate_request/4, key_exchange/3,
-	 finished/5,  next_protocol/1]).
+	 certificate/4,  client_certificate_verify/6,  certificate_request/5, key_exchange/3,
+	 finished/5,  next_protocol/1, digitally_signed/5]).
 
 %% Handle handshake messages
--export([certify/10, client_certificate_verify/6, certificate_verify/6, verify_signature/5,
-	 master_secret/5, server_key_exchange_hash/2, verify_connection/6,
-	 init_handshake_history/0, update_handshake_history/2, verify_server_key/5
+-export([certify/9, certificate_verify/6, verify_signature/5,
+	 master_secret/4, server_key_exchange_hash/2, verify_connection/6,
+	 init_handshake_history/0, update_handshake_history/2, verify_server_key/5,
+         select_version/3, select_supported_version/2, extension_value/1
 	]).
 
-%% Encode/Decode
--export([encode_handshake/2, encode_hello_extensions/1,
-	 encode_client_protocol_negotiation/2, encode_protocols_advertised_on_server/1,
-	 decode_handshake/3, decode_hello_extensions/1,
+%% Encode
+-export([encode_handshake/2, encode_hello_extensions/2, encode_extensions/1, encode_extensions/2,
+	 encode_client_protocol_negotiation/2, encode_protocols_advertised_on_server/1]).
+%% Decode
+-export([decode_handshake/3, decode_vector/1, decode_hello_extensions/4, decode_extensions/3,
 	 decode_server_key/3, decode_client_key/3,
 	 decode_suites/2
 	]).
 
 %% Cipher suites handling
--export([available_suites/2, cipher_suites/2,
-	 select_session/10, supported_ecc/1]).
+-export([available_suites/2, available_signature_algs/2,  available_signature_algs/4, 
+         cipher_suites/3, prf/6, select_session/9, supported_ecc/1,
+         premaster_secret/2, premaster_secret/3, premaster_secret/4]).
 
 %% Extensions handling
--export([client_hello_extensions/6,
-	 handle_client_hello_extensions/9, %% Returns server hello extensions
-	 handle_server_hello_extensions/9, select_curve/2
+-export([client_hello_extensions/8,
+	 handle_client_hello_extensions/10, %% Returns server hello extensions
+	 handle_server_hello_extensions/10, select_curve/2, select_curve/3,
+         select_hashsign/4, select_hashsign/5,
+	 select_hashsign_algs/3, empty_extensions/2, add_server_share/3,
+	 add_alpn/2, add_selected_version/1, decode_alpn/1, max_frag_enum/1
 	]).
 
-%% MISC
--export([select_version/3, prf/5, select_hashsign/3, 
-	 select_hashsign_algs/2, select_hashsign_algs/3,
-	 premaster_secret/2, premaster_secret/3, premaster_secret/4]).
+-export([get_cert_params/1,
+         select_own_cert/1,
+         server_name/3,
+         validation_fun_and_state/4,
+         path_validation_alert/1]).
 
 %%====================================================================
-%% Internal application API
+%% Create handshake messages 
 %%====================================================================
-
-%% ---------- Create handshake messages  ----------
 
 %%--------------------------------------------------------------------
 -spec hello_request() -> #hello_request{}.
@@ -94,15 +100,14 @@ hello_request() ->
     #hello_request{}.
 
 %%--------------------------------------------------------------------
--spec server_hello(#session{}, ssl_record:ssl_version(), #connection_states{},
-		   #hello_extensions{}) -> #server_hello{}.
+%%-spec server_hello(binary(), ssl_record:ssl_version(), ssl_record:connection_states(),
+%%		   Extension::map()) -> #server_hello{}.
 %%
 %% Description: Creates a server hello message.
 %%--------------------------------------------------------------------
 server_hello(SessionId, Version, ConnectionStates, Extensions) ->
-    Pending = ssl_record:pending_connection_state(ConnectionStates, read),
-    SecParams = Pending#connection_state.security_parameters,
-
+    #{security_parameters := SecParams} = 
+	ssl_record:pending_connection_state(ConnectionStates, read),
     #server_hello{server_version = Version,
 		  cipher_suite = SecParams#security_parameters.cipher_suite,
                   compression_method =
@@ -120,62 +125,34 @@ server_hello(SessionId, Version, ConnectionStates, Extensions) ->
 server_hello_done() ->
     #server_hello_done{}.
 
-client_hello_extensions(Host, Version, CipherSuites, SslOpts, ConnectionStates, Renegotiation) ->
-    {EcPointFormats, EllipticCurves} =
-	case advertises_ec_ciphers(lists:map(fun ssl_cipher:suite_definition/1, CipherSuites)) of
-	    true ->
-		client_ecc_extensions(tls_v1, Version);
-	    false ->
-		{undefined, undefined}
-	end,
-    SRP = srp_user(SslOpts),
-
-    #hello_extensions{
-       renegotiation_info = renegotiation_info(tls_record, client,
-					       ConnectionStates, Renegotiation),
-       srp = SRP,
-       hash_signs = advertised_hash_signs(Version),
-       ec_point_formats = EcPointFormats,
-       elliptic_curves = EllipticCurves,
-       alpn = encode_alpn(SslOpts#ssl_options.alpn_advertised_protocols, Renegotiation),
-       next_protocol_negotiation =
-	   encode_client_protocol_negotiation(SslOpts#ssl_options.next_protocol_selector,
-					      Renegotiation),
-       sni = sni(Host, SslOpts#ssl_options.server_name_indication)}.
-
 %%--------------------------------------------------------------------
--spec certificate(der_cert(), db_handle(), certdb_ref(), client | server) -> #certificate{} | #alert{}.
+-spec certificate([der_cert()] | undefined, db_handle(), certdb_ref(), client | server) -> #certificate{} | #alert{}.
 %%
 %% Description: Creates a certificate message.
 %%--------------------------------------------------------------------
-certificate(OwnCert, CertDbHandle, CertDbRef, client) ->
+certificate(undefined, _, _, client) ->
+    %% If no suitable certificate is available, the client
+    %% SHOULD send a certificate message containing no
+    %% certificates. (chapter 7.4.6. RFC 4346)
+    #certificate{asn1_certificates = []};
+certificate([OwnCert], CertDbHandle, CertDbRef, client) ->
     Chain =
 	case ssl_certificate:certificate_chain(OwnCert, CertDbHandle, CertDbRef) of
 	    {ok, _,  CertChain} ->
 		CertChain;
 	    {error, _} ->
-		%% If no suitable certificate is available, the client
-		%% SHOULD send a certificate message containing no
-		%% certificates. (chapter 7.4.6. RFC 4346)
-		[]
-	end,
+                certificate(undefined, CertDbHandle, CertDbRef, client)
+        end,
     #certificate{asn1_certificates = Chain};
-
-certificate(OwnCert, CertDbHandle, CertDbRef, server) ->
+certificate([OwnCert], CertDbHandle, CertDbRef, server) ->
     case ssl_certificate:certificate_chain(OwnCert, CertDbHandle, CertDbRef) of
 	{ok, _, Chain} ->
 	    #certificate{asn1_certificates = Chain};
-	{error, _} ->
-	    ?ALERT_REC(?FATAL, ?INTERNAL_ERROR)
-    end.
-
-%%--------------------------------------------------------------------
--spec next_protocol(binary()) -> #next_protocol{}.
-%%
-%% Description: Creates a next protocol message
-%%-------------------------------------------------------------------
-next_protocol(SelectedProtocol) ->
-  #next_protocol{selected_protocol = SelectedProtocol}.
+	{error, Error} ->
+            ?ALERT_REC(?FATAL, ?INTERNAL_ERROR, {server_has_no_suitable_certificates, Error})
+    end;
+certificate([_, _ |_] = Chain, _, _, _) ->
+    #certificate{asn1_certificates = Chain}.
 
 %%--------------------------------------------------------------------
 -spec client_certificate_verify(undefined | der_cert(), binary(),
@@ -189,28 +166,28 @@ client_certificate_verify(undefined, _, _, _, _, _) ->
     ignore;
 client_certificate_verify(_, _, _, _, undefined, _) ->
     ignore;
-client_certificate_verify(OwnCert, MasterSecret, Version,
+client_certificate_verify([OwnCert|_], MasterSecret, Version,
 			  {HashAlgo, SignAlgo},
 			  PrivateKey, {Handshake, _}) ->
     case public_key:pkix_is_fixed_dh_cert(OwnCert) of
 	true ->
-	    ?ALERT_REC(?FATAL, ?UNSUPPORTED_CERTIFICATE);
+            ?ALERT_REC(?FATAL, ?UNSUPPORTED_CERTIFICATE, fixed_diffie_hellman_prohibited);
 	false ->
 	    Hashes =
 		calc_certificate_verify(Version, HashAlgo, MasterSecret, Handshake),
-	    Signed = digitally_signed(Version, Hashes, HashAlgo, PrivateKey),
+	    Signed = digitally_signed(Version, Hashes, HashAlgo, PrivateKey, SignAlgo),
 	    #certificate_verify{signature = Signed, hashsign_algorithm = {HashAlgo, SignAlgo}}
     end.
 
 %%--------------------------------------------------------------------
--spec certificate_request(ssl_cipher:cipher_suite(), db_handle(), certdb_ref(), ssl_record:ssl_version()) ->
-    #certificate_request{}.
+-spec certificate_request(ssl_cipher_format:cipher_suite(), db_handle(), 
+			  certdb_ref(),  #hash_sign_algos{}, ssl_record:ssl_version()) ->
+				 #certificate_request{}.
 %%
 %% Description: Creates a certificate_request message, called by the server.
 %%--------------------------------------------------------------------
-certificate_request(CipherSuite, CertDbHandle, CertDbRef, Version) ->
-    Types = certificate_types(ssl_cipher:suite_definition(CipherSuite), Version),
-    HashSigns = advertised_hash_signs(Version),
+certificate_request(CipherSuite, CertDbHandle, CertDbRef, HashSigns, Version) ->
+    Types = certificate_types(ssl_cipher_format:suite_bin_to_map(CipherSuite), Version),
     Authorities = certificate_authorities(CertDbHandle, CertDbRef),
     #certificate_request{
 		    certificate_types = Types,
@@ -223,11 +200,18 @@ certificate_request(CipherSuite, CertDbHandle, CertDbRef, Version) ->
 		   {dh, binary()} |
 		   {dh, {binary(), binary()}, #'DHParameter'{}, {HashAlgo::atom(), SignAlgo::atom()},
 		   binary(), binary(), public_key:private_key()} |
+		   {ecdh, _, _, _, _, _} |
 		   {ecdh, #'ECPrivateKey'{}} |
+		   {psk, _, _, _, _, _} |
 		   {psk, binary()} |
+		   {dhe_psk, _, _, _, _, _, _, _} |
 		   {dhe_psk, binary(), binary()} |
+		   {ecdhe_psk, _, _, _, _, _, _} |
+		   {ecdhe_psk, binary(), #'ECPrivateKey'{}} |
 		   {srp, {binary(), binary()}, #srp_user{}, {HashAlgo::atom(), SignAlgo::atom()},
-		   binary(), binary(), public_key:private_key()}) ->
+                    binary(), binary(), public_key:private_key()} |
+		   {srp, _} |
+                   {psk_premaster_secret, _, _, _}) ->
     #client_key_exchange{} | #server_key_exchange{}.
 
 %%
@@ -262,6 +246,13 @@ key_exchange(client, _Version, {dhe_psk, Identity, PublicKey}) ->
 		identity = Identity,
 		dh_public = PublicKey}
 	       };
+
+key_exchange(client, _Version, {ecdhe_psk, Identity, #'ECPrivateKey'{publicKey =  ECPublicKey}}) ->
+    #client_key_exchange{
+       exchange_keys = #client_ecdhe_psk_identity{
+			  identity = Identity,
+			  dh_public = ECPublicKey}
+      };
 
 key_exchange(client, _Version, {psk_premaster_secret, PskIdentity, Secret, {_, PublicKey, _}}) ->
     EncPremasterSecret =
@@ -309,6 +300,16 @@ key_exchange(server, Version, {dhe_psk, PskIdentityHint, {PublicKey, _},
     enc_server_key_exchange(Version, ServerEDHPSKParams,
 			    HashSign, ClientRandom, ServerRandom, PrivateKey);
 
+key_exchange(server, Version, {ecdhe_psk, PskIdentityHint,
+			       #'ECPrivateKey'{publicKey =  ECPublicKey,
+					       parameters = ECCurve},
+			       HashSign, ClientRandom, ServerRandom, PrivateKey}) ->
+    ServerECDHEPSKParams = #server_ecdhe_psk_params{
+      hint = PskIdentityHint,
+      dh_params = #server_ecdh_params{curve = ECCurve, public = ECPublicKey}},
+    enc_server_key_exchange(Version, ServerECDHEPSKParams, HashSign,
+			    ClientRandom, ServerRandom, PrivateKey);
+
 key_exchange(server, Version, {srp, {PublicKey, _},
 			       #srp_user{generator = Generator, prime = Prime,
 					 salt = Salt},
@@ -327,30 +328,58 @@ key_exchange(server, Version, {srp, {PublicKey, _},
 finished(Version, Role, PrfAlgo, MasterSecret, {Handshake, _}) -> % use the current handshake
     #finished{verify_data =
 	      calc_finished(Version, Role, PrfAlgo, MasterSecret, Handshake)}.
+%%--------------------------------------------------------------------
+-spec next_protocol(binary()) -> #next_protocol{}.
+%%
+%% Description: Creates a next protocol message
+%%-------------------------------------------------------------------
+next_protocol(SelectedProtocol) ->
+  #next_protocol{selected_protocol = SelectedProtocol}.
 
-%% ---------- Handle handshake messages  ----------
-
-verify_server_key(#server_key_params{params_bin = EncParams,
-				     signature = Signature},
-		  HashSign = {HashAlgo, _},
-		  ConnectionStates, Version, PubKeyInfo) ->
-    ConnectionState =
-	ssl_record:pending_connection_state(ConnectionStates, read),
-    SecParams = ConnectionState#connection_state.security_parameters,
-    #security_parameters{client_random = ClientRandom,
-			 server_random = ServerRandom} = SecParams,
-    Hash = server_key_exchange_hash(HashAlgo,
-				    <<ClientRandom/binary,
-				      ServerRandom/binary,
-				      EncParams/binary>>),
-    verify_signature(Version, Hash, HashSign, Signature, PubKeyInfo).
-
+%%====================================================================
+%% Handle handshake messages 
+%%====================================================================
+%%--------------------------------------------------------------------
+-spec certify(#certificate{}, db_handle(), certdb_ref(), ssl_options(), term(),
+	      client | server, inet:hostname() | inet:ip_address(),
+              ssl_record:ssl_version(), map()) ->  {der_cert(), public_key_info()} | #alert{}.
+%%
+%% Description: Handles a certificate handshake message
+%%--------------------------------------------------------------------
+certify(#certificate{asn1_certificates = ASN1Certs}, CertDbHandle, CertDbRef,
+        #{server_name_indication := ServerNameIndication,
+          partial_chain := PartialChain} = SSlOptions, 
+        CRLDbHandle, Role, Host, Version, CertExt) ->
+    ServerName = server_name(ServerNameIndication, Host, Role),
+    [PeerCert | _ChainCerts ] = ASN1Certs,
+    try
+	PathsAndAnchors  =
+	    ssl_certificate:trusted_cert_and_paths(ASN1Certs, CertDbHandle, CertDbRef,
+                                                   PartialChain),
+        
+	case path_validate(PathsAndAnchors, ServerName, Role, CertDbHandle, CertDbRef, CRLDbHandle,
+                           Version, SSlOptions, CertExt) of
+	    {ok, {PublicKeyInfo, _}} ->
+                {PeerCert, PublicKeyInfo};
+	    {error, Reason} ->
+                path_validation_alert(Reason)
+	end
+    catch
+	error:{_,{error, {asn1, Asn1Reason}}} ->
+	    %% ASN-1 decode of certificate somehow failed
+            ?ALERT_REC(?FATAL, ?CERTIFICATE_UNKNOWN, {failed_to_decode_certificate, Asn1Reason});
+        error:OtherReason ->
+            ?ALERT_REC(?FATAL, ?INTERNAL_ERROR, {unexpected_error, OtherReason})
+    end.
 %%--------------------------------------------------------------------
 -spec certificate_verify(binary(), public_key_info(), ssl_record:ssl_version(), term(),
 			 binary(), ssl_handshake_history()) -> valid | #alert{}.
 %%
 %% Description: Checks that the certificate_verify message is valid.
 %%--------------------------------------------------------------------
+certificate_verify(_, _, _, undefined, _, _) ->
+    ?ALERT_REC(?FATAL, ?HANDSHAKE_FAILURE, invalid_certificate_verify_message);
+
 certificate_verify(Signature, PublicKeyInfo, Version,
 		   HashSign = {HashAlgo, _}, MasterSecret, {_, Handshake}) ->
     Hash = calc_certificate_verify(Version, HashAlgo, MasterSecret, Handshake),
@@ -366,54 +395,83 @@ certificate_verify(Signature, PublicKeyInfo, Version,
 %%
 %% Description: Checks that a public_key signature is valid.
 %%--------------------------------------------------------------------
-verify_signature(_Version, _Hash, {_HashAlgo, anon}, _Signature, _) ->
-    true;
-verify_signature({3, Minor}, Hash, {HashAlgo, rsa}, Signature, {?rsaEncryption, PubKey, _PubKeyParams})
+verify_signature({3, 4}, Hash, {HashAlgo, SignAlgo}, Signature, 
+                 {_, PubKey, PubKeyParams}) when  SignAlgo == rsa_pss_rsae;
+                                                  SignAlgo == rsa_pss_pss ->
+    Options = verify_options(SignAlgo, HashAlgo, PubKeyParams),
+    public_key:verify(Hash, HashAlgo, Signature, PubKey, Options);
+verify_signature({3, 3}, Hash, {HashAlgo, SignAlgo}, Signature, 
+                 {_, PubKey, PubKeyParams}) when  SignAlgo == rsa_pss_rsae;
+                                                  SignAlgo == rsa_pss_pss ->
+    Options = verify_options(SignAlgo, HashAlgo, PubKeyParams),
+    public_key:verify({digest, Hash}, HashAlgo, Signature, PubKey, Options);
+verify_signature({3, Minor}, Hash, {HashAlgo, SignAlgo}, Signature, {?rsaEncryption, PubKey, PubKeyParams})
   when Minor >= 3 ->
-    public_key:verify({digest, Hash}, HashAlgo, Signature, PubKey);
-verify_signature(_Version, Hash, _HashAlgo, Signature, {?rsaEncryption, PubKey, _PubKeyParams}) ->
+    Options = verify_options(SignAlgo, HashAlgo, PubKeyParams),
+    public_key:verify({digest, Hash}, HashAlgo, Signature, PubKey, Options);
+verify_signature({3, Minor}, Hash, _HashAlgo, Signature, {?rsaEncryption, PubKey, _PubKeyParams}) when Minor =< 2 ->
     case public_key:decrypt_public(Signature, PubKey,
 				   [{rsa_pad, rsa_pkcs1_padding}]) of
 	Hash -> true;
-	_    -> false
+	_   -> false
     end;
-verify_signature(_Version, Hash, {HashAlgo, dsa}, Signature, {?'id-dsa', PublicKey, PublicKeyParams}) ->
-    public_key:verify({digest, Hash}, HashAlgo, Signature, {PublicKey, PublicKeyParams});
-verify_signature(_Version, Hash, {HashAlgo, ecdsa}, Signature,
+verify_signature({3, 4}, Hash, {HashAlgo, _SignAlgo}, Signature, {?'id-ecPublicKey', PubKey, PubKeyParams}) ->
+    public_key:verify(Hash, HashAlgo, Signature, {PubKey, PubKeyParams});
+verify_signature(_, Hash, {HashAlgo, _SignAlg}, Signature,
 		 {?'id-ecPublicKey', PublicKey, PublicKeyParams}) ->
+    public_key:verify({digest, Hash}, HashAlgo, Signature, {PublicKey, PublicKeyParams});
+verify_signature({3, Minor}, _Hash, {_HashAlgo, anon}, _Signature, _) when Minor =< 3 ->
+    true;
+verify_signature({3, Minor}, Hash, {HashAlgo, dsa}, Signature, {?'id-dsa', PublicKey, PublicKeyParams})  when Minor =< 3->
     public_key:verify({digest, Hash}, HashAlgo, Signature, {PublicKey, PublicKeyParams}).
 
 %%--------------------------------------------------------------------
--spec certify(#certificate{}, db_handle(), certdb_ref(), integer() | nolimit,
-	      verify_peer | verify_none, {fun(), term}, fun(), term(), term(),
-	      client | server) ->  {der_cert(), public_key_info()} | #alert{}.
+-spec master_secret(ssl_record:ssl_version(), #session{} | binary(), ssl_record:connection_states(),
+		   client | server) -> {binary(), ssl_record:connection_states()} | #alert{}.
 %%
-%% Description: Handles a certificate handshake message
-%%--------------------------------------------------------------------
-certify(#certificate{asn1_certificates = ASN1Certs}, CertDbHandle, CertDbRef,
-	MaxPathLen, _Verify, ValidationFunAndState0, PartialChain, CRLCheck, CRLDbHandle, Role) ->
-    [PeerCert | _] = ASN1Certs,
-        
-    ValidationFunAndState = validation_fun_and_state(ValidationFunAndState0, Role, 
-						     CertDbHandle, CertDbRef,  CRLCheck, CRLDbHandle),
-
-    try
-	{TrustedCert, CertPath}  =
-	    ssl_certificate:trusted_cert_and_path(ASN1Certs, CertDbHandle, CertDbRef, PartialChain),
-	case public_key:pkix_path_validation(TrustedCert,
-					     CertPath,
-					     [{max_path_length, MaxPathLen},
-					      {verify_fun, ValidationFunAndState}]) of
-	    {ok, {PublicKeyInfo,_}} ->
-		{PeerCert, PublicKeyInfo};
-	    {error, Reason} ->
-		path_validation_alert(Reason)
-	end
+%% Description: Sets or calculates the master secret and calculate keys,
+%% updating the pending connection states. The Mastersecret and the update
+%% connection states are returned or an alert if the calculation fails.
+%%-------------------------------------------------------------------
+master_secret(Version, #session{master_secret = Mastersecret},
+	      ConnectionStates, Role) ->
+    #{security_parameters := SecParams} =
+	ssl_record:pending_connection_state(ConnectionStates, read),
+    try master_secret(Version, Mastersecret, SecParams,
+		      ConnectionStates, Role)
     catch
-	error:_ ->
-	    %% ASN-1 decode of certificate somehow failed
-	    ?ALERT_REC(?FATAL, ?CERTIFICATE_UNKNOWN)
+	exit:_ ->
+            ?ALERT_REC(?FATAL, ?HANDSHAKE_FAILURE, key_calculation_failure)
+    end;
+
+master_secret(Version, PremasterSecret, ConnectionStates, Role) ->
+    #{security_parameters := SecParams} =
+	ssl_record:pending_connection_state(ConnectionStates, read),
+    
+    #security_parameters{prf_algorithm = PrfAlgo,
+			 client_random = ClientRandom,
+			 server_random = ServerRandom} = SecParams,
+    try master_secret(Version,
+		      calc_master_secret(Version,PrfAlgo,PremasterSecret,
+					 ClientRandom, ServerRandom),
+		      SecParams, ConnectionStates, Role)
+    catch
+	exit:_ ->
+            ?ALERT_REC(?FATAL, ?HANDSHAKE_FAILURE, master_secret_calculation_failure)
     end.
+
+%%--------------------------------------------------------------------
+-spec server_key_exchange_hash(md5sha | md5 | sha | sha224 |sha256 | sha384 | sha512, binary()) -> binary().
+%%
+%% Description: Calculate server key exchange hash
+%%--------------------------------------------------------------------
+server_key_exchange_hash(md5sha, Value) ->
+    MD5 = crypto:hash(md5, Value),
+    SHA = crypto:hash(sha, Value),
+    <<MD5/binary, SHA/binary>>;
+
+server_key_exchange_hash(Hash, Value) ->
+    crypto:hash(Hash, Value).
 
 %%--------------------------------------------------------------------
 -spec verify_connection(ssl_record:ssl_version(), #finished{}, client | server, integer(), binary(),
@@ -447,275 +505,57 @@ init_handshake_history() ->
 %%
 %% Description: Update the handshake history buffer with Data.
 %%--------------------------------------------------------------------
-update_handshake_history(Handshake, % special-case SSL2 client hello
-			 <<?CLIENT_HELLO, ?UINT24(_), ?BYTE(Major), ?BYTE(Minor),
-			   ?UINT16(CSLength), ?UINT16(0),
-			   ?UINT16(CDLength),
-			   CipherSuites:CSLength/binary,
-			   ChallengeData:CDLength/binary>>) ->
-    update_handshake_history(Handshake,
-			     <<?CLIENT_HELLO, ?BYTE(Major), ?BYTE(Minor),
-			       ?UINT16(CSLength), ?UINT16(0),
-			       ?UINT16(CDLength),
-			       CipherSuites:CSLength/binary,
-			       ChallengeData:CDLength/binary>>);
 update_handshake_history({Handshake0, _Prev}, Data) ->
     {[Data|Handshake0], Handshake0}.
 
-%% %%--------------------------------------------------------------------
-%% -spec decrypt_premaster_secret(binary(), #'RSAPrivateKey'{}) -> binary().
-
-%% %%
-%% %% Description: Public key decryption using the private key.
-%% %%--------------------------------------------------------------------
-%% decrypt_premaster_secret(Secret, RSAPrivateKey) ->
-%%     try public_key:decrypt_private(Secret, RSAPrivateKey,
-%% 				   [{rsa_pad, rsa_pkcs1_padding}])
-%%     catch
-%% 	_:_ ->
-%% 	    throw(?ALERT_REC(?FATAL, ?DECRYPT_ERROR))
-%%     end.
-
-premaster_secret(OtherPublicDhKey, MyPrivateKey, #'DHParameter'{} = Params) ->
-    try 
-	public_key:compute_key(OtherPublicDhKey, MyPrivateKey, Params)  
-    catch 
-	error:computation_failed -> 
-	    throw(?ALERT_REC(?FATAL, ?ILLEGAL_PARAMETER))
-    end;	   
-premaster_secret(PublicDhKey, PrivateDhKey, #server_dh_params{dh_p = Prime, dh_g = Base}) ->
-    try 
-	crypto:compute_key(dh, PublicDhKey, PrivateDhKey, [Prime, Base])
-    catch 
-	error:computation_failed -> 
-	    throw(?ALERT_REC(?FATAL, ?ILLEGAL_PARAMETER))
-    end;
-premaster_secret(#client_srp_public{srp_a = ClientPublicKey}, ServerKey, #srp_user{prime = Prime,
-										   verifier = Verifier}) ->
-    case crypto:compute_key(srp, ClientPublicKey, ServerKey, {host, [Verifier, Prime, '6a']}) of
-	error ->
-	    throw(?ALERT_REC(?FATAL, ?ILLEGAL_PARAMETER));
-	PremasterSecret ->
-	    PremasterSecret
-    end;
-premaster_secret(#server_srp_params{srp_n = Prime, srp_g = Generator, srp_s = Salt, srp_b = Public},
-		 ClientKeys, {Username, Password}) ->
-    case ssl_srp_primes:check_srp_params(Generator, Prime) of
-	ok ->
-	    DerivedKey = crypto:hash(sha, [Salt, crypto:hash(sha, [Username, <<$:>>, Password])]),
-	    case crypto:compute_key(srp, Public, ClientKeys, {user, [DerivedKey, Prime, Generator, '6a']}) of
-		error ->
-		    throw(?ALERT_REC(?FATAL, ?ILLEGAL_PARAMETER));
-		PremasterSecret ->
-		    PremasterSecret
-	    end;
-	_ ->
-	    throw(?ALERT_REC(?FATAL, ?ILLEGAL_PARAMETER))
-    end;
-premaster_secret(#client_rsa_psk_identity{
-		    identity = PSKIdentity,
-		    exchange_keys = #encrypted_premaster_secret{premaster_secret = EncPMS}
-		   }, #'RSAPrivateKey'{} = Key, PSKLookup) ->
-    PremasterSecret = premaster_secret(EncPMS, Key),
-    psk_secret(PSKIdentity, PSKLookup, PremasterSecret);
-premaster_secret(#server_dhe_psk_params{
-		    hint = IdentityHint,
-		    dh_params =  #server_dh_params{dh_y = PublicDhKey} = Params},
-		    PrivateDhKey,
-		    LookupFun) ->
-    PremasterSecret = premaster_secret(PublicDhKey, PrivateDhKey, Params),
-    psk_secret(IdentityHint, LookupFun, PremasterSecret);
-premaster_secret({rsa_psk, PSKIdentity}, PSKLookup, RSAPremasterSecret) ->
-    psk_secret(PSKIdentity, PSKLookup, RSAPremasterSecret).
-
-premaster_secret(#client_dhe_psk_identity{
-		    identity =  PSKIdentity,
-		    dh_public = PublicDhKey}, PrivateKey, #'DHParameter'{} = Params, PSKLookup) ->
-    PremasterSecret = premaster_secret(PublicDhKey, PrivateKey, Params),
-    psk_secret(PSKIdentity, PSKLookup, PremasterSecret).
-premaster_secret(#client_psk_identity{identity = PSKIdentity}, PSKLookup) ->
-    psk_secret(PSKIdentity, PSKLookup);
-premaster_secret({psk, PSKIdentity}, PSKLookup) ->
-    psk_secret(PSKIdentity, PSKLookup);
-premaster_secret(#'ECPoint'{} = ECPoint, #'ECPrivateKey'{} = ECDHKeys) ->
-    public_key:compute_key(ECPoint, ECDHKeys);
-premaster_secret(EncSecret, #'RSAPrivateKey'{} = RSAPrivateKey) ->
-    try public_key:decrypt_private(EncSecret, RSAPrivateKey,
-				   [{rsa_pad, rsa_pkcs1_padding}])
-    catch
-	_:_ ->
-	    throw(?ALERT_REC(?FATAL, ?DECRYPT_ERROR))
-    end.
-%%--------------------------------------------------------------------
--spec server_key_exchange_hash(md5sha | md5 | sha | sha224 |sha256 | sha384 | sha512, binary()) -> binary().
-%%
-%% Description: Calculate server key exchange hash
-%%--------------------------------------------------------------------
-server_key_exchange_hash(md5sha, Value) ->
-    MD5 = crypto:hash(md5, Value),
-    SHA = crypto:hash(sha, Value),
-    <<MD5/binary, SHA/binary>>;
-
-server_key_exchange_hash(Hash, Value) ->
-    crypto:hash(Hash, Value).
-%%--------------------------------------------------------------------
--spec prf(ssl_record:ssl_version(), binary(), binary(), [binary()], non_neg_integer()) ->
-		 {ok, binary()} | {error, undefined}.
-%%
-%% Description: use the TLS PRF to generate key material
-%%--------------------------------------------------------------------
-prf({3,0}, _, _, _, _) ->
-    {error, undefined};
-prf({3,1}, Secret, Label, Seed, WantedLength) ->
-    {ok, tls_v1:prf(?MD5SHA, Secret, Label, Seed, WantedLength)};
-prf({3,_N}, Secret, Label, Seed, WantedLength) ->
-    {ok, tls_v1:prf(?SHA256, Secret, Label, Seed, WantedLength)}.
-
-
-%%--------------------------------------------------------------------
--spec select_hashsign(#hash_sign_algos{}| undefined,  undefined | binary(), ssl_record:ssl_version()) ->
-			      {atom(), atom()} | undefined.
-
-%%
-%% Description:
-%%--------------------------------------------------------------------
-select_hashsign(_, undefined, _Version) ->
-    {null, anon};
-%% The signature_algorithms extension was introduced with TLS 1.2. Ignore it if we have
-%% negotiated a lower version.
-select_hashsign(#hash_sign_algos{hash_sign_algos = HashSigns}, Cert, {Major, Minor} = Version)
-  when Major >= 3 andalso Minor >= 3 ->
-    #'OTPCertificate'{tbsCertificate = TBSCert} =public_key:pkix_decode_cert(Cert, otp),
-    #'OTPSubjectPublicKeyInfo'{algorithm = {_,Algo, _}} = TBSCert#'OTPTBSCertificate'.subjectPublicKeyInfo,
-    DefaultHashSign = {_, Sign} = select_hashsign_algs(undefined, Algo, Version),
-    case lists:filter(fun({sha, dsa}) ->
-			      true;
-			 ({_, dsa}) ->
-			      false;
-			 ({Hash, S}) when  S == Sign ->
-			      ssl_cipher:is_acceptable_hash(Hash,
-							    proplists:get_value(hashs, crypto:supports()));
-			 (_)  ->
-			      false
-		      end, HashSigns) of
-	[] ->
-	    DefaultHashSign;
-	[HashSign| _] ->
-	    HashSign
-    end;
-select_hashsign(_, Cert, Version) ->
-    #'OTPCertificate'{tbsCertificate = TBSCert} = public_key:pkix_decode_cert(Cert, otp),
-    #'OTPSubjectPublicKeyInfo'{algorithm = {_,Algo, _}} = TBSCert#'OTPTBSCertificate'.subjectPublicKeyInfo,
-    select_hashsign_algs(undefined, Algo, Version).
-
-%%--------------------------------------------------------------------
--spec select_hashsign_algs(#hash_sign_algos{}| undefined, oid(), ssl_record:ssl_version()) ->
-				  {atom(), atom()}.
-
-%% Description: For TLS 1.2 hash function and signature algorithm pairs can be
-%% negotiated with the signature_algorithms extension,
-%% for previous versions always use appropriate defaults.
-%% RFC 5246, Sect. 7.4.1.4.1.  Signature Algorithms
-%% If the client does not send the signature_algorithms extension, the
-%% server MUST do the following: (e.i defaults for TLS 1.2)
-%%
-%% -  If the negotiated key exchange algorithm is one of (RSA, DHE_RSA,
-%%    DH_RSA, RSA_PSK, ECDH_RSA, ECDHE_RSA), behave as if client had
-%%    sent the value {sha1,rsa}.
-%%
-%% -  If the negotiated key exchange algorithm is one of (DHE_DSS,
-%%    DH_DSS), behave as if the client had sent the value {sha1,dsa}.
-%%
-%% -  If the negotiated key exchange algorithm is one of (ECDH_ECDSA,
-%%    ECDHE_ECDSA), behave as if the client had sent value {sha1,ecdsa}.
-
-%%--------------------------------------------------------------------
-select_hashsign_algs(HashSign, _, {Major, Minor}) when HashSign =/= undefined andalso
-						       Major >= 3 andalso Minor >= 3 ->
-    HashSign;
-select_hashsign_algs(undefined, ?rsaEncryption, {Major, Minor}) when Major >= 3 andalso Minor >= 3 ->
-    {sha, rsa};
-select_hashsign_algs(undefined,?'id-ecPublicKey', _) ->
-    {sha, ecdsa};
-select_hashsign_algs(undefined, ?rsaEncryption, _) -> 
-    {md5sha, rsa};
-select_hashsign_algs(undefined, ?'id-dsa', _) ->
-    {sha, dsa}.
-
--spec select_hashsign_algs(atom(),  ssl_record:ssl_version()) -> {atom(), atom()}.
-%% Wrap function to keep the knowledge of the default values in
-%% one place only 
-select_hashsign_algs(Alg, Version) when (Alg == rsa orelse
-				    Alg == dhe_rsa orelse
-				    Alg == dh_rsa orelse
-				    Alg == ecdhe_rsa orelse
-				    Alg == ecdh_rsa orelse
-				    Alg == srp_rsa) ->    
-    select_hashsign_algs(undefined, ?rsaEncryption, Version);
-select_hashsign_algs(Alg, Version) when (Alg == dhe_dss orelse
-				    Alg == dh_dss orelse
-				    Alg == srp_dss) ->
-    select_hashsign_algs(undefined, ?'id-dsa', Version);
-select_hashsign_algs(Alg, Version) when (Alg == ecdhe_ecdsa orelse
-					 Alg == ecdh_ecdsa) ->
-    select_hashsign_algs(undefined, ?'id-ecPublicKey', Version).
-
-%%--------------------------------------------------------------------
--spec master_secret(atom(), ssl_record:ssl_version(), #session{} | binary(), #connection_states{},
-		   client | server) -> {binary(), #connection_states{}} | #alert{}.
-%%
-%% Description: Sets or calculates the master secret and calculate keys,
-%% updating the pending connection states. The Mastersecret and the update
-%% connection states are returned or an alert if the calculation fails.
-%%-------------------------------------------------------------------
-master_secret(RecordCB, Version, #session{master_secret = Mastersecret},
-	      ConnectionStates, Role) ->
-    ConnectionState =
+verify_server_key(#server_key_params{params_bin = EncParams,
+				     signature = Signature},
+		  HashSign = {HashAlgo, _},
+		  ConnectionStates, Version, PubKeyInfo) ->
+    #{security_parameters := SecParams} =
 	ssl_record:pending_connection_state(ConnectionStates, read),
-    SecParams = ConnectionState#connection_state.security_parameters,
-    try master_secret(RecordCB, Version, Mastersecret, SecParams,
-		      ConnectionStates, Role)
-    catch
-	exit:Reason ->
-	    Report = io_lib:format("Key calculation failed due to ~p",
-				   [Reason]),
-	    error_logger:error_report(Report),
-	    ?ALERT_REC(?FATAL, ?HANDSHAKE_FAILURE)
-    end;
-
-master_secret(RecordCB, Version, PremasterSecret, ConnectionStates, Role) ->
-    ConnectionState =
-	ssl_record:pending_connection_state(ConnectionStates, read),
-    SecParams = ConnectionState#connection_state.security_parameters,
-    #security_parameters{prf_algorithm = PrfAlgo,
-			 client_random = ClientRandom,
+    #security_parameters{client_random = ClientRandom,
 			 server_random = ServerRandom} = SecParams,
-    try master_secret(RecordCB, Version,
-		      calc_master_secret(Version,PrfAlgo,PremasterSecret,
-					 ClientRandom, ServerRandom),
-		      SecParams, ConnectionStates, Role)
-    catch
-	exit:Reason ->
-	    Report = io_lib:format("Master secret calculation failed"
-				   " due to ~p", [Reason]),
-	    error_logger:error_report(Report),
-	    ?ALERT_REC(?FATAL, ?HANDSHAKE_FAILURE)
+    Hash = server_key_exchange_hash(HashAlgo,
+				    <<ClientRandom/binary,
+				      ServerRandom/binary,
+				      EncParams/binary>>),
+    verify_signature(Version, Hash, HashSign, Signature, PubKeyInfo).
+
+select_version(RecordCB, ClientVersion, Versions) ->
+    do_select_version(RecordCB, ClientVersion, Versions).
+
+
+%% Called by TLS 1.2/1.3 Server when "supported_versions" is present
+%% in ClientHello.
+%% Input lists are ordered (highest first)
+select_supported_version([], _ServerVersions) ->
+    undefined;
+select_supported_version([ClientVersion|T], ServerVersions) ->
+    case lists:member(ClientVersion, ServerVersions) of
+        true ->
+            ClientVersion;
+        false ->
+            select_supported_version(T, ServerVersions)
     end.
 
-%%-------------Encode/Decode --------------------------------
+
+%%====================================================================
+%% Encode handshake 
+%%====================================================================
+
 encode_handshake(#next_protocol{selected_protocol = SelectedProtocol}, _Version) ->
     PaddingLength = 32 - ((byte_size(SelectedProtocol) + 2) rem 32),
     {?NEXT_PROTOCOL, <<?BYTE((byte_size(SelectedProtocol))), SelectedProtocol/binary,
                          ?BYTE(PaddingLength), 0:(PaddingLength * 8)>>};
-
-encode_handshake(#server_hello{server_version = {Major, Minor},
+encode_handshake(#server_hello{server_version = {Major, Minor} = Version,
 			       random = Random,
 			       session_id = Session_ID,
 			       cipher_suite = CipherSuite,
 			       compression_method = Comp_method,
-			       extensions = #hello_extensions{} = Extensions}, _Version) ->
+			       extensions = Extensions}, _Version) ->
 			SID_length = byte_size(Session_ID),
-    ExtensionsBin = encode_hello_extensions(Extensions),
+    ExtensionsBin = encode_hello_extensions(Extensions, Version),
     {?SERVER_HELLO, <<?BYTE(Major), ?BYTE(Minor), Random:32/binary,
 		     ?BYTE(SID_length), Session_ID/binary,
                      CipherSuite/binary, ?BYTE(Comp_method), ExtensionsBin/binary>>};
@@ -763,135 +603,205 @@ encode_handshake(#certificate_verify{signature = BinSig, hashsign_algorithm = Ha
 encode_handshake(#finished{verify_data = VerifyData}, _Version) ->
     {?FINISHED, VerifyData}.
 
-encode_hello_extensions(#hello_extensions{} = Extensions) ->
-    encode_hello_extensions(hello_extensions_list(Extensions), <<>>).
-encode_hello_extensions([], <<>>) ->
+encode_hello_extensions(_, {3, 0}) ->
     <<>>;
-encode_hello_extensions([], Acc) ->
+encode_hello_extensions(Extensions, _) ->
+    encode_extensions(hello_extensions_list(Extensions), <<>>).
+
+encode_extensions(Exts) ->
+    encode_extensions(Exts, <<>>).
+    
+encode_extensions([], <<>>) ->
+    <<?UINT16(0)>>;
+encode_extensions([], Acc) ->
     Size = byte_size(Acc),
     <<?UINT16(Size), Acc/binary>>;
-
-encode_hello_extensions([#alpn{extension_data = ExtensionData} | Rest], Acc) ->
-	Len = byte_size(ExtensionData),
-    ExtLen = Len + 2,
-	encode_hello_extensions(Rest, <<?UINT16(?ALPN_EXT), ?UINT16(ExtLen), ?UINT16(Len),
-					ExtensionData/binary, Acc/binary>>);
-encode_hello_extensions([#next_protocol_negotiation{extension_data = ExtensionData} | Rest], Acc) ->
+encode_extensions([#alpn{extension_data = ExtensionData} | Rest], Acc) ->
     Len = byte_size(ExtensionData),
-    encode_hello_extensions(Rest, <<?UINT16(?NEXTPROTONEG_EXT), ?UINT16(Len),
+    ExtLen = Len + 2,
+    encode_extensions(Rest, <<?UINT16(?ALPN_EXT), ?UINT16(ExtLen), ?UINT16(Len),
+                              ExtensionData/binary, Acc/binary>>);
+encode_extensions([#next_protocol_negotiation{extension_data = ExtensionData} | Rest], Acc) ->
+    Len = byte_size(ExtensionData),
+    encode_extensions(Rest, <<?UINT16(?NEXTPROTONEG_EXT), ?UINT16(Len),
 				    ExtensionData/binary, Acc/binary>>);
-encode_hello_extensions([#renegotiation_info{renegotiated_connection = undefined} | Rest], Acc) ->
-    encode_hello_extensions(Rest, Acc);
-encode_hello_extensions([#renegotiation_info{renegotiated_connection = ?byte(0) = Info} | Rest], Acc) ->
+encode_extensions([#renegotiation_info{renegotiated_connection = undefined} | Rest], Acc) ->
+    encode_extensions(Rest, Acc);
+encode_extensions([#renegotiation_info{renegotiated_connection = ?byte(0) = Info} | Rest], Acc) ->
     Len = byte_size(Info),
-    encode_hello_extensions(Rest, <<?UINT16(?RENEGOTIATION_EXT), ?UINT16(Len), Info/binary, Acc/binary>>);
+    encode_extensions(Rest, <<?UINT16(?RENEGOTIATION_EXT), ?UINT16(Len), Info/binary, Acc/binary>>);
 
-encode_hello_extensions([#renegotiation_info{renegotiated_connection = Info} | Rest], Acc) ->
+encode_extensions([#renegotiation_info{renegotiated_connection = Info} | Rest], Acc) ->
     InfoLen = byte_size(Info),
     Len = InfoLen +1,
-    encode_hello_extensions(Rest, <<?UINT16(?RENEGOTIATION_EXT), ?UINT16(Len), ?BYTE(InfoLen),
+    encode_extensions(Rest, <<?UINT16(?RENEGOTIATION_EXT), ?UINT16(Len), ?BYTE(InfoLen),
 				    Info/binary, Acc/binary>>);
-encode_hello_extensions([#elliptic_curves{elliptic_curve_list = EllipticCurves} | Rest], Acc) ->
+encode_extensions([#elliptic_curves{elliptic_curve_list = EllipticCurves} | Rest], Acc) ->
 
     EllipticCurveList = << <<(tls_v1:oid_to_enum(X)):16>> || X <- EllipticCurves>>,
     ListLen = byte_size(EllipticCurveList),
     Len = ListLen + 2,
-    encode_hello_extensions(Rest, <<?UINT16(?ELLIPTIC_CURVES_EXT),
+    encode_extensions(Rest, <<?UINT16(?ELLIPTIC_CURVES_EXT),
 				 ?UINT16(Len), ?UINT16(ListLen), EllipticCurveList/binary, Acc/binary>>);
-encode_hello_extensions([#ec_point_formats{ec_point_format_list = ECPointFormats} | Rest], Acc) ->
+encode_extensions([#supported_groups{supported_groups = SupportedGroups} | Rest], Acc) ->
+
+    SupportedGroupList = << <<(tls_v1:group_to_enum(X)):16>> || X <- SupportedGroups>>,
+    ListLen = byte_size(SupportedGroupList),
+    Len = ListLen + 2,
+    encode_extensions(Rest, <<?UINT16(?ELLIPTIC_CURVES_EXT),
+                              ?UINT16(Len), ?UINT16(ListLen), 
+                              SupportedGroupList/binary, Acc/binary>>);
+encode_extensions([#ec_point_formats{ec_point_format_list = ECPointFormats} | Rest], Acc) ->
     ECPointFormatList = list_to_binary(ECPointFormats),
     ListLen = byte_size(ECPointFormatList),
     Len = ListLen + 1,
-    encode_hello_extensions(Rest, <<?UINT16(?EC_POINT_FORMATS_EXT),
+    encode_extensions(Rest, <<?UINT16(?EC_POINT_FORMATS_EXT),
 				 ?UINT16(Len), ?BYTE(ListLen), ECPointFormatList/binary, Acc/binary>>);
-encode_hello_extensions([#srp{username = UserName} | Rest], Acc) ->
+encode_extensions([#srp{username = UserName} | Rest], Acc) ->
     SRPLen = byte_size(UserName),
-    Len = SRPLen + 2,
-    encode_hello_extensions(Rest, <<?UINT16(?SRP_EXT), ?UINT16(Len), ?BYTE(SRPLen),
+    Len = SRPLen + 1,
+    encode_extensions(Rest, <<?UINT16(?SRP_EXT), ?UINT16(Len), ?BYTE(SRPLen),
 				    UserName/binary, Acc/binary>>);
-encode_hello_extensions([#hash_sign_algos{hash_sign_algos = HashSignAlgos} | Rest], Acc) ->
+encode_extensions([#hash_sign_algos{hash_sign_algos = HashSignAlgos} | Rest], Acc) ->
     SignAlgoList = << <<(ssl_cipher:hash_algorithm(Hash)):8, (ssl_cipher:sign_algorithm(Sign)):8>> ||
 		       {Hash, Sign} <- HashSignAlgos >>,
     ListLen = byte_size(SignAlgoList),
     Len = ListLen + 2,
-    encode_hello_extensions(Rest, <<?UINT16(?SIGNATURE_ALGORITHMS_EXT),
+    encode_extensions(Rest, <<?UINT16(?SIGNATURE_ALGORITHMS_EXT),
 				 ?UINT16(Len), ?UINT16(ListLen), SignAlgoList/binary, Acc/binary>>);
-encode_hello_extensions([#sni{hostname = Hostname} | Rest], Acc) ->
+encode_extensions([#signature_algorithms{
+                            signature_scheme_list = SignatureSchemes} | Rest], Acc) ->
+    SignSchemeList = << <<(ssl_cipher:signature_scheme(SignatureScheme)):16 >> ||
+		       SignatureScheme <- SignatureSchemes >>,
+    ListLen = byte_size(SignSchemeList),
+    Len = ListLen + 2,
+    encode_extensions(Rest, <<?UINT16(?SIGNATURE_ALGORITHMS_EXT),
+				 ?UINT16(Len), ?UINT16(ListLen), SignSchemeList/binary, Acc/binary>>);
+encode_extensions([#signature_algorithms_cert{
+                            signature_scheme_list = SignatureSchemes} | Rest], Acc) ->
+    SignSchemeList = << <<(ssl_cipher:signature_scheme(SignatureScheme)):16 >> ||
+		       SignatureScheme <- SignatureSchemes >>,
+    ListLen = byte_size(SignSchemeList),
+    Len = ListLen + 2,
+    encode_extensions(Rest, <<?UINT16(?SIGNATURE_ALGORITHMS_CERT_EXT),
+				 ?UINT16(Len), ?UINT16(ListLen), SignSchemeList/binary, Acc/binary>>);
+encode_extensions([#sni{hostname = ""} | Rest], Acc) ->
+    HostnameBin = <<>>,
+    encode_extensions(Rest, <<?UINT16(?SNI_EXT), ?UINT16(0),
+                              HostnameBin/binary,
+                              Acc/binary>>);
+encode_extensions([#sni{hostname = Hostname} | Rest], Acc) ->
     HostLen = length(Hostname),
     HostnameBin = list_to_binary(Hostname),
     % Hostname type (1 byte) + Hostname length (2 bytes) + Hostname (HostLen bytes)
     ServerNameLength = 1 + 2 + HostLen,
     % ServerNameListSize (2 bytes) + ServerNameLength
     ExtLength = 2 + ServerNameLength,
-    encode_hello_extensions(Rest, <<?UINT16(?SNI_EXT), ?UINT16(ExtLength),
-				    ?UINT16(ServerNameLength),
-				    ?BYTE(?SNI_NAMETYPE_HOST_NAME),
-				    ?UINT16(HostLen), HostnameBin/binary,
-				    Acc/binary>>).
+    encode_extensions(Rest, <<?UINT16(?SNI_EXT), ?UINT16(ExtLength),
+                              ?UINT16(ServerNameLength),
+                              ?BYTE(?SNI_NAMETYPE_HOST_NAME),
+                              ?UINT16(HostLen), HostnameBin/binary,
+                              Acc/binary>>);
+encode_extensions([#max_frag_enum{enum = MaxFragEnum} | Rest], Acc) ->
+    ExtLength = 1,
+    encode_extensions(Rest, <<?UINT16(?MAX_FRAGMENT_LENGTH_EXT), ?UINT16(ExtLength), ?BYTE(MaxFragEnum),
+                              Acc/binary>>);
+encode_extensions([#client_hello_versions{versions = Versions0} | Rest], Acc) ->
+    Versions = encode_versions(Versions0),
+    VerLen = byte_size(Versions),
+    Len = VerLen + 1,
+    encode_extensions(Rest, <<?UINT16(?SUPPORTED_VERSIONS_EXT),
+                              ?UINT16(Len), ?BYTE(VerLen), Versions/binary, Acc/binary>>);
+encode_extensions([#server_hello_selected_version{selected_version = Version0} | Rest], Acc) ->
+    Version = encode_versions([Version0]),
+    Len = byte_size(Version), %% 2
+    encode_extensions(Rest, <<?UINT16(?SUPPORTED_VERSIONS_EXT),
+                              ?UINT16(Len), Version/binary, Acc/binary>>);
+encode_extensions([#key_share_client_hello{client_shares = ClientShares0} | Rest], Acc) ->
+    ClientShares = encode_client_shares(ClientShares0),
+    ClientSharesLen = byte_size(ClientShares),
+    Len = ClientSharesLen + 2,
+    encode_extensions(Rest, <<?UINT16(?KEY_SHARE_EXT),
+                              ?UINT16(Len), ?UINT16(ClientSharesLen),
+                              ClientShares/binary, Acc/binary>>);
+encode_extensions([#key_share_server_hello{server_share = ServerShare0} | Rest], Acc) ->
+    ServerShare = encode_key_share_entry(ServerShare0),
+    Len = byte_size(ServerShare),
+    encode_extensions(Rest, <<?UINT16(?KEY_SHARE_EXT),
+                              ?UINT16(Len), ServerShare/binary, Acc/binary>>);
+encode_extensions([#key_share_hello_retry_request{selected_group = Group0} | Rest], Acc) ->
+    Group = tls_v1:group_to_enum(Group0),
+    encode_extensions(Rest, <<?UINT16(?KEY_SHARE_EXT),
+                              ?UINT16(2), ?UINT16(Group), Acc/binary>>);
+encode_extensions([#psk_key_exchange_modes{ke_modes = KEModes0} | Rest], Acc) ->
+    KEModes = encode_psk_key_exchange_modes(KEModes0),
+    KEModesLen = byte_size(KEModes),
+    ExtLen = KEModesLen + 1,
+    encode_extensions(Rest, <<?UINT16(?PSK_KEY_EXCHANGE_MODES_EXT),
+                              ?UINT16(ExtLen), ?BYTE(KEModesLen), KEModes/binary, Acc/binary>>);
+encode_extensions([
+    #certificate_status_request{
+        status_type = StatusRequest,
+        request = Request} | Rest], Acc) ->
+    CertStatusReq = encode_cert_status_req(StatusRequest, Request),
+    Len = byte_size(CertStatusReq),
+    encode_extensions(
+        Rest, <<?UINT16(?STATUS_REQUEST), ?UINT16(Len),
+        CertStatusReq/binary, Acc/binary>>);
+encode_extensions([#pre_shared_key_client_hello{
+                      offered_psks = #offered_psks{
+                                        identities = Identities0,
+                                        binders = Binders0}} | Rest], Acc) ->
+    Identities = encode_psk_identities(Identities0),
+    Binders = encode_psk_binders(Binders0),
+    Len = byte_size(Identities) + byte_size(Binders),
+    %% The "pre_shared_key" extension MUST be the last extension in the
+    %% ClientHello (this facilitates implementation as described below).
+    %% Servers MUST check that it is the last extension and otherwise fail
+    %% the handshake with an "illegal_parameter" alert.
+    encode_extensions(Rest, <<Acc/binary,?UINT16(?PRE_SHARED_KEY_EXT),
+                              ?UINT16(Len), Identities/binary, Binders/binary>>);
+encode_extensions([#pre_shared_key_server_hello{selected_identity = Identity} | Rest], Acc) ->
+    encode_extensions(Rest, <<?UINT16(?PRE_SHARED_KEY_EXT),
+                              ?UINT16(2), ?UINT16(Identity), Acc/binary>>);
+encode_extensions([#cookie{cookie = Cookie} | Rest], Acc) ->
+    CookieLen = byte_size(Cookie),
+    Len = CookieLen + 2,
+    encode_extensions(Rest, <<?UINT16(?COOKIE_EXT), ?UINT16(Len), ?UINT16(CookieLen),
+				    Cookie/binary, Acc/binary>>).
 
-enc_server_key_exchange(Version, Params, {HashAlgo, SignAlgo},
-			ClientRandom, ServerRandom, PrivateKey) ->
-    EncParams = encode_server_key(Params),
-    case HashAlgo of
-	null ->
-	    #server_key_params{params = Params,
-			       params_bin = EncParams,
-			       hashsign = {null, anon},
-			       signature = <<>>};
-	_ ->
-	    Hash =
-		server_key_exchange_hash(HashAlgo, <<ClientRandom/binary,
-						     ServerRandom/binary,
-						     EncParams/binary>>),
-	    Signature = digitally_signed(Version, Hash, HashAlgo, PrivateKey),
-	    #server_key_params{params = Params,
-			       params_bin = EncParams,
-			       hashsign = {HashAlgo, SignAlgo},
-			       signature = Signature}
-    end.
+encode_cert_status_req(
+    StatusType,
+    #ocsp_status_request{
+        responder_id_list = ResponderIDList,
+        request_extensions = ReqExtns}) ->
+    ResponderIDListBin = encode_responderID_list(ResponderIDList),
+    ReqExtnsBin = encode_request_extensions(ReqExtns),
+    <<?BYTE(StatusType), ResponderIDListBin/binary, ReqExtnsBin/binary>>.
 
-%%--------------------------------------------------------------------
--spec decode_client_key(binary(), ssl_cipher:key_algo(), ssl_record:ssl_version()) ->
-			    #encrypted_premaster_secret{}
-			    | #client_diffie_hellman_public{}
-			    | #client_ec_diffie_hellman_public{}
-			    | #client_psk_identity{}
-			    | #client_dhe_psk_identity{}
-			    | #client_rsa_psk_identity{}
-			    | #client_srp_public{}.
-%%
-%% Description: Decode client_key data and return appropriate type
-%%--------------------------------------------------------------------
-decode_client_key(ClientKey, Type, Version) ->
-    dec_client_key(ClientKey, key_exchange_alg(Type), Version).
+encode_responderID_list([]) ->
+    <<?UINT16(0)>>;
+encode_responderID_list(List) ->
+    do_encode_responderID_list(List, <<>>).
 
-%%--------------------------------------------------------------------
--spec decode_server_key(binary(), ssl_cipher:key_algo(), ssl_record:ssl_version()) ->
-			       #server_key_params{}.
-%%
-%% Description: Decode server_key data and return appropriate type
-%%--------------------------------------------------------------------
-decode_server_key(ServerKey, Type, Version) ->
-    dec_server_key(ServerKey, key_exchange_alg(Type), Version).
+%% ResponderID is DER-encoded ASN.1 type defined in RFC6960.
+do_encode_responderID_list([], Acc) ->
+    Len = byte_size(Acc),
+    <<?UINT16(Len), Acc/binary>>;
+do_encode_responderID_list([Responder | Rest], Acc)
+  when is_binary(Responder) ->
+    Len = byte_size(Responder),
+    do_encode_responderID_list(
+        Rest, <<Acc/binary, ?UINT16(Len), Responder/binary>>).
 
-%%
-%% Description: Encode and decode functions for ALPN extension data.
-%%--------------------------------------------------------------------
-
-%% While the RFC opens the door to allow ALPN during renegotiation, in practice
-%% this does not work and it is recommended to ignore any ALPN extension during
-%% renegotiation, as done here.
-encode_alpn(_, true) ->
-    undefined;
-encode_alpn(undefined, _) ->
-    undefined;
-encode_alpn(Protocols, _) ->
-    #alpn{extension_data = lists:foldl(fun encode_protocol/2, <<>>, Protocols)}.
-
-decode_alpn(undefined) ->
-    undefined;
-decode_alpn(#alpn{extension_data=Data}) ->
-    decode_protocols(Data, []).
+%% Extensions are DER-encoded ASN.1 type defined in RFC6960 following
+%% extension model employed in X.509 version 3 certificates(RFC5280).
+encode_request_extensions([]) ->
+    <<?UINT16(0)>>;
+encode_request_extensions(Extns) when is_list(Extns) ->
+    ExtnBin = public_key:der_encode('Extensions', Extns),
+    Len = byte_size(ExtnBin),
+    <<?UINT16(Len), ExtnBin/binary>>.
 
 encode_client_protocol_negotiation(undefined, _) ->
     undefined;
@@ -904,7 +814,12 @@ encode_protocols_advertised_on_server(undefined) ->
 	undefined;
 
 encode_protocols_advertised_on_server(Protocols) ->
-	#next_protocol_negotiation{extension_data = lists:foldl(fun encode_protocol/2, <<>>, Protocols)}.
+	#next_protocol_negotiation{
+        extension_data = lists:foldl(fun encode_protocol/2, <<>>, Protocols)}.
+
+%%====================================================================
+%% Decode handshake 
+%%====================================================================
 
 decode_handshake(_, ?HELLO_REQUEST, <<>>) ->
     #hello_request{};
@@ -913,7 +828,7 @@ decode_handshake(_, ?NEXT_PROTOCOL, <<?BYTE(SelectedProtocolLength),
 				      ?BYTE(PaddingLength), _Padding:PaddingLength/binary>>) ->
     #next_protocol{selected_protocol = SelectedProtocol};
 
-decode_handshake(_Version, ?SERVER_HELLO, <<?BYTE(Major), ?BYTE(Minor), Random:32/binary,
+decode_handshake(Version, ?SERVER_HELLO, <<?BYTE(Major), ?BYTE(Minor), Random:32/binary,
 					    ?BYTE(SID_length), Session_ID:SID_length/binary,
 					    Cipher_suite:2/binary, ?BYTE(Comp_method)>>) ->
     #server_hello{
@@ -922,14 +837,13 @@ decode_handshake(_Version, ?SERVER_HELLO, <<?BYTE(Major), ?BYTE(Minor), Random:3
        session_id = Session_ID,
        cipher_suite = Cipher_suite,
        compression_method = Comp_method,
-       extensions = #hello_extensions{}};
+       extensions = empty_extensions(Version, server_hello)};
 
-decode_handshake(_Version, ?SERVER_HELLO, <<?BYTE(Major), ?BYTE(Minor), Random:32/binary,
+decode_handshake(Version, ?SERVER_HELLO, <<?BYTE(Major), ?BYTE(Minor), Random:32/binary,
 		       ?BYTE(SID_length), Session_ID:SID_length/binary,
 		       Cipher_suite:2/binary, ?BYTE(Comp_method),
 		       ?UINT16(ExtLen), Extensions:ExtLen/binary>>) ->
-
-    HelloExtensions = decode_hello_extensions(Extensions),
+    HelloExtensions = decode_hello_extensions(Extensions, Version, {Major, Minor}, server_hello),
 
     #server_hello{
        server_version = {Major,Minor},
@@ -938,9 +852,16 @@ decode_handshake(_Version, ?SERVER_HELLO, <<?BYTE(Major), ?BYTE(Minor), Random:3
        cipher_suite = Cipher_suite,
        compression_method = Comp_method,
        extensions = HelloExtensions};
-
 decode_handshake(_Version, ?CERTIFICATE, <<?UINT24(ACLen), ASN1Certs:ACLen/binary>>) ->
     #certificate{asn1_certificates = certs_to_list(ASN1Certs)};
+%% RFC 6066, servers return a certificate response along with their certificate
+%% by sending a "CertificateStatus" message immediately after the "Certificate"
+%% message and before any "ServerKeyExchange" or "CertificateRequest" messages.
+decode_handshake(_Version, ?CERTIFICATE_STATUS, <<?BYTE(?CERTIFICATE_STATUS_TYPE_OCSP),
+                 ?UINT24(Len), ASN1OcspResponse:Len/binary>>) ->
+    #certificate_status{
+        status_type = ?CERTIFICATE_STATUS_TYPE_OCSP,
+        response = ASN1OcspResponse};
 decode_handshake(_Version, ?SERVER_KEY_EXCHANGE, Keys) ->
     #server_key_exchange{exchange_keys = Keys};
 decode_handshake({Major, Minor}, ?CERTIFICATE_REQUEST,
@@ -970,21 +891,1510 @@ decode_handshake(_Version, ?CLIENT_KEY_EXCHANGE, PKEPMS) ->
     #client_key_exchange{exchange_keys = PKEPMS};
 decode_handshake(_Version, ?FINISHED, VerifyData) ->
     #finished{verify_data = VerifyData};
-decode_handshake(_, _, _) ->
-    throw(?ALERT_REC(?FATAL, ?HANDSHAKE_FAILURE)).
+decode_handshake(_, Message, _) ->
+    throw(?ALERT_REC(?FATAL, ?HANDSHAKE_FAILURE, {unknown_or_malformed_handshake, Message})).
+
 
 %%--------------------------------------------------------------------
--spec decode_hello_extensions({client, binary()} | binary()) -> #hello_extensions{}.
+-spec decode_vector(binary()) -> binary().
+%%
+%% Description: Remove length tag from TLS Vector type. Needed
+%% for client hello when extensions in older versions may be empty.
+%% 
+%%--------------------------------------------------------------------
+decode_vector(<<>>) ->
+    <<>>;
+decode_vector(<<?UINT16(Len), Vector:Len/binary>>) ->
+    Vector.
+
+%%--------------------------------------------------------------------
+-spec decode_hello_extensions(binary(), ssl_record:ssl_version(),
+                              ssl_record:ssl_version(), atom()) -> map().
 %%
 %% Description: Decodes TLS hello extensions
 %%--------------------------------------------------------------------
-decode_hello_extensions({client, <<>>}) ->
-    #hello_extensions{};
-decode_hello_extensions({client, <<?UINT16(ExtLen), Extensions:ExtLen/binary>>}) ->
-    decode_hello_extensions(Extensions);
-decode_hello_extensions(Extensions) ->
-    dec_hello_extensions(Extensions, #hello_extensions{}).
+decode_hello_extensions(Extensions, LocalVersion, LegacyVersion, MessageType0) ->
+    %% Convert legacy atoms
+    MessageType =
+        case MessageType0 of
+            client -> client_hello;
+            server -> server_hello;
+            T -> T
+        end,
+    %% RFC 8446 - 4.2.1
+    %% Servers MUST be prepared to receive ClientHellos that include this extension but
+    %% do not include 0x0304 in the list of versions.
+    %% Clients MUST check for this extension prior to processing the rest of the
+    %% ServerHello (although they will have to parse the ServerHello in order to read
+    %% the extension).
+    Version = process_supported_versions_extension(Extensions, LocalVersion, LegacyVersion),
+    decode_extensions(Extensions, Version, MessageType, empty_extensions(Version, MessageType)).
 
+%%--------------------------------------------------------------------
+-spec decode_extensions(binary(),tuple(), atom()) -> map().
+%%
+%% Description: Decodes TLS hello extensions
+%%--------------------------------------------------------------------
+decode_extensions(Extensions, Version, MessageType) ->
+    decode_extensions(Extensions, Version, MessageType, empty_extensions()).
+
+%%--------------------------------------------------------------------
+-spec decode_server_key(binary(), ssl:kex_algo(), ssl_record:ssl_version()) ->
+			       #server_key_params{}.
+%%
+%% Description: Decode server_key data and return appropriate type
+%%--------------------------------------------------------------------
+decode_server_key(ServerKey, Type, Version) ->
+    dec_server_key(ServerKey, key_exchange_alg(Type), Version).
+
+%%--------------------------------------------------------------------
+-spec decode_client_key(binary(), ssl:kex_algo(), ssl_record:ssl_version()) ->
+			    #encrypted_premaster_secret{}
+			    | #client_diffie_hellman_public{}
+			    | #client_ec_diffie_hellman_public{}
+			    | #client_psk_identity{}
+			    | #client_dhe_psk_identity{}
+			    | #client_ecdhe_psk_identity{}
+			    | #client_rsa_psk_identity{}
+			    | #client_srp_public{}.
+%%
+%% Description: Decode client_key data and return appropriate type
+%%--------------------------------------------------------------------
+decode_client_key(ClientKey, Type, Version) ->
+    dec_client_key(ClientKey, key_exchange_alg(Type), Version).
+
+%%--------------------------------------------------------------------
+-spec decode_suites('2_bytes'|'3_bytes', binary()) -> list().
+%%
+%% Description:
+%%--------------------------------------------------------------------
+decode_suites('2_bytes', Dec) ->
+    from_2bytes(Dec);
+decode_suites('3_bytes', Dec) ->
+    from_3bytes(Dec).
+
+%%====================================================================
+%% Cipher suite handling
+%%====================================================================
+
+available_suites(UserSuites, Version) ->
+    VersionSuites = ssl_cipher:all_suites(Version) ++ ssl_cipher:anonymous_suites(Version),
+    lists:filtermap(fun(Suite) -> lists:member(Suite, VersionSuites) end, UserSuites).
+
+available_suites(ServerCert, UserSuites, Version, undefined, Curve) ->
+    Suites = ssl_cipher:filter(ServerCert, available_suites(UserSuites, Version), Version),
+    filter_unavailable_ecc_suites(Curve, Suites);
+available_suites(ServerCert, UserSuites, Version, HashSigns, Curve) ->
+    Suites = available_suites(ServerCert, UserSuites, Version, undefined, Curve),
+    filter_hashsigns(Suites, [ssl_cipher_format:suite_bin_to_map(Suite) || Suite <- Suites], HashSigns, 
+                     Version, []).
+
+available_signature_algs(undefined, _)  ->
+    undefined;
+available_signature_algs(SupportedHashSigns, Version) when Version >= {3, 3} ->
+    #hash_sign_algos{hash_sign_algos = SupportedHashSigns};
+available_signature_algs(_, _) ->
+    undefined.
+available_signature_algs(undefined, SupportedHashSigns, _, Version) when 
+      Version >= {3,3} ->
+    SupportedHashSigns;
+available_signature_algs(#hash_sign_algos{hash_sign_algos = ClientHashSigns}, SupportedHashSigns, 
+                         _, Version) when Version >= {3,3} ->
+    sets:to_list(sets:intersection(sets:from_list(ClientHashSigns), 
+				   sets:from_list(SupportedHashSigns)));
+available_signature_algs(_, _, _, _) -> 
+    undefined.
+
+cipher_suites(Suites, Renegotiation, true) ->
+    %% TLS_FALLBACK_SCSV should be placed last -RFC7507
+    cipher_suites(Suites, Renegotiation) ++ [?TLS_FALLBACK_SCSV];
+cipher_suites(Suites, Renegotiation, false) ->
+    cipher_suites(Suites, Renegotiation).
+cipher_suites(Suites, false) ->
+    [?TLS_EMPTY_RENEGOTIATION_INFO_SCSV | Suites];
+cipher_suites(Suites, true) ->
+    Suites.
+%%--------------------------------------------------------------------
+-spec prf(ssl_record:ssl_version(), non_neg_integer(), binary(), binary(), [binary()], non_neg_integer()) ->
+		 {ok, binary()} | {error, undefined}.
+%%
+%% Description: use the TLS PRF to generate key material
+%%--------------------------------------------------------------------
+prf({3,_N}, PRFAlgo, Secret, Label, Seed, WantedLength) ->
+    {ok, tls_v1:prf(PRFAlgo, Secret, Label, Seed, WantedLength)}.
+
+select_session(SuggestedSessionId, CipherSuites, HashSigns, Compressions, SessIdTracker, #session{ecc = ECCCurve0} =
+		   Session, Version,
+	       #{ciphers := UserSuites, honor_cipher_order := HonorCipherOrder} = SslOpts,Cert) ->
+    {SessionId, Resumed} = ssl_session:server_select_session(Version, SessIdTracker, SuggestedSessionId,
+                                                             SslOpts, Cert),
+    case Resumed of
+        undefined ->
+	    Suites = available_suites(Cert, UserSuites, Version, HashSigns, ECCCurve0),
+	    CipherSuite0 = select_cipher_suite(CipherSuites, Suites, HonorCipherOrder),
+            {ECCCurve, CipherSuite} = cert_curve(Cert, ECCCurve0, CipherSuite0),
+	    Compression = select_compression(Compressions),
+	    {new, Session#session{session_id = SessionId,
+                                  ecc = ECCCurve,
+				  cipher_suite = CipherSuite,
+				  compression_method = Compression}};
+	_ ->
+	    {resumed, Resumed}
+    end.
+
+supported_ecc({Major, Minor}) when ((Major == 3) and (Minor >= 1)) orelse (Major > 3) ->
+    Curves = tls_v1:ecc_curves(Minor),
+    #elliptic_curves{elliptic_curve_list = Curves};
+supported_ecc(_) ->
+    #elliptic_curves{elliptic_curve_list = []}.
+
+premaster_secret(OtherPublicDhKey, MyPrivateKey, #'DHParameter'{} = Params) ->
+    try 
+	public_key:compute_key(OtherPublicDhKey, MyPrivateKey, Params)  
+    catch 
+	error:computation_failed -> 
+	    throw(?ALERT_REC(?FATAL, ?ILLEGAL_PARAMETER))
+    end;	   
+premaster_secret(PublicDhKey, PrivateDhKey, #server_dh_params{dh_p = Prime, dh_g = Base}) ->
+    try 
+	crypto:compute_key(dh, PublicDhKey, PrivateDhKey, [Prime, Base])
+    catch 
+	error:computation_failed -> 
+	    throw(?ALERT_REC(?FATAL, ?ILLEGAL_PARAMETER))
+    end;
+premaster_secret(#client_srp_public{srp_a = ClientPublicKey}, ServerKey, #srp_user{prime = Prime,
+										   verifier = Verifier}) ->
+    try crypto:compute_key(srp, ClientPublicKey, ServerKey, {host, [Verifier, Prime, '6a']}) of
+	PremasterSecret ->
+	    PremasterSecret
+    catch
+	error:_ ->
+	    throw(?ALERT_REC(?FATAL, ?ILLEGAL_PARAMETER))
+    end;
+premaster_secret(#server_srp_params{srp_n = Prime, srp_g = Generator, srp_s = Salt, srp_b = Public},
+		 ClientKeys, {Username, Password}) ->
+    case ssl_srp_primes:check_srp_params(Generator, Prime) of
+	ok ->
+	    DerivedKey = crypto:hash(sha, [Salt, crypto:hash(sha, [Username, <<$:>>, Password])]),
+	    try crypto:compute_key(srp, Public, ClientKeys, {user, [DerivedKey, Prime, Generator, '6a']}) of
+		PremasterSecret ->
+		    PremasterSecret
+            catch
+		error ->
+		    throw(?ALERT_REC(?FATAL, ?ILLEGAL_PARAMETER))
+	    end;
+	_ ->
+	    throw(?ALERT_REC(?FATAL, ?ILLEGAL_PARAMETER))
+    end;
+premaster_secret(#client_rsa_psk_identity{
+		    identity = PSKIdentity,
+		    exchange_keys = #encrypted_premaster_secret{premaster_secret = EncPMS}
+		   }, #'RSAPrivateKey'{} = Key, PSKLookup) ->
+    PremasterSecret = premaster_secret(EncPMS, Key),
+    psk_secret(PSKIdentity, PSKLookup, PremasterSecret);
+premaster_secret(#server_dhe_psk_params{
+		    hint = IdentityHint,
+		    dh_params =  #server_dh_params{dh_y = PublicDhKey} = Params},
+		    PrivateDhKey,
+		    LookupFun) ->
+    PremasterSecret = premaster_secret(PublicDhKey, PrivateDhKey, Params),
+    psk_secret(IdentityHint, LookupFun, PremasterSecret);
+premaster_secret(#server_ecdhe_psk_params{
+		    hint = IdentityHint,
+                    dh_params = #server_ecdh_params{
+                                   public = ECServerPubKey}},
+		    PrivateEcDhKey,
+		    LookupFun) ->
+    PremasterSecret = premaster_secret(#'ECPoint'{point = ECServerPubKey}, PrivateEcDhKey),
+    psk_secret(IdentityHint, LookupFun, PremasterSecret);
+premaster_secret({rsa_psk, PSKIdentity}, PSKLookup, RSAPremasterSecret) ->
+    psk_secret(PSKIdentity, PSKLookup, RSAPremasterSecret);
+premaster_secret(#client_ecdhe_psk_identity{
+		    identity =  PSKIdentity,
+		    dh_public = PublicEcDhPoint}, PrivateEcDhKey, PSKLookup) ->
+    PremasterSecret = premaster_secret(#'ECPoint'{point = PublicEcDhPoint}, PrivateEcDhKey),
+    psk_secret(PSKIdentity, PSKLookup, PremasterSecret).
+premaster_secret(#client_dhe_psk_identity{
+		    identity =  PSKIdentity,
+		    dh_public = PublicDhKey}, PrivateKey, #'DHParameter'{} = Params, PSKLookup) ->
+    PremasterSecret = premaster_secret(PublicDhKey, PrivateKey, Params),
+    psk_secret(PSKIdentity, PSKLookup, PremasterSecret).
+premaster_secret(#client_psk_identity{identity = PSKIdentity}, PSKLookup) ->
+    psk_secret(PSKIdentity, PSKLookup);
+premaster_secret({psk, PSKIdentity}, PSKLookup) ->
+    psk_secret(PSKIdentity, PSKLookup);
+premaster_secret(#'ECPoint'{} = ECPoint, #'ECPrivateKey'{} = ECDHKeys) ->
+    public_key:compute_key(ECPoint, ECDHKeys);
+premaster_secret(EncSecret, #'RSAPrivateKey'{} = RSAPrivateKey) ->
+    try public_key:decrypt_private(EncSecret, RSAPrivateKey,
+				   [{rsa_pad, rsa_pkcs1_padding}])
+    catch
+	_:_ ->
+	    throw(?ALERT_REC(?FATAL, ?DECRYPT_ERROR))
+    end;
+premaster_secret(EncSecret, #{algorithm := rsa} = Engine) ->
+    try crypto:private_decrypt(rsa, EncSecret, maps:remove(algorithm, Engine),
+				   [{rsa_pad, rsa_pkcs1_padding}])
+    catch
+	_:_ ->
+	    throw(?ALERT_REC(?FATAL, ?DECRYPT_ERROR))
+    end.
+%%====================================================================
+%% Extensions handling
+%%====================================================================
+client_hello_extensions(Version, CipherSuites, SslOpts, ConnectionStates, Renegotiation, KeyShare,
+                        TicketData, OcspNonce) ->
+    HelloExtensions0 = add_tls12_extensions(Version, SslOpts, ConnectionStates, Renegotiation),
+    HelloExtensions1 = add_common_extensions(Version, HelloExtensions0, CipherSuites, SslOpts),
+    HelloExtensions2 = maybe_add_certificate_status_request(Version, SslOpts, OcspNonce, HelloExtensions1),
+    maybe_add_tls13_extensions(Version, HelloExtensions2, SslOpts, KeyShare, TicketData).
+
+
+add_tls12_extensions(_Version,
+                     #{alpn_advertised_protocols := AlpnAdvertisedProtocols,
+                      next_protocol_selector := NextProtocolSelector,
+                      server_name_indication := ServerNameIndication,
+                      max_fragment_length := MaxFragmentLength} = SslOpts,
+                     ConnectionStates,
+                     Renegotiation) ->
+    SRP = srp_user(SslOpts),
+    #{renegotiation_info => renegotiation_info(tls_record, client,
+                                               ConnectionStates, Renegotiation),
+      srp => SRP,
+      alpn => encode_alpn(AlpnAdvertisedProtocols, Renegotiation),
+      next_protocol_negotiation =>
+          encode_client_protocol_negotiation(NextProtocolSelector,
+                                             Renegotiation),
+      sni => sni(ServerNameIndication),
+      max_frag_enum => max_frag_enum(MaxFragmentLength)
+     }.
+
+
+add_common_extensions({3,4},
+                      HelloExtensions,
+                      _CipherSuites,
+                      #{eccs := SupportedECCs,
+                        supported_groups := Groups,
+                        signature_algs := SignatureSchemes}) ->
+    {EcPointFormats, _} =
+        client_ecc_extensions(SupportedECCs),
+    HelloExtensions#{ec_point_formats => EcPointFormats,
+                     elliptic_curves => Groups,
+                     signature_algs => signature_algs_ext(SignatureSchemes)};
+
+add_common_extensions(Version,
+                      HelloExtensions,
+                      CipherSuites,
+                      #{eccs := SupportedECCs,
+                        signature_algs := SupportedHashSigns}) ->
+
+    {EcPointFormats, EllipticCurves} =
+        case advertises_ec_ciphers(
+               lists:map(fun ssl_cipher_format:suite_bin_to_map/1,
+                         CipherSuites)) of
+            true ->
+                client_ecc_extensions(SupportedECCs);
+            false ->
+                {undefined, undefined}
+        end,
+    HelloExtensions#{ec_point_formats => EcPointFormats,
+                     elliptic_curves => EllipticCurves,
+                     signature_algs => available_signature_algs(SupportedHashSigns, Version)}.
+
+
+maybe_add_tls13_extensions({3,4},
+                           HelloExtensions0,
+                           #{signature_algs_cert := SignatureSchemes,
+                                        versions := SupportedVersions},
+                           KeyShare,
+                           TicketData) ->
+    HelloExtensions1 =
+        HelloExtensions0#{client_hello_versions =>
+                              #client_hello_versions{versions = SupportedVersions},
+                          signature_algs_cert =>
+                              signature_algs_cert(SignatureSchemes)},
+    HelloExtensions = maybe_add_key_share(HelloExtensions1, KeyShare),
+    maybe_add_pre_shared_key(HelloExtensions, TicketData);
+maybe_add_tls13_extensions(_, HelloExtensions, _, _, _) ->
+    HelloExtensions.
+
+maybe_add_certificate_status_request(
+    _Version, #{ocsp_stapling := false}, _OcspNonce, HelloExtensions) ->
+    HelloExtensions;
+maybe_add_certificate_status_request(
+    _Version, #{ocsp_stapling        := true,
+                ocsp_responder_certs := OcspResponderCerts},
+    OcspNonce, HelloExtensions) ->
+    OcspResponderList = get_ocsp_responder_list(OcspResponderCerts),
+    OcspRequestExtns = public_key:ocsp_extensions(OcspNonce),
+    Req = #ocsp_status_request{responder_id_list  = OcspResponderList,
+                               request_extensions = OcspRequestExtns},
+    CertStatusReqExtn = #certificate_status_request{
+        status_type = ?CERTIFICATE_STATUS_TYPE_OCSP,
+        request = Req
+    },
+    HelloExtensions#{status_request => CertStatusReqExtn}.
+
+get_ocsp_responder_list(ResponderCerts) ->
+    get_ocsp_responder_list(ResponderCerts, []).
+
+get_ocsp_responder_list([], Acc) ->
+    Acc;
+get_ocsp_responder_list([ResponderCert | T], Acc) ->
+    get_ocsp_responder_list(
+        T, [public_key:ocsp_responder_id(ResponderCert) | Acc]).
+
+%% TODO: Add support for PSK key establishment
+
+%% RFC 8446 (TLS 1.3) - 4.2.8.  Key Share
+%%
+%% 4.2.8.1.  Diffie-Hellman Parameters
+%% Diffie-Hellman [DH76] parameters for both clients and servers are
+%% encoded in the opaque key_exchange field of a KeyShareEntry in a
+%% KeyShare structure.  The opaque value contains the Diffie-Hellman
+%% public value (Y = g^X mod p) for the specified group (see [RFC7919]
+%% for group definitions) encoded as a big-endian integer and padded to
+%% the left with zeros to the size of p in bytes.
+%%
+%% 4.2.8.2.  ECDHE Parameters
+%%
+%% ECDHE parameters for both clients and servers are encoded in the
+%% opaque key_exchange field of a KeyShareEntry in a KeyShare structure.
+%%
+%% For secp256r1, secp384r1, and secp521r1, the contents are the
+%% serialized value of the following struct:
+%%
+%%    struct {
+%%        uint8 legacy_form = 4;
+%%        opaque X[coordinate_length];
+%%        opaque Y[coordinate_length];
+%%    } UncompressedPointRepresentation;
+%%
+%% X and Y, respectively, are the binary representations of the x and y
+%% values in network byte order.  There are no internal length markers,
+%% so each number representation occupies as many octets as implied by
+%% the curve parameters.  For P-256, this means that each of X and Y use
+%% 32 octets, padded on the left by zeros if necessary.  For P-384, they
+%% take 48 octets each.  For P-521, they take 66 octets each.
+maybe_add_key_share(HelloExtensions, undefined) ->
+    HelloExtensions;
+maybe_add_key_share(HelloExtensions, KeyShare) ->
+    #key_share_client_hello{client_shares = ClientShares0} = KeyShare,
+    %% Keep only public keys
+    ClientShares = lists:map(fun kse_remove_private_key/1, ClientShares0),
+    HelloExtensions#{key_share => #key_share_client_hello{
+                                     client_shares = ClientShares}}.
+
+
+maybe_add_pre_shared_key(HelloExtensions, undefined) ->
+    HelloExtensions;
+maybe_add_pre_shared_key(HelloExtensions, TicketData) ->
+    {Identities, Binders} = get_identities_binders(TicketData),
+
+    %% A client MUST provide a "psk_key_exchange_modes" extension if it
+    %% offers a "pre_shared_key" extension.
+    HelloExtensions#{pre_shared_key =>
+                         #pre_shared_key_client_hello{
+                            offered_psks =
+                                #offered_psks{
+                                   identities = Identities,
+                                   binders = Binders}},
+                     psk_key_exchange_modes =>
+                         #psk_key_exchange_modes{
+                            ke_modes = [psk_ke, psk_dhe_ke]}}.
+
+
+get_identities_binders(TicketData) ->
+    get_identities_binders(TicketData, {[], []}, 0).
+%%
+get_identities_binders([], {Identities, Binders}, _) ->
+    {lists:reverse(Identities), lists:reverse(Binders)};
+get_identities_binders([{Key, _, Identity, _, _, HKDF}|T], {I0, B0}, N) ->
+    %% Use dummy binder for proper calculation of packet size when creating
+    %% the real binder value.
+    Binder = dummy_binder(HKDF),
+    %% Store ticket position in identities
+    tls_client_ticket_store:update_ticket(Key, N),
+    get_identities_binders(T, {[Identity|I0], [Binder|B0]}, N + 1).
+
+
+dummy_binder(HKDF) ->
+    binary:copy(<<0>>, ssl_cipher:hash_size(HKDF)).
+
+
+add_server_share(server_hello, Extensions, KeyShare) ->
+    #key_share_server_hello{server_share = ServerShare0} = KeyShare,
+    %% Keep only public keys
+    ServerShare = kse_remove_private_key(ServerShare0),
+    Extensions#{key_share => #key_share_server_hello{
+                                server_share = ServerShare}};
+add_server_share(hello_retry_request, Extensions,
+                 #key_share_server_hello{
+                    server_share = #key_share_entry{group = Group}}) ->
+    Extensions#{key_share => #key_share_hello_retry_request{
+                                selected_group = Group}}.
+
+add_alpn(Extensions, ALPN0) ->
+    ALPN = encode_alpn([ALPN0], false),
+    Extensions#{alpn => ALPN}.
+
+add_selected_version(Extensions) ->
+    SupportedVersions = #server_hello_selected_version{selected_version = {3,4}},
+    Extensions#{server_hello_selected_version => SupportedVersions}.
+
+kse_remove_private_key(#key_share_entry{
+                      group = Group,
+                      key_exchange =
+                          #'ECPrivateKey'{publicKey = PublicKey}}) ->
+    #key_share_entry{
+       group = Group,
+       key_exchange = PublicKey};
+kse_remove_private_key(#key_share_entry{
+                      group = Group,
+                      key_exchange =
+                          {PublicKey, _}}) ->
+    #key_share_entry{
+       group = Group,
+       key_exchange = PublicKey}.
+
+
+signature_algs_ext(undefined) ->
+    undefined;
+signature_algs_ext(SignatureSchemes0) ->
+    %% The SSL option signature_algs contains both hash-sign algorithms (tuples) and
+    %% signature schemes (atoms) if TLS 1.3 is configured.
+    #signature_algorithms{signature_scheme_list = SignatureSchemes0}.
+
+signature_algs_cert(undefined) ->
+    undefined;
+signature_algs_cert(SignatureSchemes) ->
+    #signature_algorithms_cert{signature_scheme_list = SignatureSchemes}.
+
+handle_client_hello_extensions(RecordCB, Random, ClientCipherSuites,
+                               Exts, Version,
+			       #{secure_renegotiate := SecureRenegotation,
+                                 alpn_preferred_protocols := ALPNPreferredProtocols} = Opts,
+			       #session{cipher_suite = NegotiatedCipherSuite,
+					compression_method = Compression} = Session0,
+			       ConnectionStates0, Renegotiation, IsResumed) ->
+    Session = handle_srp_extension(maps:get(srp, Exts, undefined), Session0),
+    MaxFragEnum = handle_mfl_extension(maps:get(max_frag_enum, Exts, undefined)),
+    ConnectionStates1 = ssl_record:set_max_fragment_length(MaxFragEnum, ConnectionStates0),
+    ConnectionStates = handle_renegotiation_extension(server, RecordCB, Version, maps:get(renegotiation_info, Exts, undefined),
+						      Random, NegotiatedCipherSuite, 
+						      ClientCipherSuites, Compression,
+						      ConnectionStates1, Renegotiation, SecureRenegotation),
+
+    Empty = empty_extensions(Version, server_hello),
+    %% RFC 6066 - server doesn't include max_fragment_length for resumed sessions
+    ServerMaxFragEnum = if IsResumed ->
+                                undefined;
+                           true ->
+                                MaxFragEnum
+                        end,
+    ServerHelloExtensions = Empty#{renegotiation_info => renegotiation_info(RecordCB, server,
+                                                                            ConnectionStates, Renegotiation),
+                                   ec_point_formats => server_ecc_extension(Version, 
+                                                                            maps:get(ec_point_formats, Exts, undefined)),
+                                   max_frag_enum => ServerMaxFragEnum
+                                  },
+    
+    %% If we receive an ALPN extension and have ALPN configured for this connection,
+    %% we handle it. Otherwise we check for the NPN extension.
+    ALPN = maps:get(alpn, Exts, undefined),
+    if
+        ALPN =/= undefined, ALPNPreferredProtocols =/= undefined ->
+            Protocol = handle_alpn_extension(ALPNPreferredProtocols, decode_alpn(ALPN)),
+            {Session, ConnectionStates, Protocol,
+             ServerHelloExtensions#{alpn => encode_alpn([Protocol], Renegotiation)}};
+        true ->
+            NextProtocolNegotiation = maps:get(next_protocol_negotiation, Exts, undefined),
+            ProtocolsToAdvertise = handle_next_protocol_extension(NextProtocolNegotiation, Renegotiation, Opts),
+            {Session, ConnectionStates, undefined,
+             ServerHelloExtensions#{next_protocol_negotiation =>
+                                        encode_protocols_advertised_on_server(ProtocolsToAdvertise)}}
+    end.
+
+handle_server_hello_extensions(RecordCB, Random, CipherSuite, Compression,
+                               Exts, Version,
+			       #{secure_renegotiate := SecureRenegotation,
+                                 next_protocol_selector := NextProtoSelector,
+                                 ocsp_stapling := Stapling},
+			       ConnectionStates0, Renegotiation, IsNew) ->
+    ConnectionStates = handle_renegotiation_extension(client, RecordCB, Version,  
+                                                      maps:get(renegotiation_info, Exts, undefined), Random, 
+						      CipherSuite, undefined,
+						      Compression, ConnectionStates0,
+						      Renegotiation, SecureRenegotation),
+
+    %% RFC 6066: handle received/expected maximum fragment length
+    if IsNew ->
+            ServerMaxFragEnum = maps:get(max_frag_enum, Exts, undefined),
+            #{current_write := #{max_fragment_length := ConnMaxFragLen}} = ConnectionStates,
+            ClientMaxFragEnum = max_frag_enum(ConnMaxFragLen),
+
+            if ServerMaxFragEnum == ClientMaxFragEnum ->
+                    ok;
+               true ->
+                    throw(?ALERT_REC(?FATAL, ?ILLEGAL_PARAMETER))
+            end;
+       true ->
+            ok
+    end,
+
+    case handle_ocsp_extension(Stapling, Exts) of
+        #alert{} = Alert ->
+            Alert;
+        OcspState ->
+            %% If we receive an ALPN extension then this is the protocol selected,
+            %% otherwise handle the NPN extension.
+            ALPN = maps:get(alpn, Exts, undefined),
+            case decode_alpn(ALPN) of
+                %% ServerHello contains exactly one protocol: the one selected.
+                %% We also ignore the ALPN extension during renegotiation (see encode_alpn/2).
+                [Protocol] when not Renegotiation ->
+                    {ConnectionStates, alpn, Protocol, OcspState};
+                [_] when Renegotiation ->
+                    {ConnectionStates, alpn, undefined, OcspState};
+                undefined ->
+                    NextProtocolNegotiation = maps:get(next_protocol_negotiation, Exts, undefined),
+                    Protocol = handle_next_protocol(NextProtocolNegotiation, NextProtoSelector, Renegotiation),
+                    {ConnectionStates, npn, Protocol, OcspState};
+                {error, Reason} ->
+                    ?ALERT_REC(?FATAL, ?HANDSHAKE_FAILURE, Reason);
+                [] ->
+                    ?ALERT_REC(?FATAL, ?HANDSHAKE_FAILURE, no_protocols_in_server_hello);
+                [_|_] ->
+                    ?ALERT_REC(?FATAL, ?HANDSHAKE_FAILURE, too_many_protocols_in_server_hello)
+            end
+    end.
+
+select_curve(Client, Server) ->
+    select_curve(Client, Server, false).
+
+select_curve(#elliptic_curves{elliptic_curve_list = ClientCurves},
+	     #elliptic_curves{elliptic_curve_list = ServerCurves},
+	     ServerOrder) ->
+    case ServerOrder of
+        false ->
+            select_shared_curve(ClientCurves, ServerCurves);
+        true ->
+            select_shared_curve(ServerCurves, ClientCurves)
+    end;
+select_curve(undefined, _, _) ->
+    %% Client did not send ECC extension use default curve if 
+    %% ECC cipher is negotiated
+    {namedCurve, ?secp256r1}.
+
+%%--------------------------------------------------------------------
+-spec select_hashsign(#hash_sign_algos{} | undefined,  undefined | binary(), 
+		      atom(), [atom()], ssl_record:ssl_version()) ->
+			     {atom(), atom()} | undefined  | #alert{}.
+
+%%
+%% Description: Handles signature_algorithms hello extension (server)
+%%--------------------------------------------------------------------
+select_hashsign(_, _, KeyExAlgo, _, _Version) when KeyExAlgo == dh_anon;
+                                                   KeyExAlgo == ecdh_anon;
+                                                   KeyExAlgo == srp_anon;
+                                                   KeyExAlgo == psk;
+                                                   KeyExAlgo == dhe_psk;
+                                                   KeyExAlgo == ecdhe_psk ->
+    {null, anon};
+%% The signature_algorithms extension was introduced with TLS 1.2. Ignore it if we have
+%% negotiated a lower version.
+select_hashsign({ClientHashSigns, ClientSignatureSchemes},
+                Cert, KeyExAlgo, undefined, {Major, Minor} = Version)
+  when Major >= 3 andalso Minor >= 3->
+    select_hashsign({ClientHashSigns, ClientSignatureSchemes}, Cert, KeyExAlgo,
+                    tls_v1:default_signature_algs(Version), Version);
+select_hashsign({#hash_sign_algos{hash_sign_algos = ClientHashSigns},
+                 ClientSignatureSchemes0},
+                Cert, KeyExAlgo, SupportedHashSigns, {Major, Minor})
+  when Major >= 3 andalso Minor >= 3 ->
+    ClientSignatureSchemes = get_signature_scheme(ClientSignatureSchemes0),
+    {SignAlgo0, Param, PublicKeyAlgo0, _} = get_cert_params(Cert),
+    SignAlgo = sign_algo(SignAlgo0),
+    PublicKeyAlgo = public_key_algo(PublicKeyAlgo0),
+
+    %% RFC 5246 (TLS 1.2)
+    %% If the client provided a "signature_algorithms" extension, then all
+    %% certificates provided by the server MUST be signed by a
+    %% hash/signature algorithm pair that appears in that extension.
+    %%
+    %% RFC 8446 (TLS 1.3)
+    %% TLS 1.3 provides two extensions for indicating which signature
+    %% algorithms may be used in digital signatures.  The
+    %% "signature_algorithms_cert" extension applies to signatures in
+    %% certificates and the "signature_algorithms" extension, which
+    %% originally appeared in TLS 1.2, applies to signatures in
+    %% CertificateVerify messages.
+    %%
+    %% If no "signature_algorithms_cert" extension is
+    %% present, then the "signature_algorithms" extension also applies to
+    %% signatures appearing in certificates.
+    case is_supported_sign(SignAlgo, Param, ClientHashSigns, ClientSignatureSchemes) of
+        true ->
+            case lists:filter(fun({_, S} = Algos) when S == PublicKeyAlgo ->
+                                      is_acceptable_hash_sign(Algos, KeyExAlgo, SupportedHashSigns);
+                                 (_)  ->
+                                      false
+                              end, ClientHashSigns) of
+                [] ->
+                    ?ALERT_REC(?FATAL, ?INSUFFICIENT_SECURITY, no_suitable_signature_algorithm);
+                [HashSign | _] ->
+                    HashSign
+            end;
+        false ->
+            ?ALERT_REC(?FATAL, ?INSUFFICIENT_SECURITY, no_suitable_signature_algorithm)
+    end;
+select_hashsign(_, Cert, _, _, Version) ->
+    #'OTPCertificate'{tbsCertificate = TBSCert} = public_key:pkix_decode_cert(Cert, otp),
+    #'OTPSubjectPublicKeyInfo'{algorithm = {_,Algo, _}} = TBSCert#'OTPTBSCertificate'.subjectPublicKeyInfo,
+    select_hashsign_algs(undefined, Algo, Version).
+%%--------------------------------------------------------------------
+-spec select_hashsign(#certificate_request{},  binary(), 
+		      [atom()], ssl_record:ssl_version()) ->
+			     {atom(), atom()} | #alert{}.
+
+%%
+%% Description: Handles signature algorithms selection for certificate requests (client) 
+%%--------------------------------------------------------------------
+select_hashsign(#certificate_request{
+                   hashsign_algorithms = #hash_sign_algos{
+                                            hash_sign_algos = HashSigns},
+                   certificate_types = Types},
+                Cert,
+                SupportedHashSigns,
+		{Major, Minor})  when Major >= 3 andalso Minor >= 3->
+    {SignAlgo0, Param, PublicKeyAlgo0, _} = get_cert_params(Cert),
+    SignAlgo = sign_algo(SignAlgo0),
+    PublicKeyAlgo = public_key_algo(PublicKeyAlgo0),
+
+    case is_acceptable_cert_type(PublicKeyAlgo, Types) andalso
+        %% certificate_request has no "signature_algorithms_cert"
+        %% extension in TLS 1.2.
+        is_supported_sign(SignAlgo, Param, HashSigns, undefined) of
+	true ->
+	    case lists:filter(fun({_, S} = Algos) when S == PublicKeyAlgo ->
+				 is_acceptable_hash_sign(Algos, SupportedHashSigns);
+			    (_)  ->
+				      false
+			      end, HashSigns) of
+		[] ->
+		    ?ALERT_REC(?FATAL, ?INSUFFICIENT_SECURITY, no_suitable_signature_algorithm);
+		[HashSign | _] ->
+		    HashSign
+	    end;
+	false ->
+	    ?ALERT_REC(?FATAL, ?INSUFFICIENT_SECURITY, no_suitable_signature_algorithm)
+    end;
+select_hashsign(#certificate_request{certificate_types = Types}, Cert, _, Version) ->
+    {_, _, PublicKeyAlgo0, _} = get_cert_params(Cert),
+    PublicKeyAlgo = public_key_algo(PublicKeyAlgo0),
+
+    %% Check cert even for TLS 1.0/1.1
+    case is_acceptable_cert_type(PublicKeyAlgo, Types) of
+        true ->
+            select_hashsign(undefined, Cert, undefined, [], Version);
+        false ->
+            ?ALERT_REC(?FATAL, ?INSUFFICIENT_SECURITY, no_suitable_signature_algorithm)
+    end.
+
+
+%% Gets the relevant parameters of a certificate:
+%% - signature algorithm
+%% - parameters of the signature algorithm
+%% - public key algorithm (key type)
+%% - RSA key size in bytes
+get_cert_params(Cert) ->
+    #'OTPCertificate'{tbsCertificate = TBSCert,
+		      signatureAlgorithm =
+                          {_,SignAlgo, Param}} = public_key:pkix_decode_cert(Cert, otp),
+    #'OTPSubjectPublicKeyInfo'{algorithm = {_, PublicKeyAlgo, _},
+                               subjectPublicKey = PublicKey} =
+        TBSCert#'OTPTBSCertificate'.subjectPublicKeyInfo,
+    RSAKeySize =
+        case PublicKey of
+            #'RSAPublicKey'{modulus = Modulus} ->
+                %% Get RSA key size in bytes
+                byte_size(binary:encode_unsigned(Modulus));
+            _ ->
+                undefined
+        end,
+    {SignAlgo, Param, PublicKeyAlgo, RSAKeySize}.
+
+select_own_cert([OwnCert| _]) ->
+    OwnCert;
+select_own_cert(undefined) ->
+    undefined.
+
+get_signature_scheme(undefined) ->
+    undefined;
+get_signature_scheme(#signature_algorithms_cert{
+                        signature_scheme_list = ClientSignatureSchemes}) ->
+    ClientSignatureSchemes.
+
+
+%%--------------------------------------------------------------------
+-spec select_hashsign_algs({atom(), atom()}| undefined, oid(), ssl_record:ssl_version()) ->
+				  {atom(), atom()}.
+
+%% Description: For TLS 1.2 hash function and signature algorithm pairs can be
+%% negotiated with the signature_algorithms extension,
+%% for previous versions always use appropriate defaults.
+%% RFC 5246, Sect. 7.4.1.4.1.  Signature Algorithms
+%% If the client does not send the signature_algorithms extension, the
+%% server MUST do the following: (e.i defaults for TLS 1.2)
+%%
+%% -  If the negotiated key exchange algorithm is one of (RSA, DHE_RSA,
+%%    DH_RSA, RSA_PSK, ECDH_RSA, ECDHE_RSA), behave as if client had
+%%    sent the value {sha1,rsa}.
+%%
+%% -  If the negotiated key exchange algorithm is one of (DHE_DSS,
+%%    DH_DSS), behave as if the client had sent the value {sha1,dsa}.
+%%
+%% -  If the negotiated key exchange algorithm is one of (ECDH_ECDSA,
+%%    ECDHE_ECDSA), behave as if the client had sent value {sha1,ecdsa}.
+
+%%--------------------------------------------------------------------
+select_hashsign_algs(HashSign, _, {Major, Minor}) when HashSign =/= undefined andalso
+						       Major >= 3 andalso Minor >= 3 ->
+    HashSign;
+select_hashsign_algs(undefined, ?rsaEncryption, {Major, Minor}) when Major >= 3 andalso Minor >= 3 ->
+    {sha, rsa};
+select_hashsign_algs(undefined,?'id-ecPublicKey', _) ->
+    {sha, ecdsa};
+select_hashsign_algs(undefined, ?rsaEncryption, _) -> 
+    {md5sha, rsa};
+select_hashsign_algs(undefined, ?'id-dsa', _) ->
+    {sha, dsa}.
+
+srp_user(#{srp_identity := {UserName, _}}) ->
+    #srp{username = UserName};
+srp_user(_) ->
+    undefined.
+
+extension_value(undefined) ->
+    undefined;
+extension_value(#sni{hostname = HostName}) ->
+    HostName;
+extension_value(#ec_point_formats{ec_point_format_list = List}) ->
+    List;
+extension_value(#elliptic_curves{elliptic_curve_list = List}) ->
+    List;
+extension_value(#supported_groups{supported_groups = SupportedGroups}) ->
+    SupportedGroups;
+extension_value(#hash_sign_algos{hash_sign_algos = Algos}) ->
+    Algos;
+extension_value(#alpn{extension_data = Data}) ->
+    Data;
+extension_value(#max_frag_enum{enum = Enum}) ->
+    Enum;
+extension_value(#next_protocol_negotiation{extension_data = Data}) ->
+    Data;
+extension_value(#srp{username = Name}) ->
+    Name;
+extension_value(#renegotiation_info{renegotiated_connection = Data}) ->
+    Data;
+extension_value(#signature_algorithms{signature_scheme_list = Schemes}) ->
+    Schemes;
+extension_value(#signature_algorithms_cert{signature_scheme_list = Schemes}) ->
+    Schemes;
+extension_value(#key_share_client_hello{client_shares = ClientShares}) ->
+    ClientShares;
+extension_value(#key_share_server_hello{server_share = ServerShare}) ->
+    ServerShare;
+extension_value(#client_hello_versions{versions = Versions}) ->
+    Versions;
+extension_value(#server_hello_selected_version{selected_version = SelectedVersion}) ->
+    SelectedVersion;
+extension_value(#pre_shared_key_client_hello{offered_psks = PSKs}) ->
+    PSKs;
+extension_value(#pre_shared_key_server_hello{selected_identity = SelectedIdentity}) ->
+    SelectedIdentity;
+extension_value(#psk_key_exchange_modes{ke_modes = Modes}) ->
+    Modes;
+extension_value(#cookie{cookie = Cookie}) ->
+    Cookie.
+
+handle_ocsp_extension(true = Stapling, Extensions) ->
+    case maps:get(status_request, Extensions, false) of
+        undefined -> %% status_request in server hello is empty
+            #{ocsp_stapling => Stapling,
+              ocsp_expect => staple};
+        false -> %% status_request is missing (not negotiated)
+            #{ocsp_stapling => Stapling,
+              ocsp_expect => no_staple};
+        _Else ->
+            ?ALERT_REC(?FATAL, ?HANDSHAKE_FAILURE, status_request_not_empty)
+    end;
+handle_ocsp_extension(false = Stapling, Extensions) ->
+    case maps:get(status_request, Extensions, false) of
+        false -> %% status_request is missing (not negotiated)
+            #{ocsp_stapling => Stapling,
+              ocsp_expect => no_staple};
+        _Else -> %% unsolicited status_request
+            ?ALERT_REC(?FATAL, ?HANDSHAKE_FAILURE, unexpected_status_request)
+    end.
+%%--------------------------------------------------------------------
+%%% Internal functions
+%%--------------------------------------------------------------------
+%%------------- Create handshake messages ----------------------------
+
+int_to_bin(I) ->
+    L = (length(integer_to_list(I, 16)) + 1) div 2,
+    <<I:(L*8)>>.
+
+%% TLS 1.0+
+%% The end-entity certificate provided by the client MUST contain a
+%% key that is compatible with certificate_types.
+certificate_types(_, {N, M}) when N >= 3 andalso M >= 1 ->
+    ECDSA = supported_cert_type_or_empty(ecdsa, ?ECDSA_SIGN),
+    RSA = supported_cert_type_or_empty(rsa, ?RSA_SIGN),
+    DSS = supported_cert_type_or_empty(dss, ?DSS_SIGN),
+    <<ECDSA/binary,RSA/binary,DSS/binary>>;
+%% SSL 3.0
+certificate_types(_, _) ->
+    RSA = supported_cert_type_or_empty(rsa, ?RSA_SIGN),
+    DSS = supported_cert_type_or_empty(dss, ?DSS_SIGN),
+    <<RSA/binary,DSS/binary>>.
+
+%% Returns encoded certificate_type if algorithm is supported
+supported_cert_type_or_empty(Algo, Type) ->
+    case proplists:get_bool(
+           Algo,
+           proplists:get_value(public_keys, crypto:supports())) of
+        true ->
+            <<?BYTE(Type)>>;
+        false ->
+            <<>>
+    end.
+
+certificate_authorities(CertDbHandle, CertDbRef) ->
+    Authorities = certificate_authorities_from_db(CertDbHandle, CertDbRef),
+    Enc = fun(#'OTPCertificate'{tbsCertificate=TBSCert}) ->
+		  OTPSubj = TBSCert#'OTPTBSCertificate'.subject,
+		  DNEncodedBin = public_key:pkix_encode('Name', OTPSubj, otp),
+		  DNEncodedLen = byte_size(DNEncodedBin),
+		  <<?UINT16(DNEncodedLen), DNEncodedBin/binary>>
+	  end,
+    list_to_binary([Enc(Cert) || {_, Cert} <- Authorities]).
+
+certificate_authorities_from_db(CertDbHandle, CertDbRef) when is_reference(CertDbRef) ->
+    ConnectionCerts = fun({{Ref, _, _}, Cert}, Acc) when Ref  == CertDbRef ->
+			      [Cert | Acc];
+			 (_, Acc) ->
+			      Acc
+		      end,
+    ssl_pkix_db:foldl(ConnectionCerts, [], CertDbHandle);
+certificate_authorities_from_db(_CertDbHandle, {extracted, CertDbData}) ->
+    %% Cache disabled, Ref contains data
+    lists:foldl(fun({decoded, {_Key,Cert}}, Acc) -> [Cert | Acc] end,
+		[], CertDbData).
+
+%%-------------Handle handshake messages --------------------------------
+validation_fun_and_state({Fun, UserState0}, VerifyState, CertPath, LogLevel) ->
+    {fun(OtpCert, {extension, _} = Extension, {SslState, UserState}) ->
+	     case ssl_certificate:validate(OtpCert,
+					   Extension,
+					   SslState) of
+		 {valid, NewSslState} ->
+		     {valid, {NewSslState, UserState}};
+		 {fail, Reason} ->
+		     apply_user_fun(Fun, OtpCert, Reason, UserState,
+				            SslState, CertPath, LogLevel);
+		 {unknown, _} ->
+		     apply_user_fun(Fun, OtpCert,
+				            Extension, UserState, SslState, CertPath, LogLevel)
+	     end;
+	(OtpCert, VerifyResult, {SslState, UserState}) ->
+	     apply_user_fun(Fun, OtpCert, VerifyResult, UserState,
+			    SslState, CertPath, LogLevel)
+     end, {VerifyState, UserState0}};
+validation_fun_and_state(undefined, VerifyState, CertPath, LogLevel) ->
+    {fun(OtpCert, {extension, _} = Extension, SslState) ->
+	     ssl_certificate:validate(OtpCert,
+				      Extension,
+				      SslState);
+	(OtpCert, VerifyResult, SslState) when (VerifyResult == valid) or 
+                                               (VerifyResult == valid_peer) -> 
+	     case cert_status_check(OtpCert, SslState, VerifyResult, CertPath, LogLevel) of
+		 valid ->
+                     ssl_certificate:validate(OtpCert, VerifyResult, SslState);
+		 Reason ->
+		     {fail, Reason}
+	     end;
+	(OtpCert, VerifyResult, SslState) ->
+	     ssl_certificate:validate(OtpCert,
+				      VerifyResult,
+				      SslState)
+     end, VerifyState}.
+
+apply_user_fun(Fun, OtpCert, VerifyResult0, UserState0, SslState, CertPath, LogLevel) when
+      (VerifyResult0 == valid) or (VerifyResult0 == valid_peer) ->
+    VerifyResult = maybe_check_hostname(OtpCert, VerifyResult0, SslState),
+    case Fun(OtpCert, VerifyResult, UserState0) of
+	{Valid, UserState} when (Valid == valid) or (Valid == valid_peer) ->
+	    case cert_status_check(OtpCert, SslState, VerifyResult, CertPath, LogLevel) of
+		valid ->
+		    {Valid, {SslState, UserState}};
+		Result ->
+		    apply_user_fun(Fun, OtpCert, Result, UserState, SslState, CertPath, LogLevel)
+	    end;
+	{fail, _} = Fail ->
+	    Fail
+    end;
+apply_user_fun(Fun, OtpCert, ExtensionOrError, UserState0, SslState, _CertPath, _LogLevel) ->
+    case Fun(OtpCert, ExtensionOrError, UserState0) of
+	{Valid, UserState} when (Valid == valid) or (Valid == valid_peer)->
+	    {Valid, {SslState, UserState}};
+	{fail, _} = Fail ->
+	    Fail;
+	{unknown, UserState} ->
+	    {unknown, {SslState, UserState}}
+    end.
+
+maybe_check_hostname(OtpCert, valid_peer, SslState) ->
+    case ssl_certificate:validate(OtpCert, valid_peer, SslState) of 
+        {valid, _} ->
+            valid_peer;
+        {fail, Reason} ->
+            Reason
+    end;
+maybe_check_hostname(_, valid, _) ->
+    valid.
+
+
+path_validation_alert({bad_cert, cert_expired}) ->
+    ?ALERT_REC(?FATAL, ?CERTIFICATE_EXPIRED);
+path_validation_alert({bad_cert, invalid_issuer}) ->
+    ?ALERT_REC(?FATAL, ?BAD_CERTIFICATE);
+path_validation_alert({bad_cert, invalid_signature}) ->
+    ?ALERT_REC(?FATAL, ?BAD_CERTIFICATE);
+path_validation_alert({bad_cert, name_not_permitted}) ->
+    ?ALERT_REC(?FATAL, ?BAD_CERTIFICATE);
+path_validation_alert({bad_cert, unknown_critical_extension}) ->
+    ?ALERT_REC(?FATAL, ?UNSUPPORTED_CERTIFICATE);
+path_validation_alert({bad_cert, {revoked, _}}) ->
+    ?ALERT_REC(?FATAL, ?CERTIFICATE_REVOKED);
+path_validation_alert({bad_cert, {revocation_status_undetermined, Details}}) ->
+    Alert = ?ALERT_REC(?FATAL, ?BAD_CERTIFICATE),
+    Alert#alert{reason = Details};
+path_validation_alert({bad_cert, selfsigned_peer}) ->
+    ?ALERT_REC(?FATAL, ?BAD_CERTIFICATE);
+path_validation_alert({bad_cert, unknown_ca}) ->
+    ?ALERT_REC(?FATAL, ?UNKNOWN_CA);
+path_validation_alert(Reason) ->
+    ?ALERT_REC(?FATAL, ?HANDSHAKE_FAILURE, Reason).
+
+digitally_signed(Version, Hashes, HashAlgo, PrivateKey, SignAlgo) ->
+    try do_digitally_signed(Version, Hashes, HashAlgo, PrivateKey, SignAlgo) of
+	Signature ->
+	    Signature
+    catch
+	error:badkey->
+	    throw(?ALERT_REC(?FATAL, ?HANDSHAKE_FAILURE, bad_key(PrivateKey)))
+    end.
+
+do_digitally_signed({3, Minor}, Hash, _, 
+                    #{algorithm := rsa} = Engine, rsa) when Minor =< 2->
+    crypto:private_encrypt(rsa, Hash, maps:remove(algorithm, Engine),
+                           rsa_pkcs1_padding);
+do_digitally_signed({3, Minor}, Hash, HashAlgo, #{algorithm := Alg} = Engine, SignAlgo)
+  when Minor > 3 ->
+    Options = signature_options(SignAlgo, HashAlgo),
+    crypto:sign(Alg, HashAlgo, Hash, maps:remove(algorithm, Engine), Options);
+do_digitally_signed({3, Minor}, Hash, HashAlgo, #{algorithm := Alg} = Engine, SignAlgo)
+  when Minor > 3 ->
+    Options = signature_options(SignAlgo, HashAlgo),
+    crypto:sign(Alg, HashAlgo, Hash, maps:remove(algorithm, Engine), Options);
+do_digitally_signed({3, 3}, Hash, HashAlgo, #{algorithm := Alg} = Engine, SignAlgo) ->
+    Options = signature_options(SignAlgo, HashAlgo),
+    crypto:sign(Alg, HashAlgo, {digest, Hash}, maps:remove(algorithm, Engine), Options);
+do_digitally_signed({3, 4}, Hash, HashAlgo, {#'RSAPrivateKey'{} = Key,
+                                             #'RSASSA-PSS-params'{}}, SignAlgo) ->
+    Options = signature_options(SignAlgo, HashAlgo),
+    public_key:sign(Hash, HashAlgo, Key, Options);
+do_digitally_signed({3, 4}, Hash, HashAlgo, Key, SignAlgo) ->
+    Options = signature_options(SignAlgo, HashAlgo),
+    public_key:sign(Hash, HashAlgo, Key, Options);
+do_digitally_signed({3, Minor}, Hash, HashAlgo, Key, SignAlgo) when Minor >= 3 ->
+    Options = signature_options(HashAlgo, SignAlgo),
+    public_key:sign({digest,Hash}, HashAlgo, Key, Options);
+do_digitally_signed({3, Minor}, Hash, _HashAlgo, #'RSAPrivateKey'{} = Key, rsa) when  Minor =< 2 ->
+    public_key:encrypt_private(Hash, Key,
+			       [{rsa_pad, rsa_pkcs1_padding}]);
+do_digitally_signed(_Version, Hash, HashAlgo, Key, _SignAlgo) ->
+    public_key:sign({digest, Hash}, HashAlgo, Key).
+    
+signature_options(SignAlgo, HashAlgo) when SignAlgo =:= rsa_pss_rsae orelse
+                                           SignAlgo =:= rsa_pss_pss ->
+    pss_options(HashAlgo);
+signature_options(_, _) ->
+    [].
+
+verify_options(SignAlgo, HashAlgo, _KeyParams)
+  when SignAlgo =:= rsa_pss_rsae orelse
+       SignAlgo =:= rsa_pss_pss ->
+    pss_options(HashAlgo);
+verify_options(_, _, _) ->
+    [].
+
+pss_options(HashAlgo) ->
+    %% of the digest algorithm: rsa_pss_saltlen = -1
+    [{rsa_padding, rsa_pkcs1_pss_padding},
+     {rsa_pss_saltlen, -1},
+     {rsa_mgf1_md, HashAlgo}].
+
+bad_key(#'DSAPrivateKey'{}) ->
+    unacceptable_dsa_key;
+bad_key(#'RSAPrivateKey'{}) ->
+    unacceptable_rsa_key;
+bad_key(#'ECPrivateKey'{}) ->
+    unacceptable_ecdsa_key;
+bad_key(#{algorithm := rsa}) ->
+    unacceptable_rsa_key;
+bad_key(#{algorithm := ecdsa}) ->
+    unacceptable_ecdsa_key.
+
+cert_status_check(_, #{ocsp_state := #{ocsp_stapling := true,
+                                       ocsp_expect := stapled}}, _VerifyResult, _, _) ->
+    valid; %% OCSP staple will now be checked by ssl_certifcate:verify_cert_extensions/2 in ssl_certifcate:validate
+cert_status_check(OtpCert, #{ocsp_state := #{ocsp_stapling := false}} = SslState, VerifyResult, CertPath, LogLevel) ->
+    maybe_check_crl(OtpCert, SslState, VerifyResult, CertPath, LogLevel);
+cert_status_check(OtpCert, #{ocsp_state := #{ocsp_stapling := best_effort, %%TODO should we support
+                                             ocsp_expect := undetermined}} = SslState, 
+                  VerifyResult, CertPath, LogLevel) ->
+    maybe_check_crl(OtpCert, SslState, VerifyResult, CertPath, LogLevel).
+
+maybe_check_crl(_, #{crl_check := false}, _, _, _) ->
+    valid;
+maybe_check_crl(_, #{crl_check := peer}, _, valid, _) -> %% Do not check CAs with this option.
+    valid;
+maybe_check_crl(OtpCert, #{crl_check := Check, 
+                     certdb := CertDbHandle,
+                     certdb_ref := CertDbRef,
+                     crl_db := {Callback, CRLDbHandle}}, _, CertPath, LogLevel) ->
+    Options = [{issuer_fun, {fun(_DP, CRL, Issuer, DBInfo) ->
+				     ssl_crl:trusted_cert_and_path(CRL, Issuer, {CertPath,
+                                                                                 DBInfo})
+			     end, {CertDbHandle, CertDbRef}}}, 
+	       {update_crl, fun(DP, CRL) ->
+                                    case Callback:fresh_crl(DP, CRL) of
+                                        {logger, LogInfo, Fresh} ->
+                                            handle_log(LogLevel, LogInfo),
+                                            Fresh;
+                                        Fresh ->
+                                            Fresh
+                                    end
+                            end},
+               {undetermined_details, true}
+	      ],
+    case dps_and_crls(OtpCert, Callback, CRLDbHandle, ext, LogLevel) of
+	no_dps ->
+	    crl_check_same_issuer(OtpCert, Check,
+				  dps_and_crls(OtpCert, Callback, CRLDbHandle, same_issuer, LogLevel),
+				  Options);
+	DpsAndCRLs ->  %% This DP list may be empty if relevant CRLs existed 
+	    %% but could not be retrived, will result in {bad_cert, revocation_status_undetermined}
+	    case public_key:pkix_crls_validate(OtpCert, DpsAndCRLs, Options) of
+		{bad_cert, {revocation_status_undetermined, _}} ->
+		    crl_check_same_issuer(OtpCert, Check, 
+                                          dps_and_crls(OtpCert, Callback, 
+                                                       CRLDbHandle, same_issuer, LogLevel), Options);
+		Other ->
+		    Other
+	    end
+    end.
+
+crl_check_same_issuer(OtpCert, best_effort, Dps, Options) ->		
+    case public_key:pkix_crls_validate(OtpCert, Dps, Options) of 
+	{bad_cert, {revocation_status_undetermined, _}}   ->
+	    valid;
+	Other ->
+	    Other
+    end;
+crl_check_same_issuer(OtpCert, _, Dps, Options) ->    
+    public_key:pkix_crls_validate(OtpCert, Dps, Options).
+
+dps_and_crls(OtpCert, Callback, CRLDbHandle, ext, LogLevel) ->
+    case public_key:pkix_dist_points(OtpCert) of
+	[] ->
+	    no_dps;
+	DistPoints ->
+	    Issuer = OtpCert#'OTPCertificate'.tbsCertificate#'OTPTBSCertificate'.issuer,
+	    CRLs = distpoints_lookup(DistPoints, Issuer, Callback, CRLDbHandle, LogLevel),
+            dps_and_crls(DistPoints, CRLs, [])
+    end;
+
+dps_and_crls(OtpCert, Callback, CRLDbHandle, same_issuer, LogLevel) ->    
+    DP = #'DistributionPoint'{distributionPoint = {fullName, GenNames}} = 
+	public_key:pkix_dist_point(OtpCert),
+    CRLs = lists:flatmap(fun({directoryName, Issuer}) -> 
+				 case Callback:select(Issuer, CRLDbHandle) of
+                                     {logger, LogInfo, Return} ->
+                                         handle_log(LogLevel, LogInfo),
+                                         Return;
+                                     Return ->
+                                         Return
+                                 end;
+			    (_) ->
+				 []
+			 end, GenNames),
+    [{DP, {CRL, public_key:der_decode('CertificateList', CRL)}} ||  CRL <- CRLs].
+
+dps_and_crls([], _, Acc) ->
+    Acc;
+dps_and_crls([DP | Rest], CRLs, Acc) ->
+    DpCRL = [{DP, {CRL, public_key:der_decode('CertificateList', CRL)}} ||  CRL <- CRLs],
+    dps_and_crls(Rest, CRLs, DpCRL ++ Acc).
+    
+distpoints_lookup([],_, _, _, _) ->
+    [];
+distpoints_lookup([DistPoint | Rest], Issuer, Callback, CRLDbHandle, LogLevel) ->
+    Result =
+	try Callback:lookup(DistPoint, Issuer, CRLDbHandle)
+	catch
+	    error:undef ->
+		%% The callback module still uses the 2-argument
+		%% version of the lookup function.
+		Callback:lookup(DistPoint, CRLDbHandle)
+	end,
+    case Result of
+	not_available ->
+	    distpoints_lookup(Rest, Issuer, Callback, CRLDbHandle, LogLevel);
+	{logger, LogInfo, CRLs} ->
+            handle_log(LogLevel, LogInfo),
+            CRLs;
+        CRLs ->
+	    CRLs
+    end.
+
+encrypted_premaster_secret(Secret, RSAPublicKey) ->
+    try
+	PreMasterSecret = public_key:encrypt_public(Secret, RSAPublicKey,
+						    [{rsa_pad,
+						      rsa_pkcs1_padding}]),
+	#encrypted_premaster_secret{premaster_secret = PreMasterSecret}
+    catch
+        _:_->
+            throw(?ALERT_REC(?FATAL, ?HANDSHAKE_FAILURE, premaster_encryption_failed))
+    end.
+
+calc_certificate_verify({3, N}, HashAlgo, _MasterSecret, Handshake) ->
+    tls_v1:certificate_verify(HashAlgo, N, lists:reverse(Handshake)).
+calc_finished({3, N}, Role, PrfAlgo, MasterSecret, Handshake) ->
+    tls_v1:finished(Role, N, PrfAlgo, MasterSecret, lists:reverse(Handshake)).
+
+master_secret(Version, MasterSecret,
+	      #security_parameters{
+		 bulk_cipher_algorithm = BCA,
+		 client_random = ClientRandom,
+		 server_random = ServerRandom,
+		 hash_size = HashSize,
+		 prf_algorithm = PrfAlgo,
+		 key_material_length = KML,
+		 expanded_key_material_length = EKML,
+		 iv_size = IVS},
+	      ConnectionStates, Role) ->
+    {ClientWriteMacSecret, ServerWriteMacSecret, ClientWriteKey,
+     ServerWriteKey, ClientIV, ServerIV} =
+	setup_keys(Version, PrfAlgo, MasterSecret, ServerRandom,
+		   ClientRandom, HashSize, KML, EKML, IVS),
+
+    ConnStates1 = ssl_record:set_master_secret(MasterSecret, ConnectionStates),
+    ConnStates2 =
+	ssl_record:set_mac_secret(ClientWriteMacSecret, ServerWriteMacSecret,
+				  Role, ConnStates1),
+
+    ClientCipherState = ssl_cipher:cipher_init(BCA, ClientIV, ClientWriteKey),
+    ServerCipherState = ssl_cipher:cipher_init(BCA, ServerIV, ServerWriteKey),
+    {MasterSecret,
+     ssl_record:set_pending_cipher_state(ConnStates2, ClientCipherState,
+					 ServerCipherState, Role)}.
+setup_keys({3,N}, PrfAlgo, MasterSecret,
+	   ServerRandom, ClientRandom, HashSize, KML, _EKML, IVS) ->
+    tls_v1:setup_keys(N, PrfAlgo, MasterSecret, ServerRandom, ClientRandom, HashSize,
+			KML, IVS).
+calc_master_secret({3,_}, PrfAlgo, PremasterSecret, ClientRandom, ServerRandom) ->
+    tls_v1:master_secret(PrfAlgo, PremasterSecret, ClientRandom, ServerRandom).
+	
+%% Update pending connection states with parameters exchanged via
+%% hello messages
+%% NOTE : Role is the role of the receiver of the hello message
+%%        currently being processed.
+hello_pending_connection_states(_RecordCB, Role, Version, CipherSuite, Random, Compression,
+				 ConnectionStates) ->
+    ReadState =
+	ssl_record:pending_connection_state(ConnectionStates, read),
+    WriteState =
+	ssl_record:pending_connection_state(ConnectionStates, write),
+
+    NewReadSecParams =
+	hello_security_parameters(Role, Version, ReadState, CipherSuite,
+			    Random, Compression),
+
+    NewWriteSecParams =
+	hello_security_parameters(Role, Version, WriteState, CipherSuite,
+			    Random, Compression),
+
+    ssl_record:set_security_params(NewReadSecParams,
+				    NewWriteSecParams,
+				    ConnectionStates).
+
+hello_security_parameters(client, Version, #{security_parameters := SecParams}, CipherSuite, Random,
+			  Compression) ->
+    NewSecParams = ssl_cipher:security_parameters(Version, CipherSuite, SecParams),
+    NewSecParams#security_parameters{
+      server_random = Random,
+      compression_algorithm = Compression
+     };
+
+hello_security_parameters(server, Version, #{security_parameters := SecParams}, CipherSuite, Random,
+			  Compression) ->
+    NewSecParams = ssl_cipher:security_parameters(Version, CipherSuite, SecParams),
+    NewSecParams#security_parameters{
+      client_random = Random,
+      compression_algorithm = Compression
+     }.
+
+select_compression(_CompressionMetodes) ->
+    ?NULL.
+
+do_select_version(_, ClientVersion, []) ->
+    ClientVersion;
+do_select_version(RecordCB, ClientVersion, [Version | Versions]) ->
+    case RecordCB:is_higher(Version, ClientVersion) of
+	true ->
+	    %% Version too high for client - keep looking
+	    do_select_version(RecordCB, ClientVersion, Versions);
+	false ->
+	    %% Version ok for client - look for a higher
+	    do_select_version(RecordCB, ClientVersion, Versions, Version)
+    end.
+%%
+do_select_version(_, _, [], GoodVersion) ->
+    GoodVersion;
+do_select_version(
+  RecordCB, ClientVersion, [Version | Versions], GoodVersion) ->
+    BetterVersion =
+	case RecordCB:is_higher(Version, ClientVersion) of
+	    true ->
+		%% Version too high for client
+		GoodVersion;
+	    false ->
+		%% Version ok for client
+		case RecordCB:is_higher(Version, GoodVersion) of
+		    true ->
+			%% Use higher version
+			Version;
+		    false ->
+			GoodVersion
+		end
+	end,
+    do_select_version(RecordCB, ClientVersion, Versions, BetterVersion).
+
+%%-------------Encode handshakes --------------------------------
+
+encode_server_key(#server_dh_params{dh_p = P, dh_g = G, dh_y = Y}) ->
+    PLen = byte_size(P),
+    GLen = byte_size(G),
+    YLen = byte_size(Y),
+    <<?UINT16(PLen), P/binary, ?UINT16(GLen), G/binary, ?UINT16(YLen), Y/binary>>;
+encode_server_key(#server_ecdh_params{curve = {namedCurve, ECCurve}, public = ECPubKey}) ->
+    %%TODO: support arbitrary keys
+    KLen = size(ECPubKey),
+    <<?BYTE(?NAMED_CURVE), ?UINT16((tls_v1:oid_to_enum(ECCurve))),
+      ?BYTE(KLen), ECPubKey/binary>>;
+encode_server_key(#server_psk_params{hint = PskIdentityHint}) ->
+    Len = byte_size(PskIdentityHint),
+    <<?UINT16(Len), PskIdentityHint/binary>>;
+encode_server_key(Params = #server_dhe_psk_params{hint = undefined}) ->
+    encode_server_key(Params#server_dhe_psk_params{hint = <<>>});
+encode_server_key(#server_dhe_psk_params{
+		  hint = PskIdentityHint,
+		  dh_params = #server_dh_params{dh_p = P, dh_g = G, dh_y = Y}}) ->
+    Len = byte_size(PskIdentityHint),
+    PLen = byte_size(P),
+    GLen = byte_size(G),
+    YLen = byte_size(Y),
+    <<?UINT16(Len), PskIdentityHint/binary,
+      ?UINT16(PLen), P/binary, ?UINT16(GLen), G/binary, ?UINT16(YLen), Y/binary>>;
+encode_server_key(Params = #server_ecdhe_psk_params{hint = undefined}) ->
+    encode_server_key(Params#server_ecdhe_psk_params{hint = <<>>});
+encode_server_key(#server_ecdhe_psk_params{
+		     hint = PskIdentityHint,
+		     dh_params = #server_ecdh_params{
+		       curve = {namedCurve, ECCurve}, public = ECPubKey}}) ->
+    %%TODO: support arbitrary keys
+    Len = byte_size(PskIdentityHint),
+    KLen = size(ECPubKey),
+    <<?UINT16(Len), PskIdentityHint/binary,
+      ?BYTE(?NAMED_CURVE), ?UINT16((tls_v1:oid_to_enum(ECCurve))),
+      ?BYTE(KLen), ECPubKey/binary>>;
+encode_server_key(#server_srp_params{srp_n = N, srp_g = G,	srp_s = S, srp_b = B}) ->
+    NLen = byte_size(N),
+    GLen = byte_size(G),
+    SLen = byte_size(S),
+    BLen = byte_size(B),
+    <<?UINT16(NLen), N/binary, ?UINT16(GLen), G/binary,
+      ?BYTE(SLen), S/binary, ?UINT16(BLen), B/binary>>.
+
+encode_client_key(#encrypted_premaster_secret{premaster_secret = PKEPMS},{3, 0}) ->
+    PKEPMS;
+encode_client_key(#encrypted_premaster_secret{premaster_secret = PKEPMS}, _) ->
+    PKEPMSLen = byte_size(PKEPMS),
+    <<?UINT16(PKEPMSLen), PKEPMS/binary>>;
+encode_client_key(#client_diffie_hellman_public{dh_public = DHPublic}, _) ->
+    Len = byte_size(DHPublic),
+    <<?UINT16(Len), DHPublic/binary>>;
+encode_client_key(#client_ec_diffie_hellman_public{dh_public = DHPublic}, _) ->
+    Len = byte_size(DHPublic),
+    <<?BYTE(Len), DHPublic/binary>>;
+encode_client_key(#client_psk_identity{identity = undefined}, _) ->
+    Id = <<"psk_identity">>,
+    Len = byte_size(Id),
+    <<?UINT16(Len), Id/binary>>;
+encode_client_key(#client_psk_identity{identity = Id}, _) ->
+    Len = byte_size(Id),
+    <<?UINT16(Len), Id/binary>>;
+encode_client_key(Identity = #client_dhe_psk_identity{identity = undefined}, Version) ->
+    encode_client_key(Identity#client_dhe_psk_identity{identity = <<"psk_identity">>}, Version);
+encode_client_key(#client_dhe_psk_identity{identity = Id, dh_public = DHPublic}, _) ->
+    Len = byte_size(Id),
+    DHLen = byte_size(DHPublic),
+    <<?UINT16(Len), Id/binary, ?UINT16(DHLen), DHPublic/binary>>;
+encode_client_key(Identity = #client_ecdhe_psk_identity{identity = undefined}, Version) ->
+    encode_client_key(Identity#client_ecdhe_psk_identity{identity = <<"psk_identity">>}, Version);
+encode_client_key(#client_ecdhe_psk_identity{identity = Id, dh_public = DHPublic}, _) ->
+    Len = byte_size(Id),
+    DHLen = byte_size(DHPublic),
+    <<?UINT16(Len), Id/binary, ?BYTE(DHLen), DHPublic/binary>>;
+encode_client_key(Identity = #client_rsa_psk_identity{identity = undefined}, Version) ->
+    encode_client_key(Identity#client_rsa_psk_identity{identity = <<"psk_identity">>}, Version);
+encode_client_key(#client_rsa_psk_identity{identity = Id, exchange_keys = ExchangeKeys}, Version) ->
+    EncPMS = encode_client_key(ExchangeKeys, Version),
+    Len = byte_size(Id),
+    <<?UINT16(Len), Id/binary, EncPMS/binary>>;
+encode_client_key(#client_srp_public{srp_a = A}, _) ->
+    Len = byte_size(A),
+    <<?UINT16(Len), A/binary>>.
+
+enc_sign({_, anon}, _Sign, _Version) ->
+    <<>>;
+enc_sign({HashAlg, SignAlg}, Signature, _Version = {Major, Minor})
+  when Major == 3, Minor >= 3->
+	SignLen = byte_size(Signature),
+	HashSign = enc_hashsign(HashAlg, SignAlg),
+	<<HashSign/binary, ?UINT16(SignLen), Signature/binary>>;
+enc_sign(_HashSign, Sign, _Version) ->
+	SignLen = byte_size(Sign),
+	<<?UINT16(SignLen), Sign/binary>>.
+
+enc_hashsign(HashAlgo, SignAlgo) ->
+    Hash = ssl_cipher:hash_algorithm(HashAlgo),
+    Sign = ssl_cipher:sign_algorithm(SignAlgo),
+    <<?BYTE(Hash), ?BYTE(Sign)>>.
+
+encode_protocol(Protocol, Acc) ->
+	Len = byte_size(Protocol),
+	<<Acc/binary, ?BYTE(Len), Protocol/binary>>.
+
+enc_server_key_exchange(Version, Params, {HashAlgo, SignAlgo},
+			ClientRandom, ServerRandom, PrivateKey) ->
+    EncParams = encode_server_key(Params),
+    case HashAlgo of
+	null ->
+	    #server_key_params{params = Params,
+			       params_bin = EncParams,
+			       hashsign = {null, anon},
+			       signature = <<>>};
+	_ ->
+	    Hash =
+		server_key_exchange_hash(HashAlgo, <<ClientRandom/binary,
+						     ServerRandom/binary,
+						     EncParams/binary>>),
+	    Signature = digitally_signed(Version, Hash, HashAlgo, PrivateKey, SignAlgo),
+	    #server_key_params{params = Params,
+			       params_bin = EncParams,
+			       hashsign = {HashAlgo, SignAlgo},
+			       signature = Signature}
+    end.
+
+%% While the RFC opens the door to allow ALPN during renegotiation, in practice
+%% this does not work and it is recommended to ignore any ALPN extension during
+%% renegotiation, as done here.
+encode_alpn(_, true) ->
+    undefined;
+encode_alpn(undefined, _) ->
+    undefined;
+encode_alpn(Protocols, _) ->
+    #alpn{extension_data = lists:foldl(fun encode_protocol/2, <<>>, Protocols)}.
+
+
+encode_versions(Versions) ->
+    encode_versions(lists:reverse(Versions), <<>>).
+%%
+encode_versions([], Acc) ->
+    Acc;
+encode_versions([{M,N}|T], Acc) ->
+    encode_versions(T, <<?BYTE(M),?BYTE(N),Acc/binary>>).
+
+encode_client_shares(ClientShares) ->
+    encode_client_shares(ClientShares, <<>>).
+%%
+encode_client_shares([], Acc) ->
+    Acc;
+encode_client_shares([KeyShareEntry0|T], Acc) ->
+    KeyShareEntry = encode_key_share_entry(KeyShareEntry0),
+    encode_client_shares(T, <<Acc/binary,KeyShareEntry/binary>>).
+
+encode_key_share_entry(#key_share_entry{
+                          group = Group,
+                          key_exchange = KeyExchange}) ->
+    Len = byte_size(KeyExchange),
+    <<?UINT16((tls_v1:group_to_enum(Group))),?UINT16(Len),KeyExchange/binary>>.
+
+encode_psk_key_exchange_modes(KEModes) ->
+    encode_psk_key_exchange_modes(lists:reverse(KEModes), <<>>).
+%%
+encode_psk_key_exchange_modes([], Acc) ->
+    Acc;
+encode_psk_key_exchange_modes([psk_ke|T], Acc) ->
+    encode_psk_key_exchange_modes(T, <<?BYTE(?PSK_KE),Acc/binary>>);
+encode_psk_key_exchange_modes([psk_dhe_ke|T], Acc) ->
+    encode_psk_key_exchange_modes(T, <<?BYTE(?PSK_DHE_KE),Acc/binary>>).
+
+
+encode_psk_identities(Identities) ->
+    encode_psk_identities(Identities, <<>>).
+%%
+encode_psk_identities([], Acc) ->
+    Len = byte_size(Acc),
+    <<?UINT16(Len), Acc/binary>>;
+encode_psk_identities([#psk_identity{
+                          identity = Identity,
+                          obfuscated_ticket_age = Age}|T], Acc) ->
+    IdLen = byte_size(Identity),
+    encode_psk_identities(T, <<Acc/binary,?UINT16(IdLen),Identity/binary,?UINT32(Age)>>).
+
+
+encode_psk_binders(Binders) ->
+    encode_psk_binders(Binders, <<>>).
+%%
+encode_psk_binders([], Acc) ->
+    Len = byte_size(Acc),
+    <<?UINT16(Len), Acc/binary>>;
+encode_psk_binders([Binder|T], Acc) ->
+    Len = byte_size(Binder),
+    encode_psk_binders(T, <<Acc/binary,?BYTE(Len),Binder/binary>>).
+
+
+hello_extensions_list(HelloExtensions) ->
+    [Ext || {_, Ext} <- maps:to_list(HelloExtensions), Ext =/= undefined].
+
+%%-------------Decode handshakes---------------------------------
 dec_server_key(<<?UINT16(PLen), P:PLen/binary,
 		 ?UINT16(GLen), G:GLen/binary,
 		 ?UINT16(YLen), Y:YLen/binary, _/binary>> = KeyStruct,
@@ -1032,6 +2442,22 @@ dec_server_key(<<?UINT16(Len), IdentityHint:Len/binary,
 		       params_bin = BinMsg,
 		       hashsign = HashSign,
 		       signature = Signature};
+dec_server_key(<<?UINT16(Len), IdentityHint:Len/binary,
+		 ?BYTE(?NAMED_CURVE), ?UINT16(CurveID),
+		 ?BYTE(PointLen), ECPoint:PointLen/binary,
+		 _/binary>> = KeyStruct,
+	       ?KEY_EXCHANGE_EC_DIFFIE_HELLMAN_PSK, Version) ->
+    DHParams = #server_ecdh_params{
+                  curve = {namedCurve, tls_v1:enum_to_oid(CurveID)},
+                  public = ECPoint},
+    Params = #server_ecdhe_psk_params{
+                hint = IdentityHint,
+                dh_params = DHParams},
+    {BinMsg, HashSign, Signature} = dec_server_key_params(Len + 2 + PointLen + 4, KeyStruct, Version),
+    #server_key_params{params = Params,
+		       params_bin = BinMsg,
+		       hashsign = HashSign,
+		       signature = Signature};
 dec_server_key(<<?UINT16(NLen), N:NLen/binary,
 		 ?UINT16(GLen), G:GLen/binary,
 		 ?BYTE(SLen), S:SLen/binary,
@@ -1043,685 +2469,20 @@ dec_server_key(<<?UINT16(NLen), N:NLen/binary,
 		       params_bin = BinMsg,
 		       hashsign = HashSign,
 		       signature = Signature};
-dec_server_key(_, _, _) ->
-    throw(?ALERT_REC(?FATAL, ?HANDSHAKE_FAILURE)).
-
-%%--------------------------------------------------------------------
--spec decode_suites('2_bytes'|'3_bytes', binary()) -> list().
-%%
-%% Description:
-%%--------------------------------------------------------------------
-decode_suites('2_bytes', Dec) ->
-    from_2bytes(Dec);
-decode_suites('3_bytes', Dec) ->
-    from_3bytes(Dec).
-
-%%-------------Cipeher suite handling --------------------------------
-
-available_suites(UserSuites, Version) ->
-    lists:filtermap(fun(Suite) ->
-			    lists:member(Suite, ssl_cipher:all_suites(Version))
-		    end, UserSuites).
-
-available_suites(ServerCert, UserSuites, Version, Curve) ->
-    ssl_cipher:filter(ServerCert, available_suites(UserSuites, Version))
-	-- unavailable_ecc_suites(Curve).
-
-unavailable_ecc_suites(no_curve) ->
-    ssl_cipher:ec_keyed_suites();
-unavailable_ecc_suites(_) ->
-    [].
-
-cipher_suites(Suites, false) ->
-    [?TLS_EMPTY_RENEGOTIATION_INFO_SCSV | Suites];
-cipher_suites(Suites, true) ->
-    Suites.
-
-select_session(SuggestedSessionId, CipherSuites, Compressions, Port, #session{ecc = ECCCurve} = 
-		   Session, Version,
-	       #ssl_options{ciphers = UserSuites, honor_cipher_order = HCO} = SslOpts,
-	       Cache, CacheCb, Cert) ->
-    {SessionId, Resumed} = ssl_session:server_id(Port, SuggestedSessionId,
-						 SslOpts, Cert,
-						 Cache, CacheCb),
-    case Resumed of
-        undefined ->
-	    Suites = available_suites(Cert, UserSuites, Version, ECCCurve),
-	    CipherSuite = select_cipher_suite(CipherSuites, Suites, HCO),
-	    Compression = select_compression(Compressions),
-	    {new, Session#session{session_id = SessionId,
-				  cipher_suite = CipherSuite,
-				  compression_method = Compression}};
-	_ ->
-	    {resumed, Resumed}
-    end.
-
-supported_ecc({Major, Minor} = Version) when ((Major == 3) and (Minor >= 1)) orelse (Major > 3) ->
-    Curves = tls_v1:ecc_curves(Version),
-    #elliptic_curves{elliptic_curve_list = Curves};
-supported_ecc(_) ->
-    #elliptic_curves{elliptic_curve_list = []}.
-
-%%-------------certificate handling --------------------------------
-
-certificate_types(_, {N, M}) when N >= 3 andalso M >= 3 ->
-    case proplists:get_bool(ecdsa,  
-			    proplists:get_value(public_keys, crypto:supports())) of
-	true ->
-	    <<?BYTE(?ECDSA_SIGN), ?BYTE(?RSA_SIGN), ?BYTE(?DSS_SIGN)>>;
-	false ->
-	    <<?BYTE(?RSA_SIGN), ?BYTE(?DSS_SIGN)>>
-    end;
-
-certificate_types({KeyExchange, _, _, _}, _) when KeyExchange == rsa;
-						  KeyExchange == dhe_rsa;
-						  KeyExchange == ecdhe_rsa ->
-    <<?BYTE(?RSA_SIGN)>>;
-
-certificate_types({KeyExchange, _, _, _}, _)  when KeyExchange == dhe_dss;
-						   KeyExchange == srp_dss ->
-    <<?BYTE(?DSS_SIGN)>>;
-
-certificate_types({KeyExchange, _, _, _}, _) when KeyExchange == dh_ecdsa;
-						  KeyExchange == dhe_ecdsa;
-						  KeyExchange == ecdh_ecdsa;
-						  KeyExchange == ecdhe_ecdsa ->
-    <<?BYTE(?ECDSA_SIGN)>>;
-
-certificate_types(_, _) ->
-    <<?BYTE(?RSA_SIGN)>>.
-
-certificate_authorities(CertDbHandle, CertDbRef) ->
-    Authorities = certificate_authorities_from_db(CertDbHandle, CertDbRef),
-    Enc = fun(#'OTPCertificate'{tbsCertificate=TBSCert}) ->
-		  OTPSubj = TBSCert#'OTPTBSCertificate'.subject,
-		  DNEncodedBin = public_key:pkix_encode('Name', OTPSubj, otp),
-		  DNEncodedLen = byte_size(DNEncodedBin),
-		  <<?UINT16(DNEncodedLen), DNEncodedBin/binary>>
-	  end,
-    list_to_binary([Enc(Cert) || {_, Cert} <- Authorities]).
-
-certificate_authorities_from_db(CertDbHandle, CertDbRef) ->
-    ConnectionCerts = fun({{Ref, _, _}, Cert}, Acc) when Ref  == CertDbRef ->
-			      [Cert | Acc];
-			 (_, Acc) ->
-			      Acc
-		      end,
-    ssl_pkix_db:foldl(ConnectionCerts, [], CertDbHandle).
-
-%%-------------Extension handling --------------------------------
-
-handle_client_hello_extensions(RecordCB, Random, ClientCipherSuites,
-			       #hello_extensions{renegotiation_info = Info,
-						 srp = SRP,
-						 ec_point_formats = ECCFormat,
-                         alpn = ALPN,
-						 next_protocol_negotiation = NextProtocolNegotiation}, Version,
-			       #ssl_options{secure_renegotiate = SecureRenegotation,
-                                            alpn_preferred_protocols = ALPNPreferredProtocols} = Opts,
-			       #session{cipher_suite = NegotiatedCipherSuite,
-					compression_method = Compression} = Session0,
-			       ConnectionStates0, Renegotiation) ->
-    Session = handle_srp_extension(SRP, Session0),
-    ConnectionStates = handle_renegotiation_extension(server, RecordCB, Version, Info,
-						      Random, NegotiatedCipherSuite, 
-						      ClientCipherSuites, Compression,
-						      ConnectionStates0, Renegotiation, SecureRenegotation),
-
-    ServerHelloExtensions =  #hello_extensions{
-				renegotiation_info = renegotiation_info(RecordCB, server,
-									ConnectionStates, Renegotiation),
-				ec_point_formats = server_ecc_extension(Version, ECCFormat)
-			       },
-
-    %% If we receive an ALPN extension and have ALPN configured for this connection,
-    %% we handle it. Otherwise we check for the NPN extension.
-    if
-        ALPN =/= undefined, ALPNPreferredProtocols =/= undefined ->
-			case handle_alpn_extension(ALPNPreferredProtocols, decode_alpn(ALPN)) of
-                #alert{} = Alert ->
-                    Alert;
-                Protocol ->
-                    {Session, ConnectionStates, Protocol,
-                        ServerHelloExtensions#hello_extensions{alpn=encode_alpn([Protocol], Renegotiation)}}
-            end;
-        true ->
-            ProtocolsToAdvertise = handle_next_protocol_extension(NextProtocolNegotiation, Renegotiation, Opts),
-            {Session, ConnectionStates, undefined,
-				ServerHelloExtensions#hello_extensions{next_protocol_negotiation=
-                	encode_protocols_advertised_on_server(ProtocolsToAdvertise)}}
-    end.
-
-handle_server_hello_extensions(RecordCB, Random, CipherSuite, Compression,
-			       #hello_extensions{renegotiation_info = Info,
-                                                 alpn = ALPN,
-						 next_protocol_negotiation = NextProtocolNegotiation}, Version,
-			       #ssl_options{secure_renegotiate = SecureRenegotation,
-					    next_protocol_selector = NextProtoSelector},
-			       ConnectionStates0, Renegotiation) ->
-    ConnectionStates = handle_renegotiation_extension(client, RecordCB, Version, Info, Random, 
-						      CipherSuite, undefined,
-						      Compression, ConnectionStates0,
-						      Renegotiation, SecureRenegotation),
-
-    %% If we receive an ALPN extension then this is the protocol selected,
-    %% otherwise handle the NPN extension.
-    case decode_alpn(ALPN) of
-        %% ServerHello contains exactly one protocol: the one selected.
-        %% We also ignore the ALPN extension during renegotiation (see encode_alpn/2).
-        [Protocol] when not Renegotiation ->
-            {ConnectionStates, alpn, Protocol};
-        undefined ->
-            case handle_next_protocol(NextProtocolNegotiation, NextProtoSelector, Renegotiation) of
-                #alert{} = Alert ->
-                    Alert;
-                Protocol ->
-                    {ConnectionStates, npn, Protocol}
-            end;
-        _ -> %% {error, _Reason} or a list of 0/2+ protocols.
-            ?ALERT_REC(?FATAL, ?HANDSHAKE_FAILURE)
-    end.
-
-select_version(RecordCB, ClientVersion, Versions) ->
-    ServerVersion = RecordCB:highest_protocol_version(Versions),
-    RecordCB:lowest_protocol_version(ClientVersion, ServerVersion).
-
-renegotiation_info(_, client, _, false) ->
-    #renegotiation_info{renegotiated_connection = undefined};
-renegotiation_info(_RecordCB, server, ConnectionStates, false) ->
-    CS  = ssl_record:current_connection_state(ConnectionStates, read),
-    case CS#connection_state.secure_renegotiation of
-	true ->
-	    #renegotiation_info{renegotiated_connection = ?byte(0)};
-	false ->
-	    #renegotiation_info{renegotiated_connection = undefined}
-    end;
-renegotiation_info(_RecordCB, client, ConnectionStates, true) ->
-    CS = ssl_record:current_connection_state(ConnectionStates, read),
-    case CS#connection_state.secure_renegotiation of
-	true ->
-	    Data = CS#connection_state.client_verify_data,
-	    #renegotiation_info{renegotiated_connection = Data};
-	false ->
-	    #renegotiation_info{renegotiated_connection = undefined}
-    end;
-
-renegotiation_info(_RecordCB, server, ConnectionStates, true) ->
-    CS = ssl_record:current_connection_state(ConnectionStates, read),
-    case CS#connection_state.secure_renegotiation of
-	true ->
-	    CData = CS#connection_state.client_verify_data,
-	    SData  =CS#connection_state.server_verify_data,
-	    #renegotiation_info{renegotiated_connection = <<CData/binary, SData/binary>>};
-	false ->
-	    #renegotiation_info{renegotiated_connection = undefined}
-    end.
-
-handle_renegotiation_info(_RecordCB, _, #renegotiation_info{renegotiated_connection = ?byte(0)},
-			  ConnectionStates, false, _, _) ->
-    {ok, ssl_record:set_renegotiation_flag(true, ConnectionStates)};
-
-handle_renegotiation_info(_RecordCB, server, undefined, ConnectionStates, _, _, CipherSuites) ->
-    case is_member(?TLS_EMPTY_RENEGOTIATION_INFO_SCSV, CipherSuites) of
-	true ->
-	    {ok, ssl_record:set_renegotiation_flag(true, ConnectionStates)};
-	false ->
-	    {ok, ssl_record:set_renegotiation_flag(false, ConnectionStates)}
-    end;
-
-handle_renegotiation_info(_RecordCB, _, undefined, ConnectionStates, false, _, _) ->
-    {ok, ssl_record:set_renegotiation_flag(false, ConnectionStates)};
-
-handle_renegotiation_info(_RecordCB, client, #renegotiation_info{renegotiated_connection = ClientServerVerify},
-			  ConnectionStates, true, _, _) ->
-    CS = ssl_record:current_connection_state(ConnectionStates, read),
-    CData = CS#connection_state.client_verify_data,
-    SData = CS#connection_state.server_verify_data,
-    case <<CData/binary, SData/binary>> == ClientServerVerify of
-	true ->
-	    {ok, ConnectionStates};
-	false ->
-	    ?ALERT_REC(?FATAL, ?HANDSHAKE_FAILURE)
-    end;
-handle_renegotiation_info(_RecordCB, server, #renegotiation_info{renegotiated_connection = ClientVerify},
-			  ConnectionStates, true, _, CipherSuites) ->
-
-      case is_member(?TLS_EMPTY_RENEGOTIATION_INFO_SCSV, CipherSuites) of
-	  true ->
-	      ?ALERT_REC(?FATAL, ?HANDSHAKE_FAILURE);
-	  false ->
-	      CS = ssl_record:current_connection_state(ConnectionStates, read),
-	      Data = CS#connection_state.client_verify_data,
-	      case Data == ClientVerify of
-		  true ->
-		      {ok, ConnectionStates};
-		  false ->
-		      ?ALERT_REC(?FATAL, ?HANDSHAKE_FAILURE)
-	      end
-      end;
-
-handle_renegotiation_info(RecordCB, client, undefined, ConnectionStates, true, SecureRenegotation, _) ->
-    handle_renegotiation_info(RecordCB, ConnectionStates, SecureRenegotation);
-
-handle_renegotiation_info(RecordCB, server, undefined, ConnectionStates, true, SecureRenegotation, CipherSuites) ->
-     case is_member(?TLS_EMPTY_RENEGOTIATION_INFO_SCSV, CipherSuites) of
-	  true ->
-	     ?ALERT_REC(?FATAL, ?HANDSHAKE_FAILURE);
-	 false ->
-	     handle_renegotiation_info(RecordCB, ConnectionStates, SecureRenegotation)
-     end.
-
-handle_renegotiation_info(_RecordCB, ConnectionStates, SecureRenegotation) ->
-    CS = ssl_record:current_connection_state(ConnectionStates, read),
-    case {SecureRenegotation, CS#connection_state.secure_renegotiation} of
-	{_, true} ->
-	    ?ALERT_REC(?FATAL, ?HANDSHAKE_FAILURE);
-	{true, false} ->
-	    ?ALERT_REC(?FATAL, ?NO_RENEGOTIATION);
-	{false, false} ->
-	    {ok, ConnectionStates}
-    end.
-
-hello_extensions_list(#hello_extensions{renegotiation_info = RenegotiationInfo,
-					srp = SRP,
-					hash_signs = HashSigns,
-					ec_point_formats = EcPointFormats,
-					elliptic_curves = EllipticCurves,
-                                        alpn = ALPN,
-					next_protocol_negotiation = NextProtocolNegotiation,
-					sni = Sni}) ->
-    [Ext || Ext <- [RenegotiationInfo, SRP, HashSigns,
-		    EcPointFormats, EllipticCurves, ALPN, NextProtocolNegotiation, Sni], Ext =/= undefined].
-
-srp_user(#ssl_options{srp_identity = {UserName, _}}) ->
-    #srp{username = UserName};
-srp_user(_) ->
-    undefined.
-
-client_ecc_extensions(Module, Version) ->
-    CryptoSupport = proplists:get_value(public_keys, crypto:supports()),
-    case proplists:get_bool(ecdh, CryptoSupport) of
-	true ->
-	    EcPointFormats = #ec_point_formats{ec_point_format_list = [?ECPOINT_UNCOMPRESSED]},
-	    EllipticCurves = #elliptic_curves{elliptic_curve_list = Module:ecc_curves(Version)},
-	    {EcPointFormats, EllipticCurves};
-	_ ->
-	    {undefined, undefined}
-    end.
-
-server_ecc_extension(_Version, EcPointFormats) ->
-    CryptoSupport = proplists:get_value(public_keys, crypto:supports()),
-    case proplists:get_bool(ecdh, CryptoSupport) of
-	true ->
-	    handle_ecc_point_fmt_extension(EcPointFormats);
-	false ->
-	    undefined
-    end.
-
-handle_ecc_point_fmt_extension(undefined) ->
-    undefined;
-handle_ecc_point_fmt_extension(_) ->
-    #ec_point_formats{ec_point_format_list = [?ECPOINT_UNCOMPRESSED]}.
-
-advertises_ec_ciphers([]) ->
-    false;
-advertises_ec_ciphers([{ecdh_ecdsa, _,_,_} | _]) ->
-    true;
-advertises_ec_ciphers([{ecdhe_ecdsa, _,_,_} | _]) ->
-    true;
-advertises_ec_ciphers([{ecdh_rsa, _,_,_} | _]) ->
-    true;
-advertises_ec_ciphers([{ecdhe_rsa, _,_,_} | _]) ->
-    true;
-advertises_ec_ciphers([{ecdh_anon, _,_,_} | _]) ->
-    true;
-advertises_ec_ciphers([_| Rest]) ->
-    advertises_ec_ciphers(Rest).
-select_curve(#elliptic_curves{elliptic_curve_list = ClientCurves}, 
-	     #elliptic_curves{elliptic_curve_list = ServerCurves}) -> 
-    select_curve(ClientCurves, ServerCurves);
-select_curve(undefined, _) ->
-    %% Client did not send ECC extension use default curve if 
-    %% ECC cipher is negotiated
-    {namedCurve, ?secp256r1};
-select_curve(_, []) ->
-    no_curve;
-select_curve(Curves, [Curve| Rest]) ->
-    case lists:member(Curve, Curves) of
-	true ->
-	    {namedCurve, Curve};
-	false ->
-	    select_curve(Curves, Rest)
-    end.
-%% RFC 6066, Section 3: Currently, the only server names supported are
-%% DNS hostnames
-sni(_, disable) ->
-    undefined;
-sni(Host, undefined) ->
-    sni1(Host);
-sni(_Host, SNIOption) ->
-    sni1(SNIOption).
-
-sni1(Hostname) ->
-    case inet_parse:domain(Hostname) of
-        false -> undefined;
-        true -> #sni{hostname = Hostname}
-    end.
-%%--------------------------------------------------------------------
-%%% Internal functions
-%%--------------------------------------------------------------------
-validation_fun_and_state({Fun, UserState0}, Role,  CertDbHandle, CertDbRef, CRLCheck, CRLDbHandle) ->
-    {fun(OtpCert, {extension, _} = Extension, {SslState, UserState}) ->
-	     case ssl_certificate:validate(OtpCert,
-					   Extension,
-					   SslState) of
-		 {valid, NewSslState} ->
-		     {valid, {NewSslState, UserState}};
-		 {fail, Reason} ->
-		     apply_user_fun(Fun, OtpCert, Reason, UserState,
-				    SslState);
-		 {unknown, _} ->
-		     apply_user_fun(Fun, OtpCert,
-				    Extension, UserState, SslState)
-	     end;
-	(OtpCert, VerifyResult, {SslState, UserState}) ->
-	     apply_user_fun(Fun, OtpCert, VerifyResult, UserState,
-			    SslState)
-     end, {{Role, CertDbHandle, CertDbRef, CRLCheck, CRLDbHandle}, UserState0}};
-validation_fun_and_state(undefined, Role, CertDbHandle, CertDbRef, CRLCheck, CRLDbHandle) ->
-    {fun(OtpCert, {extension, _} = Extension, SslState) ->
-	     ssl_certificate:validate(OtpCert,
-				      Extension,
-				      SslState);
-	(OtpCert, VerifyResult, SslState) when (VerifyResult == valid) or (VerifyResult == valid_peer) -> 
-	     case crl_check(OtpCert, CRLCheck, CertDbHandle, CertDbRef, CRLDbHandle, VerifyResult) of
-		 valid ->
-		     {VerifyResult, SslState};
-		 Reason ->
-		     {fail, Reason}
-	     end;
-	(OtpCert, VerifyResult, SslState) ->
-	     ssl_certificate:validate(OtpCert,
-				      VerifyResult,
-				      SslState)
-     end, {Role, CertDbHandle, CertDbRef, CRLCheck, CRLDbHandle}}.
-
-apply_user_fun(Fun, OtpCert, VerifyResult, UserState0, 
-	       {_, CertDbHandle, CertDbRef, CRLCheck, CRLDbHandle} = SslState) when
-      (VerifyResult == valid) or (VerifyResult == valid_peer) ->
-    case Fun(OtpCert, VerifyResult, UserState0) of
-	{Valid, UserState} when (Valid == valid) or (Valid == valid_peer) ->
-	    case crl_check(OtpCert, CRLCheck, CertDbHandle, CertDbRef, CRLDbHandle, VerifyResult) of
-		valid ->
-		    {Valid, {SslState, UserState}};
-		Result ->
-		    apply_user_fun(Fun, OtpCert, Result, UserState, SslState)
-	    end;
-	{fail, _} = Fail ->
-	    Fail
-    end;
-apply_user_fun(Fun, OtpCert, ExtensionOrError, UserState0, SslState) ->
-    case Fun(OtpCert, ExtensionOrError, UserState0) of
-	{Valid, UserState} when (Valid == valid) or (Valid == valid_peer)->
-	    {Valid, {SslState, UserState}};
-	{fail, _} = Fail ->
-	    Fail;
-	{unknown, UserState} ->
-	    {unknown, {SslState, UserState}}
-    end.
-
-path_validation_alert({bad_cert, cert_expired}) ->
-    ?ALERT_REC(?FATAL, ?CERTIFICATE_EXPIRED);
-path_validation_alert({bad_cert, invalid_issuer}) ->
-    ?ALERT_REC(?FATAL, ?BAD_CERTIFICATE);
-path_validation_alert({bad_cert, invalid_signature}) ->
-    ?ALERT_REC(?FATAL, ?BAD_CERTIFICATE);
-path_validation_alert({bad_cert, name_not_permitted}) ->
-    ?ALERT_REC(?FATAL, ?BAD_CERTIFICATE);
-path_validation_alert({bad_cert, unknown_critical_extension}) ->
-    ?ALERT_REC(?FATAL, ?UNSUPPORTED_CERTIFICATE);
-path_validation_alert({bad_cert, {revoked, _}}) ->
-    ?ALERT_REC(?FATAL, ?CERTIFICATE_REVOKED);
-path_validation_alert({bad_cert, revocation_status_undetermined}) ->
-    ?ALERT_REC(?FATAL, ?BAD_CERTIFICATE);
-path_validation_alert({bad_cert, selfsigned_peer}) ->
-    ?ALERT_REC(?FATAL, ?BAD_CERTIFICATE);
-path_validation_alert({bad_cert, unknown_ca}) ->
-     ?ALERT_REC(?FATAL, ?UNKNOWN_CA);
-path_validation_alert(_) ->
-    ?ALERT_REC(?FATAL, ?HANDSHAKE_FAILURE).
-
-encrypted_premaster_secret(Secret, RSAPublicKey) ->
-    try
-	PreMasterSecret = public_key:encrypt_public(Secret, RSAPublicKey,
-						    [{rsa_pad,
-						      rsa_pkcs1_padding}]),
-	#encrypted_premaster_secret{premaster_secret = PreMasterSecret}
-    catch
-	_:_->
-	    throw(?ALERT_REC(?FATAL, ?HANDSHAKE_FAILURE))
-    end.
-
-digitally_signed({3, Minor}, Hash, HashAlgo, Key) when Minor >= 3 ->
-    public_key:sign({digest, Hash}, HashAlgo, Key);
-digitally_signed(_Version, Hash, HashAlgo, #'DSAPrivateKey'{} = Key) ->
-    public_key:sign({digest, Hash}, HashAlgo, Key);
-digitally_signed(_Version, Hash, _HashAlgo, #'RSAPrivateKey'{} = Key) ->
-    public_key:encrypt_private(Hash, Key,
-			       [{rsa_pad, rsa_pkcs1_padding}]);
-digitally_signed(_Version, Hash, HashAlgo, Key) ->
-    public_key:sign({digest, Hash}, HashAlgo, Key).
-
-calc_certificate_verify({3, 0}, HashAlgo, MasterSecret, Handshake) ->
-    ssl_v3:certificate_verify(HashAlgo, MasterSecret, lists:reverse(Handshake));
-calc_certificate_verify({3, N}, HashAlgo, _MasterSecret, Handshake) ->
-    tls_v1:certificate_verify(HashAlgo, N, lists:reverse(Handshake)).
-
-calc_finished({3, 0}, Role, _PrfAlgo, MasterSecret, Handshake) ->
-    ssl_v3:finished(Role, MasterSecret, lists:reverse(Handshake));
-calc_finished({3, N}, Role, PrfAlgo, MasterSecret, Handshake) ->
-    tls_v1:finished(Role, N, PrfAlgo, MasterSecret, lists:reverse(Handshake)).
-
-master_secret(_RecordCB, Version, MasterSecret,
-	      #security_parameters{
-		 bulk_cipher_algorithm = BCA,
-		 client_random = ClientRandom,
-		 server_random = ServerRandom,
-		 hash_size = HashSize,
-		 prf_algorithm = PrfAlgo,
-		 key_material_length = KML,
-		 expanded_key_material_length = EKML,
-		 iv_size = IVS},
-	      ConnectionStates, Role) ->
-    {ClientWriteMacSecret, ServerWriteMacSecret, ClientWriteKey,
-     ServerWriteKey, ClientIV, ServerIV} =
-	setup_keys(Version, PrfAlgo, MasterSecret, ServerRandom,
-		   ClientRandom, HashSize, KML, EKML, IVS),
-
-    ConnStates1 = ssl_record:set_master_secret(MasterSecret, ConnectionStates),
-    ConnStates2 =
-	ssl_record:set_mac_secret(ClientWriteMacSecret, ServerWriteMacSecret,
-				  Role, ConnStates1),
-
-    ClientCipherState = ssl_cipher:cipher_init(BCA, ClientIV, ClientWriteKey),
-    ServerCipherState = ssl_cipher:cipher_init(BCA, ServerIV, ServerWriteKey),
-    {MasterSecret,
-     ssl_record:set_pending_cipher_state(ConnStates2, ClientCipherState,
-					 ServerCipherState, Role)}.
-
-setup_keys({3,0}, _PrfAlgo, MasterSecret,
-	   ServerRandom, ClientRandom, HashSize, KML, EKML, IVS) ->
-    ssl_v3:setup_keys(MasterSecret, ServerRandom,
-			ClientRandom, HashSize, KML, EKML, IVS);
-
-setup_keys({3,N}, PrfAlgo, MasterSecret,
-	   ServerRandom, ClientRandom, HashSize, KML, _EKML, IVS) ->
-    tls_v1:setup_keys(N, PrfAlgo, MasterSecret, ServerRandom, ClientRandom, HashSize,
-			KML, IVS).
-
-calc_master_secret({3,0}, _PrfAlgo, PremasterSecret, ClientRandom, ServerRandom) ->
-    ssl_v3:master_secret(PremasterSecret, ClientRandom, ServerRandom);
-
-calc_master_secret({3,_}, PrfAlgo, PremasterSecret, ClientRandom, ServerRandom) ->
-    tls_v1:master_secret(PrfAlgo, PremasterSecret, ClientRandom, ServerRandom).
-
-handle_renegotiation_extension(Role, RecordCB, Version, Info, Random, NegotiatedCipherSuite, 
-			       ClientCipherSuites, Compression,
-			       ConnectionStates0, Renegotiation, SecureRenegotation) ->
-    case handle_renegotiation_info(RecordCB, Role, Info, ConnectionStates0,
-				   Renegotiation, SecureRenegotation,
-				   ClientCipherSuites) of
-	{ok, ConnectionStates} ->
-	    hello_pending_connection_states(RecordCB, Role,
-					    Version,
-					    NegotiatedCipherSuite,
-					    Random,
-					    Compression,
-					    ConnectionStates);
-	#alert{} = Alert ->
-	    throw(Alert)
-    end.
-
-%% Update pending connection states with parameters exchanged via
-%% hello messages
-%% NOTE : Role is the role of the receiver of the hello message
-%%        currently being processed.
-hello_pending_connection_states(_RecordCB, Role, Version, CipherSuite, Random, Compression,
-				 ConnectionStates) ->
-    ReadState =
-	ssl_record:pending_connection_state(ConnectionStates, read),
-    WriteState =
-	ssl_record:pending_connection_state(ConnectionStates, write),
-
-    NewReadSecParams =
-	hello_security_parameters(Role, Version, ReadState, CipherSuite,
-			    Random, Compression),
-
-    NewWriteSecParams =
-	hello_security_parameters(Role, Version, WriteState, CipherSuite,
-			    Random, Compression),
-
-    ssl_record:set_security_params(NewReadSecParams,
-				    NewWriteSecParams,
-				    ConnectionStates).
-
-hello_security_parameters(client, Version, ConnectionState, CipherSuite, Random,
-			  Compression) ->
-    SecParams = ConnectionState#connection_state.security_parameters,
-    NewSecParams = ssl_cipher:security_parameters(Version, CipherSuite, SecParams),
-    NewSecParams#security_parameters{
-      server_random = Random,
-      compression_algorithm = Compression
-     };
-
-hello_security_parameters(server, Version, ConnectionState, CipherSuite, Random,
-			  Compression) ->
-    SecParams = ConnectionState#connection_state.security_parameters,
-    NewSecParams = ssl_cipher:security_parameters(Version, CipherSuite, SecParams),
-    NewSecParams#security_parameters{
-      client_random = Random,
-      compression_algorithm = Compression
-     }.
-
-%%-------------Encode/Decode --------------------------------
-
-encode_server_key(#server_dh_params{dh_p = P, dh_g = G, dh_y = Y}) ->
-    PLen = byte_size(P),
-    GLen = byte_size(G),
-    YLen = byte_size(Y),
-    <<?UINT16(PLen), P/binary, ?UINT16(GLen), G/binary, ?UINT16(YLen), Y/binary>>;
-encode_server_key(#server_ecdh_params{curve = {namedCurve, ECCurve}, public = ECPubKey}) ->
-    %%TODO: support arbitrary keys
-    KLen = size(ECPubKey),
-    <<?BYTE(?NAMED_CURVE), ?UINT16((tls_v1:oid_to_enum(ECCurve))),
-      ?BYTE(KLen), ECPubKey/binary>>;
-encode_server_key(#server_psk_params{hint = PskIdentityHint}) ->
-    Len = byte_size(PskIdentityHint),
-    <<?UINT16(Len), PskIdentityHint/binary>>;
-encode_server_key(Params = #server_dhe_psk_params{hint = undefined}) ->
-    encode_server_key(Params#server_dhe_psk_params{hint = <<>>});
-encode_server_key(#server_dhe_psk_params{
-		  hint = PskIdentityHint,
-		  dh_params = #server_dh_params{dh_p = P, dh_g = G, dh_y = Y}}) ->
-    Len = byte_size(PskIdentityHint),
-    PLen = byte_size(P),
-    GLen = byte_size(G),
-    YLen = byte_size(Y),
-    <<?UINT16(Len), PskIdentityHint/binary,
-      ?UINT16(PLen), P/binary, ?UINT16(GLen), G/binary, ?UINT16(YLen), Y/binary>>;
-encode_server_key(#server_srp_params{srp_n = N, srp_g = G,	srp_s = S, srp_b = B}) ->
-    NLen = byte_size(N),
-    GLen = byte_size(G),
-    SLen = byte_size(S),
-    BLen = byte_size(B),
-    <<?UINT16(NLen), N/binary, ?UINT16(GLen), G/binary,
-      ?BYTE(SLen), S/binary, ?UINT16(BLen), B/binary>>.
-
-encode_client_key(#encrypted_premaster_secret{premaster_secret = PKEPMS},{3, 0}) ->
-    PKEPMS;
-encode_client_key(#encrypted_premaster_secret{premaster_secret = PKEPMS}, _) ->
-    PKEPMSLen = byte_size(PKEPMS),
-    <<?UINT16(PKEPMSLen), PKEPMS/binary>>;
-encode_client_key(#client_diffie_hellman_public{dh_public = DHPublic}, _) ->
-    Len = byte_size(DHPublic),
-    <<?UINT16(Len), DHPublic/binary>>;
-encode_client_key(#client_ec_diffie_hellman_public{dh_public = DHPublic}, _) ->
-    Len = byte_size(DHPublic),
-    <<?BYTE(Len), DHPublic/binary>>;
-encode_client_key(#client_psk_identity{identity = undefined}, _) ->
-    Id = <<"psk_identity">>,
-    Len = byte_size(Id),
-    <<?UINT16(Len), Id/binary>>;
-encode_client_key(#client_psk_identity{identity = Id}, _) ->
-    Len = byte_size(Id),
-    <<?UINT16(Len), Id/binary>>;
-encode_client_key(Identity = #client_dhe_psk_identity{identity = undefined}, Version) ->
-    encode_client_key(Identity#client_dhe_psk_identity{identity = <<"psk_identity">>}, Version);
-encode_client_key(#client_dhe_psk_identity{identity = Id, dh_public = DHPublic}, _) ->
-    Len = byte_size(Id),
-    DHLen = byte_size(DHPublic),
-    <<?UINT16(Len), Id/binary, ?UINT16(DHLen), DHPublic/binary>>;
-encode_client_key(Identity = #client_rsa_psk_identity{identity = undefined}, Version) ->
-    encode_client_key(Identity#client_rsa_psk_identity{identity = <<"psk_identity">>}, Version);
-encode_client_key(#client_rsa_psk_identity{identity = Id, exchange_keys = ExchangeKeys}, Version) ->
-    EncPMS = encode_client_key(ExchangeKeys, Version),
-    Len = byte_size(Id),
-    <<?UINT16(Len), Id/binary, EncPMS/binary>>;
-encode_client_key(#client_srp_public{srp_a = A}, _) ->
-    Len = byte_size(A),
-    <<?UINT16(Len), A/binary>>.
-
-enc_sign({_, anon}, _Sign, _Version) ->
-    <<>>;
-enc_sign({HashAlg, SignAlg}, Signature, _Version = {Major, Minor})
-  when Major == 3, Minor >= 3->
-	SignLen = byte_size(Signature),
-	HashSign = enc_hashsign(HashAlg, SignAlg),
-	<<HashSign/binary, ?UINT16(SignLen), Signature/binary>>;
-enc_sign(_HashSign, Sign, _Version) ->
-	SignLen = byte_size(Sign),
-	<<?UINT16(SignLen), Sign/binary>>.
-
-enc_hashsign(HashAlgo, SignAlgo) ->
-    Hash = ssl_cipher:hash_algorithm(HashAlgo),
-    Sign = ssl_cipher:sign_algorithm(SignAlgo),
-    <<?BYTE(Hash), ?BYTE(Sign)>>.
-
-encode_protocol(Protocol, Acc) ->
-	Len = byte_size(Protocol),
-	<<Acc/binary, ?BYTE(Len), Protocol/binary>>.
+dec_server_key(_, KeyExchange, _) ->
+    throw(?ALERT_REC(?FATAL, ?HANDSHAKE_FAILURE, {unknown_or_malformed_key_exchange, KeyExchange})).
 
 dec_client_key(PKEPMS, ?KEY_EXCHANGE_RSA, {3, 0}) ->
     #encrypted_premaster_secret{premaster_secret = PKEPMS};
 dec_client_key(<<?UINT16(_), PKEPMS/binary>>, ?KEY_EXCHANGE_RSA, _) ->
     #encrypted_premaster_secret{premaster_secret = PKEPMS};
 dec_client_key(<<>>, ?KEY_EXCHANGE_DIFFIE_HELLMAN, _) ->
-    throw(?ALERT_REC(?FATAL, ?UNSUPPORTED_CERTIFICATE));
+    throw(?ALERT_REC(?FATAL, ?UNSUPPORTED_CERTIFICATE, empty_dh_public));
 dec_client_key(<<?UINT16(DH_YLen), DH_Y:DH_YLen/binary>>,
 	       ?KEY_EXCHANGE_DIFFIE_HELLMAN, _) ->
     #client_diffie_hellman_public{dh_public = DH_Y};
 dec_client_key(<<>>, ?KEY_EXCHANGE_EC_DIFFIE_HELLMAN, _) ->
-    throw(?ALERT_REC(?FATAL, ?UNSUPPORTED_CERTIFICATE));
+    throw(?ALERT_REC(?FATAL, ?UNSUPPORTED_CERTIFICATE, empty_dh_public));
 dec_client_key(<<?BYTE(DH_YLen), DH_Y:DH_YLen/binary>>,
 	       ?KEY_EXCHANGE_EC_DIFFIE_HELLMAN, _) ->
     #client_ec_diffie_hellman_public{dh_public = DH_Y};
@@ -1732,6 +2493,10 @@ dec_client_key(<<?UINT16(Len), Id:Len/binary,
 		 ?UINT16(DH_YLen), DH_Y:DH_YLen/binary>>,
 	       ?KEY_EXCHANGE_DHE_PSK, _) ->
     #client_dhe_psk_identity{identity = Id, dh_public = DH_Y};
+dec_client_key(<<?UINT16(Len), Id:Len/binary,
+		 ?BYTE(DH_YLen), DH_Y:DH_YLen/binary>>,
+	       ?KEY_EXCHANGE_EC_DIFFIE_HELLMAN_PSK, _) ->
+    #client_ecdhe_psk_identity{identity = Id, dh_public = DH_Y};
 dec_client_key(<<?UINT16(Len), Id:Len/binary, PKEPMS/binary>>,
 	       ?KEY_EXCHANGE_RSA_PSK, {3, 0}) ->
     #client_rsa_psk_identity{identity = Id,
@@ -1748,6 +2513,20 @@ dec_server_key_params(Len, Keys, Version) ->
     <<Params:Len/bytes, Signature/binary>> = Keys,
     dec_server_key_signature(Params, Signature, Version).
 
+dec_server_key_signature(Params, <<?BYTE(8), ?BYTE(SignAlgo),
+                                   ?UINT16(0)>>, {Major, Minor})
+  when Major == 3, Minor >= 3 ->
+    <<?UINT16(Scheme0)>> = <<?BYTE(8), ?BYTE(SignAlgo)>>,
+    Scheme = ssl_cipher:signature_scheme(Scheme0),
+    {Hash, Sign, _} = ssl_cipher:scheme_to_components(Scheme),
+    {Params, {Hash, Sign}, <<>>};
+dec_server_key_signature(Params, <<?BYTE(8), ?BYTE(SignAlgo),
+                                   ?UINT16(Len), Signature:Len/binary>>, {Major, Minor})
+  when Major == 3, Minor >= 3 ->
+    <<?UINT16(Scheme0)>> = <<?BYTE(8), ?BYTE(SignAlgo)>>,
+    Scheme = ssl_cipher:signature_scheme(Scheme0),
+    {Hash, Sign, _} = ssl_cipher:scheme_to_components(Scheme),
+    {Params, {Hash, Sign}, Signature};
 dec_server_key_signature(Params, <<?BYTE(HashAlgo), ?BYTE(SignAlgo),
 			    ?UINT16(0)>>, {Major, Minor})
   when Major == 3, Minor >= 3 ->
@@ -1765,18 +2544,62 @@ dec_server_key_signature(Params, <<?UINT16(0)>>, _) ->
 dec_server_key_signature(Params, <<?UINT16(Len), Signature:Len/binary>>, _) ->
     {Params, undefined, Signature};
 dec_server_key_signature(_, _, _) ->
-    throw(?ALERT_REC(?FATAL, ?HANDSHAKE_FAILURE)).
+    throw(?ALERT_REC(?FATAL, ?HANDSHAKE_FAILURE, failed_to_decrypt_server_key_sign)).
 
-dec_hello_extensions(<<>>, Acc) ->
+%% Processes a ClientHello/ServerHello message and returns the version to be used
+%% in the decoding functions. The following rules apply:
+%% - IF supported_versions extension is absent:
+%%   RETURN the lowest of (LocalVersion and LegacyVersion)
+%% - IF supported_versions estension is present:
+%%   RETURN the lowest of (LocalVersion and first element of supported versions)
+process_supported_versions_extension(<<>>, LocalVersion, LegacyVersion)
+  when LegacyVersion =< LocalVersion ->
+    LegacyVersion;
+process_supported_versions_extension(<<>>, LocalVersion, _LegacyVersion) ->
+    LocalVersion;
+process_supported_versions_extension(<<?UINT16(?SUPPORTED_VERSIONS_EXT), ?UINT16(Len),
+                                       ExtData:Len/binary, _Rest/binary>>,
+                                     LocalVersion, _LegacyVersion) when Len > 2 ->
+    <<?BYTE(_),Versions0/binary>> = ExtData,
+    [Highest|_] = decode_versions(Versions0),
+    if Highest =< LocalVersion ->
+            Highest;
+       true ->
+            LocalVersion
+    end;
+process_supported_versions_extension(<<?UINT16(?SUPPORTED_VERSIONS_EXT), ?UINT16(Len),
+                                       ?BYTE(Major),?BYTE(Minor), _Rest/binary>>,
+                                     LocalVersion, _LegacyVersion) when Len =:= 2 ->
+    SelectedVersion = {Major, Minor},
+    if SelectedVersion =< LocalVersion ->
+            SelectedVersion;
+       true ->
+            LocalVersion
+    end;
+process_supported_versions_extension(<<?UINT16(_), ?UINT16(Len),
+                                       _ExtData:Len/binary, Rest/binary>>,
+                                     LocalVersion, LegacyVersion) ->
+    process_supported_versions_extension(Rest, LocalVersion, LegacyVersion);
+%% Tolerate protocol encoding errors and skip parsing the rest of the extension.
+process_supported_versions_extension(_, LocalVersion, LegacyVersion)
+  when LegacyVersion =< LocalVersion ->
+    LegacyVersion;
+process_supported_versions_extension(_, LocalVersion, _) ->
+    LocalVersion.
+
+decode_extensions(<<>>, _Version, _MessageType, Acc) ->
     Acc;
-dec_hello_extensions(<<?UINT16(?ALPN_EXT), ?UINT16(ExtLen), ?UINT16(Len), ExtensionData:Len/binary, Rest/binary>>, Acc)
-        when Len + 2 =:= ExtLen ->
+decode_extensions(<<?UINT16(?ALPN_EXT), ?UINT16(ExtLen), ?UINT16(Len),
+                    ExtensionData:Len/binary, Rest/binary>>, Version, MessageType, Acc)
+  when Len + 2 =:= ExtLen ->
     ALPN = #alpn{extension_data = ExtensionData},
-    dec_hello_extensions(Rest, Acc#hello_extensions{alpn = ALPN});
-dec_hello_extensions(<<?UINT16(?NEXTPROTONEG_EXT), ?UINT16(Len), ExtensionData:Len/binary, Rest/binary>>, Acc) ->
+    decode_extensions(Rest, Version, MessageType, Acc#{alpn => ALPN});
+decode_extensions(<<?UINT16(?NEXTPROTONEG_EXT), ?UINT16(Len),
+                    ExtensionData:Len/binary, Rest/binary>>, Version, MessageType, Acc) ->
     NextP = #next_protocol_negotiation{extension_data = ExtensionData},
-    dec_hello_extensions(Rest, Acc#hello_extensions{next_protocol_negotiation = NextP});
-dec_hello_extensions(<<?UINT16(?RENEGOTIATION_EXT), ?UINT16(Len), Info:Len/binary, Rest/binary>>, Acc) ->
+    decode_extensions(Rest, Version, MessageType, Acc#{next_protocol_negotiation => NextP});
+decode_extensions(<<?UINT16(?RENEGOTIATION_EXT), ?UINT16(Len),
+                    Info:Len/binary, Rest/binary>>, Version, MessageType, Acc) ->
     RenegotiateInfo = case Len of
 			  1 ->  % Initial handshake
 			      Info; % should be <<0>> will be matched in handle_renegotiation_info
@@ -1785,25 +2608,72 @@ dec_hello_extensions(<<?UINT16(?RENEGOTIATION_EXT), ?UINT16(Len), Info:Len/binar
 			      <<?BYTE(VerifyLen), VerifyInfo/binary>> = Info,
 			      VerifyInfo
 		      end,
-    dec_hello_extensions(Rest, Acc#hello_extensions{renegotiation_info =
-							#renegotiation_info{renegotiated_connection =
-										RenegotiateInfo}});
+    decode_extensions(Rest, Version, MessageType,
+                      Acc#{renegotiation_info =>
+                               #renegotiation_info{renegotiated_connection =
+                                                       RenegotiateInfo}});
 
-dec_hello_extensions(<<?UINT16(?SRP_EXT), ?UINT16(Len), ?BYTE(SRPLen), SRP:SRPLen/binary, Rest/binary>>, Acc)
-  when Len == SRPLen + 2 ->
-    dec_hello_extensions(Rest,  Acc#hello_extensions{srp = #srp{username = SRP}});
+decode_extensions(<<?UINT16(?SRP_EXT), ?UINT16(Len), ?BYTE(SRPLen),
+                    SRP:SRPLen/binary, Rest/binary>>, Version, MessageType, Acc)
+  when Len == SRPLen + 1 ->
+    decode_extensions(Rest, Version, MessageType, Acc#{srp => #srp{username = SRP}});
 
-dec_hello_extensions(<<?UINT16(?SIGNATURE_ALGORITHMS_EXT), ?UINT16(Len),
-		       ExtData:Len/binary, Rest/binary>>, Acc) ->
+decode_extensions(<<?UINT16(?SIGNATURE_ALGORITHMS_EXT), ?UINT16(Len),
+		       ExtData:Len/binary, Rest/binary>>, Version, MessageType, Acc)
+  when Version < {3,4} ->
     SignAlgoListLen = Len - 2,
     <<?UINT16(SignAlgoListLen), SignAlgoList/binary>> = ExtData,
     HashSignAlgos = [{ssl_cipher:hash_algorithm(Hash), ssl_cipher:sign_algorithm(Sign)} ||
 			<<?BYTE(Hash), ?BYTE(Sign)>> <= SignAlgoList],
-    dec_hello_extensions(Rest, Acc#hello_extensions{hash_signs =
-						    #hash_sign_algos{hash_sign_algos = HashSignAlgos}});
+    decode_extensions(Rest, Version, MessageType,
+                      Acc#{signature_algs =>
+                               #hash_sign_algos{hash_sign_algos =
+                                                    HashSignAlgos}});
 
-dec_hello_extensions(<<?UINT16(?ELLIPTIC_CURVES_EXT), ?UINT16(Len),
-		       ExtData:Len/binary, Rest/binary>>, Acc) ->
+decode_extensions(<<?UINT16(?SIGNATURE_ALGORITHMS_EXT), ?UINT16(Len),
+		       ExtData:Len/binary, Rest/binary>>, Version, MessageType, Acc)
+  when Version =:= {3,4} ->
+    SignSchemeListLen = Len - 2,
+    <<?UINT16(SignSchemeListLen), SignSchemeList/binary>> = ExtData,
+    %% Ignore unknown signature algorithms
+    Fun = fun(Elem) ->
+                  case ssl_cipher:signature_scheme(Elem) of
+                      unassigned ->
+                          false;
+                      Value ->
+                          {true, Value}
+                  end
+          end,
+    SignSchemes= lists:filtermap(Fun, [SignScheme ||
+                                          <<?UINT16(SignScheme)>> <= SignSchemeList]),
+    decode_extensions(Rest, Version, MessageType,
+                      Acc#{signature_algs =>
+                               #signature_algorithms{
+                                  signature_scheme_list = SignSchemes}});
+
+decode_extensions(<<?UINT16(?SIGNATURE_ALGORITHMS_CERT_EXT), ?UINT16(Len),
+		       ExtData:Len/binary, Rest/binary>>, Version, MessageType, Acc) ->
+    SignSchemeListLen = Len - 2,
+    <<?UINT16(SignSchemeListLen), SignSchemeList/binary>> = ExtData,
+    %% Ignore unknown signature algorithms
+    Fun = fun(Elem) ->
+                  case ssl_cipher:signature_scheme(Elem) of
+                      unassigned ->
+                          false;
+                      Value ->
+                          {true, Value}
+                  end
+          end,
+    SignSchemes= lists:filtermap(Fun, [SignScheme ||
+                                          <<?UINT16(SignScheme)>> <= SignSchemeList]),
+    decode_extensions(Rest, Version, MessageType,
+                      Acc#{signature_algs_cert =>
+                               #signature_algorithms_cert{
+                                  signature_scheme_list = SignSchemes}});
+
+decode_extensions(<<?UINT16(?ELLIPTIC_CURVES_EXT), ?UINT16(Len),
+		       ExtData:Len/binary, Rest/binary>>, Version, MessageType, Acc)
+  when Version < {3,4} ->
     <<?UINT16(_), EllipticCurveList/binary>> = ExtData,
     %% Ignore unknown curves
     Pick = fun(Enum) ->
@@ -1815,31 +2685,165 @@ dec_hello_extensions(<<?UINT16(?ELLIPTIC_CURVES_EXT), ?UINT16(Len),
 		   end
 	   end,
     EllipticCurves = lists:filtermap(Pick, [ECC || <<ECC:16>> <= EllipticCurveList]),
-    dec_hello_extensions(Rest, Acc#hello_extensions{elliptic_curves =
-							#elliptic_curves{elliptic_curve_list =
-									     EllipticCurves}});
-dec_hello_extensions(<<?UINT16(?EC_POINT_FORMATS_EXT), ?UINT16(Len),
-		       ExtData:Len/binary, Rest/binary>>, Acc) ->
+    decode_extensions(Rest, Version, MessageType,
+                      Acc#{elliptic_curves =>
+                               #elliptic_curves{elliptic_curve_list =
+                                                    EllipticCurves}});
+
+decode_extensions(<<?UINT16(?ELLIPTIC_CURVES_EXT), ?UINT16(Len),
+		       ExtData:Len/binary, Rest/binary>>, Version, MessageType, Acc)
+  when Version =:= {3,4} ->
+    <<?UINT16(_), GroupList/binary>> = ExtData,
+    %% Ignore unknown curves
+    Pick = fun(Enum) ->
+		   case tls_v1:enum_to_group(Enum) of
+		       undefined ->
+			   false;
+		       Group ->
+			   {true, Group}
+		   end
+	   end,
+    SupportedGroups = lists:filtermap(Pick, [Group || <<Group:16>> <= GroupList]),
+    decode_extensions(Rest, Version, MessageType,
+                      Acc#{elliptic_curves =>
+                               #supported_groups{supported_groups =
+                                                     SupportedGroups}});
+
+decode_extensions(<<?UINT16(?EC_POINT_FORMATS_EXT), ?UINT16(Len),
+                    ExtData:Len/binary, Rest/binary>>, Version, MessageType, Acc) ->
     <<?BYTE(_), ECPointFormatList/binary>> = ExtData,
     ECPointFormats = binary_to_list(ECPointFormatList),
-    dec_hello_extensions(Rest, Acc#hello_extensions{ec_point_formats =
-							#ec_point_formats{ec_point_format_list =
-									      ECPointFormats}});
+    decode_extensions(Rest, Version, MessageType,
+                      Acc#{ec_point_formats =>
+                               #ec_point_formats{ec_point_format_list =
+                                                     ECPointFormats}});
 
-dec_hello_extensions(<<?UINT16(?SNI_EXT), ?UINT16(Len), Rest/binary>>, Acc) when Len == 0 ->
-    dec_hello_extensions(Rest, Acc#hello_extensions{sni = ""}); %% Server may send an empy SNI
+decode_extensions(<<?UINT16(?SNI_EXT), ?UINT16(Len),
+                    Rest/binary>>, Version, MessageType, Acc) when Len == 0 ->
+    decode_extensions(Rest, Version, MessageType,
+                      Acc#{sni => #sni{hostname = ""}}); %% Server may send an empy SNI
 
-dec_hello_extensions(<<?UINT16(?SNI_EXT), ?UINT16(Len),
-                ExtData:Len/binary, Rest/binary>>, Acc) ->
+decode_extensions(<<?UINT16(?SNI_EXT), ?UINT16(Len),
+                ExtData:Len/binary, Rest/binary>>, Version, MessageType, Acc) ->
     <<?UINT16(_), NameList/binary>> = ExtData,
-    dec_hello_extensions(Rest, Acc#hello_extensions{sni = dec_sni(NameList)});
+    decode_extensions(Rest, Version, MessageType,
+                      Acc#{sni => dec_sni(NameList)});
+
+decode_extensions(<<?UINT16(?MAX_FRAGMENT_LENGTH_EXT), ?UINT16(1), ?BYTE(MaxFragEnum), Rest/binary>>,
+                  Version, MessageType, Acc) ->
+    %% RFC 6066 Section 4
+    decode_extensions(Rest, Version, MessageType, Acc#{max_frag_enum => #max_frag_enum{enum = MaxFragEnum}});
+decode_extensions(<<?UINT16(?SUPPORTED_VERSIONS_EXT), ?UINT16(Len),
+                       ExtData:Len/binary, Rest/binary>>, Version, MessageType, Acc) when Len > 2 ->
+    <<?BYTE(_),Versions/binary>> = ExtData,
+    decode_extensions(Rest, Version, MessageType,
+                      Acc#{client_hello_versions =>
+                               #client_hello_versions{
+                                  versions = decode_versions(Versions)}});
+
+decode_extensions(<<?UINT16(?SUPPORTED_VERSIONS_EXT), ?UINT16(Len),
+                       ?UINT16(SelectedVersion), Rest/binary>>, Version, MessageType, Acc)
+  when Len =:= 2, SelectedVersion =:= 16#0304 ->
+    decode_extensions(Rest, Version, MessageType,
+                      Acc#{server_hello_selected_version =>
+                               #server_hello_selected_version{selected_version =
+                                                                  {3,4}}});
+
+decode_extensions(<<?UINT16(?KEY_SHARE_EXT), ?UINT16(Len),
+                       ExtData:Len/binary, Rest/binary>>,
+                  Version, MessageType = client_hello, Acc) ->
+    <<?UINT16(_),ClientShares/binary>> = ExtData,
+    decode_extensions(Rest, Version, MessageType,
+                      Acc#{key_share =>
+                               #key_share_client_hello{
+                                  client_shares = decode_client_shares(ClientShares)}});
+
+decode_extensions(<<?UINT16(?KEY_SHARE_EXT), ?UINT16(Len),
+                    ExtData:Len/binary, Rest/binary>>,
+                  Version, MessageType = server_hello, Acc) ->
+    <<?UINT16(Group),?UINT16(KeyLen),KeyExchange:KeyLen/binary>> = ExtData,
+    decode_extensions(Rest, Version, MessageType,
+                      Acc#{key_share =>
+                               #key_share_server_hello{
+                                  server_share =
+                                      #key_share_entry{
+                                         group = tls_v1:enum_to_group(Group),
+                                         key_exchange = KeyExchange}}});
+
+decode_extensions(<<?UINT16(?KEY_SHARE_EXT), ?UINT16(Len),
+                    ExtData:Len/binary, Rest/binary>>,
+                  Version, MessageType = hello_retry_request, Acc) ->
+    <<?UINT16(Group)>> = ExtData,
+    decode_extensions(Rest, Version, MessageType,
+                      Acc#{key_share =>
+                               #key_share_hello_retry_request{
+                                  selected_group = tls_v1:enum_to_group(Group)}});
+
+decode_extensions(<<?UINT16(?PSK_KEY_EXCHANGE_MODES_EXT), ?UINT16(Len),
+                       ExtData:Len/binary, Rest/binary>>, Version, MessageType, Acc) ->
+    <<?BYTE(PLen),KEModes:PLen/binary>> = ExtData,
+    decode_extensions(Rest, Version, MessageType,
+                      Acc#{psk_key_exchange_modes =>
+                               #psk_key_exchange_modes{
+                                  ke_modes = decode_psk_key_exchange_modes(KEModes)}});
+
+decode_extensions(<<?UINT16(?PRE_SHARED_KEY_EXT), ?UINT16(Len),
+                       ExtData:Len/binary, Rest/binary>>,
+                  Version, MessageType = client_hello, Acc) ->
+    <<?UINT16(IdLen),Identities:IdLen/binary,?UINT16(BLen),Binders:BLen/binary>> = ExtData,
+    decode_extensions(Rest, Version, MessageType,
+                      Acc#{pre_shared_key =>
+                               #pre_shared_key_client_hello{
+                                  offered_psks = #offered_psks{
+                                                    identities = decode_psk_identities(Identities),
+                                                    binders = decode_psk_binders(Binders)}}});
+
+decode_extensions(<<?UINT16(?PRE_SHARED_KEY_EXT), ?UINT16(Len),
+                       ExtData:Len/binary, Rest/binary>>,
+                  Version, MessageType = server_hello, Acc) ->
+    <<?UINT16(Identity)>> = ExtData,
+    decode_extensions(Rest, Version, MessageType,
+                      Acc#{pre_shared_key =>
+                               #pre_shared_key_server_hello{
+                                  selected_identity = Identity}});
+
+decode_extensions(<<?UINT16(?COOKIE_EXT), ?UINT16(Len), ?UINT16(CookieLen),
+                    Cookie:CookieLen/binary, Rest/binary>>,
+                  Version, MessageType, Acc)
+  when Len == CookieLen + 2 ->
+    decode_extensions(Rest, Version, MessageType,
+                      Acc#{cookie => #cookie{cookie = Cookie}});
+%% RFC6066, if a server returns a "CertificateStatus" message, then
+%% the server MUST have included an extension of type "status_request"
+%% with empty "extension_data" in the extended server hello.
+decode_extensions(<<?UINT16(?STATUS_REQUEST), ?UINT16(Len),
+                    _ExtensionData:Len/binary, Rest/binary>>, Version,
+                    MessageType = server_hello, Acc)
+  when Len =:= 0 ->
+    decode_extensions(Rest, Version, MessageType,
+                      Acc#{status_request => undefined});
+%% RFC8446 4.4.2.1, In TLS1.3, the body of the "status_request" extension
+%% from the server MUST be a CertificateStatus structure as defined in
+%% RFC6066.
+decode_extensions(<<?UINT16(?STATUS_REQUEST), ?UINT16(Len),
+                    CertStatus:Len/binary, Rest/binary>>, Version,
+                    MessageType, Acc) ->
+    case CertStatus of
+        <<?BYTE(?CERTIFICATE_STATUS_TYPE_OCSP),
+          ?UINT24(OCSPLen),
+          ASN1OCSPResponse:OCSPLen/binary>> ->
+            decode_extensions(Rest, Version, MessageType,
+                      Acc#{status_request => #certificate_status{response = ASN1OCSPResponse}});
+        _Other ->
+            decode_extensions(Rest, Version, MessageType, Acc)
+    end;
+
 %% Ignore data following the ClientHello (i.e.,
 %% extensions) if not understood.
-
-dec_hello_extensions(<<?UINT16(_), ?UINT16(Len), _Unknown:Len/binary, Rest/binary>>, Acc) ->
-    dec_hello_extensions(Rest, Acc);
+decode_extensions(<<?UINT16(_), ?UINT16(Len), _Unknown:Len/binary, Rest/binary>>, Version, MessageType, Acc) ->
+    decode_extensions(Rest, Version, MessageType, Acc);
 %% This theoretically should not happen if the protocol is followed, but if it does it is ignored.
-dec_hello_extensions(_, Acc) ->
+decode_extensions(_, _, _, Acc) ->
     Acc.
 
 dec_hashsign(<<?BYTE(HashAlgo), ?BYTE(SignAlgo)>>) ->
@@ -1851,6 +2855,38 @@ dec_sni(<<?BYTE(?SNI_NAMETYPE_HOST_NAME), ?UINT16(Len),
     #sni{hostname = binary_to_list(HostName)};
 dec_sni(<<?BYTE(_), ?UINT16(Len), _:Len, Rest/binary>>) -> dec_sni(Rest);
 dec_sni(_) -> undefined.
+
+decode_alpn(undefined) ->
+    undefined;
+decode_alpn(#alpn{extension_data=Data}) ->
+    decode_protocols(Data, []).
+
+decode_versions(Versions) ->
+    decode_versions(Versions, []).
+%%
+decode_versions(<<>>, Acc) ->
+    lists:reverse(Acc);
+decode_versions(<<?BYTE(M),?BYTE(N),Rest/binary>>, Acc) ->
+    decode_versions(Rest, [{M,N}|Acc]).
+
+
+decode_client_shares(ClientShares) ->
+    decode_client_shares(ClientShares, []).
+%%
+decode_client_shares(<<>>, Acc) ->
+    lists:reverse(Acc);
+decode_client_shares(<<?UINT16(Group0),?UINT16(Len),KeyExchange:Len/binary,Rest/binary>>, Acc) ->
+    case tls_v1:enum_to_group(Group0) of
+        undefined ->
+            %% Ignore key_share with unknown group
+            decode_client_shares(Rest, Acc);
+        Group ->
+            decode_client_shares(Rest, [#key_share_entry{
+                                           group = Group,
+                                           key_exchange= KeyExchange
+                                          }|Acc])
+    end.
+
 
 decode_next_protocols({next_protocol_negotiation, Protocols}) ->
     decode_protocols(Protocols, []).
@@ -1867,6 +2903,41 @@ decode_protocols(<<?BYTE(Len), Protocol:Len/binary, Rest/binary>>, Acc) ->
 decode_protocols(_Bytes, _Acc) ->
     {error, invalid_protocols}.
 
+
+decode_psk_key_exchange_modes(KEModes) ->
+    decode_psk_key_exchange_modes(KEModes, []).
+%%
+decode_psk_key_exchange_modes(<<>>, Acc) ->
+    lists:reverse(Acc);
+decode_psk_key_exchange_modes(<<?BYTE(?PSK_KE), Rest/binary>>, Acc) ->
+    decode_psk_key_exchange_modes(Rest, [psk_ke|Acc]);
+decode_psk_key_exchange_modes(<<?BYTE(?PSK_DHE_KE), Rest/binary>>, Acc) ->
+    decode_psk_key_exchange_modes(Rest, [psk_dhe_ke|Acc]);
+%% Ignore unknown PskKeyExchangeModes
+decode_psk_key_exchange_modes(<<?BYTE(_), Rest/binary>>, Acc) ->
+    decode_psk_key_exchange_modes(Rest, Acc).
+
+
+decode_psk_identities(Identities) ->
+    decode_psk_identities(Identities, []).
+%%
+decode_psk_identities(<<>>, Acc) ->
+    lists:reverse(Acc);
+decode_psk_identities(<<?UINT16(Len), Identity:Len/binary, ?UINT32(Age), Rest/binary>>, Acc) ->
+    decode_psk_identities(Rest, [#psk_identity{
+                                    identity = Identity,
+                                    obfuscated_ticket_age = Age}|Acc]).
+
+
+decode_psk_binders(Binders) ->
+    decode_psk_binders(Binders, []).
+%%
+decode_psk_binders(<<>>, Acc) ->
+    lists:reverse(Acc);
+decode_psk_binders(<<?BYTE(Len), Binder:Len/binary, Rest/binary>>, Acc) ->
+    decode_psk_binders(Rest, [Binder|Acc]).
+
+
 %% encode/decode stream of certificate data to/from list of certificate data
 certs_to_list(ASN1Certs) ->
     certs_to_list(ASN1Certs, []).
@@ -1881,6 +2952,7 @@ certs_from_list(ACList) ->
 			CertLen = byte_size(Cert),
                         <<?UINT24(CertLen), Cert/binary>>
 		    end || Cert <- ACList]).
+
 from_3bytes(Bin3) ->
     from_3bytes(Bin3, []).
 
@@ -1896,10 +2968,11 @@ from_2bytes(<<>>, Acc) ->
     lists:reverse(Acc);
 from_2bytes(<<?UINT16(N), Rest/binary>>, Acc) ->
     from_2bytes(Rest, [?uint16(N) | Acc]).
+
 key_exchange_alg(rsa) ->
     ?KEY_EXCHANGE_RSA;
 key_exchange_alg(Alg) when Alg == dhe_rsa; Alg == dhe_dss;
-			    Alg == dh_dss; Alg == dh_rsa; Alg == dh_anon ->
+			   Alg == dh_dss; Alg == dh_rsa; Alg == dh_anon ->
     ?KEY_EXCHANGE_DIFFIE_HELLMAN;
 key_exchange_alg(Alg) when Alg == ecdhe_rsa; Alg == ecdh_rsa;
 			   Alg == ecdhe_ecdsa; Alg == ecdh_ecdsa;
@@ -1909,6 +2982,8 @@ key_exchange_alg(psk) ->
     ?KEY_EXCHANGE_PSK;
 key_exchange_alg(dhe_psk) ->
     ?KEY_EXCHANGE_DHE_PSK;
+key_exchange_alg(ecdhe_psk) ->
+    ?KEY_EXCHANGE_EC_DIFFIE_HELLMAN_PSK;
 key_exchange_alg(rsa_psk) ->
     ?KEY_EXCHANGE_RSA_PSK;
 key_exchange_alg(Alg)
@@ -1917,72 +2992,7 @@ key_exchange_alg(Alg)
 key_exchange_alg(_) ->
     ?NULL.
 
-%%-------------Extension handling --------------------------------
-
-%% Receive protocols, choose one from the list, return it.
-handle_alpn_extension(_, {error, _Reason}) ->
-    ?ALERT_REC(?FATAL, ?HANDSHAKE_FAILURE);
-handle_alpn_extension([], _) ->
-	?ALERT_REC(?FATAL, ?NO_APPLICATION_PROTOCOL);
-handle_alpn_extension([ServerProtocol|Tail], ClientProtocols) ->
-	case lists:member(ServerProtocol, ClientProtocols) of
-		true -> ServerProtocol;
-		false -> handle_alpn_extension(Tail, ClientProtocols)
-	end.
-
-handle_next_protocol(undefined,
-		     _NextProtocolSelector, _Renegotiating) ->
-    undefined;
-
-handle_next_protocol(#next_protocol_negotiation{} = NextProtocols,
-    NextProtocolSelector, Renegotiating) ->
-
-    case next_protocol_extension_allowed(NextProtocolSelector, Renegotiating) of
-        true ->
-            select_next_protocol(decode_next_protocols(NextProtocols), NextProtocolSelector);
-        false ->
-            ?ALERT_REC(?FATAL, ?HANDSHAKE_FAILURE) % unexpected next protocol extension
-    end.
-
-
-handle_next_protocol_extension(NextProtocolNegotiation, Renegotiation, SslOpts)->
-    case handle_next_protocol_on_server(NextProtocolNegotiation, Renegotiation, SslOpts) of
-	#alert{} = Alert ->
-	    Alert;
-	ProtocolsToAdvertise ->
-	    ProtocolsToAdvertise
-    end.
-
-handle_next_protocol_on_server(undefined, _Renegotiation, _SslOpts) ->
-    undefined;
-
-handle_next_protocol_on_server(#next_protocol_negotiation{extension_data = <<>>},
-			       false, #ssl_options{next_protocols_advertised = Protocols}) ->
-    Protocols;
-
-handle_next_protocol_on_server(_Hello, _Renegotiation, _SSLOpts) ->
-    ?ALERT_REC(?FATAL, ?HANDSHAKE_FAILURE). % unexpected next protocol extension
-
-next_protocol_extension_allowed(NextProtocolSelector, Renegotiating) ->
-    NextProtocolSelector =/= undefined andalso not Renegotiating.
-
-select_next_protocol({error, _Reason}, _NextProtocolSelector) ->
-    ?ALERT_REC(?FATAL, ?HANDSHAKE_FAILURE);
-select_next_protocol(Protocols, NextProtocolSelector) ->
-    case NextProtocolSelector(Protocols) of
-	?NO_PROTOCOL ->
-	    ?ALERT_REC(?FATAL, ?HANDSHAKE_FAILURE);
-	Protocol when is_binary(Protocol)  ->
-	    Protocol
-    end.
-
-handle_srp_extension(undefined, Session) ->
-    Session;
-handle_srp_extension(#srp{username = Username}, Session) ->
-    Session#session{srp_username = Username}.
-
-%%-------------Misc --------------------------------
-
+%%-------------Cipher suite handling -----------------------------
 select_cipher_suite(CipherSuites, Suites, false) ->
     select_cipher_suite(CipherSuites, Suites);
 select_cipher_suite(CipherSuites, Suites, true) ->
@@ -1998,38 +3008,8 @@ select_cipher_suite([Suite | ClientSuites], SupportedSuites) ->
 	    select_cipher_suite(ClientSuites, SupportedSuites)
     end.
 
-int_to_bin(I) ->
-    L = (length(integer_to_list(I, 16)) + 1) div 2,
-    <<I:(L*8)>>.
-
 is_member(Suite, SupportedSuites) ->
     lists:member(Suite, SupportedSuites).
-
-select_compression(_CompressionMetodes) ->
-    ?NULL.
-
--define(TLSEXT_SIGALG_RSA(MD), {MD, rsa}).
--define(TLSEXT_SIGALG_DSA(MD), {MD, dsa}).
--define(TLSEXT_SIGALG_ECDSA(MD), {MD, ecdsa}).
-
--define(TLSEXT_SIGALG(MD), ?TLSEXT_SIGALG_ECDSA(MD), ?TLSEXT_SIGALG_RSA(MD)).
-
-advertised_hash_signs({Major, Minor}) when Major >= 3 andalso Minor >= 3 ->
-    HashSigns = [?TLSEXT_SIGALG(sha512),
-		 ?TLSEXT_SIGALG(sha384),
-		 ?TLSEXT_SIGALG(sha256),
-		 ?TLSEXT_SIGALG(sha224),
-		 ?TLSEXT_SIGALG(sha),
-		 ?TLSEXT_SIGALG_DSA(sha),
-		 ?TLSEXT_SIGALG_RSA(md5)],
-    CryptoSupport = crypto:supports(),
-    HasECC = proplists:get_bool(ecdsa,  proplists:get_value(public_keys, CryptoSupport)),
-    Hashs = proplists:get_value(hashs, CryptoSupport),
-    #hash_sign_algos{hash_sign_algos =
-			 lists:filter(fun({Hash, ecdsa}) -> HasECC andalso proplists:get_bool(Hash, Hashs);
-					 ({Hash, _}) -> proplists:get_bool(Hash, Hashs) end, HashSigns)};
-advertised_hash_signs(_) ->
-    undefined.
 
 psk_secret(PSKIdentity, PSKLookup) ->
     case handle_psk_identity(PSKIdentity, PSKLookup) of
@@ -2060,69 +3040,542 @@ handle_psk_identity(_PSKIdentity, LookupFun)
 handle_psk_identity(PSKIdentity, {Fun, UserState}) ->
     Fun(psk, PSKIdentity, UserState).
 
-crl_check(_, false, _,_,_, _) ->
-    valid;
-crl_check(_, peer, _, _,_, valid) -> %% Do not check CAs with this option.
-    valid;
-crl_check(OtpCert, Check, CertDbHandle, CertDbRef, {Callback, CRLDbHandle}, _) ->
-    Options = [{issuer_fun, {fun(_DP, CRL, Issuer, DBInfo) ->
-				     ssl_crl:trusted_cert_and_path(CRL, Issuer, DBInfo)
-			     end, {CertDbHandle, CertDbRef}}}, 
-	       {update_crl, fun(DP, CRL) -> Callback:fresh_crl(DP, CRL) end}
-	      ],
-    case dps_and_crls(OtpCert, Callback, CRLDbHandle, ext) of
-	no_dps ->
-	    case dps_and_crls(OtpCert, Callback, CRLDbHandle, same_issuer) of
-		[] ->
-		    valid; %% No relevant CRL existed
-		DpsAndCRls ->
-		    crl_check_same_issuer(OtpCert, Check, DpsAndCRls, Options)		
-	    end;
-	DpsAndCRLs ->  %% This DP list may be empty if relevant CRLs existed 
-	    %% but could not be retrived, will result in {bad_cert, revocation_status_undetermined}
-	    case public_key:pkix_crls_validate(OtpCert, DpsAndCRLs, Options) of
-		{bad_cert, revocation_status_undetermined} ->
-		    crl_check_same_issuer(OtpCert, Check, dps_and_crls(OtpCert, Callback, 
-								       CRLDbHandle, same_issuer), Options);
-		Other ->
-		    Other
-	    end
+
+filter_hashsigns([], [], _, _, Acc) ->
+    lists:reverse(Acc);
+filter_hashsigns([Suite | Suites], [#{key_exchange := KeyExchange} | Algos], HashSigns, Version,
+ 		 Acc) when KeyExchange == dhe_ecdsa;
+ 			   KeyExchange == ecdhe_ecdsa ->
+    do_filter_hashsigns(ecdsa, Suite, Suites, Algos, HashSigns, Version, Acc); 
+filter_hashsigns([Suite | Suites], [#{key_exchange := KeyExchange} | Algos], HashSigns, Version,
+		 Acc) when KeyExchange == rsa;
+			   KeyExchange == dhe_rsa;
+			   KeyExchange == ecdhe_rsa;
+			   KeyExchange == srp_rsa;
+			   KeyExchange == rsa_psk ->
+    do_filter_hashsigns(rsa, Suite, Suites, Algos, HashSigns, Version, Acc);
+filter_hashsigns([Suite | Suites], [#{key_exchange := KeyExchange} | Algos], HashSigns, Version, Acc) when 
+      KeyExchange == dhe_dss;
+      KeyExchange == srp_dss ->							       
+    do_filter_hashsigns(dsa, Suite, Suites, Algos, HashSigns, Version, Acc);
+filter_hashsigns([Suite | Suites], [#{key_exchange := KeyExchange} | Algos], HashSigns, Verion,
+                 Acc) when 
+      KeyExchange == dh_dss; 
+      KeyExchange == dh_rsa; 
+      KeyExchange == dh_ecdsa;
+      KeyExchange == ecdh_rsa;    
+      KeyExchange == ecdh_ecdsa ->
+      %%  Fixed DH certificates MAY be signed with any hash/signature
+      %%  algorithm pair appearing in the hash_sign extension.  The names
+    %%  DH_DSS, DH_RSA, ECDH_ECDSA, and ECDH_RSA are historical.
+    filter_hashsigns(Suites, Algos, HashSigns, Verion, [Suite| Acc]);
+filter_hashsigns([Suite | Suites], [#{key_exchange := KeyExchange} | Algos], HashSigns, Version,
+                 Acc) when 
+      KeyExchange == dh_anon;
+      KeyExchange == ecdh_anon;
+      KeyExchange == srp_anon;
+      KeyExchange == psk;
+      KeyExchange == dhe_psk;
+      KeyExchange == ecdhe_psk ->
+    %% In this case hashsigns is not used as the kexchange is anonaymous
+    filter_hashsigns(Suites, Algos, HashSigns, Version, [Suite| Acc]).
+
+do_filter_hashsigns(SignAlgo, Suite, Suites, Algos, HashSigns, Version, Acc) ->
+    case lists:keymember(SignAlgo, 2, HashSigns) of
+	true ->
+	    filter_hashsigns(Suites, Algos, HashSigns, Version, [Suite| Acc]);
+	false ->
+	    filter_hashsigns(Suites, Algos, HashSigns, Version, Acc)
     end.
 
-crl_check_same_issuer(OtpCert, best_effort, Dps, Options) ->		
-    case public_key:pkix_crls_validate(OtpCert, Dps, Options) of 
-	{bad_cert, revocation_status_undetermined}  ->
-	    valid;
-	Other ->
-	    Other
+filter_unavailable_ecc_suites(no_curve, Suites) ->
+    ECCSuites = ssl_cipher:filter_suites(Suites, #{key_exchange_filters => [fun(ecdh_ecdsa) -> true; 
+                                                                               (ecdhe_ecdsa) -> true; 
+                                                                               (ecdh_rsa) -> true; 
+                                                                               (_) -> false 
+                                                                            end],
+                                                   cipher_filters => [],
+                                                   mac_filters => [],
+                                                   prf_filters => []}),
+    Suites -- ECCSuites;       
+filter_unavailable_ecc_suites(_, Suites) ->
+    Suites.
+%%-------------Extension handling --------------------------------
+
+handle_renegotiation_extension(Role, RecordCB, Version, Info, Random, NegotiatedCipherSuite, 
+			       ClientCipherSuites, Compression,
+			       ConnectionStates0, Renegotiation, SecureRenegotation) ->
+    {ok, ConnectionStates} = handle_renegotiation_info(Version, RecordCB, Role, Info, ConnectionStates0,
+                                                       Renegotiation, SecureRenegotation,
+                                                       ClientCipherSuites),
+    hello_pending_connection_states(RecordCB, Role,
+                                    Version,
+                                    NegotiatedCipherSuite,
+                                    Random,
+                                    Compression,
+                                    ConnectionStates).
+
+%% Receive protocols, choose one from the list, return it.
+handle_alpn_extension(_, {error, Reason}) ->
+    throw(?ALERT_REC(?FATAL, ?HANDSHAKE_FAILURE, Reason));
+handle_alpn_extension([], _) ->
+    throw(?ALERT_REC(?FATAL, ?NO_APPLICATION_PROTOCOL));
+handle_alpn_extension([ServerProtocol|Tail], ClientProtocols) ->
+    case lists:member(ServerProtocol, ClientProtocols) of
+        true -> ServerProtocol;
+            false -> handle_alpn_extension(Tail, ClientProtocols)
+    end.
+
+handle_mfl_extension(#max_frag_enum{enum = Enum}=MaxFragEnum) when Enum >= 1, Enum =< 4 ->
+    MaxFragEnum;
+handle_mfl_extension(#max_frag_enum{}) ->
+    throw(?ALERT_REC(?FATAL, ?ILLEGAL_PARAMETER));
+handle_mfl_extension(_) ->
+    undefined.
+
+handle_next_protocol(undefined,
+		     _NextProtocolSelector, _Renegotiating) ->
+    undefined;
+
+handle_next_protocol(#next_protocol_negotiation{} = NextProtocols,
+    NextProtocolSelector, Renegotiating) ->
+
+    case next_protocol_extension_allowed(NextProtocolSelector, Renegotiating) of
+        true ->
+            select_next_protocol(decode_next_protocols(NextProtocols), NextProtocolSelector);
+        false ->
+            throw(?ALERT_REC(?FATAL, ?HANDSHAKE_FAILURE, unexpected_next_protocol_extension))
+    end.
+
+
+handle_next_protocol_extension(NextProtocolNegotiation, Renegotiation, SslOpts)->
+    case handle_next_protocol_on_server(NextProtocolNegotiation, Renegotiation, SslOpts) of
+	#alert{} = Alert ->
+	    throw(Alert);
+	ProtocolsToAdvertise ->
+	    ProtocolsToAdvertise
+    end.
+
+handle_next_protocol_on_server(undefined, _Renegotiation, _SslOpts) ->
+    undefined;
+
+handle_next_protocol_on_server(#next_protocol_negotiation{extension_data = <<>>},
+			       false, #{next_protocols_advertised := Protocols}) ->
+    Protocols;
+
+handle_next_protocol_on_server(_Hello, _Renegotiation, _SSLOpts) ->
+    ?ALERT_REC(?FATAL, ?HANDSHAKE_FAILURE, unexpected_next_protocol_extension).
+
+next_protocol_extension_allowed(NextProtocolSelector, Renegotiating) ->
+    NextProtocolSelector =/= undefined andalso not Renegotiating.
+
+select_next_protocol({error, Reason}, _NextProtocolSelector) ->
+    ?ALERT_REC(?FATAL, ?HANDSHAKE_FAILURE, Reason);
+select_next_protocol(Protocols, NextProtocolSelector) ->
+    case NextProtocolSelector(Protocols) of
+	?NO_PROTOCOL ->
+            ?ALERT_REC(?FATAL, ?HANDSHAKE_FAILURE, no_next_protocol);
+	Protocol when is_binary(Protocol)  ->
+	    Protocol
+    end.
+
+handle_srp_extension(undefined, Session) ->
+    Session;
+handle_srp_extension(#srp{username = Username}, Session) ->
+    Session#session{srp_username = Username}.
+
+is_acceptable_hash_sign( _, KeyExAlgo, _) when 
+      KeyExAlgo == psk;
+      KeyExAlgo == dhe_psk;
+      KeyExAlgo == ecdhe_psk;
+      KeyExAlgo == srp_anon;
+      KeyExAlgo == dh_anon;
+      KeyExAlgo == ecdhe_anon     
+      ->
+    true; 
+is_acceptable_hash_sign(Algos,_, SupportedHashSigns) -> 
+    is_acceptable_hash_sign(Algos, SupportedHashSigns).
+
+is_acceptable_hash_sign(Algos, SupportedHashSigns) ->
+    lists:member(Algos, SupportedHashSigns).
+
+is_acceptable_cert_type(Sign, Types) ->
+    lists:member(sign_type(Sign), binary_to_list(Types)).
+
+%% signature_algorithms_cert = undefined
+is_supported_sign(SignAlgo, _, HashSigns, undefined) ->
+    lists:member(SignAlgo, HashSigns);
+
+%% {'SignatureAlgorithm',{1,2,840,113549,1,1,11},'NULL'}
+is_supported_sign({Hash, Sign}, 'NULL', _, SignatureSchemes) ->
+    Fun = fun (Scheme, Acc) ->
+                  {H0, S0, _} = ssl_cipher:scheme_to_components(Scheme),
+                  S1 = case S0 of
+                             rsa_pkcs1 -> rsa;
+                             S -> S
+                         end,
+                  H1 = case H0 of
+                             sha1 -> sha;
+                             H -> H
+                         end,
+                  Acc orelse (Sign =:= S1 andalso
+                              Hash =:= H1)
+          end,
+    lists:foldl(Fun, false, SignatureSchemes);
+
+%% TODO: Implement validation for the curve used in the signature
+%% RFC 3279 - 2.2.3 ECDSA Signature Algorithm
+%% When the ecdsa-with-SHA1 algorithm identifier appears as the
+%% algorithm field in an AlgorithmIdentifier, the encoding MUST omit the
+%% parameters field.  That is, the AlgorithmIdentifier SHALL be a
+%% SEQUENCE of one component: the OBJECT IDENTIFIER ecdsa-with-SHA1.
+%%
+%% The elliptic curve parameters in the subjectPublicKeyInfo field of
+%% the certificate of the issuer SHALL apply to the verification of the
+%% signature.
+is_supported_sign({Hash, Sign}, _Param, _, SignatureSchemes) ->
+    Fun = fun (Scheme, Acc) ->
+                  {H0, S0, _} = ssl_cipher:scheme_to_components(Scheme),
+                  S1 = case S0 of
+                             rsa_pkcs1 -> rsa;
+                             S -> S
+                         end,
+                  H1 = case H0 of
+                             sha1 -> sha;
+                             H -> H
+                         end,
+                  Acc orelse (Sign  =:= S1 andalso
+                              Hash  =:= H1)
+          end,
+    lists:foldl(Fun, false, SignatureSchemes).
+
+%% SupportedPublicKeyAlgorithms PUBLIC-KEY-ALGORITHM-CLASS ::= {
+%%   dsa | rsa-encryption | dh  | kea  | ec-public-key }
+public_key_algo(?rsaEncryption) ->
+    rsa;
+public_key_algo(?'id-ecPublicKey') ->
+    ecdsa;
+public_key_algo(?'id-dsa') ->
+    dsa.
+
+%% SupportedSignatureAlgorithms SIGNATURE-ALGORITHM-CLASS ::= {
+%%   dsa-with-sha1 | dsaWithSHA1 |  md2-with-rsa-encryption |
+%%   md5-with-rsa-encryption | sha1-with-rsa-encryption | sha-1with-rsa-encryption |
+%%   sha224-with-rsa-encryption |
+%%   sha256-with-rsa-encryption |
+%%   sha384-with-rsa-encryption |
+%%   sha512-with-rsa-encryption |
+%%   ecdsa-with-sha1 |
+%%   ecdsa-with-sha224 |
+%%   ecdsa-with-sha256 |
+%%   ecdsa-with-sha384 |
+%%   ecdsa-with-sha512 }
+sign_algo(Alg) ->
+    public_key:pkix_sign_types(Alg).
+
+sign_type(rsa) ->
+    ?RSA_SIGN;
+sign_type(dsa) ->
+    ?DSS_SIGN;
+sign_type(ecdsa) ->
+    ?ECDSA_SIGN.
+
+server_name(_, _, server) ->
+    undefined; %% Not interesting to check your own name.
+server_name(undefined, Host, client) ->
+    {fallback, Host}; %% Fallback to Host argument to connect
+server_name(SNI, _, client) ->
+    SNI. %% If Server Name Indication is available
+
+client_ecc_extensions(SupportedECCs) ->
+    CryptoSupport = proplists:get_value(public_keys, crypto:supports()),
+    case proplists:get_bool(ecdh, CryptoSupport) of
+	true ->
+            %% RFC 8422 - 5.1.  Client Hello Extensions
+            %% Clients SHOULD send both the Supported Elliptic Curves Extension and the
+            %% Supported Point Formats Extension.  If the Supported Point Formats
+            %% Extension is indeed sent, it MUST contain the value 0 (uncompressed)
+            %% as one of the items in the list of point formats.
+	    EcPointFormats = #ec_point_formats{ec_point_format_list = [?ECPOINT_UNCOMPRESSED]},
+	    EllipticCurves = SupportedECCs,
+	    {EcPointFormats, EllipticCurves};
+	_ ->
+	    {undefined, undefined}
+    end.
+
+server_ecc_extension(_Version, EcPointFormats) ->
+    CryptoSupport = proplists:get_value(public_keys, crypto:supports()),
+    case proplists:get_bool(ecdh, CryptoSupport) of
+	true ->
+	    handle_ecc_point_fmt_extension(EcPointFormats);
+	false ->
+	    undefined
+    end.
+
+handle_ecc_point_fmt_extension(undefined) ->
+    undefined;
+handle_ecc_point_fmt_extension(_) ->
+    #ec_point_formats{ec_point_format_list = [?ECPOINT_UNCOMPRESSED]}.
+
+advertises_ec_ciphers([]) ->
+    false;
+advertises_ec_ciphers([#{key_exchange := ecdh_ecdsa} | _]) ->
+    true;
+advertises_ec_ciphers([#{key_exchange := ecdhe_ecdsa} | _]) ->
+    true;
+advertises_ec_ciphers([#{key_exchange := ecdh_rsa} | _]) ->
+    true;
+advertises_ec_ciphers([#{key_exchange := ecdhe_rsa} | _]) ->
+    true;
+advertises_ec_ciphers([#{key_exchange := ecdh_anon} | _]) ->
+    true;
+advertises_ec_ciphers([{ecdhe_psk, _,_,_} | _]) ->
+    true;
+advertises_ec_ciphers([_| Rest]) ->
+    advertises_ec_ciphers(Rest).
+
+select_shared_curve([], _) ->
+    no_curve;
+select_shared_curve([Curve | Rest], Curves) ->
+    case lists:member(Curve, Curves) of
+	true ->
+	    {namedCurve, Curve};
+	false ->
+	    select_shared_curve(Rest, Curves)
+    end.
+
+sni(undefined) ->
+    undefined;
+sni(disable) ->
+    undefined;
+sni(Hostname) ->
+    #sni{hostname = Hostname}.
+
+%% convert max_fragment_length (in bytes) to the RFC 6066 ENUM
+max_frag_enum(?MAX_FRAGMENT_LENGTH_BYTES_1) ->
+    #max_frag_enum{enum = 1};
+max_frag_enum(?MAX_FRAGMENT_LENGTH_BYTES_2) ->
+    #max_frag_enum{enum = 2};
+max_frag_enum(?MAX_FRAGMENT_LENGTH_BYTES_3) ->
+    #max_frag_enum{enum = 3};
+max_frag_enum(?MAX_FRAGMENT_LENGTH_BYTES_4) ->
+    #max_frag_enum{enum = 4};
+max_frag_enum(undefined) ->
+    undefined.
+
+renegotiation_info(_, client, _, false) ->
+    #renegotiation_info{renegotiated_connection = undefined};
+renegotiation_info(_RecordCB, server, ConnectionStates, false) ->
+    ConnectionState  = ssl_record:current_connection_state(ConnectionStates, read),
+    case maps:get(secure_renegotiation, ConnectionState) of
+	true ->
+	    #renegotiation_info{renegotiated_connection = ?byte(0)};
+	false ->
+	    #renegotiation_info{renegotiated_connection = undefined}
     end;
-crl_check_same_issuer(OtpCert, _, Dps, Options) ->    
-    public_key:pkix_crls_validate(OtpCert, Dps, Options).
+renegotiation_info(_RecordCB, client, ConnectionStates, true) ->
+    ConnectionState = ssl_record:current_connection_state(ConnectionStates, read),
+    case  maps:get(secure_renegotiation, ConnectionState) of
+	true ->
+	    Data = maps:get(client_verify_data, ConnectionState),
+	    #renegotiation_info{renegotiated_connection = Data};
+	false ->
+	    #renegotiation_info{renegotiated_connection = undefined}
+    end;
 
-dps_and_crls(OtpCert, Callback, CRLDbHandle, ext) ->
-	case public_key:pkix_dist_points(OtpCert) of
-	    [] ->
-		no_dps;
-	    DistPoints ->
-		distpoints_lookup(DistPoints, Callback, CRLDbHandle) 
-	end;
-    
-dps_and_crls(OtpCert, Callback, CRLDbHandle, same_issuer) ->    
-    DP = #'DistributionPoint'{distributionPoint = {fullName, GenNames}} = 
-	public_key:pkix_dist_point(OtpCert),
-    CRLs = lists:flatmap(fun({directoryName, Issuer}) -> 
-				 Callback:select(Issuer, CRLDbHandle);
-			    (_) ->
-				 []
-			 end, GenNames),
-    [{DP, {CRL, public_key:der_decode('CertificateList', CRL)}} ||  CRL <- CRLs].
+renegotiation_info(_RecordCB, server, ConnectionStates, true) ->
+    ConnectionState = ssl_record:current_connection_state(ConnectionStates, read),
+    case maps:get(secure_renegotiation, ConnectionState) of
+	true ->
+	    CData = maps:get(client_verify_data, ConnectionState),
+	    SData = maps:get(server_verify_data, ConnectionState),
+	    #renegotiation_info{renegotiated_connection = <<CData/binary, SData/binary>>};
+	false ->
+	    #renegotiation_info{renegotiated_connection = undefined}
+    end.
 
-distpoints_lookup([], _, _) ->
-    [];
-distpoints_lookup([DistPoint | Rest], Callback, CRLDbHandle) ->
-    case Callback:lookup(DistPoint, CRLDbHandle) of
-	not_available ->
-	    distpoints_lookup(Rest, Callback, CRLDbHandle);
-	CRLs ->
-	    [{DistPoint, {CRL, public_key:der_decode('CertificateList', CRL)}} ||  CRL <- CRLs]
-    end.	
+handle_renegotiation_info(_, _RecordCB, _, #renegotiation_info{renegotiated_connection = ?byte(0)},
+			  ConnectionStates, false, _, _) ->
+    {ok, ssl_record:set_renegotiation_flag(true, ConnectionStates)};
+
+handle_renegotiation_info(_, _RecordCB, server, undefined, ConnectionStates, _, _, CipherSuites) ->
+    case is_member(?TLS_EMPTY_RENEGOTIATION_INFO_SCSV, CipherSuites) of
+	true ->
+	    {ok, ssl_record:set_renegotiation_flag(true, ConnectionStates)};
+	false ->
+	    {ok, ssl_record:set_renegotiation_flag(false, ConnectionStates)}
+    end;
+
+handle_renegotiation_info(_, _RecordCB, _, undefined, ConnectionStates, false, _, _) ->
+    {ok, ssl_record:set_renegotiation_flag(false, ConnectionStates)};
+
+handle_renegotiation_info(_, _RecordCB, client, #renegotiation_info{renegotiated_connection = ClientServerVerify},
+			  ConnectionStates, true, _, _) ->
+    ConnectionState = ssl_record:current_connection_state(ConnectionStates, read),
+    CData = maps:get(client_verify_data, ConnectionState),
+    SData = maps:get(server_verify_data, ConnectionState),
+    case <<CData/binary, SData/binary>> == ClientServerVerify of
+	true ->
+	    {ok, ConnectionStates};
+	false ->
+            throw(?ALERT_REC(?FATAL, ?HANDSHAKE_FAILURE, client_renegotiation))
+    end;
+handle_renegotiation_info(_, _RecordCB, server, #renegotiation_info{renegotiated_connection = ClientVerify},
+			  ConnectionStates, true, _, CipherSuites) ->
+
+      case is_member(?TLS_EMPTY_RENEGOTIATION_INFO_SCSV, CipherSuites) of
+	  true ->
+              throw(?ALERT_REC(?FATAL, ?HANDSHAKE_FAILURE, {server_renegotiation, empty_renegotiation_info_scsv}));
+	  false ->
+	      ConnectionState = ssl_record:current_connection_state(ConnectionStates, read),
+	      Data =  maps:get(client_verify_data, ConnectionState),
+	      case Data == ClientVerify of
+		  true ->
+		      {ok, ConnectionStates};
+		  false ->
+                      throw(?ALERT_REC(?FATAL, ?HANDSHAKE_FAILURE, server_renegotiation))
+	      end
+      end;
+handle_renegotiation_info(_, RecordCB, client, undefined, ConnectionStates, true, SecureRenegotation, _) ->
+    handle_renegotiation_info(RecordCB, ConnectionStates, SecureRenegotation);
+
+handle_renegotiation_info(_, RecordCB, server, undefined, ConnectionStates, true, SecureRenegotation, CipherSuites) ->
+     case is_member(?TLS_EMPTY_RENEGOTIATION_INFO_SCSV, CipherSuites) of
+	  true ->
+             throw(?ALERT_REC(?FATAL, ?HANDSHAKE_FAILURE, {server_renegotiation, empty_renegotiation_info_scsv}));
+	 false ->
+	     handle_renegotiation_info(RecordCB, ConnectionStates, SecureRenegotation)
+     end.
+
+handle_renegotiation_info(_RecordCB, ConnectionStates, SecureRenegotation) ->
+    ConnectionState = ssl_record:current_connection_state(ConnectionStates, read),
+    case {SecureRenegotation, maps:get(secure_renegotiation, ConnectionState)} of
+	{_, true} ->
+            throw(?ALERT_REC(?FATAL, ?HANDSHAKE_FAILURE, already_secure));
+	{true, false} ->
+	    throw(?ALERT_REC(?FATAL, ?NO_RENEGOTIATION));
+	{false, false} ->
+	    {ok, ConnectionStates}
+    end.
+
+cert_curve(_, _, no_suite) ->
+    {no_curve, no_suite};
+cert_curve(Cert, ECCCurve0, CipherSuite) ->
+    case ssl_cipher_format:suite_bin_to_map(CipherSuite) of
+        #{key_exchange := Kex} when Kex == ecdh_ecdsa; 
+                                    Kex == ecdh_rsa ->
+            OtpCert = public_key:pkix_decode_cert(Cert, otp),
+            TBSCert = OtpCert#'OTPCertificate'.tbsCertificate,
+            #'OTPSubjectPublicKeyInfo'{algorithm = AlgInfo} 
+                = TBSCert#'OTPTBSCertificate'.subjectPublicKeyInfo,
+            {namedCurve, Oid}  = AlgInfo#'PublicKeyAlgorithm'.parameters,
+            {{namedCurve, Oid}, CipherSuite};
+        _ ->
+            {ECCCurve0, CipherSuite}
+    end.
+
+empty_extensions() ->
+     #{}.
+
+empty_extensions({3,4}, client_hello) ->
+    #{
+      sni => undefined,
+      %% max_frag_enum => undefined,
+      %% status_request => undefined,
+      elliptic_curves => undefined,
+      signature_algs => undefined,
+      %% use_srtp => undefined,
+      %% heartbeat => undefined,
+      alpn => undefined,
+      %% signed_cert_timestamp => undefined,
+      %% client_cert_type => undefined,
+      %% server_cert_type => undefined,
+      %% padding => undefined,
+      key_share => undefined,
+      pre_shared_key => undefined,
+      psk_key_exchange_modes => undefined,
+      %% early_data => undefined,
+      cookie => undefined,
+      client_hello_versions => undefined,
+      %% cert_authorities => undefined,
+      %% post_handshake_auth => undefined,
+      signature_algs_cert => undefined
+     };
+empty_extensions({3, 3}, client_hello) ->
+    Ext = empty_extensions({3,2}, client_hello),
+    Ext#{signature_algs => undefined};
+empty_extensions(_, client_hello) ->
+    #{renegotiation_info => undefined,
+      alpn => undefined,
+      next_protocol_negotiation => undefined,
+      srp => undefined,
+      ec_point_formats => undefined,
+      elliptic_curves => undefined,
+      sni => undefined};
+empty_extensions({3,4}, server_hello) ->
+    #{server_hello_selected_version => undefined,
+      key_share => undefined,
+      pre_shared_key => undefined
+     };
+empty_extensions({3,4}, hello_retry_request) ->
+    #{server_hello_selected_version => undefined,
+      key_share => undefined,
+      pre_shared_key => undefined, %% TODO remove!
+      cookie => undefined
+     };
+empty_extensions(_, server_hello) ->
+    #{renegotiation_info => undefined,
+      alpn => undefined,
+      next_protocol_negotiation => undefined,
+      ec_point_formats => undefined}.
+
+handle_log(Level, {LogLevel, ReportMap, Meta}) ->
+    ssl_logger:log(Level, LogLevel, ReportMap, Meta).
+
+
+path_validate([{TrustedCert, Path}], ServerName, Role, CertDbHandle, CertDbRef, CRLDbHandle,
+              Version, SslOptions, CertExt) ->
+    path_validation(TrustedCert, Path, ServerName, Role, CertDbHandle, CertDbRef, 
+                    CRLDbHandle, Version, SslOptions, CertExt);
+path_validate([{TrustedCert, Path} | Rest], ServerName, Role, CertDbHandle, CertDbRef, CRLDbHandle,
+              Version, SslOptions, CertExt) ->
+    case path_validation(TrustedCert, Path, ServerName, 
+                         Role, CertDbHandle, CRLDbHandle, CertDbRef, 
+                         Version, SslOptions, CertExt) of
+        {ok, _} = Result ->
+            Result;
+        {error, _} ->
+            path_validate(Rest, ServerName, Role, CertDbHandle, CertDbRef, CRLDbHandle,
+                          Version, SslOptions, CertExt)
+    end.
+
+path_validation(TrustedCert, Path, ServerName, Role, CertDbHandle, CertDbRef, CRLDbHandle, Version,
+                #{verify_fun := VerifyFun,
+                  customize_hostname_check := CustomizeHostnameCheck,
+                  crl_check := CrlCheck,
+                  log_level := Level,
+                  signature_algs := SignAlgos,
+                  depth := Depth}, 
+                #{cert_ext := CertExt,
+                  ocsp_responder_certs := OcspResponderCerts,
+                  ocsp_state := OcspState}) ->
+    ValidationFunAndState = 
+        validation_fun_and_state(VerifyFun, #{role => Role,
+                                              certdb => CertDbHandle,
+                                              certdb_ref => CertDbRef,
+                                              server_name => ServerName,
+                                              customize_hostname_check =>
+                                                  CustomizeHostnameCheck,
+                                              signature_algs => SignAlgos,
+                                              signature_algs_cert => undefined,
+                                              version => Version,
+                                              crl_check => CrlCheck,
+                                              crl_db => CRLDbHandle,
+                                              cert_ext => CertExt,
+                                              issuer => TrustedCert,
+                                              ocsp_responder_certs => OcspResponderCerts,
+                                              ocsp_state => OcspState},
+                                 Path, Level),
+    Options = [{max_path_length, Depth},
+               {verify_fun, ValidationFunAndState}],
+    public_key:pkix_path_validation(TrustedCert, Path, Options).

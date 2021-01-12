@@ -1,7 +1,7 @@
 %%
 %% %CopyrightBegin%
 %% 
-%% Copyright Ericsson AB 1996-2013. All Rights Reserved.
+%% Copyright Ericsson AB 1996-2018. All Rights Reserved.
 %% 
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -29,10 +29,10 @@
 
 %% gen_server callbacks
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2,
-	 terminate/2, code_change/3]).
+	 terminate/2]).
 
 %% Other exports
--export([format_status/2]).
+-export([format_status/2, parse_df/2]).
 
 -record(state, {threshold, timeout, os, diskdata = [],port}).
 
@@ -153,7 +153,7 @@ handle_cast(_Msg, State) ->
 handle_info(timeout, State) ->
     NewDiskData = check_disk_space(State#state.os, State#state.port,
 				   State#state.threshold),
-    timer:send_after(State#state.timeout, timeout),
+    {ok, _Tref} = timer:send_after(State#state.timeout, timeout),
     {noreply, State#state{diskdata = NewDiskData}};
 handle_info({'EXIT', _Port, Reason}, State) ->
     {stop, {port_died, Reason}, State#state{port=not_used}};
@@ -169,30 +169,6 @@ terminate(_Reason, State) ->
 	    port_close(Port)
     end,
     ok.
-
-%% os_mon-2.0.1
-%% For live downgrade to/upgrade from os_mon-1.8[.1]
-code_change(Vsn, PrevState, "1.8") ->
-    case Vsn of
-
-	%% Downgrade from this version
-	{down, _Vsn} ->
-	    State = case PrevState#state.port of
-			not_used -> PrevState#state{port=noport};
-			_ -> PrevState
-		    end,
-	    {ok, State};
-
-	%% Upgrade to this version
-	_Vsn ->
-	    State = case PrevState#state.port of
-			noport -> PrevState#state{port=not_used};
-			_ -> PrevState
-		    end,
-	    {ok, State}
-    end;
-code_change(_OldVsn, State, _Extra) ->
-    {ok, State}.
 
 %%----------------------------------------------------------------------
 %% Other exports
@@ -252,8 +228,23 @@ newline([13|_], B) -> {ok, lists:reverse(B)};
 newline([H|T], B) -> newline(T, [H|B]);
 newline([], B) -> {more, B}.
 
+%%-- Looking for Cmd location ------------------------------------------
+find_cmd(Cmd) ->
+    os:find_executable(Cmd).
+
+find_cmd(Cmd, Path) ->
+    %% try to find it at the specific location
+    case os:find_executable(Cmd, Path) of
+        false ->
+            find_cmd(Cmd);
+        Found ->
+            Found
+    end.
+
 %%--Check disk space----------------------------------------------------
 
+%% We use as many absolute paths as possible below as there may be stale
+%% NFS handles in the PATH which cause these commands to hang.
 check_disk_space({win32,_}, not_used, Threshold) ->
     Result = os_mon_sysinfo:get_disk_info(),
     check_disks_win32(Result, Threshold);
@@ -264,7 +255,8 @@ check_disk_space({unix, irix}, Port, Threshold) ->
     Result = my_cmd("/usr/sbin/df -lk",Port),
     check_disks_irix(skip_to_eol(Result), Threshold);
 check_disk_space({unix, linux}, Port, Threshold) ->
-    Result = my_cmd("/bin/df -lk", Port),
+    Df = find_cmd("df", "/bin"),
+    Result = my_cmd(Df ++ " -lk -x squashfs", Port),
     check_disks_solaris(skip_to_eol(Result), Threshold);
 check_disk_space({unix, posix}, Port, Threshold) ->
     Result = my_cmd("df -k -P", Port),
@@ -285,7 +277,7 @@ check_disk_space({unix, sunos4}, Port, Threshold) ->
     Result = my_cmd("df", Port),
     check_disks_solaris(skip_to_eol(Result), Threshold);
 check_disk_space({unix, darwin}, Port, Threshold) ->
-    Result = my_cmd("/bin/df -i -k -t ufs,hfs", Port),
+    Result = my_cmd("/bin/df -i -k -t ufs,hfs,apfs", Port),
     check_disks_susv3(skip_to_eol(Result), Threshold).
 
 % This code works for Linux and FreeBSD as well
@@ -294,8 +286,8 @@ check_disks_solaris("", _Threshold) ->
 check_disks_solaris("\n", _Threshold) ->
     [];
 check_disks_solaris(Str, Threshold) ->
-    case io_lib:fread("~s~d~d~d~d%~s", Str) of
-	{ok, [_FS, KB, _Used, _Avail, Cap, MntOn], RestStr} ->
+    case parse_df(Str, posix) of
+	{ok, {KB, Cap, MntOn}, RestStr} ->
 	    if
 		Cap >= Threshold ->
 		    set_alarm({disk_almost_full, MntOn}, []);
@@ -308,14 +300,102 @@ check_disks_solaris(Str, Threshold) ->
 	    check_disks_solaris(skip_to_eol(Str),Threshold)
     end.
 
+%% @private
+%% @doc Predicate to take a word from the input string until a space or
+%% a percent '%' sign (the Capacity field is followed by a %)
+parse_df_is_not_space($ ) -> false;
+parse_df_is_not_space($%) -> false;
+parse_df_is_not_space(_) -> true.
+
+%% @private
+%% @doc Predicate to take spaces away from string. Stops on a non-space
+parse_df_is_space($ ) -> true;
+parse_df_is_space(_) -> false.
+
+%% @private
+%% @doc Predicate to consume remaining characters until end of line.
+parse_df_is_not_eol($\r) -> false;
+parse_df_is_not_eol($\n) -> false;
+parse_df_is_not_eol(_)   -> true.
+
+%% @private
+%% @doc Trims leading non-spaces (the word) from the string then trims spaces.
+parse_df_skip_word(Input) ->
+    Remaining = lists:dropwhile(fun parse_df_is_not_space/1, Input),
+    lists:dropwhile(fun parse_df_is_space/1, Remaining).
+
+%% @private
+%% @doc Takes all non-spaces and then drops following spaces.
+parse_df_take_word(Input) ->
+    {Word, Remaining0} = lists:splitwith(fun parse_df_is_not_space/1, Input),
+    Remaining1 = lists:dropwhile(fun parse_df_is_space/1, Remaining0),
+    {Word, Remaining1}.
+
+%% @private
+%% @doc Takes all non-spaces and then drops the % after it and the spaces.
+parse_df_take_word_percent(Input) ->
+    {Word, Remaining0} = lists:splitwith(fun parse_df_is_not_space/1, Input),
+    %% Drop the leading % or do nothing
+    Remaining1 = case Remaining0 of
+                     [$% | R1] -> R1;
+                     _ -> Remaining0 % Might be no % or empty list even
+                 end,
+    Remaining2 = lists:dropwhile(fun parse_df_is_space/1, Remaining1),
+    {Word, Remaining2}.
+
+%% @private
+%% @doc Given a line of 'df' POSIX/SUSv3 output split it into fields:
+%% a string (mounted device), 4 integers (kilobytes, used, available
+%% and capacity), skip % sign, (optionally for susv3 can also skip IUsed, IFree
+%% and ICap% fields) then take remaining characters as the mount path
+-spec parse_df(string(), posix | susv3) ->
+    {error, parse_df} | {ok, {integer(), integer(), list()}, string()}.
+parse_df(Input0, Flavor) ->
+    %% Format of Posix/Linux df output looks like Header + Lines
+    %% Filesystem     1024-blocks     Used Available Capacity Mounted on
+    %% udev               2467108        0   2467108       0% /dev
+    Input1 = parse_df_skip_word(Input0), % skip device path field
+    {KbStr, Input2} = parse_df_take_word(Input1), % take Kb field
+    Input3 = parse_df_skip_word(Input2), % skip Used field
+    Input4 = parse_df_skip_word(Input3), % skip Avail field
+
+    % take Capacity% field; drop a % sign following the capacity
+    {CapacityStr, Input5} = parse_df_take_word_percent(Input4),
+
+    %% Format of OS X/SUSv3 df looks similar to POSIX but has 3 extra columns
+    %% Filesystem 1024-blocks Used Available Capacity iused ifree %iused Mounted
+    %% /dev/disk1   243949060 2380  86690680    65% 2029724 37555    0%  /
+    Input6 = case Flavor of
+                 posix -> Input5;
+                 susv3 -> % there are 3 extra integers we want to skip
+                     Input5a = parse_df_skip_word(Input5), % skip IUsed field
+                     Input5b = parse_df_skip_word(Input5a), % skip IFree field
+                     %% skip the value of ICap + '%' field
+                     {_, Input5c} = parse_df_take_word_percent(Input5b),
+                     Input5c
+             end,
+
+    % path is the remaining string till end of line
+    {MountPath, Input7} = lists:splitwith(fun parse_df_is_not_eol/1, Input6),
+    % Trim the newlines
+    Remaining = lists:dropwhile(fun(X) -> not parse_df_is_not_eol(X) end,
+                                Input7),
+    try
+        Kb = erlang:list_to_integer(KbStr),
+        Capacity = erlang:list_to_integer(CapacityStr),
+        {ok, {Kb, Capacity, MountPath}, Remaining}
+    catch error:badarg ->
+        {error, parse_df}
+    end.
+
 % Parse per SUSv3 specification, notably recent OS X
 check_disks_susv3("", _Threshold) ->
     [];
 check_disks_susv3("\n", _Threshold) ->
     [];
 check_disks_susv3(Str, Threshold) ->
-    case io_lib:fread("~s~d~d~d~d%~d~d~d%~s", Str) of
-    {ok, [_FS, KB, _Used, _Avail, Cap, _IUsed, _IFree, _ICap, MntOn], RestStr} ->
+    case parse_df(Str, susv3) of
+    {ok, {KB, Cap, MntOn}, RestStr} ->
 	    if
 		Cap >= Threshold ->
 		    set_alarm({disk_almost_full, MntOn}, []);

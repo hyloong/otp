@@ -1,7 +1,7 @@
 /*
  * %CopyrightBegin%
  *
- * Copyright Ericsson AB 2009-2010. All Rights Reserved.
+ * Copyright Ericsson AB 2009-2016. All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -27,6 +27,13 @@
 
 #ifdef HAVE_CONFIG_H
 #include "config.h"
+#endif
+
+#if defined(__APPLE__) && defined(__MACH__) && !defined(__DARWIN__)
+#  define __DARWIN__ 1
+#endif
+#ifdef __DARWIN__
+#  define _DARWIN_UNLIMITED_SELECT
 #endif
 
 #include "ethread.h"
@@ -56,6 +63,12 @@ ethr_event_init(ethr_event *e)
 }
 
 int
+ethr_event_prepare_timed(ethr_event *e)
+{
+    return 0;
+}
+
+int
 ethr_event_destroy(ethr_event *e)
 {
     return 0;
@@ -81,6 +94,9 @@ wait__(ethr_event *e, int spincount, ethr_sint64_t timeout)
 	tsp = NULL;
     }
     else {
+#ifdef ETHR_HAVE_ETHR_GET_MONOTONIC_TIME
+	start = ethr_get_monotonic_time();
+#endif
 	tsp = &ts;
 	time = timeout;
 	if (spincount == 0) {
@@ -89,9 +105,6 @@ wait__(ethr_event *e, int spincount, ethr_sint64_t timeout)
 		goto return_event_on;
 	    goto set_timeout;
 	}
-#ifdef ETHR_HAVE_ETHR_GET_MONOTONIC_TIME
-	start = ethr_get_monotonic_time();
-#endif
     }
 
     while (1) {
@@ -171,6 +184,19 @@ return_event_on:
 #include <errno.h>
 #include <string.h>
 
+#include "erl_misc_utils.h"
+
+#ifdef __DARWIN__
+
+struct ethr_event_fdsets___ {
+    fd_set *rsetp;
+    fd_set *esetp;
+    size_t mem_size;
+    fd_mask mem[1];
+};
+
+#endif
+
 static void
 setup_nonblocking_pipe(ethr_event *e)
 {
@@ -187,6 +213,35 @@ setup_nonblocking_pipe(ethr_event *e)
     fcntl(e->fd[0], F_SETFL, flgs | O_NONBLOCK);
     flgs = fcntl(e->fd[1], F_GETFL, 0);
     fcntl(e->fd[1], F_SETFL, flgs | O_NONBLOCK);
+
+
+#ifndef __DARWIN__
+    if (e->fd[0] >= FD_SETSIZE)
+	ETHR_FATAL_ERROR__(ENOTSUP);
+#else
+    {
+	int nmasks;
+	ethr_event_fdsets__ *fdsets;
+	size_t mem_size;
+
+	nmasks = (e->fd[0]+NFDBITS)/NFDBITS;
+	mem_size = 2*nmasks*sizeof(fd_mask);
+	if (mem_size < 2*sizeof(fd_set)) {
+	    mem_size = 2*sizeof(fd_set);
+	    nmasks = mem_size/(2*sizeof(fd_mask));
+	}
+
+	fdsets = malloc(sizeof(ethr_event_fdsets__)
+			+ mem_size
+			- sizeof(fd_mask));
+	if (!fdsets)
+	    ETHR_FATAL_ERROR__(ENOMEM);
+	fdsets->rsetp = (fd_set *) (char *) &fdsets->mem[0];
+	fdsets->esetp = (fd_set *) (char *) &fdsets->mem[nmasks];
+	fdsets->mem_size = mem_size;
+	e->fdsets = fdsets;
+    }
+#endif
 
     ETHR_MEMBAR(ETHR_StoreStore);
 }
@@ -252,6 +307,19 @@ ethr_event_init(ethr_event *e)
 
     e->fd[0] = e->fd[1] = ETHR_EVENT_INVALID_FD__;
 
+#ifdef __DARWIN__
+    e->fdsets = NULL;
+#endif
+
+    return 0;
+}
+
+int
+ethr_event_prepare_timed(ethr_event *e)
+{
+    if (e->fd[0] == ETHR_EVENT_INVALID_FD__)
+	setup_nonblocking_pipe(e);
+
     return 0;
 }
 
@@ -263,13 +331,14 @@ ethr_event_destroy(ethr_event *e)
 	close(e->fd[0]);
 	close(e->fd[1]);
     }
+#ifdef __DARWIN__
+    if (e->fdsets)
+	free(e->fdsets);
+#endif
     res = pthread_mutex_destroy(&e->mtx);
     if (res != 0)
 	return res;
-    res = pthread_cond_destroy(&e->cnd);
-    if (res != 0)
-	return res;
-    return 0;
+    return pthread_cond_destroy(&e->cnd);
 }
 
 static ETHR_INLINE int
@@ -279,12 +348,9 @@ wait__(ethr_event *e, int spincount, ethr_sint64_t timeout)
     ethr_sint32_t val;
     int res, ulres;
     int until_yield = ETHR_YIELD_AFTER_BUSY_LOOPS;
-    ethr_sint64_t time = 0; /* SHUT UP annoying faulty warning... */
+    ethr_sint64_t time = 0;
 #ifdef ETHR_HAVE_ETHR_GET_MONOTONIC_TIME
-    ethr_sint64_t start = 0; /* SHUT UP annoying faulty warning... */
-#endif
-#ifdef ETHR_HAVE_PTHREAD_COND_TIMEDWAIT_MONOTONIC
-    struct timespec cond_timeout;
+    ethr_sint64_t timeout_time = 0; /* SHUT UP annoying faulty warning... */
 #endif
 
     val = ethr_atomic32_read(&e->state);
@@ -295,33 +361,30 @@ wait__(ethr_event *e, int spincount, ethr_sint64_t timeout)
 	if (spincount == 0)
 	    goto set_event_off_waiter;
     }
-    if (timeout == 0)
+    else if (timeout == 0)
 	return ETIMEDOUT;
     else {
-	time = timeout;
+#ifdef ETHR_HAVE_ETHR_GET_MONOTONIC_TIME
+	timeout_time = ethr_get_monotonic_time();
+	timeout_time += timeout;
+#endif
 	switch (e->fd[0]) {
 	case ETHR_EVENT_INVALID_FD__:
-#ifdef ETHR_HAVE_ETHR_GET_MONOTONIC_TIME
-	    start = ethr_get_monotonic_time();
-#endif
+	    time = timeout;
 	    setup_nonblocking_pipe(e);
 	    break;
 #ifdef ETHR_HAVE_PTHREAD_COND_TIMEDWAIT_MONOTONIC
 	case ETHR_EVENT_COND_TIMEDWAIT__:
-	    time += ethr_get_monotonic_time();
-	    cond_timeout.tv_sec = time / (1000*1000*1000);
-	    cond_timeout.tv_nsec = time % (1000*1000*1000);
+	    time = -1;
 	    if (spincount == 0)
 		goto set_event_off_waiter;
 	    break;
 #endif
 	default:
+	    time = timeout;
 	    /* Already initialized pipe... */
 	    if (spincount == 0)
 		goto set_select_timeout;
-#ifdef ETHR_HAVE_ETHR_GET_MONOTONIC_TIME
-	    start = ethr_get_monotonic_time();
-#endif
 	    break;
 	}
     }
@@ -351,6 +414,9 @@ wait__(ethr_event *e, int spincount, ethr_sint64_t timeout)
 	|| e->fd[0] == ETHR_EVENT_COND_TIMEDWAIT__
 #endif
 	) {
+#ifdef ETHR_HAVE_PTHREAD_COND_TIMEDWAIT_MONOTONIC
+	struct timespec cond_timeout;
+#endif
 
     set_event_off_waiter:
 
@@ -379,9 +445,35 @@ wait__(ethr_event *e, int spincount, ethr_sint64_t timeout)
 
 #ifdef ETHR_HAVE_PTHREAD_COND_TIMEDWAIT_MONOTONIC
 	    if (timeout > 0) {
+		if (time != timeout_time) {
+		    time = timeout_time;
+
+#if ERTS_USE_PREMATURE_TIMEOUT
+		    {
+			ethr_sint64_t rtmo;
+
+			rtmo = timeout_time - ethr_get_monotonic_time();
+			if (rtmo <= 0) {
+			    res = ETIMEDOUT;
+			    break;
+			}
+			time = timeout_time;
+			time -= ERTS_PREMATURE_TIMEOUT(rtmo, 1000*1000*1000);
+		    }
+#endif
+
+		    cond_timeout.tv_sec = time / (1000*1000*1000);
+		    cond_timeout.tv_nsec = time % (1000*1000*1000);
+		}
 		res = pthread_cond_timedwait(&e->cnd, &e->mtx, &cond_timeout);
-		if (res == EINTR || res == ETIMEDOUT)
+		if (res == EINTR
+		    || (res == ETIMEDOUT
+#if ERTS_USE_PREMATURE_TIMEOUT
+			&& time == timeout_time
+#endif
+			)) {
 		    break;
+		}
 	    }
 	    else
 #endif
@@ -403,12 +495,18 @@ wait__(ethr_event *e, int spincount, ethr_sint64_t timeout)
 	int fd;
 	int sres;
 	ssize_t rres;
-	fd_set rset;
-	fd_set eset;
+#ifndef __DARWIN__
+	fd_set rset, eset;
+#endif
+	fd_set *rsetp, *esetp;
 	struct timeval select_timeout;
 
 #ifdef ETHR_HAVE_ETHR_GET_MONOTONIC_TIME
-	time -= ethr_get_monotonic_time() - start;
+#if ERTS_USE_PREMATURE_TIMEOUT
+    restart_select:
+#endif
+
+	time = timeout_time - ethr_get_monotonic_time();
 	if (time <= 0)
 	    return ETIMEDOUT;
 #endif
@@ -422,6 +520,11 @@ wait__(ethr_event *e, int spincount, ethr_sint64_t timeout)
 	 * for micro-seconds...
 	 */
 	time = ((time - 1) / 1000) + 1;
+
+#if defined(ETHR_HAVE_ETHR_GET_MONOTONIC_TIME) \
+    && ERTS_USE_PREMATURE_TIMEOUT
+	time -= ERTS_PREMATURE_TIMEOUT(time, 1000*1000);
+#endif
 
 	select_timeout.tv_sec = time / (1000*1000);
 	select_timeout.tv_usec = time % (1000*1000);
@@ -457,12 +560,22 @@ wait__(ethr_event *e, int spincount, ethr_sint64_t timeout)
 	    ETHR_ASSERT(act == val);
 	}
 
-	FD_ZERO(&rset);
-	FD_SET(fd, &rset);
-	FD_ZERO(&eset);
-	FD_SET(fd, &eset);
 
-	sres = select(fd + 1, &rset, NULL, &eset, &select_timeout);
+#ifdef __DARWIN__
+	rsetp = e->fdsets->rsetp;
+	esetp = e->fdsets->esetp;
+	memset((void *) &e->fdsets->mem[0], 0, e->fdsets->mem_size);
+#else
+	FD_ZERO(&rset);
+	FD_ZERO(&eset);
+	rsetp = &rset;
+	esetp = &eset;
+#endif
+
+	FD_SET(fd, rsetp);
+	FD_SET(fd, esetp);
+
+	sres = select(fd + 1, rsetp, NULL, esetp, &select_timeout);
 	if (sres == 0)
 	    res = ETIMEDOUT;
 	else {
@@ -480,7 +593,11 @@ wait__(ethr_event *e, int spincount, ethr_sint64_t timeout)
 	val = ethr_atomic32_read(&e->state);
 	if (val == ETHR_EVENT_ON__)
 	    goto return_event_on;
-
+#if defined(ETHR_HAVE_ETHR_GET_MONOTONIC_TIME) \
+    && ERTS_USE_PREMATURE_TIMEOUT
+	if (res == ETIMEDOUT)
+	    goto restart_select; /* Verify timeout */
+#endif
     }
 
     return res;

@@ -1,7 +1,7 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2008-2013. All Rights Reserved.
+%% Copyright Ericsson AB 2008-2020. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -24,8 +24,6 @@
 %% This suite expects to be run as the last suite of all suites.
 %%
 
-%-define(line_trace, 1).
-
 -include_lib("kernel/include/file.hrl").
 	    
 -record(core_search_conf, {search_dir,
@@ -34,56 +32,23 @@
 			   file,
 			   run_by_ts}).
 
--define(DEFAULT_TIMEOUT, ?t:minutes(5)).
-
--export([all/0, suite/0,groups/0,init_per_suite/1, end_per_suite/1, 
-	 init_per_group/2,end_per_group/2, 
-	 init_per_testcase/2, end_per_testcase/2]).
+-export([all/0, suite/0]).
 
 -export([search_for_core_files/1, core_files/1]).
 
 -include_lib("common_test/include/ct.hrl").
     
-
-init_per_testcase(Case, Config) ->
-    Dog = ?t:timetrap(?DEFAULT_TIMEOUT),
-    [{testcase, Case}, {watchdog, Dog} |Config].
-
-end_per_testcase(_Case, Config) ->
-    Dog = ?config(watchdog, Config),
-    ?t:timetrap_cancel(Dog),
-    ok.
-
-suite() -> [{ct_hooks,[ts_install_cth]}].
+suite() ->
+    [{ct_hooks,[ts_install_cth]},
+     {timetrap, {minutes, 10}}].
 
 all() -> 
     [core_files].
 
-groups() -> 
-    [].
-
-init_per_suite(Config) ->
-    Config.
-
-end_per_suite(_Config) ->
-    ok.
-
-init_per_group(_GroupName, Config) ->
-    Config.
-
-end_per_group(_GroupName, Config) ->
-    Config.
-
-
-
-core_files(doc) ->
-    [];
-core_files(suite) ->
-    [];
 core_files(Config) when is_list(Config) ->
     case os:type() of
 	{win32, _} ->
-	    {skipped, "No idea searching for core-files on windows"};
+            win32_search(true, os:getenv("OTP_DAILY_BUILD_TOP_DIR"));
 	{unix, darwin} ->
 	    core_file_search(
 	      core_search_conf(true,
@@ -98,7 +63,7 @@ core_files(Config) when is_list(Config) ->
 search_for_core_files(Dir) ->
     case os:type() of
 	{win32, _} ->
-	    io:format("No idea searching for core-files on windows");
+            win32_search(false, Dir);
 	{unix, darwin} ->
 	    core_file_search(core_search_conf(false, Dir, "/cores"));
 	_ ->
@@ -123,10 +88,10 @@ find_cerl(DBTop) ->
 	[Cerl | _ ] ->
 	    case filelib:is_regular(Cerl) of
 		true -> Cerl;
-		_ -> false
+		_ -> find_cerl(false)
 	    end;
 	_ ->
-	    false
+	    find_cerl(false)
     end.
 
 is_dir(false) ->
@@ -138,18 +103,7 @@ core_search_conf(RunByTS, DBTop) ->
     core_search_conf(RunByTS, DBTop, false).
 
 core_search_conf(RunByTS, DBTop, XDir) ->
-    SearchDir = case is_dir(DBTop) of
-		    false ->
-			case code:which(test_server) of
-			    non_existing ->
-				{ok, CWD} = file:get_cwd(),
-				CWD;
-			    TS ->
-				filename:dirname(filename:dirname(TS))
-			end;
-		    true ->
-			DBTop
-		end,
+    SearchDir = search_dir(DBTop),
     XSearchDir = case is_dir(XDir) of
 		     false ->
 			 false;
@@ -165,24 +119,25 @@ core_search_conf(RunByTS, DBTop, XDir) ->
 		      file = os:find_executable("file"),
 		      run_by_ts = RunByTS}.
 
+search_dir(DBTop) ->
+    case is_dir(DBTop) of
+        false ->
+            case code:which(test_server) of
+                non_existing ->
+                    {ok, CWD} = file:get_cwd(),
+                    CWD;
+                TS ->
+                    filename:dirname(filename:dirname(TS))
+            end;
+        true ->
+            DBTop
+    end.
+
 file_inspect(#core_search_conf{file = File}, Core) ->
     FRes0 = os:cmd(File ++ " " ++ Core),
-    FRes = case string:str(FRes0, Core) of
-	       0 ->
-		   FRes0;
-	       S ->
-		   L = length(FRes0),
-		   E = length(Core),
-		   case S of
-		       1 ->
-			   lists:sublist(FRes0, E+1, L+1);
-		       _ ->
-			   lists:sublist(FRes0, 1, S-1)
-			       ++
-			       " "
-			       ++
-			       lists:sublist(FRes0, E+1, L+1)
-		   end
+    FRes = case string:split(FRes0, Core) of
+	       [S1] -> S1;
+	       [S1,S2] -> lists:flatten(S1 ++ " " ++ S2)
 	   end,
     case re:run(FRes, "text|ascii", [caseless,{capture,none}]) of
 	match ->
@@ -229,33 +184,41 @@ mod_time_list(F) ->
 	    [0,0,0,0,0,0]
     end.
 
-str_strip(S) ->
-    string:strip(string:strip(string:strip(S), both, $\n), both, $\r).
-
 dump_core(#core_search_conf{ cerl = false }, _) ->
     ok;
 dump_core(_, {ignore, _Core}) ->
     ok;
 dump_core(#core_search_conf{ cerl = Cerl }, Core) ->
-    Dump = case test_server:is_debug() of
-	       true ->
-		   os:cmd(Cerl ++ " -debug -dump " ++ Core);
-	       _ ->
-		   os:cmd(Cerl ++ " -dump " ++ Core)
-	   end,
+    Dump = case erlang:system_info(build_type) of
+               opt ->
+                   os:cmd(Cerl ++ " -dump " ++ Core);
+               Type ->
+		   os:cmd(lists:concat([Cerl," -",Type," -dump ",Core]))
+           end,
     ct:log("~ts~n~n~ts",[Core,Dump]).
-
 
 format_core(Conf, {ignore, Core}) ->
     format_core(Conf, Core, "[ignored] ");
 format_core(Conf, Core) ->
-    format_core(Conf, Core, "").
+    format_core(Conf, Core, ""),
+
+    %% Try print (log dir) name of offending application
+    CoreDir = filename:dirname(Core),
+    lists:foreach(fun(TestDir) ->
+			  case filelib:is_dir(filename:join(CoreDir,TestDir)) of
+			      true ->
+				  io:format("  from ~s~n", [TestDir]);
+			      false ->
+				  no
+			  end
+		  end,
+		  filelib:wildcard("*.logs", CoreDir)).
 
 format_core(#core_search_conf{file = false}, Core, Ignore) ->
     io:format("  ~s~s " ++ time_fstr() ++ "~s~n",
 	      [Ignore, Core] ++ mod_time_list(Core));
 format_core(#core_search_conf{file = File}, Core, Ignore) ->
-    FRes = str_strip(os:cmd(File ++ " " ++ Core)),
+    FRes = string:trim(os:cmd(File ++ " " ++ Core)),
     case catch re:run(FRes, Core, [caseless,{capture,none}]) of
 	match ->
 	    io:format("  ~s~s " ++ time_fstr() ++ "~n",
@@ -269,17 +232,24 @@ core_file_search(#core_search_conf{search_dir = Base,
 				   extra_search_dir = XBase,
 				   cerl = Cerl,
 				   run_by_ts = RunByTS} = Conf) ->
-    case {Cerl,test_server:is_debug()} of
+    case {Cerl,erlang:system_info(build_type)} of
 	{false,_} -> ok;
-	{_,true} ->
-	    catch io:format("A cerl script that probably can be used for "
-			    "inspection of emulator cores:~n  ~s -debug~n",
-			    [Cerl]);
-	_ ->
+	{_,opt} ->
 	    catch io:format("A cerl script that probably can be used for "
 			    "inspection of emulator cores:~n  ~s~n",
-			    [Cerl])
+			    [Cerl]);
+	{_,Type} ->
+	    catch io:format("A cerl script that probably can be used for "
+			    "inspection of emulator cores:~n  ~s -emu_type ~p~n",
+			    [Cerl,Type])
     end,
+
+    case os:getenv("DOCKER_BUILD_INFO") of
+        false -> ok;
+        Info ->
+            io:format(Info)
+    end,
+
     io:format("Searching for core-files in: ~s~s~n",
 	      [case XBase of
 		   false -> "";
@@ -293,6 +263,8 @@ core_file_search(#core_search_conf{search_dir = Base,
 				 "core" ->
 				     core_cand(Conf, Core, Cores);
 				 "core." ++ _ ->
+				     core_cand(Conf, Core, Cores);
+				 "vgcore." ++ _ -> % valgrind
 				     core_cand(Conf, Core, Cores);
 				 Bin when is_binary(Bin) -> %Icky filename; ignore
 				     Cores;
@@ -354,7 +326,43 @@ core_file_search(#core_search_conf{search_dir = Base,
 	    case {RunByTS, ICores, FCores} of
 		{true, [], []} -> ok;
 		{true, _, []} -> {comment, Res};
-		{true, _, _} -> ?t:fail(Res);
+		{true, _, _} -> ct:fail(Res);
 		_ -> Res
 	    end
+    end.
+
+win32_search(RunByTS, DBTop) ->
+    case os:getenv("WSLENV") of
+        false when RunByTS ->
+            {skipped, "No idea searching for core-files on old windows"};
+        false ->
+            io:format("No idea searching for core-files on old windows");
+        _ ->
+            win32_search_2(RunByTS, DBTop)
+    end.
+
+win32_search_2(true, DBTop0) ->
+    DBTop = search_dir(DBTop0),
+    Dir = "c:/ldisk/daily_build",
+    io:format("Find and move 'dmp' files in: ~s to ~s~n",[Dir, DBTop]),
+    case filelib:wildcard("*.dmp", Dir) of
+        [] -> ok;
+        Dumps ->
+            %% We move the "daily" dmp files to this test-run
+            Str = lists:flatten(["Core-files found:", lists:join($\s, lists:reverse(Dumps))]),
+            Rename = fun(File) ->
+                             FP = filename:join(Dir, File),
+                             _ = file:rename(FP, filename:join(DBTop, File))
+                     end,
+            [Rename(File) || File <- Dumps],
+            ct:fail(Str)
+    end;
+win32_search_2(false, _DBTop0) ->
+    DBTop = search_dir("c:/ldisk/daily_build"),
+    io:format("Search for 'dmp' files in: ~s~n",[DBTop]),
+    case filelib:wildcard("*.dmp", DBTop) of
+        [] -> "Core-files found: Ignored core-files found:";
+        Dumps ->
+            io:format("The dmp files must be removed manually\n", []),
+            lists:flatten(["Core-files found:", lists:join($\s, lists:reverse(Dumps))])
     end.

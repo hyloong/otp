@@ -276,11 +276,11 @@ The following tags can be used before a module declaration:
 ```%% @author Richard Carlsson'''
 
 ```%% @author Richard Carlsson <carlsson.richard@gmail.com>
-   %%   [http://user.it.uu.se/~richardc/]'''
+   %%   [http://example.net/richardc/]'''
 
 ```%% @author <carlsson.richard@gmail.com>'''
 
-```%% @author carlsson.richard@gmail.com [http://user.it.uu.se/~richardc/]'''
+```%% @author carlsson.richard@gmail.com [http://example.net/richardc/]'''
       </dd>
 
 <dt><a name="mtag-copyright">`@copyright'</a></dt>
@@ -377,6 +377,12 @@ The following tags can be used before a function definition:
       Useful for debug/test functions, etc. The content can be
       used as a comment; it is ignored by EDoc.</dd>
 
+  <dt><a name="ftag-param">`@param'</a></dt>
+      <dd>Provide more information on a single parameter of the
+      enclosing function. The content consists of a parameter name, 
+      followed by one or more whitespace characters, and XHTML text.
+      </dd>
+      
   <dt><a name="ftag-private">`@private'</a></dt>
       <dd>Marks the function as private (i.e., not part of the public
       interface), so that it will not appear in the normal
@@ -385,6 +391,10 @@ The following tags can be used before a function definition:
       e.g. entry points for `spawn'. (Non-exported functions are
       always "private".) The content can be used as a comment; it is
       ignored by EDoc.</dd>
+
+  <dt><a name="ftag-returns">`@returns'</a></dt>
+      <dd>Specify additional information about the value returned by
+      the function. Content consists of XHTML text.</dd>
 
   <dt><a name="ftag-see">`@see'</a></dt>
       <dd>Make a reference to a module, function, datatype, or
@@ -755,16 +765,15 @@ following escape sequences may be used: <dl>
 
  === Function specifications ===
 
-<note>Although the syntax described in the following can still be used
+Note that although the syntax described in the following can still be used
 for specifying functions we recommend that Erlang specifications as
-described in <seealso marker="doc/reference_manual:typespec"> Types
-and Function Specification</seealso> should be added to the source
-code instead. This way the analyses of <seealso
-marker="dialyzer:dialyzer">Dialyzer</seealso>'s can be utilized in the
+described in <seeguide marker="system/reference_manual:typespec"> Types
+and Function Specification</seeguide> should be added to the source
+code instead. This way the analyses of <seeerl
+marker="dialyzer:dialyzer">Dialyzer</seeerl>'s can be utilized in the
 process of keeping the documentation consistent and up-to-date.
 Erlang specifications will be used unless there is also a function
 specification (a `@spec' tag followed by a type) with the same name.
-</note>
 
 The following grammar describes the form of the specifications following
 a `@spec' tag. A '`?'' suffix implies that the element is optional.
@@ -973,12 +982,12 @@ contain any annotations at all.
 
  === Type definitions ===
 
-<note>Although the syntax described in the following can still be used
+Note that although the syntax described in the following can still be used
 for specifying types we recommend that Erlang types as described in
-<seealso marker="doc/reference_manual:typespec"> Types and Function
-Specification</seealso> should be added to the source code instead.
+<seeguide marker="system/reference_manual:typespec"> Types and Function
+Specification</seeguide> should be added to the source code instead.
 Erlang types will be used unless there is a type alias with the same
-name.</note>
+name.
 
 The following grammar (see above for auxiliary definitions) describes
 the form of the definitions that may follow a `@type' tag:

@@ -286,6 +286,7 @@ document for information on how to build the documentation.
 
 Testing the cross compiled system
 ---------------------------------
+
 Some of the tests that come with erlang use native code to test. This means
 that when cross compiling erlang you also have to cross compile test suites
 in order to run tests on the target host. To do this you first have to release
@@ -520,27 +521,9 @@ When a variable has been set, no warning will be issued.
     `posix_memalign` implementation that accepts larger than page size
     alignment.
 
-Copyright and License
----------------------
-
-%CopyrightBegin%
-
-Copyright Ericsson AB 2009-2014. All Rights Reserved.
-
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
- 
-    http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
-
-%CopyrightEnd%
-
+*   `erl_xcomp_code_model_small` - `yes|no`. Default to `no`. If `yes`, the target
+    system must place the beam.smp executable in the lower 2 GB of memory. That is it
+    should not use position independent executable.
 
 
    [$ERL_TOP/HOWTO/INSTALL.md]: INSTALL.md

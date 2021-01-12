@@ -1,7 +1,7 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2006-2014. All Rights Reserved.
+%% Copyright Ericsson AB 2006-2018. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -19,7 +19,7 @@
 %%
 
 -module(observer_SUITE).
--include_lib("test_server/include/test_server.hrl").
+-include_lib("common_test/include/ct.hrl").
 -include_lib("wx/include/wx.hrl").
 -include_lib("observer/src/observer_tv.hrl").
 
@@ -34,13 +34,15 @@
 
 %% Test cases
 -export([app_file/1, appup_file/1,
-	 basic/1, process_win/1, table_win/1
+	 basic/1, process_win/1, table_win/1,
+         port_win_when_tab_not_initiated/1
 	]).
 
 %% Default timetrap timeout (set in init_per_testcase)
--define(default_timeout, ?t:minutes(1)).
+-define(default_timeout, ?t:minutes(2)).
 
-suite() -> [{ct_hooks,[ts_install_cth]}].
+suite() -> [{timetrap, {minutes, 5}},
+            {ct_hooks,[ts_install_cth]}].
 
 all() ->
     [app_file, appup_file, {group, gui}].
@@ -49,7 +51,8 @@ groups() ->
     [{gui, [],
       [basic,
        process_win,
-       table_win
+       table_win,
+       port_win_when_tab_not_initiated
       ]
      }].
 
@@ -111,8 +114,14 @@ appup_file(Config) when is_list(Config) ->
 basic(suite) -> [];
 basic(doc) -> [""];
 basic(Config) when is_list(Config) ->
-    timer:send_after(100, "foobar"), %% Otherwise the timer server gets added to procs
+    %% Start these before
+    wx:new(),
+    wx:destroy(),
+    timer:send_after(100, "foobar"),
+    {foo, node@machine} ! dummy_msg,  %% start distribution stuff
+    %% Otherwise ever lasting servers gets added to procs
     ProcsBefore = processes(),
+    ProcInfoBefore = [{P,process_info(P)} || P <- ProcsBefore],
     NumProcsBefore = length(ProcsBefore),
 
     ok = observer:start(),
@@ -143,8 +152,10 @@ basic(Config) when is_list(Config) ->
     ProcsAfter = processes(),
     NumProcsAfter = length(ProcsAfter),
     if NumProcsAfter=/=NumProcsBefore ->
+            BeforeNotAfter = ProcsBefore -- ProcsAfter,
 	    ct:log("Before but not after:~n~p~n",
-		   [[{P,process_info(P)} || P <- ProcsBefore -- ProcsAfter]]),
+		   [[{P,I} || {P,I} <- ProcInfoBefore,
+                              lists:member(P,BeforeNotAfter)]]),
 	    ct:log("After but not before:~n~p~n",
 		   [[{P,process_info(P)} || P <- ProcsAfter -- ProcsBefore]]),
 	    ct:fail("leaking processes");
@@ -171,6 +182,7 @@ test_page("Applications" ++ _, _Window) ->
 test_page("Processes" ++ _, _Window) ->
     timer:sleep(500),  %% Give it time to refresh
     Active = get_active(),
+    Active ! refresh_interval,
     ChangeSort = fun(N) ->
 			 FakeEv = #wx{event=#wxList{type=command_list_col_click, col=N}},
 			 Active ! FakeEv,
@@ -184,7 +196,23 @@ test_page("Processes" ++ _, _Window) ->
     timer:sleep(1000),  %% Give it time to refresh
     ok;
 
-test_page(_Title = "Table" ++ _, _Window) ->
+test_page("Ports" ++ _, _Window) ->
+    timer:sleep(500),  %% Give it time to refresh
+    Active = get_active(),
+    Active ! refresh_interval,
+    ChangeSort = fun(N) ->
+			 FakeEv = #wx{event=#wxList{type=command_list_col_click, col=N}},
+			 Active ! FakeEv,
+			 timer:sleep(200)
+		 end,
+    [ChangeSort(N) || N <- lists:seq(1,4) ++ [0]],
+    Activate = #wx{event=#wxList{type=command_list_item_activated,
+				 itemIndex=2}},
+    Active ! Activate,
+    timer:sleep(1000),  %% Give it time to refresh
+    ok;
+
+test_page("Table" ++ _, _Window) ->
     Tables = [ets:new(list_to_atom("Test-" ++ [C]), [public]) || C <- lists:seq($A, $Z)],
     Table = lists:nth(3, Tables),
     ets:insert(Table, [{N,100-N} || N <- lists:seq(1,100)]),
@@ -206,6 +234,13 @@ test_page(_Title = "Table" ++ _, _Window) ->
     Info = 407, %% whitebox...
     Active ! #wx{id=Info},
     timer:sleep(1000),
+    ok;
+
+test_page("Trace Overview" ++ _, _Window) ->
+    timer:sleep(500),  %% Give it time to refresh
+    Active = get_active(),
+    Active ! refresh_interval,
+    timer:sleep(1000),  %% Give it time to refresh
     ok;
 
 test_page(Title, Window) ->
@@ -267,7 +302,7 @@ table_win(Config) when is_list(Config) ->
     Notebook = setup_whitebox_testing(),
     Parent = get_top_level_parent(Notebook),
     TObj = observer_tv_table:start_link(Parent, [{node,node()}, {type,ets}, {table,#tab{name=foo, id=Table}}]),
-    %% Modal can not test edit..
+    %% Modal cannot test edit..
     %% TPid = wx_object:get_pid(TObj),
     %% TPid ! #wx{event=#wxList{type=command_list_item_activated, itemIndex=12}},
     timer:sleep(3000),
@@ -275,6 +310,17 @@ table_win(Config) when is_list(Config) ->
     observer:stop(),
     ok.
 
+%% Test PR-1296/OTP-14151
+%% Clicking a link to a port before the port tab has been activated the
+%% first time crashes observer.
+port_win_when_tab_not_initiated(_Config) ->
+    {ok,Port} = gen_tcp:listen(0,[]),
+    ok = observer:start(),
+    _Notebook = setup_whitebox_testing(),
+    observer ! {open_link,erlang:port_to_list(Port)},
+    timer:sleep(1000),
+    observer:stop(),
+    ok.
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 

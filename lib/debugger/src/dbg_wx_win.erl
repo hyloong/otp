@@ -1,7 +1,7 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2008-2013. All Rights Reserved.
+%% Copyright Ericsson AB 2008-2018. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -43,7 +43,8 @@
 %%   GS = term()
 %%--------------------------------------------------------------------
 init() ->
-    wx:new().
+    _ = wx:new(),
+    ok.
 
 %%--------------------------------------------------------------------
 %% create_menus(MenuBar, [Menu])
@@ -80,12 +81,12 @@ create_menus(_MB,[], _Win,Id) ->
     Id.
 
 create_menu_item(Menu, [separator|Is], Win, Id,Connect) ->
-    wxMenu:appendSeparator(Menu),
+    _ = wxMenu:appendSeparator(Menu),
     create_menu_item(Menu,Is,Win,Id+1,Connect);
 create_menu_item(Menu, [{Name, _N, cascade, Items}|Is], Win, Id0,Connect) ->
     Sub = wxMenu:new([]),
     Id = create_menu_item(Sub, Items, Win, Id0, false),
-    wxMenu:append(Menu, ?wxID_ANY, menu_name(Name,ignore), Sub),
+    _ = wxMenu:append(Menu, ?wxID_ANY, menu_name(Name,ignore), Sub),
     %% Simulate GS sub checkBox/RadioBox behaviour
     Self = self(),
     Butts = [{MI,get(MI)} || {MI,_,_} <- Items],
@@ -95,13 +96,12 @@ create_menu_item(Menu, [{Name, _N, cascade, Items}|Is], Win, Id0,Connect) ->
 			    false -> Acc
 			end		
 		end,
-    Filter = fun(_,_) ->	     
+    Filter = fun(Ev,_) ->
 		     Enabled = lists:foldl(IsChecked, [], Butts),
-		     Self ! #wx{userData={Name, Enabled},
-				event=#wxCommand{type=command_menu_selected}}
+		     Self ! Ev#wx{userData={Name, Enabled}}
 	     end,
-    wxMenu:connect(Win, command_menu_selected, 
-		   [{id,Id0},{lastId, Id-1},{callback,Filter}]),
+    _ = wxMenu:connect(Win, command_menu_selected,
+		       [{id,Id0},{lastId, Id-1},{callback,Filter}]),
     create_menu_item(Menu, Is, Win, Id, Connect);
 create_menu_item(Menu, [{Name,Pos}|Is], Win, Id, Connect) -> 
     MenuId = case lists:member(Name, ['Debugger']) of
@@ -169,7 +169,7 @@ add_break(Win, MenuName, Point) ->
     Delete = wxMenu:appendRadioItem(Trigger, ?wxID_ANY,"Delete"),
     Add(Delete, {break,Point,{trigger,delete}}),
 
-    wxMenu:append(Sub, ?wxID_ANY, "Trigger Action", Trigger),
+    _ = wxMenu:append(Sub, ?wxID_ANY, "Trigger Action", Trigger),
     MenuBtn = wxMenu:append(Menu,?wxID_ANY, Label, Sub),
 
     #break{mb={Menu,MenuBtn}, 
@@ -273,10 +273,9 @@ entry(Parent, Title, Prompt, {Type, Value}) ->
 
 
 verify(Type, Str) ->
-    case erl_scan:string(Str) of
+    case erl_scan:string(Str, 1, [text]) of
 	{ok, Tokens, _EndLine} when Type==term ->
-	    
-	    case erl_parse:parse_term(Tokens++[{dot, 1}]) of
+	    case erl_eval:extended_parse_term(Tokens++[{dot, erl_anno:new(1)}]) of
 		{ok, Value} -> {edit, Value};
 		_Error -> 
 		    ignore
@@ -305,7 +304,10 @@ to_string(Integer) when is_integer(Integer) ->
     integer_to_list(Integer);
 to_string([]) -> "";
 to_string(List) when is_list(List) ->
-    List;
+    try unicode:characters_to_list(List)
+    catch _:_ ->
+            io_lib:format("~tp",[List])
+    end;
 to_string(Term) ->
     io_lib:format("~tp",[Term]).
 

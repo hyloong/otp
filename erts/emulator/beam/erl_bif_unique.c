@@ -1,7 +1,7 @@
 /*
  * %CopyrightBegin%
  *
- * Copyright Ericsson AB 2014. All Rights Reserved.
+ * Copyright Ericsson AB 2014-2017. All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -22,12 +22,15 @@
 #  include "config.h"
 #endif
 
+#define ERL_BIF_UNIQUE_C__
 #include "sys.h"
 #include "erl_vm.h"
 #include "erl_alloc.h"
 #include "export.h"
 #include "bif.h"
 #include "erl_bif_unique.h"
+#include "hash.h"
+#include "erl_binary.h"
 
 /* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * *\
  * Reference                                                         *
@@ -58,21 +61,34 @@ static union {
 static Uint32 max_thr_id;
 #endif
 
+static void init_magic_ref_tables(void);
+static void init_pid_ref_tables(void);
+
+static Uint64 ref_init_value;
+
 static void
 init_reference(void)
 {
+    SysTimeval tv;
+    sys_gettimeofday(&tv);
+    ref_init_value = 0;
+    ref_init_value |= (Uint64) tv.tv_sec;
+    ref_init_value |= ((Uint64) tv.tv_usec) << 32;
+    ref_init_value *= (Uint64) 268438039;
+    ref_init_value += (Uint64) tv.tv_usec;
 #ifdef DEBUG
     max_thr_id = (Uint32) erts_no_schedulers;
-#ifdef ERTS_DIRTY_SCHEDULERS
     max_thr_id += (Uint32) erts_no_dirty_cpu_schedulers;
     max_thr_id += (Uint32) erts_no_dirty_io_schedulers;
 #endif
-#endif
-    erts_atomic64_init_nob(&global_reference.count, 0);
+    erts_atomic64_init_nob(&global_reference.count,
+			   (erts_aint64_t) ref_init_value);
+    init_magic_ref_tables();
+    init_pid_ref_tables();
 }
 
 static ERTS_INLINE void
-global_make_ref_in_array(Uint32 thr_id, Uint32 ref[ERTS_MAX_REF_NUMBERS])
+global_make_ref_in_array(Uint32 thr_id, Uint32 ref[ERTS_REF_NUMBERS])
 {
     Uint64 value;
 
@@ -82,7 +98,7 @@ global_make_ref_in_array(Uint32 thr_id, Uint32 ref[ERTS_MAX_REF_NUMBERS])
 }
 
 static ERTS_INLINE void
-make_ref_in_array(Uint32 ref[ERTS_MAX_REF_NUMBERS])
+make_ref_in_array(Uint32 ref[ERTS_REF_NUMBERS])
 {
     ErtsSchedulerData *esdp = erts_get_scheduler_data();
     if (esdp)
@@ -92,15 +108,23 @@ make_ref_in_array(Uint32 ref[ERTS_MAX_REF_NUMBERS])
 }
 
 void
-erts_make_ref_in_array(Uint32 ref[ERTS_MAX_REF_NUMBERS])
+erts_make_ref_in_array(Uint32 ref[ERTS_REF_NUMBERS])
 {
     make_ref_in_array(ref);
 }
 
-Eterm erts_make_ref_in_buffer(Eterm buffer[REF_THING_SIZE])
+void
+erts_make_magic_ref_in_array(Uint32 ref[ERTS_REF_NUMBERS])
+{
+    make_ref_in_array(ref);
+    ASSERT(!(ref[1] & ERTS_REF1_MAGIC_MARKER_BIT__));
+    ref[1] |= ERTS_REF1_MAGIC_MARKER_BIT__;
+}
+
+Eterm erts_make_ref_in_buffer(Eterm buffer[ERTS_REF_THING_SIZE])
 {
     Eterm* hp = buffer;
-    Uint32 ref[ERTS_MAX_REF_NUMBERS];
+    Uint32 ref[ERTS_REF_NUMBERS];
 
     make_ref_in_array(ref);
     write_ref_thing(hp, ref[0], ref[1], ref[2]);
@@ -110,16 +134,571 @@ Eterm erts_make_ref_in_buffer(Eterm buffer[REF_THING_SIZE])
 Eterm erts_make_ref(Process *c_p)
 {
     Eterm* hp;
-    Uint32 ref[ERTS_MAX_REF_NUMBERS];
+    Uint32 ref[ERTS_REF_NUMBERS];
 
-    ERTS_SMP_LC_ASSERT(ERTS_PROC_LOCK_MAIN & erts_proc_lc_my_proc_locks(c_p));
+    ERTS_LC_ASSERT(ERTS_PROC_LOCK_MAIN & erts_proc_lc_my_proc_locks(c_p));
 
-    hp = HAlloc(c_p, REF_THING_SIZE);
+    hp = HAlloc(c_p, ERTS_REF_THING_SIZE);
 
     make_ref_in_array(ref);
     write_ref_thing(hp, ref[0], ref[1], ref[2]);
 
     return make_internal_ref(hp);
+}
+
+static void pid_ref_save(Uint32 refn[ERTS_REF_NUMBERS], Eterm pid);
+
+Eterm erts_make_pid_ref(Process *c_p)
+{
+    Eterm* hp;
+    Uint32 ref[ERTS_REF_NUMBERS];
+    Eterm pid;
+
+    ERTS_LC_ASSERT(ERTS_PROC_LOCK_MAIN & erts_proc_lc_my_proc_locks(c_p));
+
+    hp = HAlloc(c_p, ERTS_PID_REF_THING_SIZE);
+
+    make_ref_in_array(ref);
+
+    ASSERT(!(ref[1] & ERTS_REF1_PID_MARKER_BIT__));
+    ref[1] |= ERTS_REF1_PID_MARKER_BIT__;
+
+    pid = c_p->common.id;
+
+    write_pid_ref_thing(hp, ref[0], ref[1], ref[2], pid);
+
+    pid_ref_save(ref, pid);
+    
+    return make_internal_ref(hp);
+}
+
+/*
+ * Magic reference tables
+ */
+
+typedef struct {
+    HashBucket hash;
+    ErtsMagicBinary *mb;
+    Uint64 value;
+    Uint32 thr_id;
+} ErtsMagicRefTableEntry;
+
+typedef struct {
+    erts_rwmtx_t rwmtx;
+    Hash hash;
+    char name[32];
+} ErtsMagicRefTable;
+
+typedef struct {
+    union {
+	ErtsMagicRefTable table;
+	char align__[ERTS_ALC_CACHE_LINE_ALIGN_SIZE(sizeof(ErtsMagicRefTable))];
+    } u;
+} ErtsAlignedMagicRefTable;
+
+ErtsAlignedMagicRefTable *magic_ref_table;
+
+ErtsMagicBinary *
+erts_magic_ref_lookup_bin__(Uint32 refn[ERTS_REF_NUMBERS])
+{
+    ErtsMagicRefTableEntry tmpl;
+    ErtsMagicRefTableEntry *tep;
+    ErtsMagicBinary *mb;
+    ErtsMagicRefTable *tblp;
+
+    ASSERT(erts_is_ref_numbers_magic(refn));
+
+    tmpl.value = erts_get_ref_numbers_value(refn);
+    tmpl.thr_id = erts_get_ref_numbers_thr_id(refn);
+    if (tmpl.thr_id > erts_no_schedulers)
+	tblp = &magic_ref_table[0].u.table;
+    else
+	tblp = &magic_ref_table[tmpl.thr_id].u.table;
+
+    erts_rwmtx_rlock(&tblp->rwmtx);
+
+    tep = (ErtsMagicRefTableEntry *) hash_get(&tblp->hash, &tmpl);
+    if (!tep)
+	mb = NULL;
+    else {
+	erts_aint_t refc;
+	mb = tep->mb;
+        refc = erts_refc_inc_unless(&mb->intern.refc, 0, 0);
+        if (refc == 0)
+            mb = NULL;
+    }
+
+    erts_rwmtx_runlock(&tblp->rwmtx);
+
+    return mb;
+}
+
+void
+erts_magic_ref_save_bin__(Eterm ref)
+{
+    ErtsMagicRefTableEntry tmpl;
+    ErtsMagicRefTableEntry *tep;
+    ErtsMRefThing *mrtp;
+    ErtsMagicRefTable *tblp;
+    Uint32 *refn;
+
+    ASSERT(is_internal_magic_ref(ref));
+
+    mrtp = (ErtsMRefThing *) internal_ref_val(ref);
+    refn = mrtp->mb->refn;
+
+    tmpl.value = erts_get_ref_numbers_value(refn);
+    tmpl.thr_id = erts_get_ref_numbers_thr_id(refn);
+
+    if (tmpl.thr_id > erts_no_schedulers)
+	tblp = &magic_ref_table[0].u.table;
+    else
+	tblp = &magic_ref_table[tmpl.thr_id].u.table;
+
+    erts_rwmtx_rlock(&tblp->rwmtx);
+
+    tep = (ErtsMagicRefTableEntry *) hash_get(&tblp->hash, &tmpl);
+
+    erts_rwmtx_runlock(&tblp->rwmtx);
+
+    if (!tep) {
+	ErtsMagicRefTableEntry *used_tep;
+	
+	ASSERT(tmpl.value == erts_get_ref_numbers_value(refn));
+	ASSERT(tmpl.thr_id == erts_get_ref_numbers_thr_id(refn));
+
+	if (tblp != &magic_ref_table[0].u.table) {
+	    tep = erts_alloc(ERTS_ALC_T_MREF_NSCHED_ENT,
+			     sizeof(ErtsNSchedMagicRefTableEntry));
+	}
+	else {
+	    tep = erts_alloc(ERTS_ALC_T_MREF_ENT,
+			     sizeof(ErtsMagicRefTableEntry));
+	    tep->thr_id = tmpl.thr_id;
+	}
+
+	tep->value = tmpl.value;
+	tep->mb = mrtp->mb;
+
+	erts_rwmtx_rwlock(&tblp->rwmtx);
+
+	used_tep = hash_put(&tblp->hash, tep);
+
+	erts_rwmtx_rwunlock(&tblp->rwmtx);
+
+	if (used_tep != tep) {
+	    if (tblp != &magic_ref_table[0].u.table)
+		erts_free(ERTS_ALC_T_MREF_NSCHED_ENT, (void *) tep);
+	    else
+		erts_free(ERTS_ALC_T_MREF_ENT, (void *) tep);
+	}
+    }
+}
+
+void
+erts_magic_ref_remove_bin(Uint32 refn[ERTS_REF_NUMBERS])
+{
+    ErtsMagicRefTableEntry tmpl;
+    ErtsMagicRefTableEntry *tep;
+    ErtsMagicRefTable *tblp;
+
+    tmpl.value = erts_get_ref_numbers_value(refn);
+    tmpl.thr_id = erts_get_ref_numbers_thr_id(refn);
+
+    if (tmpl.thr_id > erts_no_schedulers)
+	tblp = &magic_ref_table[0].u.table;
+    else
+	tblp = &magic_ref_table[tmpl.thr_id].u.table;
+
+    erts_rwmtx_rlock(&tblp->rwmtx);
+
+    tep = (ErtsMagicRefTableEntry *) hash_get(&tblp->hash, &tmpl);
+
+    erts_rwmtx_runlock(&tblp->rwmtx);
+
+    if (tep) {
+
+	ASSERT(tmpl.value == erts_get_ref_numbers_value(refn));
+	ASSERT(tmpl.thr_id == erts_get_ref_numbers_thr_id(refn));
+
+	erts_rwmtx_rwlock(&tblp->rwmtx);
+
+	tep = hash_remove(&tblp->hash, &tmpl);
+	ASSERT(tep);
+
+	erts_rwmtx_rwunlock(&tblp->rwmtx);
+
+	if (tblp != &magic_ref_table[0].u.table)
+	    erts_free(ERTS_ALC_T_MREF_NSCHED_ENT, (void *) tep);
+	else
+	    erts_free(ERTS_ALC_T_MREF_ENT, (void *) tep);
+    }
+}
+
+static int nsched_mreft_cmp(void *ve1, void *ve2)
+{
+    ErtsNSchedMagicRefTableEntry *e1 = ve1;
+    ErtsNSchedMagicRefTableEntry *e2 = ve2;
+    return e1->value != e2->value;
+}
+
+static int non_nsched_mreft_cmp(void *ve1, void *ve2)
+{
+    ErtsMagicRefTableEntry *e1 = ve1;
+    ErtsMagicRefTableEntry *e2 = ve2;
+    return e1->value != e2->value || e1->thr_id != e2->thr_id;
+}
+
+static HashValue nsched_mreft_hash(void *ve)
+{
+    ErtsNSchedMagicRefTableEntry *e = ve;
+    return (HashValue) e->value;
+}
+
+static HashValue non_nsched_mreft_hash(void *ve)
+{
+    ErtsMagicRefTableEntry *e = ve;
+    HashValue h;
+    h = (HashValue) e->thr_id;
+    h *= 268440163;
+    h += (HashValue) e->value;
+    return h;
+}
+
+static void *mreft_alloc(void *ve)
+{
+    /*
+     * We allocate the element before
+     * hash_put() and pass it as
+     * template which we get as
+     * input...
+     */
+    return ve;
+}
+
+static void mreft_free(void *ve)
+{
+    /*
+     * We free the element ourselves
+     * after hash_remove()...
+     */
+}
+
+static void *mreft_meta_alloc(int i, size_t size)
+{
+    return erts_alloc(ERTS_ALC_T_MREF_TAB_BKTS, size);
+}
+
+static void mreft_meta_free(int i, void *ptr)
+{
+    erts_free(ERTS_ALC_T_MREF_TAB_BKTS, ptr);
+}
+
+static void
+init_magic_ref_tables(void)
+{
+    HashFunctions hash_funcs;
+    int i;
+    ErtsMagicRefTable *tblp;
+
+    magic_ref_table = erts_alloc_permanent_cache_aligned(ERTS_ALC_T_MREF_TAB,
+							 (sizeof(ErtsAlignedMagicRefTable)
+							  * (erts_no_schedulers + 1)));
+
+    hash_funcs.hash = non_nsched_mreft_hash;
+    hash_funcs.cmp = non_nsched_mreft_cmp;
+
+    hash_funcs.alloc = mreft_alloc;
+    hash_funcs.free = mreft_free;
+    hash_funcs.meta_alloc = mreft_meta_alloc;
+    hash_funcs.meta_free = mreft_meta_free;
+    hash_funcs.meta_print = erts_print;
+
+    tblp = &magic_ref_table[0].u.table;
+    erts_snprintf(&tblp->name[0], sizeof(tblp->name),
+		  "magic_ref_table_0");
+    hash_init(0, &tblp->hash, &tblp->name[0], 1, hash_funcs);
+    erts_rwmtx_init(&tblp->rwmtx, "magic_ref_table", NIL,
+        ERTS_LOCK_FLAGS_PROPERTY_STATIC | ERTS_LOCK_FLAGS_CATEGORY_GENERIC);
+
+    hash_funcs.hash = nsched_mreft_hash;
+    hash_funcs.cmp = nsched_mreft_cmp;
+
+    for (i = 1; i <= erts_no_schedulers; i++) {
+	ErtsMagicRefTable *tblp = &magic_ref_table[i].u.table;
+	erts_snprintf(&tblp->name[0], sizeof(tblp->name),
+		      "magic_ref_table_%d", i);
+	hash_init(0, &tblp->hash, &tblp->name[0], 1, hash_funcs);
+	erts_rwmtx_init(&tblp->rwmtx, "magic_ref_table", NIL,
+        ERTS_LOCK_FLAGS_PROPERTY_STATIC | ERTS_LOCK_FLAGS_CATEGORY_GENERIC);
+    }
+}
+
+void erts_ref_bin_free(ErtsMagicBinary *mb)
+{
+    erts_bin_free((Binary *) mb);
+}
+
+
+/*
+ * Pid reference tables.
+ *
+ * These tables are intended to be temporary until huge
+ * references (containing the pid) can be mandatory in
+ * the external format.
+ */
+
+typedef struct {
+    HashBucket hash;
+    Eterm pid;
+    Uint64 value;
+    Uint32 thr_id;
+} ErtsPidRefTableEntry;
+
+typedef struct {
+    erts_rwmtx_t rwmtx;
+    Hash hash;
+    char name[32];
+} ErtsPidRefTable;
+
+typedef struct {
+    union {
+	ErtsPidRefTable table;
+	char align__[ERTS_ALC_CACHE_LINE_ALIGN_SIZE(sizeof(ErtsPidRefTable))];
+    } u;
+} ErtsAlignedPidRefTable;
+
+ErtsAlignedPidRefTable *pid_ref_table;
+
+Eterm
+erts_pid_ref_lookup__(Uint32 refn[ERTS_REF_NUMBERS])
+{
+    ErtsPidRefTableEntry tmpl;
+    ErtsPidRefTableEntry *tep;
+    ErtsPidRefTable *tblp;
+    Eterm pid;
+
+    ASSERT(erts_is_pid_ref_numbers(refn));
+
+    tmpl.value = erts_get_ref_numbers_value(refn);
+    tmpl.thr_id = erts_get_ref_numbers_thr_id(refn);
+    if (tmpl.thr_id > erts_no_schedulers)
+	tblp = &pid_ref_table[0].u.table;
+    else
+	tblp = &pid_ref_table[tmpl.thr_id].u.table;
+
+    erts_rwmtx_rlock(&tblp->rwmtx);
+
+    tep = (ErtsPidRefTableEntry *) hash_get(&tblp->hash, &tmpl);
+    pid = tep ? tep->pid : THE_NON_VALUE;
+
+    erts_rwmtx_runlock(&tblp->rwmtx);
+
+    return pid;
+}
+
+static void
+pid_ref_save(Uint32 refn[ERTS_REF_NUMBERS], Eterm pid)
+{
+    ErtsPidRefTableEntry tmpl;
+    ErtsPidRefTableEntry *tep;
+    ErtsPidRefTable *tblp;
+
+    ASSERT(erts_is_pid_ref_numbers(refn));
+
+    tmpl.value = erts_get_ref_numbers_value(refn);
+    tmpl.thr_id = erts_get_ref_numbers_thr_id(refn);
+    tmpl.pid = pid;
+
+    if (tmpl.thr_id > erts_no_schedulers)
+	tblp = &pid_ref_table[0].u.table;
+    else
+	tblp = &pid_ref_table[tmpl.thr_id].u.table;
+
+    erts_rwmtx_rlock(&tblp->rwmtx);
+
+    tep = (ErtsPidRefTableEntry *) hash_get(&tblp->hash, &tmpl);
+
+    erts_rwmtx_runlock(&tblp->rwmtx);
+
+    if (!tep) {
+	ErtsPidRefTableEntry *used_tep;
+	
+	ASSERT(tmpl.value == erts_get_ref_numbers_value(refn));
+	ASSERT(tmpl.thr_id == erts_get_ref_numbers_thr_id(refn));
+
+	if (tblp != &pid_ref_table[0].u.table) {
+	    tep = erts_alloc(ERTS_ALC_T_PREF_NSCHED_ENT,
+			     sizeof(ErtsNSchedPidRefTableEntry));
+	}
+	else {
+	    tep = erts_alloc(ERTS_ALC_T_PREF_ENT,
+			     sizeof(ErtsPidRefTableEntry));
+	    tep->thr_id = tmpl.thr_id;
+	}
+
+	tep->value = tmpl.value;
+        tep->pid = pid;
+
+	erts_rwmtx_rwlock(&tblp->rwmtx);
+
+	used_tep = hash_put(&tblp->hash, tep);
+
+	erts_rwmtx_rwunlock(&tblp->rwmtx);
+
+	if (used_tep != tep) {
+	    if (tblp != &pid_ref_table[0].u.table)
+		erts_free(ERTS_ALC_T_PREF_NSCHED_ENT, (void *) tep);
+	    else
+		erts_free(ERTS_ALC_T_PREF_ENT, (void *) tep);
+	}
+    }
+}
+
+void
+erts_pid_ref_delete(Eterm ref)
+{
+    ErtsPidRefTableEntry tmpl;
+    ErtsPidRefTableEntry *tep;
+    ErtsPidRefTable *tblp;
+    Uint32 *refn;
+
+    ASSERT(is_internal_pid_ref(ref));
+    
+    refn = internal_pid_ref_numbers(ref);
+    
+    ASSERT(erts_is_pid_ref_numbers(refn));
+
+    tmpl.value = erts_get_ref_numbers_value(refn);
+    tmpl.thr_id = erts_get_ref_numbers_thr_id(refn);
+
+    if (tmpl.thr_id > erts_no_schedulers)
+	tblp = &pid_ref_table[0].u.table;
+    else
+	tblp = &pid_ref_table[tmpl.thr_id].u.table;
+
+    erts_rwmtx_rlock(&tblp->rwmtx);
+
+    tep = (ErtsPidRefTableEntry *) hash_get(&tblp->hash, &tmpl);
+
+    erts_rwmtx_runlock(&tblp->rwmtx);
+
+    if (tep) {
+
+	ASSERT(tmpl.value == erts_get_ref_numbers_value(refn));
+	ASSERT(tmpl.thr_id == erts_get_ref_numbers_thr_id(refn));
+
+	erts_rwmtx_rwlock(&tblp->rwmtx);
+
+	tep = hash_remove(&tblp->hash, &tmpl);
+	ASSERT(tep);
+
+	erts_rwmtx_rwunlock(&tblp->rwmtx);
+
+	if (tblp != &pid_ref_table[0].u.table)
+	    erts_free(ERTS_ALC_T_PREF_NSCHED_ENT, (void *) tep);
+	else
+	    erts_free(ERTS_ALC_T_PREF_ENT, (void *) tep);
+    }
+}
+
+static int nsched_preft_cmp(void *ve1, void *ve2)
+{
+    ErtsNSchedPidRefTableEntry *e1 = ve1;
+    ErtsNSchedPidRefTableEntry *e2 = ve2;
+    return e1->value != e2->value;
+}
+
+static int non_nsched_preft_cmp(void *ve1, void *ve2)
+{
+    ErtsPidRefTableEntry *e1 = ve1;
+    ErtsPidRefTableEntry *e2 = ve2;
+    return e1->value != e2->value || e1->thr_id != e2->thr_id;
+}
+
+static HashValue nsched_preft_hash(void *ve)
+{
+    ErtsNSchedPidRefTableEntry *e = ve;
+    return (HashValue) e->value;
+}
+
+static HashValue non_nsched_preft_hash(void *ve)
+{
+    ErtsPidRefTableEntry *e = ve;
+    HashValue h;
+    h = (HashValue) e->thr_id;
+    h *= 268440163;
+    h += (HashValue) e->value;
+    return h;
+}
+
+static void *preft_alloc(void *ve)
+{
+    /*
+     * We allocate the element before
+     * hash_put() and pass it as
+     * template which we get as
+     * input...
+     */
+    return ve;
+}
+
+static void preft_free(void *ve)
+{
+    /*
+     * We free the element ourselves
+     * after hash_remove()...
+     */
+}
+
+static void *preft_meta_alloc(int i, size_t size)
+{
+    return erts_alloc(ERTS_ALC_T_PREF_TAB_BKTS, size);
+}
+
+static void preft_meta_free(int i, void *ptr)
+{
+    erts_free(ERTS_ALC_T_PREF_TAB_BKTS, ptr);
+}
+
+static void
+init_pid_ref_tables(void)
+{
+    HashFunctions hash_funcs;
+    int i;
+    ErtsPidRefTable *tblp;
+
+    pid_ref_table = erts_alloc_permanent_cache_aligned(ERTS_ALC_T_PREF_TAB,
+							 (sizeof(ErtsAlignedPidRefTable)
+							  * (erts_no_schedulers + 1)));
+
+    hash_funcs.hash = non_nsched_preft_hash;
+    hash_funcs.cmp = non_nsched_preft_cmp;
+
+    hash_funcs.alloc = preft_alloc;
+    hash_funcs.free = preft_free;
+    hash_funcs.meta_alloc = preft_meta_alloc;
+    hash_funcs.meta_free = preft_meta_free;
+    hash_funcs.meta_print = erts_print;
+
+    tblp = &pid_ref_table[0].u.table;
+    erts_snprintf(&tblp->name[0], sizeof(tblp->name),
+		  "pid_ref_table_0");
+    hash_init(0, &tblp->hash, &tblp->name[0], 1, hash_funcs);
+    erts_rwmtx_init(&tblp->rwmtx, "pid_ref_table", NIL,
+        ERTS_LOCK_FLAGS_PROPERTY_STATIC | ERTS_LOCK_FLAGS_CATEGORY_GENERIC);
+
+    hash_funcs.hash = nsched_preft_hash;
+    hash_funcs.cmp = nsched_preft_cmp;
+
+    for (i = 1; i <= erts_no_schedulers; i++) {
+	ErtsPidRefTable *tblp = &pid_ref_table[i].u.table;
+	erts_snprintf(&tblp->name[0], sizeof(tblp->name),
+		      "pid_ref_table_%d", i);
+	hash_init(0, &tblp->hash, &tblp->name[0], 1, hash_funcs);
+	erts_rwmtx_init(&tblp->rwmtx, "pid_ref_table", NIL,
+        ERTS_LOCK_FLAGS_PROPERTY_STATIC | ERTS_LOCK_FLAGS_CATEGORY_GENERIC);
+    }
 }
 
 /* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * *\
@@ -147,10 +726,8 @@ init_unique_integer(void)
 {
     int bits;
     unique_data.r.o.val0_max = (Uint64) erts_no_schedulers;
-#ifdef ERTS_DIRTY_SCHEDULERS
     unique_data.r.o.val0_max += (Uint64) erts_no_dirty_cpu_schedulers;
     unique_data.r.o.val0_max += (Uint64) erts_no_dirty_io_schedulers;
-#endif
     bits = erts_fit_in_bits_int64(unique_data.r.o.val0_max);
     unique_data.r.o.left_shift = bits;
     unique_data.r.o.right_shift = 64 - bits;
@@ -257,7 +834,7 @@ static ERTS_INLINE Eterm unique_integer_bif(Process *c_p, int positive)
     Uint hsz;
     Eterm *hp;
 
-    esdp = ERTS_PROC_GET_SCHDATA(c_p);
+    esdp = erts_proc_sched_data(c_p);
     thr_id = (Uint64) esdp->thr_id;
     unique = esdp->unique++;
     bld_unique_integer_term(NULL, &hsz, thr_id, unique, positive);
@@ -266,17 +843,19 @@ static ERTS_INLINE Eterm unique_integer_bif(Process *c_p, int positive)
 }
 
 Uint
-erts_raw_unique_integer_heap_size(Uint64 val[ERTS_UNIQUE_INT_RAW_VALUES])
+erts_raw_unique_integer_heap_size(Uint64 val[ERTS_UNIQUE_INT_RAW_VALUES],
+                                  int positive)
 {
     Uint sz;
-    bld_unique_integer_term(NULL, &sz, val[0], val[1], 0);
+    bld_unique_integer_term(NULL, &sz, val[0], val[1], positive);
     return sz;
 }
 
 Eterm
-erts_raw_make_unique_integer(Eterm **hpp, Uint64 val[ERTS_UNIQUE_INT_RAW_VALUES])
+erts_raw_make_unique_integer(Eterm **hpp, Uint64 val[ERTS_UNIQUE_INT_RAW_VALUES],
+    int positive)
 {
-    return bld_unique_integer_term(hpp, NULL, val[0], val[1], 0);
+    return bld_unique_integer_term(hpp, NULL, val[0], val[1], positive);
 }
 
 void
@@ -426,16 +1005,16 @@ erts_raw_get_unique_monotonic_integer(void)
 }
 
 Uint
-erts_raw_unique_monotonic_integer_heap_size(Sint64 raw)
+erts_raw_unique_monotonic_integer_heap_size(Sint64 raw, int positive)
 {
-    return get_unique_monotonic_integer_heap_size(raw, 0);
+    return get_unique_monotonic_integer_heap_size(raw, positive);
 }
 
 Eterm
-erts_raw_make_unique_monotonic_integer_value(Eterm **hpp, Sint64 raw)
+erts_raw_make_unique_monotonic_integer_value(Eterm **hpp, Sint64 raw, int positive)
 {
-    Uint hsz = get_unique_monotonic_integer_heap_size(raw, 0);
-    Eterm res = make_unique_monotonic_integer_value(*hpp, hsz, raw, 0);
+    Uint hsz = get_unique_monotonic_integer_heap_size(raw, positive);
+    Eterm res = make_unique_monotonic_integer_value(*hpp, hsz, raw, positive);
     *hpp += hsz;
     return res;
 }
@@ -496,7 +1075,7 @@ void
 erts_sched_bif_unique_init(ErtsSchedulerData *esdp)
 {
     esdp->unique = (Uint64) 0;
-    esdp->ref = (Uint64) 0;
+    esdp->ref = (Uint64) ref_init_value;
 }
 
 /* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * *\
@@ -509,11 +1088,11 @@ BIF_RETTYPE make_ref_0(BIF_ALIST_0)
     BIF_RETTYPE res;
     Eterm* hp;
 
-    ERTS_SMP_LC_ASSERT(ERTS_PROC_LOCK_MAIN & erts_proc_lc_my_proc_locks(BIF_P));
+    ERTS_LC_ASSERT(ERTS_PROC_LOCK_MAIN & erts_proc_lc_my_proc_locks(BIF_P));
 
-    hp = HAlloc(BIF_P, REF_THING_SIZE);
+    hp = HAlloc(BIF_P, ERTS_REF_THING_SIZE);
 
-    res = erts_sched_make_ref_in_buffer(ERTS_PROC_GET_SCHDATA(BIF_P), hp);
+    res = erts_sched_make_ref_in_buffer(erts_proc_sched_data(BIF_P), hp);
 
     BIF_RET(res);
 }

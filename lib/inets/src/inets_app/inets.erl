@@ -1,7 +1,7 @@
 %%
 %% %CopyrightBegin%
 %% 
-%% Copyright Ericsson AB 2006-2012. All Rights Reserved.
+%% Copyright Ericsson AB 2006-2018. All Rights Reserved.
 %% 
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -58,7 +58,7 @@ start(Type) ->
 %% Function: start(Service, ServiceConfig [, How]) -> {ok, Pid} | 
 %%                                                {error, Reason}
 %%
-%% Service = - ftpc | tftpd | tftpc | tftp | httpc | httpd
+%% Service = - httpc | httpd
 %% ServiceConfig = ConfPropList | ConfFile
 %% ConfPropList = [{Property, Value}] according to service 
 %% ConfFile = Path - when service is httpd
@@ -81,12 +81,10 @@ start(Type) ->
 %% top supervisor.
 %% --------------------------------------------------------------------
 start(Service, ServiceConfig) ->
-    Module = service_module(Service),
-    start_service(Module, ServiceConfig, inets).
+    start_service(Service, ServiceConfig, inets).
 
 start(Service, ServiceConfig, How) ->
-    Module = service_module(Service),
-    start_service(Module, ServiceConfig, How).
+    start_service(Service, ServiceConfig, How).
 
 
 %%--------------------------------------------------------------------
@@ -101,7 +99,7 @@ stop() ->
 %%--------------------------------------------------------------------
 %% Function: stop(Service, Pid) -> ok
 %%
-%% Service - ftpc | ftp | tftpd | tftpc | tftp | httpc | httpd | stand_alone
+%% Service - httpc | httpd | stand_alone
 %%
 %% Description: Stops a started service of the inets application or takes
 %% down a stand alone "service" gracefully.
@@ -111,8 +109,7 @@ stop(stand_alone, Pid) ->
     ok;
 
 stop(Service, Pid) ->
-    Module = service_module(Service),
-    call_service(Module, stop_service, Pid).
+    call_service(Service, stop_service, Pid).
 
 
 %%--------------------------------------------------------------------
@@ -122,11 +119,9 @@ stop(Service, Pid) ->
 %% Note: Services started with the stand alone option will not be listed
 %%--------------------------------------------------------------------
 services() ->
-    Modules = [service_module(Service) || Service <- 
-					      service_names()],
     try lists:flatten(lists:map(fun(Module) ->
 					Module:services()
-				end, Modules)) of
+				end, service_names())) of
 	Result ->
 	    Result
     catch 
@@ -147,9 +142,8 @@ services_info() ->
 	    {error, inets_not_started};
 	Services ->
 	    Fun =  fun({Service, Pid}) -> 
-			   Module = service_module(Service),
 			   Info =  
-			       case Module:service_info(Pid) of
+			       case Service:service_info(Pid) of
 				   {ok, PropList} ->
 				       PropList;
 				   {error, Reason} ->
@@ -378,7 +372,7 @@ key1search(Key, Vals, Def) ->
 %% Description: Returns a list of supported services
 %%-------------------------------------------------------------------
 service_names() ->
-    [ftpc, tftp, httpc, httpd].
+    [httpc, httpd].
 
 
 %%-----------------------------------------------------------------
@@ -388,7 +382,7 @@ service_names() ->
 %% Parameters:
 %% Level -> max | min | integer()
 %% Destination -> File | Port | io | HandlerSpec
-%% Service -> httpc | httpd | ftpc | tftp | all
+%% Service -> httpc | httpd | all
 %% File -> string()
 %% Port -> integer()
 %% Verbosity -> true | false
@@ -437,7 +431,7 @@ set_trace(Level) -> inets_trace:set_level(Level).
 %% Parameters:
 %% Severity -> 0 =< integer() =< 100
 %% Label -> string()
-%% Service -> httpd | httpc | ftp | tftp
+%% Service -> httpd | httpc
 %% Content -> [{tag, term()}]
 %%
 %% Description:
@@ -465,18 +459,3 @@ call_service(Service, Call, Args) ->
         exit:{noproc, _} ->
             {error, inets_not_started}
     end.
-	
-service_module(tftpd) ->
-    tftp;
-service_module(tftpc) ->
-    tftp;
-service_module(ftpc) ->
-    ftp;
-service_module(Service) ->
-    Service.
-
-
-
-
-
-

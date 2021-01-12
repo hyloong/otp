@@ -2,7 +2,7 @@
 %% %CopyrightBegin%
 %%
 %%
-%% Copyright Ericsson AB 2002-2013. All Rights Reserved.
+%% Copyright Ericsson AB 2002-2018. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -32,7 +32,7 @@
 -export([init_per_testcase/2, end_per_testcase/2]).
 -export([foo/0]).
 
--include_lib("test_server/include/test_server.hrl").
+-include_lib("common_test/include/ct.hrl").
 
 -define(default_timeout, ?t:minutes(1)).
 -define(OUTPUT, "handler_output").
@@ -222,7 +222,7 @@ file_fetch(Config) when is_list(Config) ->
     ?line ?t:capture_stop(),
     ?line [StoreString] = ?t:capture_get(),
     ?line UploadDir =
-	lists:last(string:tokens(lists:flatten(StoreString),"$ \n")),
+	lists:last(string:lexemes(lists:flatten(StoreString),"$ \n")),
 
     %% check that files are no longer in original directories...
     ?line ok = check_gone(ThisDir,atom_to_list(Node)++"-file_fetch"),
@@ -658,11 +658,29 @@ seq_trace(Config) when is_list(Config) ->
     ?line ok = ttb:format(
 		 [filename:join(Privdir,atom_to_list(Node)++"-seq_trace")]),
     ?line [{trace_ts,StartProc,call,{?MODULE,seq,[]},{_,_,_}},
-	   {seq_trace,0,{send,{0,1},StartProc,P1Proc,{Start,P2}}},
-	   {seq_trace,0,{send,{1,2},P1Proc,P2Proc,{P1,Start}}},
-	   {seq_trace,0,{send,{2,3},P2Proc,StartProc,{P2,P1}}},
+           {seq_trace,0,{send,{First, Seq0},StartProc,P1Proc,SpawnRequest1}},
+           {seq_trace,0,{send,{Seq0, Seq1},P1Proc,StartProc,SpawnReply1}},
+           {seq_trace,0,{send,{Seq2, Seq3},StartProc,P2Proc,SpawnRequest2}},
+           {seq_trace,0,{send,{Seq3, Seq4},P2Proc,StartProc,SpawnReply2}},
+	   {seq_trace,0,{send,{Seq5, Seq6},StartProc,P1Proc,{Start,P2}}},
+	   {seq_trace,0,{send,{Seq6,  Seq7},P1Proc,P2Proc,{P1,Start}}},
+	   {seq_trace,0,{send,{Seq7,  Last},P2Proc,StartProc,{P2,P1}}},
 	   end_of_trace] = flush(),
-
+    spawn_request = element(1, SpawnRequest1),
+    SReq1 = element(2, SpawnRequest1),
+    spawn_reply = element(1, SpawnReply1),
+    SReq1 = element(2, SpawnReply1),
+    spawn_request = element(1, SpawnRequest2),
+    SReq2 = element(2, SpawnRequest2),
+    spawn_reply = element(1, SpawnReply2),
+    SReq2 = element(2, SpawnReply2),
+    true = First < Seq0,
+    true = Seq0 < Seq1,
+    true = Seq1 < Seq2,
+    true = Seq2 < Seq3,
+    true = Seq4 < Seq5,
+    true = Seq6 < Seq7,
+    true = Seq7 < Last,
    %% Additional test for metatrace
     case StartProc of
 	{Start,_,_} -> ok;
@@ -720,7 +738,7 @@ diskless(Config) when is_list(Config) ->
     ?line {ok,[{matched,RemoteNode,1}]} = ttb:tp(?MODULE,foo,[]),
 
     ?line rpc:call(RemoteNode,?MODULE,foo,[]),
-    ?line timer:sleep(500), % needed for the IP port to flush
+    ?line timer:sleep(5000), % needed for the IP port to flush
     ?line ttb:stop([nofetch]),
     ?line ok = ttb:format(filename:join(Privdir,
 					atom_to_list(RemoteNode)++"-diskless")),
@@ -749,7 +767,7 @@ diskless_wrap(Config) when is_list(Config) ->
     ?line {ok,[{matched,RemoteNode,1}]} = ttb:tp(?MODULE,foo,[]),
 
     ?line rpc:call(RemoteNode,?MODULE,foo,[]),
-    ?line timer:sleep(500), % needed for the IP port to flush
+    ?line timer:sleep(5000), % needed for the IP port to flush
     ?line ttb:stop([nofetch]),
     ?line ok = ttb:format(filename:join(Privdir,
 					atom_to_list(RemoteNode)++"-diskless.*.wrp")),
@@ -778,37 +796,37 @@ otp_4967_2(suite) ->
 otp_4967_2(doc) ->
     ["OTP-4967: Trace message sent to {Name, Node}"];
 otp_4967_2(Config) when is_list(Config) ->
-    io:format("1: ~p",[now()]),
+    io:format("1: ~p",[erlang:timestamp()]),
     ?line Privdir = priv_dir(Config),
-    io:format("2: ~p",[now()]),
+    io:format("2: ~p",[erlang:timestamp()]),
     ?line File = filename:join(Privdir,"otp_4967"),
-    io:format("3: ~p",[now()]),
+    io:format("3: ~p",[erlang:timestamp()]),
     ?line S = self(),
-    io:format("4: ~p",[now()]),
+    io:format("4: ~p",[erlang:timestamp()]),
     ?line {ok,[Node]} =
 	ttb:tracer(node(),[{file, File},
 			   {handler,{fun myhandler/4, S}}]),
 
-    io:format("5: ~p",[now()]),
+    io:format("5: ~p",[erlang:timestamp()]),
     %% Test that delayed registration of a process works.
     receive after 200 -> ok end,
     ?line register(otp_4967,self()),
-    io:format("6: ~p",[now()]),
+    io:format("6: ~p",[erlang:timestamp()]),
     ?line {ok,[{S,[{matched,Node,1}]}]} =  ttb:p(self(),s),
-    io:format("7: ~p",[now()]),
+    io:format("7: ~p",[erlang:timestamp()]),
     ?line {otp_4967,node()} ! heihopp,
-    io:format("8: ~p",[now()]),
+    io:format("8: ~p",[erlang:timestamp()]),
     ?line stopped = ttb:stop([format]),
-    io:format("9: ~p",[now()]),
+    io:format("9: ~p",[erlang:timestamp()]),
     ?line Msgs = flush(),
-    io:format("10: ~p",[now()]),
+    io:format("10: ~p",[erlang:timestamp()]),
     ?line io:format("Messages received: \n~p\n",[Msgs]),
-    io:format("11: ~p",[now()]),
+    io:format("11: ~p",[erlang:timestamp()]),
     ?line true = lists:member(heihopp,Msgs), % the heihopp message itself
-    io:format("13: ~p",[now()]),
+    io:format("13: ~p",[erlang:timestamp()]),
     ?line {value,{trace_ts,_,send,heihopp,{_,otp_4967,Node},{_,_,_}}} =
 	lists:keysearch(heihopp,4,Msgs), % trace trace of the heihopp message
-    io:format("14: ~p",[now()]),
+    io:format("14: ~p",[erlang:timestamp()]),
     ?line end_of_trace = lists:last(Msgs), % end of the trace
     ok.
     
@@ -819,6 +837,7 @@ myhandler(_Fd,Trace,_,Relay) ->
 
 simple_call_handler() ->
     {fun(A, {trace_ts, _, call, _, _} ,_,_) -> io:format(A, "ok.~n", []);
+	(A, {drop, N}, _, _) -> io:format(A, "{drop, ~p}.", [N]);
 	(_, end_of_trace, _, _) -> ok end, []}.
 
 marking_call_handler() ->
@@ -954,17 +973,24 @@ begin_trace_local(ServerNode, ClientNode, Dest) ->
     ?line ttb:tpl(client, get, []).
 
 check_size(N, Dest, Output, ServerNode, ClientNode) ->
-    ?line begin_trace(ServerNode, ClientNode, Dest),
-    ?line case Dest of
+    begin_trace(ServerNode, ClientNode, Dest),
+    case Dest of
         {local, _} ->
-            ?line ttb_helper:msgs_ip(N);
+            ttb_helper:msgs_ip(N);
         _ ->
-            ?line ttb_helper:msgs(N)
+	    ttb_helper:msgs(N)
     end,
-    ?line {_, D} = ttb:stop([fetch, return_fetch_dir]),
-    ?line ttb:format(D, [{out, Output}, {handler, simple_call_handler()}]),
-    ?line {ok, Ret} = file:consult(Output),
-    ?line true = (N + 1 == length(Ret)).
+    {_, D} = ttb:stop([fetch, return_fetch_dir]),
+    ttb:format(D, [{out, Output}, {handler, simple_call_handler()}]),
+    {ok, Ret} = file:consult(Output),
+    check_output(N+1, Ret).
+
+check_output(Expected, Ret)
+  when length(Ret) =:= Expected -> ok;
+check_output(Expected, Ret) ->
+    io:format("~p~n",[Ret]),
+    io:format("Expected ~p got ~p ~n",[Expected, length(Ret)]),
+    Expected = length(Ret).
 
 fetch_when_no_option_given(suite) ->
     [];
@@ -1027,8 +1053,8 @@ logfile_name_in_fetch_dir(Config) when is_list(Config) ->
     ?line {ServerNode, ClientNode} = start_client_and_server(),
     ?line begin_trace(ServerNode, ClientNode, {local, ?FNAME}),
     ?line {_,Dir} = ttb:stop([return_fetch_dir]),
-    ?line P1 = lists:nth(3, string:tokens(filename:basename(Dir), "_")),
-    ?line P2 = hd(string:tokens(P1, "-")),
+    ?line P1 = lists:nth(3, string:lexemes(filename:basename(Dir), "_")),
+    ?line P2 = hd(string:lexemes(P1, "-")),
     ?line _File = P2.
 logfile_name_in_fetch_dir(cleanup,_Config) ->
     ?line stop_client_and_server().
@@ -1166,8 +1192,8 @@ changing_cwd_on_control_node(Config) when is_list(Config) ->
     ?line {_, D} = ttb:stop([fetch, return_fetch_dir]),
     ?line ttb:format(D, [{out, ?OUTPUT}, {handler, simple_call_handler()}]),
     ?line {ok, Ret} = file:consult(?OUTPUT),
-    ?line true = (2*(NumMsgs + 1) == length(Ret)),
-    ?line ok = file:set_cwd(OldDir).
+    check_output(2*(NumMsgs + 1),Ret),
+    ok = file:set_cwd(OldDir).
 changing_cwd_on_control_node(cleanup,_Config) ->
     ?line stop_client_and_server().
 
@@ -1176,18 +1202,19 @@ changing_cwd_on_control_node_with_local_trace(suite) ->
 changing_cwd_on_control_node_with_local_trace(doc) ->
     ["Changing cwd on control node during local tracing is safe"];
 changing_cwd_on_control_node_with_local_trace(Config) when is_list(Config) ->
-    ?line {ok, OldDir} = file:get_cwd(),
-    ?line {ServerNode, ClientNode} = start_client_and_server(),
-    ?line begin_trace(ServerNode, ClientNode, {local, ?FNAME}),
-    ?line NumMsgs = 3,
-    ?line ttb_helper:msgs_ip(NumMsgs),
-    ?line ok = file:set_cwd(".."),
-    ?line ttb_helper:msgs_ip(NumMsgs),
-    ?line {_, D} = ttb:stop([fetch, return_fetch_dir]),
-    ?line ttb:format(D, [{out, ?OUTPUT}, {handler, simple_call_handler()}]),
-    ?line {ok, Ret} = file:consult(?OUTPUT),
-    ?line true = (2*(NumMsgs + 1) == length(Ret)),
-    ?line ok = file:set_cwd(OldDir).
+    {ok, OldDir} = file:get_cwd(),
+    {ServerNode, ClientNode} = start_client_and_server(),
+    begin_trace(ServerNode, ClientNode, {local, ?FNAME}),
+    NumMsgs = 3,
+    ttb_helper:msgs_ip(NumMsgs),
+    ok = file:set_cwd(".."),
+    ttb_helper:msgs_ip(NumMsgs),
+    {_, D} = ttb:stop([fetch, return_fetch_dir]),
+    ttb:format(D, [{out, ?OUTPUT}, {handler, simple_call_handler()}]),
+    {ok, Ret} = file:consult(?OUTPUT),
+    Expected = 2*(NumMsgs + 1),
+    check_output(Expected, Ret),
+    ok = file:set_cwd(OldDir).
 changing_cwd_on_control_node_with_local_trace(cleanup,_Config) ->
     ?line stop_client_and_server().
 
@@ -1205,7 +1232,7 @@ changing_cwd_on_remote_node(Config) when is_list(Config) ->
     ?line {_, D} = ttb:stop([fetch, return_fetch_dir]),
     ?line ttb:format(D, [{out, ?OUTPUT}, {handler, simple_call_handler()}]),
     ?line {ok, Ret} = file:consult(?OUTPUT),
-    ?line true = (2*(NumMsgs + 1) == length(Ret)).
+    check_output(2*(NumMsgs + 1),Ret).
 changing_cwd_on_remote_node(cleanup,_Config) ->
     ?line stop_client_and_server().
 
@@ -1497,7 +1524,7 @@ logic(N, M, TracingType) ->
     ct:log("formatted ~p",[{D,?OUTPUT}]),
     ?line {ok, Ret} = file:consult(?OUTPUT),
     ct:log("consulted: ~p",[Ret]),
-    ?line M = length(Ret).
+    check_output(M,Ret).
 
 begin_trace_with_resume(ServerNode, ClientNode, Dest) ->
     ?line {ok, _} = ttb:tracer([ServerNode,ClientNode], [{file, Dest}, resume]),

@@ -1,7 +1,7 @@
 %%
 %% %CopyrightBegin%
 %% 
-%% Copyright Ericsson AB 2001-2010. All Rights Reserved.
+%% Copyright Ericsson AB 2001-2016. All Rights Reserved.
 %% 
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -128,7 +128,7 @@ list_group_members(Addr, Port, Dir, Group, Password) ->
     list_group_members(Addr, Port, ?DEFAULT_PROFILE, Dir, Group, Password).
 list_group_members(Addr, Port, Profile, Dir, Group, Password) ->
     Name = make_name(Addr, Port, Profile),
-    Req  = {list_group_members, Addr, Port, Dir, Group, Password},
+    Req  = {list_group_members, Addr, Port, Profile, Dir, Group, Password},
     call(Name, Req).
 
 delete_group(Addr, Port, Dir, GroupName, Password) ->
@@ -316,7 +316,7 @@ lookup(Db, Key) ->
 
 
 make_name(Addr, Port, Profile) ->
-    httpd_util:make_name(?MODULE, Addr, Port, Profile).
+    httpd_util:make_name(?MODULE_STRING, Addr, Port, Profile).
 
 
 call(Name, Req) ->

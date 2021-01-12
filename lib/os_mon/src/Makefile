@@ -1,7 +1,7 @@
 #
 # %CopyrightBegin%
 # 
-# Copyright Ericsson AB 1996-2013. All Rights Reserved.
+# Copyright Ericsson AB 1996-2016. All Rights Reserved.
 # 
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -34,8 +34,7 @@ RELSYSDIR = $(RELEASE_PATH)/lib/os_mon-$(VSN)
 # ----------------------------------------------------
 # Target Specs
 # ----------------------------------------------------
-MODULES= disksup memsup cpu_sup os_mon os_mon_mib os_sup os_mon_sysinfo \
-	nteventlog
+MODULES= disksup memsup cpu_sup os_mon os_mon_mib os_sup os_mon_sysinfo nteventlog
 
 INCLUDE=../include
 CSRC=../c_src
@@ -60,7 +59,7 @@ TARGET_FILES= $(MODULES:%=$(EBIN)/%.$(EMULATOR)) $(APP_TARGET) $(APPUP_TARGET)
 # ----------------------------------------------------
 # FLAGS
 # ----------------------------------------------------
-ERL_COMPILE_FLAGS += +warn_obsolete_guard -I$(INCLUDE) -Werror
+ERL_COMPILE_FLAGS += -I$(INCLUDE) -Werror
 
 # ----------------------------------------------------
 # Targets

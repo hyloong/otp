@@ -3,7 +3,7 @@
      #
      # %CopyrightBegin%
      #
-     # Copyright Ericsson AB 2009-2013. All Rights Reserved.
+     # Copyright Ericsson AB 2009-2018. All Rights Reserved.
      #
      # Licensed under the Apache License, Version 2.0 (the "License");
      # you may not use this file except in compliance with the License.
@@ -23,12 +23,16 @@
 <xsl:stylesheet version="1.0"
   xmlns:xsl="http://www.w3.org/1999/XSL/Transform"
   xmlns:exsl="http://exslt.org/common"
-  extension-element-prefixes="exsl"
-  xmlns:fo="http://www.w3.org/1999/XSL/Format">
+  xmlns:func="http://exslt.org/functions"
+  xmlns:erl="http://erlang.org"
+  extension-element-prefixes="exsl func"
+  xmlns:fo="http://www.w3.org/1999/XSL/Format"
+  xmlns:fn="http://www.w3.org/2005/02/xpath-functions">
 
   <xsl:output method="xml" indent="yes"/>
 
   <xsl:include href="db_pdf_params.xsl"/>
+  <xsl:include href="db_funcs.xsl"/>
 
   <!-- Start of Dialyzer type/spec tags.
        See also the templates matching "name" and "seealso" as well as
@@ -293,6 +297,13 @@
       <xsl:text>Data Types</xsl:text>
     </fo:block>
     <xsl:apply-templates/>
+  </xsl:template>
+
+  <!-- Datatype Title-->
+  <xsl:template match="datatype_title">
+     <fo:block  xsl:use-attribute-sets="h4">
+       <xsl:apply-templates/>
+    </fo:block>
   </xsl:template>
 
   <!-- Datatype -->
@@ -651,7 +662,7 @@
 
       <fo:flow flow-name="xsl-region-body">
         <fo:block xsl:use-attribute-sets="cover.logo">
-          <fo:external-graphic src="{$logo}"/>
+          <fo:external-graphic src="url('{$logo}')"/>
         </fo:block>
         <fo:block xsl:use-attribute-sets="cover.title" id="cover-page">
           <xsl:apply-templates/>
@@ -687,7 +698,7 @@
         <fo:block xsl:use-attribute-sets="cover.inner.copyrightnotice">
           <xsl:value-of select="/book/header/legalnotice"/>
 
-        <!--   
+        <!--
   Licensed under the Apache License, Version 2.0 (the "License");
   you may not use this file except in compliance with the License.
   You may obtain a copy of the License at
@@ -744,12 +755,12 @@
         <fo:bookmark internal-destination="{generate-id(header/title)}"
           starting-state="hide">
           <fo:bookmark-title><xsl:value-of select="header/title"/></fo:bookmark-title>
-          
+
           <xsl:call-template name="bookmarks2">
             <xsl:with-param name="entries"
               select="chapter[header/title]"/>
           </xsl:call-template>
-          
+
         </fo:bookmark>
       </xsl:for-each>
     </xsl:if>
@@ -969,7 +980,7 @@
 
     </fo:block>
 
-    <xsl:apply-templates select="section|quote|warning|note|br|image|marker|table|p|pre|code|list|taglist|codeinclude|erleval">
+    <xsl:apply-templates select="section|quote|warning|note|br|image|marker|table|p|pre|code|list|taglist|codeinclude">
       <xsl:with-param name="partnum" select="$partnum"/>
       <xsl:with-param name="chapnum"><xsl:number/></xsl:with-param>
     </xsl:apply-templates>
@@ -1054,7 +1065,7 @@
   </xsl:template>
 
   <!-- Section/title -->
- <xsl:template match="section/title">
+ <xsl:template match="section/title|fsdescription/title">
  </xsl:template>
 
   <!-- Lists -->
@@ -1122,51 +1133,69 @@
   <!-- Note -->
   <xsl:template match="note">
     <xsl:param name="partnum"/>
-    <fo:block xsl:use-attribute-sets="note">
-        <fo:block xsl:use-attribute-sets="note-warning-title">
-            <xsl:text>Note:</xsl:text>
-        </fo:block>
-      <xsl:apply-templates>
-        <xsl:with-param name="partnum" select="$partnum"/>
-      </xsl:apply-templates>
+    <fo:block xsl:use-attribute-sets="note-warning">
+      <fo:block xsl:use-attribute-sets="note-title">
+	<xsl:text>Note:</xsl:text>
+      </fo:block>
+      <fo:block xsl:use-attribute-sets="note-warning-content">
+	<xsl:apply-templates>
+          <xsl:with-param name="partnum" select="$partnum"/>
+	</xsl:apply-templates>
+      </fo:block>
     </fo:block>
   </xsl:template>
 
   <!-- Warning -->
   <xsl:template match="warning">
     <xsl:param name="partnum"/>
-    <fo:block xsl:use-attribute-sets="warning">
-        <fo:block xsl:use-attribute-sets="note-warning-title">
-            <xsl:text>Warning:</xsl:text>
-        </fo:block>
-      <xsl:apply-templates>
-        <xsl:with-param name="partnum" select="$partnum"/>
-      </xsl:apply-templates>
+    <fo:block xsl:use-attribute-sets="note-warning">
+      <fo:block xsl:use-attribute-sets="warning-title">
+	<xsl:text>Warning:</xsl:text>
+      </fo:block>
+      <fo:block xsl:use-attribute-sets="note-warning-content">
+	<xsl:apply-templates>
+          <xsl:with-param name="partnum" select="$partnum"/>
+	</xsl:apply-templates>
+      </fo:block>
     </fo:block>
   </xsl:template>
 
   <!-- Do -->
   <xsl:template match="do">
     <xsl:param name="partnum"/>
-    <fo:block xsl:use-attribute-sets="do">
-        <fo:block xsl:use-attribute-sets="note-warning-title">
-            <xsl:text>Do:</xsl:text>
-        </fo:block>
-      <xsl:apply-templates>
-        <xsl:with-param name="partnum" select="$partnum"/>
-      </xsl:apply-templates>
+    <fo:block xsl:use-attribute-sets="note-warning">
+      <fo:block xsl:use-attribute-sets="note-title">
+	<xsl:text>Do:</xsl:text>
+      </fo:block>
+      <fo:block xsl:use-attribute-sets="note-warning-content">
+	<xsl:apply-templates>
+          <xsl:with-param name="partnum" select="$partnum"/>
+	</xsl:apply-templates>
+      </fo:block>
     </fo:block>
   </xsl:template>
 
   <!-- Dont -->
   <xsl:template match="dont">
     <xsl:param name="partnum"/>
-    <fo:block xsl:use-attribute-sets="dont">
-        <fo:block xsl:use-attribute-sets="note-warning-title">
-            <xsl:text>Don't:</xsl:text>
-        </fo:block>
+    <fo:block xsl:use-attribute-sets="note-warning">
+      <fo:block xsl:use-attribute-sets="warning-title">
+	<xsl:text>Don't:</xsl:text>
+      </fo:block>
+      <fo:block xsl:use-attribute-sets="note-warning-content">
+	<xsl:apply-templates>
+          <xsl:with-param name="partnum" select="$partnum"/>
+	</xsl:apply-templates>
+      </fo:block>
+    </fo:block>
+  </xsl:template>
+
+  <!-- Quote -->
+  <xsl:template match="quote">
+    <xsl:param name="chapnum"/>
+    <fo:block font-style="italic">
       <xsl:apply-templates>
-        <xsl:with-param name="partnum" select="$partnum"/>
+        <xsl:with-param name="chapnum" select="$chapnum"/>
       </xsl:apply-templates>
     </fo:block>
   </xsl:template>
@@ -1180,8 +1209,8 @@
 
 
   <!-- Inline elements -->
-  <xsl:template match="b">
-    <fo:inline font-weight="bold">
+  <xsl:template match="i">
+    <fo:inline font-style="italic">
       <xsl:apply-templates/>
     </fo:inline>
   </xsl:template>
@@ -1197,7 +1226,13 @@
   </xsl:template>
 
   <xsl:template match="em">
-    <fo:inline font-style="italic">
+    <fo:inline font-weight="bold">
+      <xsl:apply-templates/>
+    </fo:inline>
+  </xsl:template>
+
+  <xsl:template match="strong">
+    <fo:inline font-weight="bold">
       <xsl:apply-templates/>
     </fo:inline>
   </xsl:template>
@@ -1210,7 +1245,14 @@
     </xsl:variable>
 
     <fo:block xsl:use-attribute-sets="code">
-      <xsl:apply-templates select="text()"/>
+      <xsl:choose> 
+	<xsl:when test="not(descendant::anno)">
+	  <xsl:value-of select="erl:code_trim(text())"/>
+	</xsl:when>
+	<xsl:otherwise>
+	  <xsl:apply-templates/>
+	</xsl:otherwise>
+      </xsl:choose>	
     </fo:block>
 
     <xsl:if test="@caption">
@@ -1404,11 +1446,14 @@
   <!-- Funcs -->
   <xsl:template match="funcs">
     <xsl:param name="partnum"/>
+    <xsl:apply-templates select="fsdescription">
+      <xsl:with-param name="partnum" select="$partnum"/>
+    </xsl:apply-templates>
     <fo:block  xsl:use-attribute-sets="h3">
       <xsl:text>Exports</xsl:text>
     </fo:block>
 
-    <xsl:apply-templates>
+    <xsl:apply-templates select="func">
       <xsl:with-param name="partnum" select="$partnum"/>
     </xsl:apply-templates>
 
@@ -1614,8 +1659,14 @@
     </xsl:variable>
 
     <fo:block xsl:use-attribute-sets="image">
-      <fo:external-graphic content-width="scale-down-to-fit" inline-progression-dimension.maximum="100%" src="{@file}"/>
-
+      <xsl:choose>
+	<xsl:when test="@width">
+	  <fo:external-graphic content-width="scale-to-fit" width="{@width}" inline-progression-dimension.maximum="100%" src="url('{@file}')"/>
+	</xsl:when>
+	<xsl:otherwise>
+	   <fo:external-graphic content-width="scale-down-to-fit" inline-progression-dimension.maximum="100%" src="url('{@file}')"/>
+	</xsl:otherwise>
+      </xsl:choose>
       <xsl:apply-templates>
         <xsl:with-param name="chapnum" select="$chapnum"/>
         <xsl:with-param name="fignum" select="$fignum"/>

@@ -1,7 +1,7 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2001-2015. All Rights Reserved.
+%% Copyright Ericsson AB 2001-2016. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -117,7 +117,7 @@ main(N, SocketType, Host, Port, Time)
 loop(Pollers, Timeout) ->
     d("loop -> entry when"
       "~n   Timeout: ~p", [Timeout]),
-    Start = inets_time_compat:monotonic_time(),
+    Start = erlang:monotonic_time(),
 
     receive 
 	{'EXIT', Pid, {poller_stat_failure, SocketType, Host, Port, Time, Reason}} ->
@@ -386,31 +386,31 @@ validate(ExpStatusCode, _SocketType, _Socket, Response) ->
     %% Sz = sz(Response),
     %% trash_the_rest(Socket, Sz),
     %% inets_test_lib:close(SocketType, Socket),
-    case inets_regexp:split(Response," ") of
-        {ok, ["HTTP/1.0", ExpStatusCode|_]} ->
+    case re:split(Response," ", [{return, list}]) of
+        ["HTTP/1.0", ExpStatusCode|_] ->
             ok;
-        {ok, ["HTTP/1.0", StatusCode|_]} -> 
+        ["HTTP/1.0", StatusCode|_] -> 
 	    error_msg("Unexpected status code: ~p (~s). "
 		      "Expected status code: ~p (~s)", 
 		      [StatusCode,    status_to_message(StatusCode),
 		       ExpStatusCode, status_to_message(ExpStatusCode)]),
             exit({unexpected_response_code, StatusCode, ExpStatusCode});
-	{ok, ["HTTP/1.1", ExpStatusCode|_]} ->
+	["HTTP/1.1", ExpStatusCode|_] ->
             ok;
-        {ok, ["HTTP/1.1", StatusCode|_]} -> 
+	["HTTP/1.1", StatusCode|_] -> 
 	    error_msg("Unexpected status code: ~p (~s). "
 		      "Expected status code: ~p (~s)", 
 		      [StatusCode,    status_to_message(StatusCode),
 		       ExpStatusCode, status_to_message(ExpStatusCode)]),
             exit({unexpected_response_code, StatusCode, ExpStatusCode});
-        {ok, Unexpected} -> 
-	    error_msg("Unexpected response split: ~p (~s)", 
-		      [Unexpected, Response]),
-            exit({unexpected_response, Unexpected, Response});
-        {error, Reason} -> 
+	{error, Reason} -> 
 	    error_msg("Failed processing response: ~p (~s)", 
 		      [Reason, Response]),
-            exit({failed_response_processing, Reason, Response})
+            exit({failed_response_processing, Reason, Response});
+	Unexpected ->
+	    error_msg("Unexpected response split: ~p (~s)", 
+		      [Unexpected, Response]),
+            exit({unexpected_response, Unexpected, Response})
     end.
 
 

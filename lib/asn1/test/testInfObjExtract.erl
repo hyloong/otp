@@ -1,7 +1,7 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2014. All Rights Reserved.
+%% Copyright Ericsson AB 2014-2016. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -21,9 +21,10 @@
 
 -module(testInfObjExtract).
 
--export([main/0]).
+-export([main/1]).
 
-main() ->
+main(jer) -> ok;
+main(_Rule) ->
     roundtrip_data_object_13('DataSeq-1'),
 
     roundtrip_data_object_1('DataSeq-2'),

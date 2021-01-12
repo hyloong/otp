@@ -4,7 +4,7 @@
 <part xmlns:xi="http://www.w3.org/2001/XInclude">
   <header>
     <copyright>
-      <year>1996</year><year>2013</year>
+      <year>1996</year><year>2019</year>
       <holder>Ericsson AB. All Rights Reserved.</holder>
     </copyright>
     <legalnotice>
@@ -30,13 +30,14 @@
     <file>part.xml</file>
   </header>
   <description>
-    <p>The Erlang Runtime System Application <em>ERTS</em>.</p>
   </description>
+  <xi:include href="introduction.xml"/>
   <xi:include href="communication.xml"/>
   <xi:include href="time_correction.xml"/>
   <xi:include href="match_spec.xml"/>
   <xi:include href="crash_dump.xml"/>
   <xi:include href="alt_dist.xml"/>
+  <xi:include href="alt_disco.xml"/>
   <xi:include href="absform.xml"/>
   <xi:include href="tty.xml"/>
   <xi:include href="driver.xml"/>

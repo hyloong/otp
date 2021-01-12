@@ -1,7 +1,7 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2009-2014. All Rights Reserved.
+%% Copyright Ericsson AB 2009-2018. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -19,11 +19,7 @@
 
 -module(reltool_server_SUITE).
 
--export([all/0, suite/0,groups/0,init_per_group/2,end_per_group/2, 
-	 init_per_suite/1, end_per_suite/1, 
-         init_per_testcase/2, end_per_testcase/2]).
-
--compile(export_all).
+-compile([export_all, nowarn_export_all]).
 
 -include_lib("reltool/src/reltool.hrl").
 -include("reltool_test_lib.hrl").
@@ -106,6 +102,7 @@ all() ->
      create_release,
      create_release_sort,
      create_script,
+     create_script_without_dot_erlang,
      create_script_sort,
      create_target,
      create_target_unicode,
@@ -142,10 +139,12 @@ all() ->
      save_config,
      dependencies,
      mod_incl_cond_derived,
+     dep_in_app_not_xref,
      use_selected_vsn,
      use_selected_vsn_relative_path,
      non_standard_vsn_id,
-     undefined_regexp].
+     undefined_regexp,
+     windows_erl_libs].
 
 groups() -> 
     [].
@@ -173,7 +172,7 @@ break(_Config) ->
 
 start_server(_Config) ->
     {ok, Pid} = ?msym({ok, _}, reltool:start_server([])),
-    Libs = lists:sort(erl_libs()),
+    Libs = reltool_test_lib:erl_libs(),
     StrippedDefault =
         case Libs of
             [] -> {sys, []};
@@ -187,7 +186,7 @@ start_server(_Config) ->
 %% Start a server process and check that it does not crash
 
 set_config(_Config) ->
-    Libs = lists:sort(erl_libs()),
+    Libs = reltool_test_lib:erl_libs(),
     Default =
         {sys,
          [
@@ -221,7 +220,15 @@ get_config(_Config) ->
     StdLibDir = filename:join(LibDir,"stdlib-"++StdVsn),
     SaslLibDir = filename:join(LibDir,"sasl-"++SaslVsn),
 
-    Sys = {sys,[{incl_cond, exclude},
+    Libs = reltool_test_lib:erl_libs(),
+    LibDirs =
+        case Libs of
+            [] -> [];
+            _ -> [{lib_dirs,Libs}]
+        end,
+
+    Sys = {sys,LibDirs ++
+               [{incl_cond, exclude},
 		{app,kernel,[{incl_cond,include}]},
 		{app,sasl,[{incl_cond,include},{vsn,SaslVsn}]},
 		{app,stdlib,[{incl_cond,include},{lib_dir,StdLibDir}]}]},
@@ -230,13 +237,27 @@ get_config(_Config) ->
     ?m({ok, Sys}, reltool:get_config(Pid,false,false)),
 
     %% Include derived info
-    ?msym({ok,{sys,[{incl_cond, exclude},
-		    {erts,[]},
-		    {app,kernel,[{incl_cond,include},{mod,_,[]}|_]},
-		    {app,sasl,[{incl_cond,include},{vsn,SaslVsn},{mod,_,[]}|_]},
-		    {app,stdlib,[{incl_cond,include},{lib_dir,StdLibDir},
-				 {mod,_,[]}|_]}]}},
-	  reltool:get_config(Pid,false,true)),
+    case Libs of
+        [] ->
+            ?msym({ok,{sys,[{incl_cond, exclude},
+                            {erts,[]},
+                            {app,kernel,[{incl_cond,include},{mod,_,[]}|_]},
+                            {app,sasl,[{incl_cond,include},{vsn,SaslVsn},
+                                       {mod,_,[]}|_]},
+                            {app,stdlib,[{incl_cond,include},{lib_dir,StdLibDir},
+                                         {mod,_,[]}|_]}]}},
+                  reltool:get_config(Pid,false,true));
+        _ ->
+            ?msym({ok,{sys,[{lib_dirs,Libs},
+                            {incl_cond, exclude},
+                            {erts,[]},
+                            {app,kernel,[{incl_cond,include},{mod,_,[]}|_]},
+                            {app,sasl,[{incl_cond,include},{vsn,SaslVsn},
+                                       {mod,_,[]}|_]},
+                            {app,stdlib,[{incl_cond,include},{lib_dir,StdLibDir},
+                                         {mod,_,[]}|_]}]}},
+                  reltool:get_config(Pid,false,true))
+    end,
 
     %% Include defaults
     ?msym({ok,{sys,[{root_dir,_},
@@ -250,8 +271,9 @@ get_config(_Config) ->
 		    {app,stdlib,[{incl_cond,include},{vsn,undefined},
 				 {lib_dir,StdLibDir}]},
 		    {boot_rel,"start_clean"},
-		    {rel,"start_clean","1.0",[]},
-		    {rel,"start_sasl","1.0",[sasl]},
+                    {rel,"no_dot_erlang","1.0",[],[{load_dot_erlang,false}]},
+		    {rel,"start_clean","1.0",[],[{load_dot_erlang,true}]},
+		    {rel,"start_sasl","1.0",[sasl],[{load_dot_erlang,true}]},
 		    {emu_name,"beam"},
 		    {relocatable,true},
 		    {profile,development},
@@ -280,8 +302,9 @@ get_config(_Config) ->
 		    {app,stdlib,[{incl_cond,include},{vsn,StdVsn},
 				 {lib_dir,StdLibDir},{mod,_,[]}|_]},
 		    {boot_rel,"start_clean"},
-		    {rel,"start_clean","1.0",[]},
-		    {rel,"start_sasl","1.0",[sasl]},
+                    {rel,"no_dot_erlang","1.0",[],[{load_dot_erlang,false}]},
+		    {rel,"start_clean","1.0",[],[{load_dot_erlang,true}]},
+		    {rel,"start_sasl","1.0",[sasl],[{load_dot_erlang,true}]},
 		    {emu_name,"beam"},
 		    {relocatable,true},
 		    {profile,development},
@@ -305,11 +328,11 @@ get_config(_Config) ->
 %% OTP-9135, test that app_file option can be set to all | keep | strip
 
 otp_9135(_Config) ->
-    Libs = lists:sort(erl_libs()),
+    Libs = reltool_test_lib:erl_libs(),
     StrippedDefaultSys = 
         case Libs of
             [] -> [];
-            _  -> {lib_dirs, Libs}
+            _  -> [{lib_dirs, Libs}]
         end,
     
     Config1 = {sys,[{app_file, keep}]}, % this is the default
@@ -408,7 +431,6 @@ create_release_sort(Config) ->
 	  {app,tools,[{mod_cond,app},{incl_cond,include}]}
          ]},
     %% Generate release
-
     ?msym({ok, {release, {RelName1, RelVsn},
 		{erts, _},
 		[{kernel, _},
@@ -549,6 +571,32 @@ create_script(_Config) ->
     %% ?m(OrigScript2, Script2),
     
     ?m(equal, diff_script(OrigScript, Script)),
+
+    %% A release defaults to load_dot_erlang == true
+    {script, {RelName, RelVsn}, ScriptInstructions} = Script,
+    ?m(true, lists:member({apply,{c,erlangrc,[]}}, ScriptInstructions)),
+
+    %% Stop server
+    ?m(ok, reltool:stop(Pid)),
+    ok.
+
+create_script_without_dot_erlang(_Config) ->
+    %% Configure the server
+    RelName = "Just testing",
+    RelVsn = "1.0",
+    Config =
+        {sys,
+         [
+          {lib_dirs, []},
+          {boot_rel, RelName},
+          {rel, RelName, RelVsn, [stdlib, kernel], [{load_dot_erlang, false}]}
+         ]},
+    {ok, Pid} = ?msym({ok, _}, reltool:start_server([{config, Config}])),
+
+    %% Confirm that load_dot_erlang == false was used
+    {ok, Script} = ?msym({ok, _}, reltool:get_script(Pid, RelName)),
+    {script, {RelName, RelVsn}, ScriptInstructions} = Script,
+    ?m(false, lists:member({apply,{c,erlangrc,[]}}, ScriptInstructions)),
 
     %% Stop server
     ?m(ok, reltool:stop(Pid)),
@@ -1040,7 +1088,7 @@ create_standalone_app(Config) ->
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %% Generate standalone system with inlined archived application
-%% Check that the inlined app can not be explicitly configured
+%% Check that the inlined app cannot be explicitly configured
 
 create_standalone_app_clash(Config) ->
     %% Create archive
@@ -1660,7 +1708,7 @@ set_apps_inlined(Config) ->
     ?m(true, Someapp1#app.is_included),
     ?m(true, Someapp1#app.is_pre_included),
 
-    %% Check that inlined app can not be configured
+    %% Check that inlined app cannot be configured
     Someapp2 = Someapp1#app{incl_cond=exclude},
     ?msym({error,
 	   "Application someapp is inlined in '*escript* someapp'. "
@@ -1720,13 +1768,19 @@ set_sys_and_undo(Config) ->
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 load_config_and_undo(Config) ->
-    Sys1 = {sys,[{incl_cond, exclude},
-		 {app,kernel,[{incl_cond,include}]},
-		 {app,sasl,[{incl_cond,include}]},
-		 {app,stdlib,[{incl_cond,include}]},
-		 {app,tools,[{incl_cond,include}]}]},
+    Sys1 = {sys,Cfg1=[{incl_cond, exclude},
+                      {app,kernel,[{incl_cond,include}]},
+                      {app,sasl,[{incl_cond,include}]},
+                      {app,stdlib,[{incl_cond,include}]},
+                      {app,tools,[{incl_cond,include}]}]},
     {ok, Pid} = ?msym({ok, _}, reltool:start_server([{config, Sys1}])),
-    ?m({ok, Sys1}, reltool:get_config(Pid)),
+    Libs = reltool_test_lib:erl_libs(),
+    Sys11 =
+        case Libs of
+            [] -> Sys1;
+            _  -> {sys, [{lib_dirs, Libs}|Cfg1]}
+        end,
+    ?m({ok, Sys11}, reltool:get_config(Pid)),
     ?m({ok,[]}, reltool_server:get_status(Pid)),
 
     %% Get app and mod
@@ -1781,13 +1835,19 @@ load_config_and_undo(Config) ->
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %% Test that load_config is properly rolled back if it fails
 load_config_fail(_Config) ->
-    Sys1 = {sys,[{incl_cond, exclude},
-		 {app,kernel,[{incl_cond,include}]},
-		 {app,sasl,[{incl_cond,include}]},
-		 {app,stdlib,[{incl_cond,include}]},
-		 {app,tools,[{incl_cond,include}]}]},
+    Sys1 = {sys,Cfg1=[{incl_cond, exclude},
+                      {app,kernel,[{incl_cond,include}]},
+                      {app,sasl,[{incl_cond,include}]},
+                      {app,stdlib,[{incl_cond,include}]},
+                      {app,tools,[{incl_cond,include}]}]},
     {ok, Pid} = ?msym({ok, _}, reltool:start_server([{config, Sys1}])),
-    ?m({ok, Sys1}, reltool:get_config(Pid)),
+    Libs = reltool_test_lib:erl_libs(),
+    Sys11 =
+        case Libs of
+            [] -> Sys1;
+            _  -> {sys, [{lib_dirs, Libs}|Cfg1]}
+        end,
+    ?m({ok, Sys11}, reltool:get_config(Pid)),
     ?m({ok,[]}, reltool_server:get_status(Pid)),
 
     %% Get app and mod
@@ -1805,7 +1865,7 @@ load_config_fail(_Config) ->
 	  reltool_server:load_config(Pid,Sys2)),
 
     %% Check that a rollback is done to the old configuration
-    ?m({ok, Sys1}, reltool:get_config(Pid,false,false)),
+    ?m({ok, Sys11}, reltool:get_config(Pid,false,false)),
 
     %% and that tools is not changed (i.e. that the new configuration
     %% is not applied)
@@ -2075,25 +2135,42 @@ gen_rel_files(_Config) ->
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 save_config(Config) ->
     PrivDir = ?config(priv_dir,Config),
-    Sys = {sys,[{incl_cond, exclude},
-		{app,kernel,[{incl_cond,include}]},
-		{app,sasl,[{incl_cond,include}]},
-		{app,stdlib,[{incl_cond,include}]}]},
+    Sys = {sys,Cfg=[{incl_cond, exclude},
+                    {app,kernel,[{incl_cond,include}]},
+                    {app,sasl,[{incl_cond,include}]},
+                    {app,stdlib,[{incl_cond,include}]}]},
     {ok, Pid} = ?msym({ok, _}, reltool:start_server([{config, Sys}])),
-    ?m({ok, Sys}, reltool:get_config(Pid)),
+    Libs = reltool_test_lib:erl_libs(),
+    Sys1 =
+        case Libs of
+            [] -> Sys;
+            _  -> {sys, [{lib_dirs, Libs}|Cfg]}
+        end,
+    ?m({ok, Sys1}, reltool:get_config(Pid)),
 
     Simple = filename:join(PrivDir,"save_simple.reltool"),
     ?m(ok, reltool_server:save_config(Pid,Simple,false,false)),
-    ?m({ok,[Sys]}, file:consult(Simple)),
+    ?m({ok,[Sys1]}, file:consult(Simple)),
 
     Derivates = filename:join(PrivDir,"save_derivates.reltool"),
     ?m(ok, reltool_server:save_config(Pid,Derivates,false,true)),
-    ?msym({ok,[{sys,[{incl_cond, exclude},
-		     {erts,[]},
-		     {app,kernel,[{incl_cond,include},{mod,_,[]}|_]},
-		     {app,sasl,[{incl_cond,include},{mod,_,[]}|_]},
-		     {app,stdlib,[{incl_cond,include},{mod,_,[]}|_]}]}]},
-	  file:consult(Derivates)),
+    case Libs of
+        [] ->
+            ?msym({ok,[{sys,[{incl_cond, exclude},
+                             {erts,[]},
+                             {app,kernel,[{incl_cond,include},{mod,_,[]}|_]},
+                             {app,sasl,[{incl_cond,include},{mod,_,[]}|_]},
+                             {app,stdlib,[{incl_cond,include},{mod,_,[]}|_]}]}]},
+                  file:consult(Derivates));
+        _ ->
+            ?msym({ok,[{sys,[{lib_dirs,Libs},
+                             {incl_cond, exclude},
+                             {erts,[]},
+                             {app,kernel,[{incl_cond,include},{mod,_,[]}|_]},
+                             {app,sasl,[{incl_cond,include},{mod,_,[]}|_]},
+                             {app,stdlib,[{incl_cond,include},{mod,_,[]}|_]}]}]},
+                  file:consult(Derivates))
+    end,
 
     Defaults = filename:join(PrivDir,"save_defaults.reltool"),
     ?m(ok, reltool_server:save_config(Pid,Defaults,true,false)),
@@ -2108,8 +2185,9 @@ save_config(Config) ->
 		     {app,stdlib,[{incl_cond,include},{vsn,undefined},
 				  {lib_dir,undefined}]},
 		     {boot_rel,"start_clean"},
-		     {rel,"start_clean","1.0",[]},
-		     {rel,"start_sasl","1.0",[sasl]},
+                     {rel,"no_dot_erlang","1.0",[],[{load_dot_erlang,false}]},
+		     {rel,"start_clean","1.0",[],[{load_dot_erlang,true}]},
+		     {rel,"start_sasl","1.0",[sasl],[{load_dot_erlang,true}]},
 		     {emu_name,"beam"},
 		     {relocatable,true},
 		     {profile,development},
@@ -2148,8 +2226,9 @@ save_config(Config) ->
 		     {app,stdlib,[{incl_cond,include},{vsn,StdVsn},
 				  {lib_dir,StdLibDir},{mod,_,[]}|_]},
 		     {boot_rel,"start_clean"},
-		     {rel,"start_clean","1.0",[]},
-		     {rel,"start_sasl","1.0",[sasl]},
+                     {rel,"no_dot_erlang","1.0",[],[{load_dot_erlang,false}]},
+		     {rel,"start_clean","1.0",[],[{load_dot_erlang,true}]},
+		     {rel,"start_sasl","1.0",[sasl],[{load_dot_erlang,true}]},
 		     {emu_name,"beam"},
 		     {relocatable,true},
 		     {profile,development},
@@ -2304,6 +2383,7 @@ dependencies(Config) ->
     ok.
 
 
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %% Test that incl_cond on mod level overwrites mod_cond on app level
 %% Uses same test applications as dependencies/1 above
 mod_incl_cond_derived(Config) ->
@@ -2343,6 +2423,40 @@ mod_incl_cond_derived(Config) ->
     %% is used by x3.
     ?msym({ok,#mod{is_included=true}}, reltool_server:get_mod(Pid,y2)),
 
+    ok.
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% ERL-167, OTP-11993: For applications that are not included in a
+%% release spec ('rel'), dependencies in the .app files are not
+%% considered - only those found with xref.
+dep_in_app_not_xref(Config) ->
+    RelName = "Just testing...",
+    RelVsn = "1.0",
+    Sys =
+        {sys,
+         [
+	  {lib_dirs,[filename:join(datadir(Config),"dep_in_app_not_xref")]},
+	  {incl_cond,exclude},
+	  {incl_archive_filters,[]},
+	  {erts,[{incl_cond,exclude}]},
+          {boot_rel, RelName},
+          {rel, RelName, RelVsn, [kernel, stdlib]},
+	  {app,kernel,[{incl_cond,include}]},
+	  {app,stdlib,[{incl_cond,include}]},
+	  {app,x,[{incl_cond,include}]},
+	  {app,y,[{incl_cond,derived}]},
+	  {app,z,[{incl_cond,derived}]}
+         ]},
+
+    TargetDir = filename:join([?WORK_DIR, "target_dep_in_app_not_xref"]),
+    ?m(ok, reltool_utils:recursive_delete(TargetDir)),
+    ?m(ok, file:make_dir(TargetDir)),
+    ?log("SPEC: ~p\n", [reltool:get_target_spec([{config, Sys}])]),
+    ok = ?m(ok, reltool:create_target([{config, Sys}], TargetDir)),
+    ?log("~p~n",[file:list_dir(filename:join([TargetDir,"lib"]))]),
+
+    ?m(true, filelib:is_dir(filename:join([TargetDir,"lib","y-1.0"]))),
+    ?m(true, filelib:is_dir(filename:join([TargetDir,"lib","z-1.0"]))),
     ok.
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
@@ -2511,10 +2625,18 @@ undefined_regexp(_Config) ->
     ok.
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-%% Library functions
+%% Checks that reltool_utils can correctly read Windows ERL_LIBS
 
-erl_libs() ->
-    string:tokens(os:getenv("ERL_LIBS", ""), ":;").
+windows_erl_libs(_Config) ->
+    WinErlLibs =
+        "C:\\Program Files\\Erlang Libs;C:\\Program Files\\More Erlang Libs",
+    Ret = reltool_utils:erl_libs(WinErlLibs, {win32, nt}),
+    ?m(["C:\\Program Files\\Erlang Libs","C:\\Program Files\\More Erlang Libs"],
+       Ret),
+    ok.
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% Library functions
 
 datadir(Config) ->
     %% Removes the trailing slash...
@@ -2524,25 +2646,70 @@ latest(App) ->
     AppStr = atom_to_list(App),
     AppDirs = filelib:wildcard(filename:join(code:lib_dir(),AppStr++"-*")),
     [LatestAppDir|_] = lists:reverse(AppDirs),
-    [_,Vsn] = string:tokens(filename:basename(LatestAppDir),"-"),
+    [_,Vsn] = string:lexemes(filename:basename(LatestAppDir),"-"),
     Vsn.
 
 rm_missing_app(Apps) ->
     lists:keydelete(?MISSING_APP_NAME,#app.name,Apps).
 
+%% We will compare the script generated by systools with
+%% the script generated by Reltool.
+%%
+%% The systools script may include additional modules in
+%% the first primLoad command (as a pure optimization).
+%% Therefore, we cannot compare the primLoad commands
+%% directly. Instead we will collect all modules from
+%% all primLoad commands in each script. The same
+%% modules must be loaded by both scripts. In addition,
+%% the error_handler module must be included in the
+%% first primLoad in each script.
+
 diff_script(Script, Script) ->
     equal;
 diff_script({script, Rel, Commands1}, {script, Rel, Commands2}) ->
-    diff_cmds(Commands1, Commands2);
+    case diff_cmds(Commands1, Commands2) of
+	equal ->
+	    Loaded = diff_get_prim_load(Commands1),
+	    case diff_get_prim_load(Commands2) of
+		Loaded ->
+		    equal;
+		Other ->
+		    io:format("Only loaded by systools: ~p",
+			      [Loaded--Other]),
+		    io:format("Only loaded by reltool: ~p",
+			      [Other--Loaded]),
+		    ct:fail(different_prim_loads)
+	    end;
+	Error ->
+	    Error
+    end;
 diff_script({script, Rel1, _}, {script, Rel2, _}) ->
     {error, {Rel1, Rel2}}.
 
+diff_cmds([{primLoad, Ms1}=Cmd1 | Commands1],
+	  [{primLoad, Ms2}=Cmd2 | Commands2]) ->
+    case lists:member(error_handler, Ms1) xor
+	lists:member(error_handler, Ms2) of
+	false ->
+	    %% error_handler either present in both or
+	    %% absent in both.
+	    diff_cmds(Commands1, Commands2);
+	true ->
+	    %% error_handler only present in one primLoad.
+	    %% Not OK.
+	    {diff, missing_error_handler,
+	     {expected, Cmd1}, {actual, Cmd2}}
+    end;
 diff_cmds([Cmd | Commands1], [Cmd | Commands2]) ->
     diff_cmds(Commands1, Commands2);
 diff_cmds([Cmd1 | _Commands1], [Cmd2 | _Commands2]) ->
     {diff, {expected, Cmd1}, {actual, Cmd2}};
 diff_cmds([], []) ->
     equal.
+
+diff_get_prim_load(Cmds) ->
+    L = [Ms || {primLoad, Ms} <- Cmds],
+    lists:sort(lists:flatten(L)).
 
 os_cmd(Cmd) when is_list(Cmd) ->
     %% Call the plain os:cmd with an echo command appended to print command status
@@ -2555,16 +2722,11 @@ os_cmd(Cmd) when is_list(Cmd) ->
         Return->
             %% Find the position of the status code wich is last in the string
             %% prepended with #
-            case string:rchr(Return, $#) of
-                
-                %% This happens only if the sh command pipe is somehow interrupted
-                0->
-                {98, Return};
-                
-                Position->
-                Result = string:left(Return,Position - 1),
-                Status = string:substr(Return,Position + 1, length(Return) - Position - 1),
-                {list_to_integer(Status), Result}
+            case string:split(Return, "$#", trailing) of
+                [_] -> %% This happens only if the sh command pipe is somehow interrupted
+                    {98, Return};
+                [Result, Status0] ->
+                    {list_to_integer(string:trim(Status0)), Result}
             end
     end.
 
@@ -2630,6 +2792,8 @@ mk_node_args(Name, Args) ->
     {ok, Pwd} = file:get_cwd(),
     NameStr = atom_to_list(Name),
     ["-detached",
+     %% Don't want to try to run the debug emulator here
+     "-emu_type","opt",
      NameSw, NameStr,
      "-pa", Pa,
      "-env", "ERL_CRASH_DUMP", Pwd ++ "/erl_crash_dump." ++ NameStr,

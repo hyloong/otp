@@ -17,72 +17,78 @@
 %% %CopyrightEnd%
 %%
 -module(map_SUITE).
--export([all/0, suite/0,groups/0,init_per_suite/1, end_per_suite/1, 
-	init_per_group/2,end_per_group/2
-    ]).
+-export([all/0, suite/0, init_per_suite/1, end_per_suite/1,
+         groups/0]).
 
--export([
-	t_build_and_match_literals/1, t_build_and_match_literals_large/1,
-	t_update_literals/1, t_update_literals_large/1,
-        t_match_and_update_literals/1, t_match_and_update_literals_large/1,
-	t_update_map_expressions/1,
-	t_update_assoc/1, t_update_assoc_large/1,
-        t_update_exact/1, t_update_exact_large/1,
-	t_guard_bifs/1,
-        t_guard_sequence/1, t_guard_sequence_large/1,
-        t_guard_update/1, t_guard_update_large/1,
-	t_guard_receive/1, t_guard_receive_large/1,
-        t_guard_fun/1,
-        t_update_deep/1,
-	t_list_comprehension/1,
-	t_map_sort_literals/1,
-	t_map_equal/1,
-	t_map_compare/1,
-	t_map_size/1,
-	t_is_map/1,
+-export([t_build_and_match_literals/1, t_build_and_match_literals_large/1,
+         t_update_literals/1, t_update_literals_large/1,
+         t_match_and_update_literals/1, t_match_and_update_literals_large/1,
+         t_update_map_expressions/1,
+         t_update_assoc/1, t_update_assoc_large/1,
+         t_update_exact/1, t_update_exact_large/1,
+         t_guard_bifs/1,
+         t_guard_sequence/1, t_guard_sequence_large/1,
+         t_guard_update/1, t_guard_update_large/1,
+         t_guard_receive/1, t_guard_receive_large/1,
+         t_guard_fun/1,
+         t_update_deep/1,
+         t_list_comprehension/1,
+         t_map_sort_literals/1,
+         t_map_equal/1,
+         t_map_compare/1,
+         t_map_size/1,
+         t_map_get/1,
+         t_is_map/1,
+         t_is_map_key/1,
 
-	%% Specific Map BIFs
-	t_bif_map_get/1,
-	t_bif_map_find/1,
-	t_bif_map_is_key/1,
-	t_bif_map_keys/1,
-	t_bif_map_merge/1,
-	t_bif_map_new/1,
-	t_bif_map_put/1,
-	t_bif_map_remove/1,
-	t_bif_map_update/1,
-	t_bif_map_values/1,
-	t_bif_map_to_list/1,
-	t_bif_map_from_list/1,
+         %% Specific Map BIFs
+         t_bif_map_get/1,
+         t_bif_map_find/1,
+         t_bif_map_is_key/1,
+         t_bif_map_keys/1,
+         t_bif_map_merge/1,
+         t_bif_map_new/1,
+         t_bif_map_put/1,
+         t_bif_map_remove/1,
+         t_bif_map_take/1, t_bif_map_take_large/1,
+         t_bif_map_update/1,
+         t_bif_map_values/1,
+         t_bif_map_to_list/1,
+         t_bif_map_from_list/1,
+         t_bif_map_next/1,
 
-	%% erlang
-	t_erlang_hash/1,
-	t_map_encode_decode/1,
+         %% erlang
+         t_erlang_hash/1,
+         t_map_encode_decode/1,
+         t_gc_rare_map_overflow/1,
 
-	%% non specific BIF related
-	t_bif_build_and_check/1,
-	t_bif_merge_and_check/1,
+         %% non specific BIF related
+         t_bif_build_and_check/1,
+         t_bif_merge_and_check/1,
 
-	%% maps module not bifs
-	t_maps_fold/1,
-	t_maps_map/1,
-	t_maps_size/1,
-	t_maps_without/1,
+         %% maps module not bifs
+         t_maps_fold/1,
+         t_maps_map/1,
+         t_maps_size/1,
+         t_maps_without/1,
 
-	%% misc
-	t_hashmap_balance/1,
-        t_erts_internal_order/1,
-        t_erts_internal_hash/1,
-	t_pdict/1,
-	t_ets/1,
-	t_dets/1,
-	t_tracing/1,
+         %% misc
+         t_hashmap_balance/1,
+         t_erts_internal_order/1,
+         t_erts_internal_hash/1,
+         t_pdict/1,
+         t_ets/1,
+         t_dets/1,
+         t_tracing/1,
+         t_hash_entropy/1,
 
-	%% instruction-level tests
-	t_has_map_fields/1,
-	y_regs/1,
-	badmap_17/1
-    ]).
+         %% instruction-level tests
+         t_has_map_fields/1,
+         y_regs/1,
+         badmap_17/1,
+
+         %%Bugs
+         t_large_unequal_bins_same_hash_bug/1]).
 
 -include_lib("stdlib/include/ms_transform.hrl").
 
@@ -95,64 +101,93 @@
 
 suite() -> [].
 
-all() -> [
-	t_build_and_match_literals, t_build_and_match_literals_large,
-	t_update_literals, t_update_literals_large,
-        t_match_and_update_literals, t_match_and_update_literals_large,
-	t_update_map_expressions,
-	t_update_assoc, t_update_assoc_large,
-        t_update_exact, t_update_exact_large,
-	t_guard_bifs,
-        t_guard_sequence, t_guard_sequence_large,
-        t_guard_update, t_guard_update_large,
-	t_guard_receive, t_guard_receive_large,
-        t_guard_fun, t_list_comprehension,
-        t_update_deep,
-	t_map_equal, t_map_compare,
-	t_map_sort_literals,
+all() ->
+    run_once() ++ [{group,main}].
 
-	%% Specific Map BIFs
-	t_bif_map_get,t_bif_map_find,t_bif_map_is_key,
-	t_bif_map_keys, t_bif_map_merge, t_bif_map_new,
-	t_bif_map_put,
-	t_bif_map_remove, t_bif_map_update,
-	t_bif_map_values,
-	t_bif_map_to_list, t_bif_map_from_list,
+groups() ->
+    [{main,[],
+      [t_build_and_match_literals, t_build_and_match_literals_large,
+       t_update_literals, t_update_literals_large,
+       t_match_and_update_literals, t_match_and_update_literals_large,
+       t_update_map_expressions,
+       t_update_assoc, t_update_assoc_large,
+       t_update_exact, t_update_exact_large,
+       t_guard_bifs,
+       t_guard_sequence, t_guard_sequence_large,
+       t_guard_update, t_guard_update_large,
+       t_guard_receive, t_guard_receive_large,
+       t_guard_fun, t_list_comprehension,
+       t_update_deep,
+       t_map_equal, t_map_compare,
+       t_map_sort_literals,
 
-	%% erlang
-	t_erlang_hash, t_map_encode_decode,
-	t_map_size, t_is_map,
+       %% Specific Map BIFs
+       t_bif_map_get,t_bif_map_find,t_bif_map_is_key,
+       t_bif_map_keys, t_bif_map_merge, t_bif_map_new,
+       t_bif_map_put,
+       t_bif_map_remove,
+       t_bif_map_take, t_bif_map_take_large,
+       t_bif_map_update,
+       t_bif_map_values,
+       t_bif_map_to_list, t_bif_map_from_list,
+       t_bif_map_next,
 
-	%% non specific BIF related
-	t_bif_build_and_check,
-	t_bif_merge_and_check,
+       %% erlang
+       t_erlang_hash, t_map_encode_decode,
+       t_gc_rare_map_overflow,
+       t_map_size, t_map_get, t_is_map,
 
-	%% maps module
-	t_maps_fold, t_maps_map,
-	t_maps_size, t_maps_without,
+       %% non specific BIF related
+       t_bif_build_and_check,
+       t_bif_merge_and_check,
+
+       %% maps module
+       t_maps_fold, t_maps_map,
+       t_maps_size, t_maps_without,
 
 
-        %% Other functions
-	t_hashmap_balance,
-        t_erts_internal_order,
-        t_erts_internal_hash,
-	t_pdict,
-	t_ets,
-	t_tracing,
+       %% Other functions
+       t_hashmap_balance,
+       t_erts_internal_order,
+       t_erts_internal_hash,
+       t_pdict,
+       t_ets,
+       t_tracing,
+       t_hash_entropy,
 
-	%% instruction-level tests
-	t_has_map_fields,
-	y_regs,
-	badmap_17
-    ].
+       %% instruction-level tests
+       t_has_map_fields,
+       y_regs,
 
-groups() -> [].
+       %% Bugs
+       t_large_unequal_bins_same_hash_bug]},
+     {once,[],[badmap_17]}].
 
-init_per_suite(Config) -> Config.
-end_per_suite(_Config) -> ok.
+run_once() ->
+    case ?MODULE of
+	map_SUITE ->
+            %% Canononical module name. Run these cases.
+            [{group,once}];
+        _ ->
+            %% Cloned module. Don't run.
+            []
+    end.
 
-init_per_group(_GroupName, Config) -> Config.
-end_per_group(_GroupName, Config) -> Config.
+init_per_suite(Config) ->
+    A0 = case application:start(sasl) of
+	     ok -> [sasl];
+	     _ -> []
+	 end,
+    A = case application:start(os_mon) of
+	     ok -> [os_mon|A0];
+	     _ -> A0
+	 end,
+    [{started_apps, A}|Config].
+
+end_per_suite(Config) ->
+    As = proplists:get_value(started_apps, Config),
+    lists:foreach(fun (A) -> application:stop(A) end, As),
+    Config.
 
 %% tests
 
@@ -683,6 +718,88 @@ t_map_size(Config) when is_list(Config) ->
                     {'EXIT',{{badmap,T},_}} =
                       (catch map_size(T))
               end),
+    ok.
+
+t_map_get(Config) when is_list(Config) ->
+    %% small map
+    1    = map_get(a, id(#{a=>1})),
+    2    = map_get(b, id(#{a=>1, b=>2})),
+    "hi" = map_get("hello", id(#{a=>1, "hello"=>"hi"})),
+    "tuple hi" = map_get({1,1.0}, id(#{a=>a, {1,1.0}=>"tuple hi"})),
+
+    M0    = id(#{ k1=>"v1", <<"k2">> => <<"v3">> }),
+    "v4" = map_get(<<"k2">>, M0#{<<"k2">> => "v4"}),
+
+    %% large map
+    M1   = maps:from_list([{I,I}||I<-lists:seq(1,100)] ++
+			  [{a,1},{b,2},{"hello","hi"},{{1,1.0},"tuple hi"},
+			   {k1,"v1"},{<<"k2">>,"v3"}]),
+    1    = map_get(a, M1),
+    2    = map_get(b, M1),
+    "hi" = map_get("hello", M1),
+    "tuple hi" = map_get({1,1.0}, M1),
+    "v3" = map_get(<<"k2">>, M1),
+
+    %% error cases
+    do_badmap(fun(T) ->
+		      {'EXIT',{{badmap,T},[{erlang,map_get,_,_}|_]}} =
+			  (catch map_get(a, T))
+	      end),
+
+    {'EXIT',{{badkey,{1,1}},[{erlang,map_get,_,_}|_]}} =
+	(catch map_get({1,1}, id(#{{1,1.0}=>"tuple"}))),
+    {'EXIT',{{badkey,a},[{erlang,map_get,_,_}|_]}} = (catch map_get(a, id(#{}))),
+    {'EXIT',{{badkey,a},[{erlang,map_get,_,_}|_]}} =
+	(catch map_get(a, id(#{b=>1, c=>2}))),
+
+    %% in guards
+    M2 = id(#{a=>1}),
+    true = if map_get(a, M2) =:= 1 -> true; true -> false end,
+    false = if map_get(x, M2) =:= 1 -> true; true -> false end,
+    do_badmap(fun
+        (T) when map_get(x, T) =:= 1 -> ok;
+        (T) -> false = is_map(T)
+    end),
+    ok.
+
+t_is_map_key(Config) when is_list(Config) ->
+    %% small map
+    true = is_map_key(a, id(#{a=>1})),
+    true = is_map_key(b, id(#{a=>1, b=>2})),
+    true = is_map_key("hello", id(#{a=>1, "hello"=>"hi"})),
+    true = is_map_key({1,1.0}, id(#{a=>a, {1,1.0}=>"tuple hi"})),
+
+    M0   = id(#{ k1=>"v1", <<"k2">> => <<"v3">> }),
+    true = is_map_key(<<"k2">>, M0#{<<"k2">> => "v4"}),
+
+    %% large map
+    M1   = maps:from_list([{I,I}||I<-lists:seq(1,100)] ++
+			  [{a,1},{b,2},{"hello","hi"},{{1,1.0},"tuple hi"},
+			   {k1,"v1"},{<<"k2">>,"v3"}]),
+    true = is_map_key(a, M1),
+    true = is_map_key(b, M1),
+    true = is_map_key("hello", M1),
+    true = is_map_key({1,1.0}, M1),
+    true = is_map_key(<<"k2">>, M1),
+
+    %% error cases
+    do_badmap(fun(T) ->
+		      {'EXIT',{{badmap,T},[{erlang,is_map_key,_,_}|_]}} =
+			  (catch is_map_key(a, T))
+	      end),
+
+    false = is_map_key({1,1}, id(#{{1,1.0}=>"tuple"})),
+    false = is_map_key(a, id(#{})),
+    false = is_map_key(a, id(#{b=>1, c=>2})),
+
+    %% in guards
+    M2 = id(#{a=>1}),
+    true = if is_map_key(a, M2) -> true; true -> false end,
+    false = if is_map_key(x, M2) -> true; true -> false end,
+    do_badmap(fun
+        (T) when is_map_key(T, x) =:= 1 -> ok;
+        (T) -> false = is_map(T)
+    end),
     ok.
 
 build_and_check_size([K|Ks],N,M0) ->
@@ -1509,11 +1626,8 @@ t_map_equal(Config) when is_list(Config) ->
 
 
 t_map_compare(Config) when is_list(Config) ->
-    Seed = {erlang:monotonic_time(),
-	    erlang:time_offset(),
-	    erlang:unique_integer()},
-    io:format("seed = ~p\n", [Seed]),
-    random:seed(Seed),
+    rand:seed(exsplus),
+    io:format("seed = ~p\n", [rand:export_seed()]),
     repeat(100, fun(_) -> float_int_compare() end, []),
     repeat(100, fun(_) -> recursive_compare() end, []),
     ok.
@@ -1531,7 +1645,7 @@ float_int_compare() ->
 
 numeric_keys(N) ->
     lists:foldl(fun(_,Acc) ->
-			Int = random:uniform(N*4) - N*2,
+			Int = rand:uniform(N*4) - N*2,
 			Float = float(Int),
 			[Int, Float, Float * 0.99, Float * 1.01 | Acc]
 		end,
@@ -1562,7 +1676,7 @@ do_compare([Gen1, Gen2]) ->
 
     %% Change one key from int to float (or vice versa) and check compare
     ML1 = maps:to_list(M1),
-    {K1,V1} = lists:nth(random:uniform(length(ML1)), ML1),
+    {K1,V1} = lists:nth(rand:uniform(length(ML1)), ML1),
     case K1 of
 	I when is_integer(I) ->
 	    case maps:find(float(I),M1) of
@@ -1653,9 +1767,9 @@ cmp_others(T1, T2, _) ->
 
 map_gen(Pairs, Size) ->
     {_,L} = lists:foldl(fun(_, {Keys, Acc}) ->
-				KI = random:uniform(size(Keys)),
+				KI = rand:uniform(size(Keys)),
 				K = element(KI,Keys),
-				KV = element(random:uniform(size(K)), K),
+				KV = element(rand:uniform(size(K)), K),
 				{erlang:delete_element(KI,Keys), [KV | Acc]}
 			end,
 			{Pairs, []},
@@ -1695,20 +1809,19 @@ term_gen_recursive(Leafs, Flags, Depth) ->
     MaxDepth = 10,
     Rnd = case {Flags, Depth} of
 	      {_, MaxDepth} -> % Only leafs
-		  random:uniform(size(Leafs)) + 3;
+		  rand:uniform(size(Leafs)) + 3;
 	      {0, 0} ->        % Only containers
-		  random:uniform(3);
+		  rand:uniform(3);
 	      {0,_} ->         % Anything
-		  random:uniform(size(Leafs)+3)
+		  rand:uniform(size(Leafs)+3)
 	  end,
     case Rnd of
 	1 -> % Make map
-	    Size = random:uniform(size(Leafs)),
+	    Size = rand:uniform(size(Leafs)),
 	    lists:foldl(fun(_, {Acc1,Acc2}) ->
 				{K1,K2} = term_gen_recursive(Leafs, Flags,
 							     Depth+1),
 				{V1,V2} = term_gen_recursive(Leafs, Flags, Depth+1),
-				%%ok = check_keys(K1,K2, 0),
 				{maps:put(K1,V1, Acc1), maps:put(K2,V2, Acc2)}
 			end,
 			{maps:new(), maps:new()},
@@ -1718,7 +1831,7 @@ term_gen_recursive(Leafs, Flags, Depth) ->
 	    {Cdr1,Cdr2} = term_gen_recursive(Leafs, Flags, Depth+1),
 	    {[Car1 | Cdr1], [Car2 | Cdr2]};
 	3 -> % Make tuple
-	    Size = random:uniform(size(Leafs)),
+	    Size = rand:uniform(size(Leafs)),
 	    L = lists:map(fun(_) -> term_gen_recursive(Leafs, Flags, Depth+1) end,
 			  lists:seq(1,Size)),
 	    {L1, L2} = lists:unzip(L),
@@ -1727,7 +1840,7 @@ term_gen_recursive(Leafs, Flags, Depth) ->
 	N -> % Make leaf
 	    case element(N-3, Leafs) of
 		I when is_integer(I) ->
-		    case random:uniform(4) of
+		    case rand:uniform(4) of
 			1 -> {I, float(I)};
 			2 -> {float(I), I};
 			_ -> {I,I}
@@ -1736,26 +1849,6 @@ term_gen_recursive(Leafs, Flags, Depth) ->
 	    end
     end.
 
-check_keys(K1, K2, _) when K1 =:= K2 ->
-    case erlang:phash3(K1) =:= erlang:phash3(K2) of
-	true -> ok;
-	false ->
-	    io:format("Same keys with different hash values !!!\nK1 = ~p\nK2 = ~p\n", [K1,K2]),
-	    error
-    end;
-check_keys(K1, K2, 0) ->
-    case {erlang:phash3(K1), erlang:phash3(K2)} of
-	{H,H} -> check_keys(K1, K2, 1);
-	{_,_} -> ok
-    end;
-check_keys(K1, K2, L) when L < 10 ->
-    case {erlang:phash3([L|K1]), erlang:phash3([L|K2])} of
-	{H,H} -> check_keys(K1, K2, L+1);
-	{_,_} -> ok
-    end;
-check_keys(K1, K2, L) ->
-    io:format("Same hash value at level ~p !!!\nK1 = ~p\nK2 = ~p\n", [L,K1,K2]),
-    error.
 
 %% BIFs
 t_bif_map_get(Config) when is_list(Config) ->
@@ -1779,15 +1872,18 @@ t_bif_map_get(Config) when is_list(Config) ->
     "v3" = maps:get(<<"k2">>, M1),
 
     %% error cases
+    %%
+    %% Note that the stack trace is ignored because the compiler may have
+    %% rewritten maps:get/2 to map_get.
     do_badmap(fun(T) ->
-		      {'EXIT',{{badmap,T},[{maps,get,_,_}|_]}} =
+		      {'EXIT',{{badmap,T},_}} =
 			  (catch maps:get(a, T))
 	      end),
 
-    {'EXIT',{{badkey,{1,1}},[{maps,get,_,_}|_]}} =
+    {'EXIT',{{badkey,{1,1}},_}} =
 	(catch maps:get({1,1}, #{{1,1.0} => "tuple"})),
-    {'EXIT',{{badkey,a},[{maps,get,_,_}|_]}} = (catch maps:get(a, #{})),
-    {'EXIT',{{badkey,a},[{maps,get,_,_}|_]}} =
+    {'EXIT',{{badkey,a},_}} = (catch maps:get(a, #{})),
+    {'EXIT',{{badkey,a},_}} =
 	(catch maps:get(a, #{b=>1, c=>2})),
     ok.
 
@@ -1849,8 +1945,11 @@ t_bif_map_is_key(Config) when is_list(Config) ->
     false = maps:is_key(1.0, maps:put(1, "number", M1)),
 
     %% error case
+    %%
+    %% Note that the stack trace is ignored because the compiler may have
+    %% rewritten maps:is_key/2 to is_map_key.
     do_badmap(fun(T) ->
-		      {'EXIT',{{badmap,T},[{maps,is_key,_,_}|_]}} =
+		      {'EXIT',{{badmap,T},_}} =
 			  (catch maps:is_key(a, T))
 	      end),
     ok.
@@ -2005,7 +2104,7 @@ t_bif_map_remove(Config) when is_list(Config) ->
     0  = erlang:map_size(maps:remove(some_key, #{})),
 
     M0 = #{ "hi" => "hello", int => 3, <<"key">> => <<"value">>,
-	4 => number, 18446744073709551629 => wat},
+            4 => number, 18446744073709551629 => wat},
 
     M1 = maps:remove("hi", M0),
     true = is_members([4,18446744073709551629,int,<<"key">>],maps:keys(M1)),
@@ -2034,10 +2133,71 @@ t_bif_map_remove(Config) when is_list(Config) ->
 
     %% error case
     do_badmap(fun(T) ->
-		      {'EXIT',{{badmap,T},[{maps,remove,_,_}|_]}} =
-	(catch maps:remove(a, T))
+		      {'EXIT',{{badmap,T},[{maps,remove,_,_}|_]}} = (catch maps:remove(a, T))
 	      end),
-     ok.
+    ok.
+
+t_bif_map_take(Config) when is_list(Config) ->
+    error = maps:take(some_key, #{}),
+
+    M0 = #{ "hi" => "hello", int => 3, <<"key">> => <<"value">>,
+            4 => number, 18446744073709551629 => wat},
+
+    5 = maps:size(M0),
+    {"hello", M1} = maps:take("hi", M0),
+    true = is_members([4,18446744073709551629,int,<<"key">>],maps:keys(M1)),
+    true = is_members([number,wat,3,<<"value">>],maps:values(M1)),
+    error = maps:take("hi", M1),
+    4 = maps:size(M1),
+
+    {3, M2} = maps:take(int, M1),
+    true = is_members([4,18446744073709551629,<<"key">>],maps:keys(M2)),
+    true = is_members([number,wat,<<"value">>],maps:values(M2)),
+    error = maps:take(int, M2),
+    3 = maps:size(M2),
+
+    {<<"value">>,M3} = maps:take(<<"key">>, M2),
+    true = is_members([4,18446744073709551629],maps:keys(M3)),
+    true = is_members([number,wat],maps:values(M3)),
+    error = maps:take(<<"key">>, M3),
+    2 = maps:size(M3),
+
+    {wat,M4} = maps:take(18446744073709551629, M3),
+    true = is_members([4],maps:keys(M4)),
+    true = is_members([number],maps:values(M4)),
+    error = maps:take(18446744073709551629, M4),
+    1 = maps:size(M4),
+
+    {number,M5} = maps:take(4, M4),
+    [] = maps:keys(M5),
+    [] = maps:values(M5),
+    error = maps:take(4, M5),
+    0 = maps:size(M5),
+
+    {wat,#{ "hi" := "hello", int := 3, 4 := number, <<"key">> := <<"value">>}} = maps:take(18446744073709551629,M0),
+
+    %% error case
+    do_badmap(fun(T) ->
+		      {'EXIT',{{badmap,T},[{maps,take,_,_}|_]}} = (catch maps:take(a, T))
+	      end),
+    ok.
+
+t_bif_map_take_large(Config) when is_list(Config) ->
+    KVs = [{{erlang:md5(<<I:64>>),I}, I}|| I <- lists:seq(1,500)],
+    M0 = maps:from_list(KVs),
+    ok = bif_map_take_all(KVs, M0),
+    ok.
+
+bif_map_take_all([], M0) ->
+    0 = maps:size(M0),
+    ok;
+bif_map_take_all([{K,V}|KVs],M0) ->
+    {ok,V} = maps:find(K,M0),
+    {V,M1} = maps:take(K,M0),
+    error  = maps:find(K,M1),
+    error  = maps:take(K,M1),
+    bif_map_take_all(KVs,M1).
+
 
 t_bif_map_update(Config) when is_list(Config) ->
     M0 = #{ "hi" => "hello", int => 3, <<"key">> => <<"value">>,
@@ -2099,8 +2259,6 @@ t_erlang_hash(Config) when is_list(Config) ->
 
     ok = t_bif_erlang_phash2(),
     ok = t_bif_erlang_phash(),
-    ok = t_bif_erlang_hash(),
-
     ok.
 
 t_bif_erlang_phash2() ->
@@ -2143,27 +2301,6 @@ t_bif_erlang_phash() ->
     2620391445 = erlang:phash(M2,Sz), % 3590546636
     ok.
 
-t_bif_erlang_hash() ->
-    Sz = 1 bsl 27 - 1,
-    39684169 = erlang:hash(#{},Sz),  % 5158
-    33673142 = erlang:hash(#{ a => 1, "a" => 2, <<"a">> => 3, {a,b} => 4 },Sz), % 71555838
-    95337869 = erlang:hash(#{ 1 => a, 2 => "a", 3 => <<"a">>, 4 => {a,b} },Sz), % 5497225
-    108959561 = erlang:hash(#{ 1 => a },Sz), % 126071654
-    59623150 = erlang:hash(#{ a => 1 },Sz), % 126426236
-
-    42775386 = erlang:hash(#{{} => <<>>},Sz), % 101655720
-    71692856 = erlang:hash(#{<<>> => {}},Sz), % 101655720
-
-    M0 = #{ a => 1, "key" => <<"value">> },
-    M1 = maps:remove("key",M0),
-    M2 = M1#{ "key" => <<"value">> },
-
-    70254632 = erlang:hash(M0,Sz), % 38260486
-    59623150 = erlang:hash(M1,Sz), % 126426236
-    70254632 = erlang:hash(M2,Sz), % 38260486
-    ok.
-
-
 t_map_encode_decode(Config) when is_list(Config) ->
     <<131,116,0,0,0,0>> = erlang:term_to_binary(#{}),
     Pairs = [
@@ -2181,7 +2318,9 @@ t_map_encode_decode(Config) when is_list(Config) ->
 	{<<>>, sc9}, {3.14158, sc10},
 	{[3.14158], sc11}, {more_atoms, sc12},
 	{{more_tuples}, sc13}, {self(), sc14},
-	{{},{}},{[],[]}
+	{{},{}},{[],[]},
+        {map_s, #{a=>a, 2=>b, 3=>c}},
+        {map_l, maps:from_list([{I,I}||I <- lists:seq(1,74)])}
     ],
     ok = map_encode_decode_and_match(Pairs,[],#{}),
 
@@ -2245,9 +2384,30 @@ t_map_encode_decode(Config) when is_list(Config) ->
 
     %% bad size (too small) .. should fail just truncate it .. weird.
     %% possibly change external format so truncated will be #{a:=1}
-    #{ a:=b } =
-	erlang:binary_to_term(<<131,116,0,0,0,1,100,0,1,97,100,0,1,98,97,1,97,1>>),
+    #{ a:=b } = erlang:binary_to_term(<<131,116,0,0,0,1,100,0,1,97,100,0,1,98,97,1,97,1>>),
 
+    %% specific fannerl (opensource app) binary_to_term error in 18.1
+
+    #{bias := {1,1,0},
+      bit_fail := 0,
+      connections := #{{2,9}   := _,
+                       {8,14}  := _,
+                       {2,12}  := _,
+                       {5,7}   := _,
+                       {11,16} := _,
+                       {11,15} := _},
+      layers := {5,7,3},
+      network_type := fann_nettype_layer,
+      num_input := 5,
+      num_layers := 3,
+      num_output := 3,
+      rprop_delta_max := _,
+      rprop_delta_min := _,
+      total_connections := 66,
+      total_neurons := 17,
+      train_error_function := fann_errorfunc_tanh,
+      train_stop_function := fann_stopfunc_mse,
+      training_algorithm := fann_train_rprop} = erlang:binary_to_term(fannerl()),
     ok.
 
 map_encode_decode_and_match([{K,V}|Pairs], EncodedPairs, M0) ->
@@ -2332,23 +2492,85 @@ t_bif_map_from_list(Config) when is_list(Config) ->
     {'EXIT', {badarg,_}} = (catch maps:from_list(id(42))),
     ok.
 
-t_bif_build_and_check(Config) when is_list(Config) ->
-    ok = check_build_and_remove(750,[
-				      fun(K) -> [K,K] end,
-				      fun(K) -> [float(K),K] end,
-				      fun(K) -> K end,
-				      fun(K) -> {1,K} end,
-				      fun(K) -> {K} end,
-				      fun(K) -> [K|K] end,
-				      fun(K) -> [K,1,2,3,4] end,
-				      fun(K) -> {K,atom} end,
-				      fun(K) -> float(K) end,
-				      fun(K) -> integer_to_list(K) end,
-				      fun(K) -> list_to_atom(integer_to_list(K)) end,
-				      fun(K) -> [K,{K,[K,{K,[K]}]}] end,
-				      fun(K) -> <<K:32>> end
-			      ]),
+t_bif_map_next(Config) when is_list(Config) ->
 
+    erts_debug:set_internal_state(available_internal_state, true),
+
+    try
+
+        none = maps:next(maps:iterator(id(#{}))),
+
+        verify_iterator(#{}),
+        verify_iterator(#{a => 1, b => 2, c => 3}),
+
+        %% Use fatmap in order to test iterating in very deep maps
+        FM = fatmap(43),
+        verify_iterator(FM),
+
+        {'EXIT', {{badmap,[{a,b},b]},_}} = (catch maps:iterator(id([{a,b},b]))),
+        {'EXIT', {badarg,_}} = (catch maps:next(id(a))),
+        {'EXIT', {badarg,_}} = (catch maps:next(id([a|FM]))),
+        {'EXIT', {badarg,_}} = (catch maps:next(id([1|#{}]))),
+        {'EXIT', {badarg,_}} = (catch maps:next(id([-1|#{}]))),
+        {'EXIT', {badarg,_}} = (catch maps:next(id([-1|FM]))),
+        {'EXIT', {badarg,_}} = (catch maps:next(id([16#FFFFFFFFFFFFFFFF|FM]))),
+        {'EXIT', {badarg,_}} = (catch maps:next(id([-16#FFFFFFFFFFFFFFFF|FM]))),
+
+        %% This us a whitebox test that the error code works correctly.
+        %% It uses a path for a tree of depth 4 and tries to do next on
+        %% each of those paths.
+        (fun F(0) -> ok;
+             F(N) ->
+                 try maps:next([N|FM]) of
+                     none ->
+                         F(N-1);
+                     {_K,_V,_I} ->
+                         F(N-1)
+                 catch error:badarg ->
+                         F(N-1)
+                 end
+         end)(16#FFFF),
+
+        ok
+    after
+            erts_debug:set_internal_state(available_internal_state, false)
+    end.
+
+verify_iterator(Map) ->
+    KVs = t_fold(fun(K, V, A) -> [{K, V} | A] end, [], Map),
+
+    %% Verify that KVs created by iterating Map is of
+    %% correct size and contains all elements
+    true = length(KVs) == maps:size(Map),
+    [maps:get(K, Map) || {K, _} <- KVs],
+    ok.
+
+
+t_fold(Fun, Init, Map) ->
+    t_fold_1(Fun, Init, maps:iterator(Map)).
+
+t_fold_1(Fun, Acc, Iter) ->
+    case maps:next(Iter) of
+        {K, V, NextIter} ->
+            t_fold_1(Fun, Fun(K,V,Acc), NextIter);
+        none ->
+            Acc
+    end.
+
+t_bif_build_and_check(Config) when is_list(Config) ->
+    ok = check_build_and_remove(750,[fun(K) -> [K,K] end,
+				     fun(K) -> [float(K),K] end,
+				     fun(K) -> K end,
+				     fun(K) -> {1,K} end,
+				     fun(K) -> {K} end,
+				     fun(K) -> [K|K] end,
+				     fun(K) -> [K,1,2,3,4] end,
+				     fun(K) -> {K,atom} end,
+				     fun(K) -> float(K) end,
+				     fun(K) -> integer_to_list(K) end,
+				     fun(K) -> list_to_atom(integer_to_list(K)) end,
+				     fun(K) -> [K,{K,[K,{K,[K]}]}] end,
+				     fun(K) -> <<K:32>> end]),
     ok.
 
 check_build_and_remove(_,[]) -> ok;
@@ -2573,7 +2795,7 @@ hashmap_balance(KeyFun) ->
     F = fun(I, {M0,Max0}) ->
 		Key = KeyFun(I),
 		M1 = M0#{Key => Key},
-		Max1 = case erts_internal:map_type(M1) of
+		Max1 = case erts_internal:term_type(M1) of
 			   hashmap ->
 			       Nodes = hashmap_nodes(M1),
 			       Avg = maps:size(M1) * 0.4,
@@ -2902,7 +3124,18 @@ y_regs(Config) when is_list(Config) ->
 
     true = is_map(Map2) andalso is_map(Map4),
 
+    gurka = y_regs_literal(0),
+    gaffel = y_regs_literal(1),
+
     ok.
+
+y_regs_literal(Key) when is_integer(Key) ->
+    %% Forces the key to be placed in a Y register.
+    lists:seq(1, 2),
+    case is_map_key(Key, #{ 0 => 0 }) of
+        true -> gurka;
+        false -> gaffel
+    end.
 
 y_regs_update(Map0, Val0) ->
     Val1 = {t,Val0},
@@ -2952,12 +3185,6 @@ do_badmap(Test) ->
 %% Test that a module compiled with the OTP 17 compiler will
 %% generate the correct 'badmap' exception.
 badmap_17(Config) ->
-    case ?MODULE of
-	map_SUITE -> do_badmap_17(Config);
-	_ -> {skip,"Run in map_SUITE"}
-    end.
-
-do_badmap_17(Config) ->
     Mod = badmap_17,
     DataDir = test_server:lookup_config(data_dir, Config),
     Beam = filename:join(DataDir, Mod),
@@ -2966,3 +3193,286 @@ do_badmap_17(Config) ->
 
 %% Use this function to avoid compile-time evaluation of an expression.
 id(I) -> I.
+
+
+%% OTP-13763
+t_hash_entropy(Config) when is_list(Config)  ->
+    %% entropy bug in 18.3, 19.0
+    M1 = maps:from_list([{#{"id" => I}, ok}||I <- lists:seq(1,50000)]),
+
+    #{ #{"id" => 100} := ok,
+       #{"id" => 200} := ok,
+       #{"id" => 300} := ok,
+       #{"id" => 400} := ok,
+       #{"id" => 500} := ok,
+       #{"id" => 600} := ok,
+       #{"id" => 700} := ok,
+       #{"id" => 800} := ok,
+       #{"id" => 900} := ok,
+       #{"id" => 25061} := ok,
+       #{"id" => 39766} := ok } = M1,
+
+    M0 = maps:from_list([{I,ok}||I <- lists:seq(1,33)]),
+    M2 = maps:from_list([{M0#{"id" => I}, ok}||I <- lists:seq(1,50000)]),
+
+    ok = maps:get(M0#{"id" => 100}, M2),
+    ok = maps:get(M0#{"id" => 200}, M2),
+    ok = maps:get(M0#{"id" => 300}, M2),
+    ok = maps:get(M0#{"id" => 400}, M2),
+    ok = maps:get(M0#{"id" => 500}, M2),
+    ok = maps:get(M0#{"id" => 600}, M2),
+    ok = maps:get(M0#{"id" => 700}, M2),
+    ok = maps:get(M0#{"id" => 800}, M2),
+    ok = maps:get(M0#{"id" => 900}, M2),
+    ok = maps:get(M0#{"id" => 25061}, M2),
+    ok = maps:get(M0#{"id" => 39766}, M2),
+    ok.
+
+%% OTP-13146
+%% Provoke major GC with a lot of "fat" maps on external format in msg queue
+%% causing heap fragments to be allocated.
+t_gc_rare_map_overflow(Config) when is_list(Config) ->
+    Pa = filename:dirname(code:which(?MODULE)),
+    {ok, Node} = test_server:start_node(gc_rare_map_overflow, slave, [{args, "-pa \""++Pa++"\""}]),
+    erts_debug:set_internal_state(available_internal_state, true),
+    try
+	Echo = spawn_link(Node, fun Loop() -> receive {From,Msg} -> From ! Msg
+					      end,
+					      Loop()
+				end),
+	FatMap = fatmap(34),
+	false = (flatmap =:= erts_internal:term_type(FatMap)),
+
+	t_gc_rare_map_overflow_do(Echo, FatMap, fun() -> erlang:garbage_collect() end),
+
+	%% Repeat test for minor gc:
+	t_gc_rare_map_overflow_do(Echo, FatMap, fun() -> minor_collect() end),
+
+	unlink(Echo),
+
+	%% Test fatmap in exit signal
+	Exiter = spawn_link(Node, fun Loop() -> receive {_From,Msg} ->
+							"not_a_map" = Msg  % badmatch!
+						end,
+						Loop()
+				  end),
+	process_flag(trap_exit, true),
+	Exiter ! {self(), FatMap},
+	{'EXIT', Exiter, {{badmatch,FatMap}, _}} = receive M -> M end,
+	ok
+
+    after
+	process_flag(trap_exit, false),
+	erts_debug:set_internal_state(available_internal_state, false),
+	test_server:stop_node(Node)
+    end.
+
+t_gc_rare_map_overflow_do(Echo, FatMap, GcFun) ->
+    Master = self(),
+    true = receive _M -> false after 0 -> true end,   % assert empty msg queue
+    Echo ! {Master, token},
+    repeat(1000, fun(_) -> Echo ! {Master, FatMap} end, void),
+
+    timer:sleep(100),                % Wait for maps to arrive in our msg queue
+    token = receive Tok -> Tok end,  % and provoke move from outer to inner msg queue
+
+    %% Do GC that will "overflow" and create heap frags due to all the fat maps
+    GcFun(),
+
+    %% Now check that all maps in msg queueu are intact
+    %% Will crash emulator in OTP-18.1
+    repeat(1000, fun(_) -> FatMap = receive FM -> FM end end, void),
+    ok.
+
+minor_collect() ->
+    Before = minor_gcs(),
+    erts_debug:set_internal_state(force_gc, self()),
+    erlang:yield(),
+    After = minor_gcs(),
+    io:format("minor_gcs: ~p -> ~p\n", [Before, After]).
+
+minor_gcs() ->
+    {garbage_collection, Info} = process_info(self(), garbage_collection),
+    {minor_gcs, GCS} = lists:keyfind(minor_gcs, 1, Info),
+    GCS.
+
+%% Generate a map with N (or N+1) keys that has an abnormal heap demand.
+%% Done by finding keys that collide in the first 32-bit hash.
+fatmap(N) ->
+    %%erts_debug:set_internal_state(available_internal_state, true),
+    Table = ets:new(void, [bag, private]),
+
+    Seed0 = rand:seed_s(exsplus, {4711, 3141592, 2718281}),
+    Seed1 = fatmap_populate(Table, Seed0, (1 bsl 16)),
+    Keys = fatmap_generate(Table, Seed1, N, []),
+    ets:delete(Table),
+    maps:from_list([{K,K} || K <- Keys]).
+
+fatmap_populate(_, Seed, 0) -> Seed;
+fatmap_populate(Table, Seed, N) ->
+    {I, NextSeed} = rand:uniform_s(1 bsl 48, Seed),
+    Hash = internal_hash(I),
+    ets:insert(Table, [{Hash, I}]),
+    fatmap_populate(Table, NextSeed, N-1).
+
+
+fatmap_generate(_, _, N, Acc) when N =< 0 ->
+    Acc;
+fatmap_generate(Table, Seed, N0, Acc0) ->    
+    {I, NextSeed} = rand:uniform_s(1 bsl 48, Seed),
+    Hash = internal_hash(I),
+    case ets:member(Table, Hash) of
+	true ->
+	    NewKeys = [I | ets:lookup_element(Table, Hash, 2)],
+	    Acc1 = lists:usort(Acc0 ++ NewKeys),
+	    N1 = N0 - (length(Acc1) - length(Acc0)),
+	    fatmap_generate(Table, NextSeed, N1, Acc1);
+	false ->
+	    fatmap_generate(Table, NextSeed, N0, Acc0)
+    end.
+
+internal_hash(Term) ->
+    erts_debug:get_internal_state({internal_hash, Term}).
+
+
+%% map external_format (fannerl).
+fannerl() ->
+    <<131,116,0,0,0,28,100,0,13,108,101,97,114,110,105,110,103,95,114,
+      97,116,101,70,63,230,102,102,96,0,0,0,100,0,17,108,101,97,114,110,105,110,
+      103,95,109,111,109,101,110,116,117,109,70,0,0,0,0,0,0,0,0,100,0,
+      18,116,114,97,105,110,105,110,103,95,97,108,103,111,114,105,116,104,109,100,0,
+      16,102,97,110,110,95,116,114,97,105,110,95,114,112,114,111,112,
+      100,0,17,109,101,97,110,95,115,113,117,97,114,101,95,101,114,114,111,114,70,
+      0,0,0,0,0,0,0,0,100,0,8,98,105,116,95,102,97,105,108,97,0,100,0,20,
+      116,114,97,105,110,95,101,114,114,111,114,95,102,117,110,99,116,105,111,
+      110,100,0,19,102,97,110,110,95,101,114,114,111,114,102,117,110,99,
+      95,116,97,110,104,100,0,9,110,117,109,95,105,110,112,117,116,97,5,100,0,10,110,
+      117,109,95,111,117,116,112,117,116,97,3,100,0,13,116,111,116,97,108,
+      95,110,101,117,114,111,110,115,97,17,100,0,17,116,111,116,97,108,95,99,111,110,
+      110,101,99,116,105,111,110,115,97,66,100,0,12,110,101,116,119,111,114,107,
+      95,116,121,112,101,100,0,18,102,97,110,110,95,110,101,116,116,121,112,101,
+      95,108,97,121,101,114,100,0,15,99,111,110,110,101,99,116,105,111,110,95,
+      114,97,116,101,70,63,240,0,0,0,0,0,0,100,0,10,110,117,109,95,108,97,121,101,
+      114,115,97,3,100,0,19,116,114,97,105,110,95,115,116,111,112,95,102,117,110,
+      99,116,105,111,110,100,0,17,102,97,110,110,95,115,116,111,112,102,117,110,
+      99,95,109,115,101,100,0,15,113,117,105,99,107,112,114,111,112,95,100,101,99,
+      97,121,70,191,26,54,226,224,0,0,0,100,0,12,113,117,105,99,107,112,114,
+      111,112,95,109,117,70,63,252,0,0,0,0,0,0,100,0,21,114,112,114,111,112,95,105,
+      110,99,114,101,97,115,101,95,102,97,99,116,111,114,70,63,243,51,51,
+      64,0,0,0,100,0,21,114,112,114,111,112,95,100,101,99,114,101,97,115,101,
+      95,102,97,99,116,111,114,70,63,224,0,0,0,0,0,0,100,0,15,114,112,114,111,112,
+      95,100,101,108,116,97,95,109,105,110,70,0,0,0,0,0,0,0,0,100,0,15,114,112,114,
+      111,112,95,100,101,108,116,97,95,109,97,120,70,64,73,0,0,0,0,0,0,100,0,
+      16,114,112,114,111,112,95,100,101,108,116,97,95,122,101,114,111,70,63,185,153,
+      153,160,0,0,0,100,0,26,115,97,114,112,114,111,112,95,119,101,105,103,
+      104,116,95,100,101,99,97,121,95,115,104,105,102,116,70,192,26,147,116,192,0,0,0,
+      100,0,35,115,97,114,112,114,111,112,95,115,116,101,112,95,101,114,
+      114,111,114,95,116,104,114,101,115,104,111,108,100,95,102,97,99,116,111,114,70,
+      63,185,153,153,160,0,0,0,100,0,24,115,97,114,112,114,111,112,95,115,
+      116,101,112,95,101,114,114,111,114,95,115,104,105,102,116,70,63,246,40,245,
+      192,0,0,0,100,0,19,115,97,114,112,114,111,112,95,116,101,109,112,101,114,
+      97,116,117,114,101,70,63,142,184,81,224,0,0,0,100,0,6,108,97,121,101,114,115,
+      104,3,97,5,97,7,97,3,100,0,4,98,105,97,115,104,3,97,1,97,1,97,0,100,0,11,
+      99,111,110,110,101,99,116,105,111,110,115,116,0,0,0,66,104,2,97,0,97,6,70,
+      191,179,51,44,64,0,0,0,104,2,97,1,97,6,70,63,178,130,90,32,0,0,0,104,2,97,2,
+      97,6,70,63,82,90,88,0,0,0,0,104,2,97,3,97,6,70,63,162,91,63,192,0,0,0,104,2,
+      97,4,97,6,70,191,151,70,169,0,0,0,0,104,2,97,5,97,6,70,191,117,52,222,0,0,0,
+      0,104,2,97,0,97,7,70,63,152,240,139,0,0,0,0,104,2,97,1,97,7,70,191,166,31,
+      187,160,0,0,0,104,2,97,2,97,7,70,191,150,70,63,0,0,0,0,104,2,97,3,97,7,70,
+      63,152,181,126,128,0,0,0,104,2,97,4,97,7,70,63,151,187,162,128,0,0,0,104,2,
+      97,5,97,7,70,191,143,161,101,0,0,0,0,104,2,97,0,97,8,70,191,153,102,36,128,0,
+      0,0,104,2,97,1,97,8,70,63,160,139,250,64,0,0,0,104,2,97,2,97,8,70,63,164,62,
+      196,64,0,0,0,104,2,97,3,97,8,70,191,178,78,209,192,0,0,0,104,2,97,4,97,8,70,
+      191,185,19,76,224,0,0,0,104,2,97,5,97,8,70,63,183,142,196,96,0,0,0,104,2,97,0,
+      97,9,70,63,150,104,248,0,0,0,0,104,2,97,1,97,9,70,191,164,4,100,224,0,0,0,
+      104,2,97,2,97,9,70,191,169,42,42,224,0,0,0,104,2,97,3,97,9,70,63,145,54,78,128,0,
+      0,0,104,2,97,4,97,9,70,63,126,243,134,0,0,0,0,104,2,97,5,97,9,70,63,177,
+      203,25,96,0,0,0,104,2,97,0,97,10,70,63,172,104,47,64,0,0,0,104,2,97,1,97,10,
+      70,63,161,242,193,64,0,0,0,104,2,97,2,97,10,70,63,175,208,241,192,0,0,0,104,2,
+      97,3,97,10,70,191,129,202,161,0,0,0,0,104,2,97,4,97,10,70,63,178,151,55,32,0,0,0,
+      104,2,97,5,97,10,70,63,137,155,94,0,0,0,0,104,2,97,0,97,11,70,191,179,
+      106,160,0,0,0,0,104,2,97,1,97,11,70,63,184,253,164,96,0,0,0,104,2,97,2,97,11,
+      70,191,143,30,157,0,0,0,0,104,2,97,3,97,11,70,63,153,225,140,128,0,0,0,104,
+      2,97,4,97,11,70,63,161,35,85,192,0,0,0,104,2,97,5,97,11,70,63,175,200,55,192,
+      0,0,0,104,2,97,0,97,12,70,191,180,116,132,96,0,0,0,104,2,97,1,97,12,70,191,
+      165,151,152,0,0,0,0,104,2,97,2,97,12,70,191,180,197,91,160,0,0,0,104,2,97,3,97,12,
+      70,191,91,30,160,0,0,0,0,104,2,97,4,97,12,70,63,180,251,45,32,0,0,0,
+      104,2,97,5,97,12,70,63,165,134,77,64,0,0,0,104,2,97,6,97,14,70,63,181,56,242,96,
+      0,0,0,104,2,97,7,97,14,70,191,165,239,234,224,0,0,0,104,2,97,8,97,14,
+      70,191,154,65,216,128,0,0,0,104,2,97,9,97,14,70,63,150,250,236,0,0,0,0,104,2,97,
+      10,97,14,70,191,141,105,108,0,0,0,0,104,2,97,11,97,14,70,191,152,40,
+      165,0,0,0,0,104,2,97,12,97,14,70,63,141,159,46,0,0,0,0,104,2,97,13,97,14,70,
+      191,183,172,137,32,0,0,0,104,2,97,6,97,15,70,63,163,26,123,192,0,0,0,104,
+      2,97,7,97,15,70,63,176,184,106,32,0,0,0,104,2,97,8,97,15,70,63,152,234,144,
+      0,0,0,0,104,2,97,9,97,15,70,191,172,58,70,160,0,0,0,104,2,97,10,97,15,70,
+      63,161,211,211,192,0,0,0,104,2,97,11,97,15,70,191,148,171,120,128,0,0,0,104,
+      2,97,12,97,15,70,63,180,117,214,224,0,0,0,104,2,97,13,97,15,70,191,104,
+      230,216,0,0,0,0,104,2,97,6,97,16,70,63,178,53,103,96,0,0,0,104,2,97,7,97,16,
+      70,63,170,230,232,64,0,0,0,104,2,97,8,97,16,70,191,183,45,100,192,0,0,0,
+      104,2,97,9,97,16,70,63,184,100,97,32,0,0,0,104,2,97,10,97,16,70,63,169,174,
+      254,64,0,0,0,104,2,97,11,97,16,70,191,119,121,234,0,0,0,0,104,2,97,12,97,
+      16,70,63,149,12,170,128,0,0,0,104,2,97,13,97,16,70,191,144,193,191,0,0,0,0>>.
+
+%% This test case checks that the bug with ticket number OTP-15707 is
+%% fixed. The bug could cause a crash or memory usage to grow until
+%% the machine ran out of memory.
+t_large_unequal_bins_same_hash_bug(Config) when is_list(Config) ->
+    run_when_enough_resources(
+      fun() ->
+              K1 = get_4GB_bin(1),
+              K2 = get_4GB_bin(2),
+              Map = make_map(500),
+              Map2 = maps:put(K1, 42, Map),
+              %% The map needed to contain at least 32 key-value pairs
+              %% at this point to get the crash or out of memory
+              %% problem on the next line
+              Map3 = maps:put(K2, 43, Map2),
+              %% The following line should avoid that the compiler
+              %% optimizes away the above
+              io:format("~p ~p~n", [erlang:phash2(Map3), maps:size(Map3)])
+      end).
+
+make_map(0) -> 
+    #{};
+make_map(Size) ->
+    maps:put(Size, Size, make_map(Size-1)).
+
+get_4GB_bin(Value) ->
+    List = lists:duplicate(65536, Value),
+    Bin = erlang:iolist_to_binary(List),
+    IOList4GB = duplicate_iolist(Bin, 16),
+    Bin4GB = erlang:iolist_to_binary(IOList4GB),
+    4294967296 = size(Bin4GB),
+    Bin4GB.
+
+duplicate_iolist(IOList, 0) ->
+    IOList;
+duplicate_iolist(IOList, NrOfTimes) ->
+    duplicate_iolist([IOList, IOList], NrOfTimes - 1).
+
+run_when_enough_resources(Fun) ->
+    case {total_memory(), erlang:system_info(wordsize)} of
+        {Mem, 8} when is_integer(Mem) andalso Mem >= 31 ->
+            Fun();
+        {Mem, WordSize} ->
+            {skipped, 
+             io_lib:format("Not enough resources (System Memory >= ~p, Word Size = ~p)",
+                           [Mem, WordSize])}
+    end.
+
+total_memory() ->
+    %% Total memory in GB.
+    try
+	MemoryData = memsup:get_system_memory_data(),
+	case lists:keysearch(total_memory, 1, MemoryData) of
+	    {value, {total_memory, TM}} ->
+		TM div (1024*1024*1024);
+	    false ->
+		{value, {system_total_memory, STM}} =
+		    lists:keysearch(system_total_memory, 1, MemoryData),
+		STM div (1024*1024*1024)
+	end
+    catch
+	_ : _ ->
+	    undefined
+    end.

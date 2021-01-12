@@ -2,7 +2,7 @@
 #
 # %CopyrightBegin%
 # 
-# Copyright Ericsson AB 1999-2013. All Rights Reserved.
+# Copyright Ericsson AB 1999-2018. All Rights Reserved.
 # 
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -30,8 +30,9 @@ use File::Basename;
 my $file = "";
 my $nif = "";
 my @emu_drivers = ();
+my @emu_nifs = ();
 my @static_drivers = ();
-my @nifs = ();
+my @static_nifs = ();
 my $mode = 1;
 
 while (@ARGV) {
@@ -51,13 +52,19 @@ while (@ARGV) {
     if ( $d =~ /^.*\.a$/ ) {
 	$d = basename $d;
 	$d =~ s/\.a$//;	# strip .a
+	$d =~ s/\.gprof$//;	# strip .gprof
 	if ($mode == 1) {
 	    push(@static_drivers, $d);
 	}
 	if ($mode == 2) {
-	    push(@nifs, $d);
+	    push(@static_nifs, $d);
 	}
 	next;
+    } elsif ($mode == 2) {
+        $d = basename $d;
+        $d =~ s/_nif(\..*|)$//; # strip nif.* or just nif
+        push(@emu_nifs, $d);
+        next;
     }
     $d = basename $d;
     $d =~ s/drv(\..*|)$//;	# strip drv.* or just drv
@@ -89,38 +96,34 @@ foreach (@static_drivers) {
 }
 
 # The array itself
-print "\nErlDrvEntry *driver_tab[] =\n{\n";
+print "\nErtsStaticDriver driver_tab[] =\n{\n";
 
 foreach (@emu_drivers) {
-    print "    &${_}driver_entry,\n";
+    print "    {&${_}driver_entry, 0},\n";
 }
 
 foreach (@static_drivers) {
-    print "    NULL, /* ${_} */\n";
+    print "    {NULL, 1}, /* ${_} */\n";
 }
-print "    NULL\n};\n";
+print "    {NULL}\n};\n";
 
 print "void erts_init_static_drivers() {\n";
 
 my $index = 0;
 foreach (@static_drivers) {
-    print "    driver_tab[".(scalar @emu_drivers+$index)."] = ${_}_driver_init();\n";
+    print "    driver_tab[".(scalar @emu_drivers+$index)."].de = ${_}_driver_init();\n";
     $index++;
 }
 
 print "}\n";
 
-print <<EOF;
-
-typedef struct ErtsStaticNifEntry_ {
-    const char *nif_name;
-    ErtsStaticNifInitFPtr nif_init;
-} ErtsStaticNifEntry;
-
-EOF
-
 # prototypes
-foreach (@nifs) {
+foreach (@emu_nifs) {
+    my $d = ${_};
+    $d =~ s/\.debug//; # strip .debug
+    print "void *".$d."_nif_init(void);\n";
+}
+foreach (@static_nifs) {
     my $d = ${_};
     $d =~ s/\.debug//; # strip .debug
     print "void *".$d."_nif_init(void);\n";
@@ -129,20 +132,25 @@ foreach (@nifs) {
 # The array itself
 print "static ErtsStaticNifEntry static_nif_tab[] =\n{\n";
 
-foreach (@nifs) {
+foreach (@emu_nifs) {
     my $d = ${_};
     $d =~ s/\.debug//; # strip .debug
-    print "{\"${_}\",&".$d."_nif_init},\n";
+    print "    {\"${_}\", &".$d."_nif_init, 0},\n";
+}
+foreach (@static_nifs) {
+    my $d = ${_};
+    $d =~ s/\.debug//; # strip .debug
+    print "    {\"${_}\", &".$d."_nif_init, 1},\n";
 }
 
 print "    {NULL,NULL}\n};\n";
 
 print <<EOF;
-ErtsStaticNifInitFPtr erts_static_nif_get_nif_init(const char *name, int len) {
+ErtsStaticNifEntry* erts_static_nif_get_nif_init(const char *name, int len) {
     ErtsStaticNifEntry* p;
     for (p = static_nif_tab; p->nif_name != NULL; p++)
         if (strncmp(p->nif_name, name, len) == 0 && p->nif_name[len] == 0)
-            return p->nif_init;
+            return p;
     return NULL;
 }
 

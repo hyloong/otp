@@ -1,7 +1,7 @@
 %%
 %% %CopyrightBegin%
 %% 
-%% Copyright Ericsson AB 2013-2013. All Rights Reserved.
+%% Copyright Ericsson AB 2013-2016. All Rights Reserved.
 %% 
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -45,15 +45,13 @@ all() ->
 groups() ->
     [
      {http, [], all_version_groups()},
-     {https, [], all_version_groups()}
+     {https, [], all_version_groups()},
      {http_1_1, [], []},
      {http_1_0, [], []},
-     {http_0_9, [], []},
      {mod_alias, [], []},
      {mod_actions, [], []},
      {mod_security, [], []},
      {mod_auth, [], []},
-     {mod_htaccess, [], []},
      {mod_cgi, [], []},
      {mod_esi, [], []},
      {mod_head, [], []},
@@ -66,7 +64,6 @@ all_version_groups ()->
      {group, mod_actions},
      {group, mod_security},
      {group, mod_auth},
-     {group, mod_htaccess},
      {group, mod_cgi},
      {group, mod_esi},
      {group, mod_head}

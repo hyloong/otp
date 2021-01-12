@@ -16,19 +16,21 @@
 %% 
 -module(edoc_SUITE).
 
--include_lib("test_server/include/test_server.hrl").
+-include_lib("common_test/include/ct.hrl").
 
 %% Test server specific exports
 -export([all/0, suite/0,groups/0,init_per_suite/1, end_per_suite/1, 
 	 init_per_group/2,end_per_group/2]).
 
 %% Test cases
--export([app/1,appup/1,build_std/1,build_map_module/1,otp_12008/1, build_app/1]).
+-export([app/1,appup/1,build_std/1,build_map_module/1,otp_12008/1,
+         build_app/1, otp_14285/1, infer_module_app_test/1]).
 
 suite() -> [{ct_hooks,[ts_install_cth]}].
 
-all() -> 
-    [app,appup,build_std,build_map_module,otp_12008, build_app].
+all() ->
+    [app,appup,build_std,build_map_module,otp_12008, build_app, otp_14285,
+     infer_module_app_test].
 
 groups() -> 
     [].
@@ -69,7 +71,7 @@ build_std(Config) when is_list(Config) ->
 	    {def, {vsn,"TEST"}},
 	    {dir, PrivDir}]),
 
-    ok = edoc:application(xmerl, [{dir, PrivDir}]),
+    ok = edoc:application(xmerl, [{preprocess,true},{dir, PrivDir}]),
     ok.
 
 build_map_module(Config) when is_list(Config) ->
@@ -113,3 +115,42 @@ build_app(Config) ->
 	true = filelib:is_regular(filename:join(OutDir, "a.html")),
 	true = filelib:is_regular(filename:join(OutDir, "b.html")),
 	ok.
+
+otp_14285(Config) ->
+    DataDir  = ?config(data_dir, Config),
+    PrivDir  = ?config(priv_dir, Config),
+    Un1 = filename:join(DataDir, "un_atom1.erl"),
+    Un2 = filename:join(DataDir, "un_atom2.erl"),
+    %% epp_dodger
+    Opts1 = [{dir, PrivDir}],
+    ok = edoc:files([Un1], Opts1),
+    ok = edoc:files([Un2], Opts1),
+    %% epp
+    Opts2 = [{preprocess, true}, {dir, PrivDir}],
+    ok = edoc:files([Un1], Opts2),
+    ok = edoc:files([Un2], Opts2),
+    ok.
+
+infer_module_app_test(Config) ->
+    Modules = lists:map(fun ({M, _, _}) ->
+				{list_to_atom(M), M ++ ".beam"}
+			end, code:all_available()),
+    true = lists:all(fun infer_module_app_test_/1, Modules).
+
+infer_module_app_test_({M, Beam}) ->
+    case edoc_lib:infer_module_app(M) of
+	no_app ->
+	    true;
+	{app, App} when is_atom(App) ->
+	    %% When `App' is actually returned, the corresponding
+	    %% BEAM file is expected to be found on disk in the app's
+	    %% ebin dir.
+	    %% `preloaded' modules should be found under `erts/ebin'
+	    %% or under `erts/preloaded/ebin' in case of running tests
+	    %% from the source tree.
+	    BeamPath1 = filename:join([code:lib_dir(App), "ebin", Beam]),
+	    BeamPath2 = filename:join([code:lib_dir(App), "preloaded", "ebin", Beam]),
+	    R1 = filelib:is_regular(BeamPath1),
+	    R2 = filelib:is_regular(BeamPath2),
+	    R1 orelse R2
+    end.

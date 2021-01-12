@@ -1,7 +1,7 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 1999-2011. All Rights Reserved.
+%% Copyright Ericsson AB 1999-2016. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -26,9 +26,11 @@
 	 line_numbers/1]).
 -export([crash/1]).
 
--include_lib("test_server/include/test_server.hrl").
+-include_lib("common_test/include/ct.hrl").
 
-suite() -> [{ct_hooks,[ts_install_cth]}].
+suite() ->
+    [{ct_hooks,[ts_install_cth]},
+     {timetrap,{minutes,1}}].
 
 all() ->
     cases().
@@ -47,21 +49,19 @@ cases() ->
 
 init_per_testcase(_Case, Config) ->
     test_lib:interpret(?MODULE),
-    Dog = test_server:timetrap(?t:minutes(1)),
-    [{watchdog,Dog}|Config].
+    Config.
 
-end_per_testcase(_Case, Config) ->
-    Dog = ?config(watchdog, Config),
-    ?t:timetrap_cancel(Dog),
+end_per_testcase(_Case, _Config) ->
     ok.
 
 init_per_suite(Config) when is_list(Config) ->
-    ?line test_lib:interpret(?MODULE),
-    ?line true = lists:member(?MODULE, int:interpreted()),
+    test_lib:interpret(?MODULE),
+    true = lists:member(?MODULE, int:interpreted()),
     Config.
 
 end_per_suite(Config) when is_list(Config) ->
     ok.
+
 
 
 
@@ -90,8 +90,8 @@ close_calls(Where) ->				%Line 86
 	call2(),				%Line 90
 	call3(),				%Line 91
 	no_crash				%Line 92
-    catch error:crash ->
-	    erlang:get_stacktrace()		%Line 94
+    catch error:crash:Stk ->
+	    Stk                                 %Line 94
     end.					%Line 95
 
 call1() ->					%Line 97
@@ -201,14 +201,14 @@ line_numbers(Config) when is_list(Config) ->
 	      {?MODULE,line_numbers,1,_}|_]}} =
 	(catch do_call_abs(y, y)),
     {'EXIT',{badarg,
-	     [{erlang,abs,[[]],[]},
+	     [{erlang,abs,[[]],[{error_info,#{}}]},
 	      {?MODULE,do_call_abs,2,
 	       [{file,File},{line,126}]},
 	      {?MODULE,line_numbers,1,_}|_]}} =
 	(catch do_call_abs(x, [])),
 
     {'EXIT',{badarg,
-	     [{erlang,link,[[]],[]},
+	     [{erlang,link,[[]],[{error_info,#{}}]},
 	      {?MODULE,do_call_unsafe_bif,2,
 	       [{file,File},{line,129}]},
 	      {?MODULE,line_numbers,1,_}|_]}} =

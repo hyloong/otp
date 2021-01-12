@@ -1,7 +1,7 @@
 /*
  * %CopyrightBegin%
  *
- * Copyright Ericsson AB 2010-2011. All Rights Reserved.
+ * Copyright Ericsson AB 2010-2016. All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -108,13 +108,13 @@ void LeaveCriticalSection(CRITICAL_SECTION *);
 #  error Need a qlock implementation
 #endif
 
-#define ETHR_RWMTX_W_FLG__		(((ethr_sint32_t) 1) << 31)
-#define ETHR_RWMTX_W_WAIT_FLG__		(((ethr_sint32_t) 1) << 30)
-#define ETHR_RWMTX_R_WAIT_FLG__		(((ethr_sint32_t) 1) << 29)
+#define ETHR_RWMTX_W_FLG__              ((ethr_sint32_t) (1U << 31))
+#define ETHR_RWMTX_W_WAIT_FLG__	        ((ethr_sint32_t) (1U << 30))
+#define ETHR_RWMTX_R_WAIT_FLG__	        ((ethr_sint32_t) (1U << 29))
 
 /* frequent read kind */
-#define ETHR_RWMTX_R_FLG__		(((ethr_sint32_t) 1) << 28)
-#define ETHR_RWMTX_R_ABRT_UNLCK_FLG__	(((ethr_sint32_t) 1) << 27)
+#define ETHR_RWMTX_R_FLG__              ((ethr_sint32_t) (1U << 28))
+#define ETHR_RWMTX_R_ABRT_UNLCK_FLG__   ((ethr_sint32_t) (1U << 27))
 #define ETHR_RWMTX_R_PEND_UNLCK_MASK__	(ETHR_RWMTX_R_ABRT_UNLCK_FLG__ - 1)
 
 /* normal kind */

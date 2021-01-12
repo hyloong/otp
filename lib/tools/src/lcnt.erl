@@ -1,7 +1,7 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2010-2013. All Rights Reserved.
+%% Copyright Ericsson AB 2010-2020. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -23,67 +23,60 @@
 -author("Björn-Egil Dahlberg").
 
 %% gen_server callbacks
--export([
-	init/1,
-	handle_call/3,
-	handle_cast/2,
-	handle_info/2,
-	terminate/2,
-	code_change/3
-	]).
+-export([init/1,
+         handle_call/3,
+         handle_cast/2,
+         handle_info/2,
+         terminate/2,
+         code_change/3]).
 
 %% start/stop
--export([
-	start/0,
-	stop/0
-	]).
+-export([start/0,
+         stop/0]).
 
-%% erts_debug:lock_counters api
--export([
-	rt_collect/0,
-	rt_collect/1,
-	rt_clear/0,
-	rt_clear/1,
-	rt_opt/1,
-	rt_opt/2
-    ]).
+%% erts_debug:lcnt_xxx api
+-export([rt_mask/0,
+         rt_mask/1,
+         rt_mask/2,
+         rt_collect/0,
+         rt_collect/1,
+         rt_clear/0,
+         rt_clear/1,
+         rt_opt/1,
+         rt_opt/2]).
 
 
 %% gen_server call api
--export([
-	raw/0,
-	collect/0,
-	collect/1,
-	clear/0,
-	clear/1,
-	conflicts/0,
-	conflicts/1,
-	locations/0,
-	locations/1,
-	inspect/1,
-	inspect/2,
-	histogram/1,
-	histogram/2,
-	information/0,
-	swap_pid_keys/0,
-	% set options
-	set/1,
-	set/2,
+-export([raw/0,
+         collect/0,
+         collect/1,
+         clear/0,
+         clear/1,
+         conflicts/0,
+         conflicts/1,
+         locations/0,
+         locations/1,
+         inspect/1,
+         inspect/2,
+         histogram/1,
+         histogram/2,
+         information/0,
+         swap_pid_keys/0,
+         % set options
+         set/1,
+         set/2,
 
-	load/1,
-	save/1
-	]).
+         load/1,
+         save/1]).
 
 %% convenience
--export([
-	apply/3,
-	apply/2,
-	apply/1,
-	all_conflicts/0,
-	all_conflicts/1,
-	pid/2, pid/3,
-	port/1, port/2
-    ]).
+-export([apply/3,
+         apply/2,
+         apply/1,
+         all_conflicts/0,
+         all_conflicts/1,
+         pid/2, pid/3,
+         port/1, port/2]).
 
 -define(version, "1.0").
 
@@ -94,12 +87,12 @@
 
 -record(stats, {
 	file  :: atom(),
-	line  :: non_neg_integer(),
+	line  :: non_neg_integer() | 'undefined',
 	tries :: non_neg_integer(),
 	colls :: non_neg_integer(),
 	time  :: non_neg_integer(), % us
 	nt    :: non_neg_integer(), % #timings collected
-	hist  :: tuple()            % histogram
+	hist  :: tuple() | 'undefined'  % histogram
     }).
 
 -record(lock, {
@@ -131,33 +124,116 @@
 %%
 %% -------------------------------------------------------------------- %%
 
-start()  -> gen_server:start({local, ?MODULE}, ?MODULE, [], []).
-stop()   -> gen_server:call(?MODULE, stop, infinity).
+-spec start() -> {'ok', Pid} | {'error', {'already_started', Pid}} when
+      Pid :: pid().
+
+start() -> gen_server:start({local, ?MODULE}, ?MODULE, [], []).
+
+-spec stop() -> 'ok'.
+
+stop()-> gen_server:stop(?MODULE, normal, infinity).
+
 init([]) -> {ok, #state{ locks = [], duration = 0 } }.
 
+-dialyzer({no_match, start_internal/0}).
+start_internal() ->
+    case start() of
+        {ok,_} -> ok;
+        {error, {already_started,_}} -> ok;
+        Error -> Error
+    end.
+
 %% -------------------------------------------------------------------- %%
 %%
-%% API erts_debug:lock_counters
+%% API erts_debug:lcnt_xxx
 %%
 %% -------------------------------------------------------------------- %%
 
-rt_collect() ->
-    erts_debug:lock_counters(info).
+-spec rt_mask(Node, Categories) ->  'ok' | {'error', 'copy_save_enabled'} when
+      Node :: node(),
+      Categories :: [category_atom()].
+
+rt_mask(Node, Categories) when is_atom(Node), is_list(Categories) ->
+    rpc:call(Node, lcnt, rt_mask, [Categories]).
+
+-type category_atom() :: atom().
+
+-spec rt_mask(Node) -> [category_atom()] when
+                  Node :: node();
+             (Categories) -> 'ok' | {'error', 'copy_save_enabled'} when
+                  Categories :: [category_atom()].
+
+rt_mask(Node) when is_atom(Node) ->
+    rpc:call(Node, lcnt, rt_mask, []);
+rt_mask(Categories) when is_list(Categories) ->
+    case erts_debug:lcnt_control(copy_save) of
+        false ->
+            erts_debug:lcnt_control(mask, Categories);
+        true ->
+            {error, copy_save_enabled}
+    end.
+
+-spec rt_mask() -> [category_atom()].
+
+rt_mask() ->
+    erts_debug:lcnt_control(mask).
+
+-type lock_counter_data() :: term().
+
+-spec rt_collect(Node) -> [lock_counter_data()] when
+      Node :: node().
 
 rt_collect(Node) ->
-    rpc:call(Node, erts_debug, lock_counters, [info]).
+    rpc:call(Node, lcnt, rt_collect, []).
 
-rt_clear() ->
-    erts_debug:lock_counters(clear).
+-spec rt_collect() -> [lock_counter_data()].
+
+rt_collect() ->
+    erts_debug:lcnt_collect().
+
+-spec rt_clear(Node) -> 'ok' when
+      Node :: node().
 
 rt_clear(Node) ->
-    rpc:call(Node, erts_debug, lock_counters, [clear]).
+    rpc:call(Node, lcnt, rt_clear, []).
 
-rt_opt({Type, Opt}) ->
-    erts_debug:lock_counters({Type, Opt}).
+-spec rt_clear() -> 'ok'.
 
-rt_opt(Node, {Type, Opt}) ->
-    rpc:call(Node, erts_debug, lock_counters, [{Type, Opt}]).
+rt_clear() ->
+    erts_debug:lcnt_clear().
+
+-spec rt_opt(Node, Option) -> boolean() when
+      Node :: node(),
+      Option :: {Type, Value :: boolean()},
+      Type :: 'copy_save' | 'process_locks'.
+
+rt_opt(Node, Arg) ->
+    rpc:call(Node, lcnt, rt_opt, [Arg]).
+
+-spec rt_opt(Option) -> boolean() when
+      Option :: {Type, Value :: boolean()},
+      Type :: 'copy_save' | 'process_locks'.
+
+%% Compatibility shims for the "process/port_locks" options mentioned in the
+%% manual.
+rt_opt({process_locks, Enable}) ->
+    toggle_category(process, Enable);
+rt_opt({port_locks, Enable}) ->
+    toggle_category(io, Enable);
+rt_opt({Type, NewVal}) ->
+    PreviousVal = erts_debug:lcnt_control(Type),
+    erts_debug:lcnt_control(Type, NewVal),
+    PreviousVal.
+
+toggle_category(Category, true) ->
+    PreviousMask = erts_debug:lcnt_control(mask),
+    erts_debug:lcnt_control(mask, [Category | PreviousMask]),
+    lists:member(Category, PreviousMask);
+
+toggle_category(Category, false) ->
+    PreviousMask = erts_debug:lcnt_control(mask),
+    erts_debug:lcnt_control(mask, lists:delete(Category, PreviousMask)),
+    lists:member(Category, PreviousMask).
 
 %% -------------------------------------------------------------------- %%
 %%
@@ -165,28 +241,104 @@ rt_opt(Node, {Type, Opt}) ->
 %%
 %% -------------------------------------------------------------------- %%
 
-clear()              -> rt_clear().
-clear(Node)          -> rt_clear(Node).
-collect()            -> call({collect, rt_collect()}).
-collect(Node)        -> call({collect, rt_collect(Node)}).
+-spec clear() -> 'ok'.
 
-locations()          -> call({locations,[]}).
-locations(Opts)      -> call({locations, Opts}).
-conflicts()          -> call({conflicts, []}).
+clear() -> rt_clear().
+
+-spec clear(Node) -> 'ok' when
+      Node :: node().
+
+clear(Node) -> rt_clear(Node).
+
+-spec collect() -> 'ok'.
+
+collect() -> call({collect, rt_collect()}).
+
+-spec collect(Node) -> 'ok' when
+      Node :: node().
+
+collect(Node) -> call({collect, rt_collect(Node)}).
+
+-spec locations() -> 'ok'.
+
+locations() -> call({locations,[]}).
+
+-spec locations(Options) -> 'ok' when
+      Options :: [option()].
+
+locations(Opts) -> call({locations, Opts}).
+
+-spec conflicts() -> 'ok'.
+
+conflicts() -> call({conflicts, []}).
+
+-type sort() :: 'colls' | 'entry' | 'id' | 'name' | 'ratio' | 'time' |
+                'tries' | 'type'.
+
+-type threshold() :: {'colls', non_neg_integer()}
+                   | {'time', non_neg_integer()}
+                   | {'tries', non_neg_integer()}.
+
+-type print() :: 'colls' | 'duration' | 'entry' | 'id' | 'name' |
+                 'ratio' | 'time' | 'tries' | 'type'.
+
+-type option() :: {'sort', Sort :: sort()}
+                | {'reverse', boolean()}
+                | {'locations', boolean()}
+                | {'thresholds', Thresholds :: [threshold()]}
+                | {'print',
+                   PrintOptions :: [print() | {print(), non_neg_integer()}]}
+                | {'max_locks', MaxLocks :: non_neg_integer() | 'none'}
+                | {'combine', boolean()}.
+
+-spec conflicts(Options) -> 'ok' when
+      Options :: [option()].
+
 conflicts(Opts)      -> call({conflicts, Opts}).
+
+-spec inspect(Lock) -> 'ok' when
+      Lock :: Name | {Name, Id | [Id]},
+      Name :: atom() | pid() | port(),
+      Id :: atom() | integer() | pid() | port().
+
 inspect(Lock)        -> call({inspect, Lock, []}).
+
+-spec inspect(Lock, Options) -> 'ok' when
+      Lock :: Name | {Name, Id | [Id]},
+      Name :: atom() | pid() | port(),
+      Id :: atom() | integer() | pid() | port(),
+      Options :: [option()].
+
 inspect(Lock, Opts)  -> call({inspect, Lock, Opts}).
+
 histogram(Lock)      -> call({histogram, Lock, []}).
 histogram(Lock, Opts)-> call({histogram, Lock, Opts}).
+
+-spec information() -> 'ok'.
+
 information()        -> call(information).
+
+-spec swap_pid_keys() -> 'ok'.
+
 swap_pid_keys()      -> call(swap_pid_keys).
+
 raw()                -> call(raw).
 set(Option, Value)   -> call({set, Option, Value}).
 set({Option, Value}) -> call({set, Option, Value}).
-save(Filename)       -> call({save, Filename}).
-load(Filename)       -> start(), call({load, Filename}).
 
-call(Msg) -> gen_server:call(?MODULE, Msg, infinity).
+-spec save(Filename) -> 'ok' when
+      Filename :: file:filename().
+
+save(Filename)       -> call({save, Filename}).
+
+-spec load(Filename) -> 'ok' when
+      Filename :: file:filename().
+
+load(Filename)       -> call({load, Filename}).
+
+call(Msg) ->
+    ok = start_internal(),
+    gen_server:call(?MODULE, Msg, infinity).
 
 %% -------------------------------------------------------------------- %%
 %%
@@ -194,39 +346,66 @@ call(Msg) -> gen_server:call(?MODULE, Msg, infinity).
 %%
 %% -------------------------------------------------------------------- %%
 
+-spec apply(Module, Function, Args) -> term() when
+      Module :: module(),
+      Function :: atom(),
+      Args :: [term()].
+
 apply(M,F,As) when is_atom(M), is_atom(F), is_list(As) ->
-    lcnt:start(),
-    Opt = lcnt:rt_opt({copy_save, true}),
-    lcnt:clear(),
-    Res = erlang:apply(M,F,As),
-    lcnt:collect(),
-    lcnt:rt_opt({copy_save, Opt}),
-    Res.
+    apply(fun() ->
+        erlang:apply(M,F,As)
+    end).
+
+-spec apply(Fun) -> term() when
+      Fun :: fun().
 
 apply(Fun) when is_function(Fun) ->
     lcnt:apply(Fun, []).
 
+-spec apply(Fun, Args) -> term() when
+      Fun :: fun(),
+      Args :: [term()].
+
 apply(Fun, As) when is_function(Fun) ->
-    lcnt:start(),
     Opt = lcnt:rt_opt({copy_save, true}),
     lcnt:clear(),
     Res = erlang:apply(Fun, As),
     lcnt:collect(),
-    lcnt:rt_opt({copy_save, Opt}),
+    %% _ is bound to silence a dialyzer warning; it used to fail silently and
+    %% we don't want to change the error semantics.
+    _ = lcnt:rt_opt({copy_save, Opt}),
     Res.
 
 all_conflicts() -> all_conflicts(time).
 all_conflicts(Sort) ->
     conflicts([{max_locks, none}, {thresholds, []},{combine,false}, {sort, Sort}, {reverse, true}]).
 
+-spec pid(Id, Serial) -> pid() when
+      Id :: integer(),
+      Serial :: integer().
+
 pid(Id, Serial) -> pid(node(), Id, Serial).
+
+-spec pid(Node, Id, Serial) -> pid() when
+      Node :: node(),
+      Id :: integer(),
+      Serial :: integer().
+
 pid(Node, Id, Serial) when is_atom(Node) ->
     Header   = <<131,103,100>>,
     String   = atom_to_list(Node),
     L        = length(String),
     binary_to_term(list_to_binary([Header, bytes16(L), String, bytes32(Id), bytes32(Serial),0])).
 
+-spec port(Id) -> port() when
+      Id :: integer().
+
 port(Id) -> port(node(), Id).
+
+-spec port(Node, Id) -> port() when
+      Node :: node(),
+      Id :: integer().
+
 port(Node, Id ) when is_atom(Node) ->
     Header   = <<131,102,100>>,
     String   = atom_to_list(Node),
@@ -408,9 +587,6 @@ handle_call({save, Filename}, _From, State) ->
 	Error ->
 	    {reply, {error, Error}, State}
     end;
-
-handle_call(stop, _From, State) ->
-    {stop, normal, ok, State};
 
 handle_call(Command, _From, State) ->
     {reply, {error, {undefined, Command}}, State}.
@@ -701,18 +877,46 @@ stats2record([{{File,Line},{Tries,Colls,{S,Ns,N}}}|Stats]) ->
 	    nt    = N} | stats2record(Stats)];
 stats2record([]) -> [].
 
+
 clean_id_creation(Id) when is_pid(Id) ->
     Bin = term_to_binary(Id),
-    <<H:3/binary, L:16, Node:L/binary, Ids:8/binary, _Creation/binary>> = Bin,
-    Bin2 = list_to_binary([H, bytes16(L), Node, Ids, 0]),
+    <<H:3/binary, Rest/binary>> = Bin,
+    <<131, PidTag, AtomTag>> = H,
+    LL = atomlen_bits(AtomTag),
+    CL = creation_bits(PidTag),
+    <<L:LL, Node:L/binary, Ids:8/binary, _Creation/binary>> = Rest,
+    Bin2 = list_to_binary([H, <<L:LL>>, Node, Ids, <<0:CL>>]),
     binary_to_term(Bin2);
 clean_id_creation(Id) when is_port(Id) ->
     Bin = term_to_binary(Id),
-    <<H:3/binary, L:16, Node:L/binary, Ids:4/binary, _Creation/binary>> = Bin,
-    Bin2 = list_to_binary([H, bytes16(L), Node, Ids, 0]),
+    <<H:3/binary, Rest/binary>> = Bin,
+    <<131, PortTag, AtomTag>> = H,
+    LL = atomlen_bits(AtomTag),
+    CL = creation_bits(PortTag),
+    <<L:LL, Node:L/binary, Ids:4/binary, _Creation/binary>> = Rest,
+    Bin2 = list_to_binary([H, <<L:LL>>, Node, Ids, <<0:CL>>]),
     binary_to_term(Bin2);
 clean_id_creation(Id) ->
     Id.
+
+-define(PID_EXT, $g).
+-define(NEW_PID_EXT, $X).
+-define(PORT_EXT, $f).
+-define(NEW_PORT_EXT, $Y).
+-define(ATOM_EXT, $d).
+-define(SMALL_ATOM_EXT, $s).
+-define(ATOM_UTF8_EXT, $v).
+-define(SMALL_ATOM_UTF8_EXT, $w).
+
+atomlen_bits(?ATOM_EXT) -> 16;
+atomlen_bits(?SMALL_ATOM_EXT) -> 8;
+atomlen_bits(?ATOM_UTF8_EXT) -> 16;
+atomlen_bits(?SMALL_ATOM_UTF8_EXT) -> 8.
+
+creation_bits(?PID_EXT) -> 8;
+creation_bits(?NEW_PID_EXT) -> 32;
+creation_bits(?PORT_EXT) -> 8;
+creation_bits(?NEW_PORT_EXT) -> 32.
 
 %% serializer
 
@@ -757,7 +961,7 @@ list2lock([F|Fs], Ls) ->
 
 stats2stats([]) -> [];
 stats2stats([Stat|Stats]) ->
-    Sz = tuple_size(#stats{}),
+    Sz = record_info(size, stats),
     [stat2stat(Stat,Sz)|stats2stats(Stats)].
 
 stat2stat(Stat,Sz) when tuple_size(Stat) =:= Sz -> Stat;
@@ -770,7 +974,7 @@ stat2stat(Stat,_) ->
 %% print_lock_information
 %% In:
 %%	Locks :: [#lock{}]
-%%	Print :: [Type | {Type, integer()}]
+%%	Print :: [Type | {Type, non_neg_integer()}]
 %%
 %% Out:
 %%	ok
@@ -883,7 +1087,7 @@ print_state_information(#state{locks = Locks} = State) ->
     print(kv("#tries",          s(Stats#stats.tries))),
     print(kv("#colls",          s(Stats#stats.colls))),
     print(kv("wait time",       s(Stats#stats.time) ++ " us" ++ " ( " ++ s(Stats#stats.time/1000000) ++ " s)")),
-    print(kv("percent of duration", s(Stats#stats.time/State#state.duration*100) ++ " %")),
+    print(kv("percent of duration", s(percent(Stats#stats.time, State#state.duration)) ++ " %")),
     ok.
 
 
@@ -933,19 +1137,30 @@ strings(Strings) -> strings(Strings, []).
 strings([], Out) -> Out;
 strings([{space,  N,      S} | Ss], Out) -> strings(Ss, Out ++ term2string(term2string("~~~ws", [N]), [S]));
 strings([{left,   N,      S} | Ss], Out) -> strings(Ss, Out ++ term2string(term2string(" ~~s~~~ws", [N]), [S,""]));
-strings([{format, Format, S} | Ss], Out) -> strings(Ss, Out ++ term2string(Format, [S]));
 strings([S|Ss], Out) -> strings(Ss, Out ++ term2string("~ts", [S])).
 
 
 term2string({M,F,A}) when is_atom(M), is_atom(F), is_integer(A) -> term2string("~p:~p/~p", [M,F,A]);
 term2string(Term) when is_port(Term) ->
     %  ex #Port<6442.816>
-    <<_:3/binary, L:16, Node:L/binary, Ids:32, _/binary>> = term_to_binary(Term),
-    term2string("#Port<~s.~w>", [Node, Ids]);
+    case term_to_binary(Term) of
+        <<_:2/binary, ?SMALL_ATOM_UTF8_EXT, L:8, Node:L/binary, Ids:32, _/binary>> ->
+            term2string("#Port<~ts.~w>", [Node, Ids]);
+        <<_:2/binary, ?ATOM_UTF8_EXT, L:16, Node:L/binary, Ids:32, _/binary>> ->
+            term2string("#Port<~ts.~w>", [Node, Ids]);
+        <<_:2/binary, ?ATOM_EXT, L:16, Node:L/binary, Ids:32, _/binary>> ->
+            term2string("#Port<~s.~w>", [Node, Ids])
+    end;
 term2string(Term) when is_pid(Term) ->
     %  ex <0.80.0>
-    <<_:3/binary, L:16, Node:L/binary, Ids:32, Serial:32,  _/binary>> = term_to_binary(Term),
-    term2string("<~s.~w.~w>", [Node, Ids, Serial]);
+    case  term_to_binary(Term) of
+        <<_:2/binary, ?SMALL_ATOM_UTF8_EXT, L:8, Node:L/binary, Ids:32, Serial:32,  _/binary>> ->
+            term2string("<~ts.~w.~w>", [Node, Ids, Serial]);
+        <<_:2/binary, ?ATOM_UTF8_EXT, L:16, Node:L/binary, Ids:32, Serial:32,  _/binary>> ->
+            term2string("<~ts.~w.~w>", [Node, Ids, Serial]);
+        <<_:2/binary, ?ATOM_EXT, L:16, Node:L/binary, Ids:32, Serial:32,  _/binary>> ->
+            term2string("<~s.~w.~w>", [Node, Ids, Serial])
+    end;
 term2string(Term) -> term2string("~w", [Term]).
 term2string(Format, Terms) -> lists:flatten(io_lib:format(Format, Terms)).
 

@@ -4,14 +4,14 @@
 <chapter>
   <header>
     <copyright>
-      <year>2004</year><year>2013</year>
+      <year>2004</year><year>2018</year>
       <holder>Ericsson AB. All Rights Reserved.</holder>
     </copyright>
     <legalnotice>
       Licensed under the Apache License, Version 2.0 (the "License");
       you may not use this file except in compliance with the License.
       You may obtain a copy of the License at
- 
+
           http://www.apache.org/licenses/LICENSE-2.0
 
       Unless required by applicable law or agreed to in writing, software
@@ -21,7 +21,7 @@
       limitations under the License.
 
     </legalnotice>
-    
+
     <title>ODBC Release Notes</title>
     <prepared>otp_appnotes</prepared>
     <docno>nil</docno>
@@ -32,7 +32,190 @@
   <p>This document describes the changes made to the odbc application.
   </p>
 
-  <section><title>ODBC 2.11</title>
+  <section><title>ODBC 2.13.1</title>
+
+    <section><title>Improvements and New Features</title>
+      <list>
+        <item>
+          <p>
+	    Changes in order to build on the Haiku operating system.</p>
+          <p>
+	    Thanks to Calvin Buckley</p>
+          <p>
+	    Own Id: OTP-16707 Aux Id: PR-2638 </p>
+        </item>
+      </list>
+    </section>
+
+</section>
+
+<section><title>ODBC 2.13</title>
+
+    <section><title>Fixed Bugs and Malfunctions</title>
+      <list>
+        <item>
+          <p>
+	    Fix various compiler warnings on 64-bit Windows.</p>
+          <p>
+	    Own Id: OTP-15800</p>
+        </item>
+      </list>
+    </section>
+
+
+    <section><title>Improvements and New Features</title>
+      <list>
+        <item>
+          <p>
+	    Rewrite due to the removal of <c>erl_interface</c> legacy
+	    functions.</p>
+          <p>
+	    Own Id: OTP-16544 Aux Id: OTP-16328 </p>
+        </item>
+      </list>
+    </section>
+
+</section>
+
+<section><title>ODBC 2.12.4</title>
+
+    <section><title>Improvements and New Features</title>
+      <list>
+        <item>
+          <p>
+	    Minor adjustments made to build system for parallel
+	    configure.</p>
+          <p>
+	    Own Id: OTP-15340 Aux Id: OTP-14625 </p>
+        </item>
+      </list>
+    </section>
+
+</section>
+
+<section><title>ODBC 2.12.3</title>
+
+    <section><title>Fixed Bugs and Malfunctions</title>
+      <list>
+        <item>
+          <p>
+	    Enhance error handling to avoid stack corruption</p>
+          <p>
+	    Own Id: OTP-15667 Aux Id: ERL-808, PR-2065 </p>
+        </item>
+      </list>
+    </section>
+
+</section>
+
+<section><title>ODBC 2.12.2</title>
+
+    <section><title>Fixed Bugs and Malfunctions</title>
+      <list>
+        <item>
+          <p>
+	    Improved documentation.</p>
+          <p>
+	    Own Id: OTP-15190</p>
+        </item>
+      </list>
+    </section>
+
+</section>
+
+<section><title>ODBC 2.12.1</title>
+
+    <section><title>Fixed Bugs and Malfunctions</title>
+      <list>
+        <item>
+	    <p> Removed all old unused files in the documentation.
+	    </p>
+          <p>
+	    Own Id: OTP-14475 Aux Id: ERL-409, PR-1493 </p>
+        </item>
+      </list>
+    </section>
+
+</section>
+
+<section><title>ODBC 2.12</title>
+
+    <section><title>Improvements and New Features</title>
+      <list>
+        <item>
+          <p>
+	    Change configure to skip odbc for old MACs, the change in
+	    PR-1227 is not backwards compatible with old MACs, and we
+	    do not see a need to continue support for such old
+	    versions. However it is still possible to make it work on
+	    such machines using the --with-odbc configure option.</p>
+          <p>
+	    *** POTENTIAL INCOMPATIBILITY ***</p>
+          <p>
+	    Own Id: OTP-14083</p>
+        </item>
+      </list>
+    </section>
+
+</section>
+
+<section><title>ODBC 2.11.3</title>
+
+    <section><title>Fixed Bugs and Malfunctions</title>
+      <list>
+        <item>
+          <p>
+	    ODBC build configure has been updated to accept Mac OS X
+	    El Capitan. Fixed by Lee Bannard.</p>
+          <p>
+	    Own Id: OTP-13781</p>
+        </item>
+      </list>
+    </section>
+
+</section>
+
+<section><title>ODBC 2.11.2</title>
+
+    <section><title>Improvements and New Features</title>
+      <list>
+        <item>
+          <p>
+	    Configure enhancement for better handling program paths
+	    used in the build process</p>
+          <p>
+	    Own Id: OTP-13559</p>
+        </item>
+      </list>
+    </section>
+
+</section>
+
+<section><title>ODBC 2.11.1</title>
+
+    <section><title>Improvements and New Features</title>
+      <list>
+        <item>
+          <p>
+	    New application variable to set timeout of internal
+	    communication setup between the erlang code and the
+	    c-port program that interfaces the odbc driver. This can
+	    be useful if you have an underlying system that is slow
+	    due to heavy load at startup.</p>
+          <p>
+	    With this environment variable you can easily bypass and
+	    tailor odbc to the needs of the underlying actual system
+	    without changing the configuration. Which is a good thing
+	    because this value is very system specific.</p>
+          <p>
+	    Own Id: OTP-12935</p>
+        </item>
+      </list>
+    </section>
+
+</section>
+
+<section><title>ODBC 2.11</title>
 
     <section><title>Improvements and New Features</title>
       <list>
@@ -491,9 +674,9 @@
 
 </section>
 
-  
+
   <section><title>ODBC 2.10.7</title>
-  
+
     <section><title>Fixed Bugs and Malfunctions</title>
     <list>
       <item>
@@ -506,7 +689,7 @@
     </list>
     </section>
 
-    
+
     <section><title>Improvements and New Features</title>
       <list>
         <item>
@@ -545,7 +728,7 @@
 	    also been extended. </item><item> The <c>configure</c>
 	    scripts of <c>erl_interface</c> and <c>odbc</c> now
 	    search for thread libraries and thread library quirks the
-	    same way as <c>erts</c> do. </item><item> The
+	    same way as ERTS do. </item><item> The
 	    <c>configure</c> script of the <c>odbc</c> application
 	    now also looks for odbc libraries in <c>lib64</c> and
 	    <c>lib/64</c> directories when building on a 64-bit
@@ -643,7 +826,7 @@
   </section>
 
   <section><title>ODBC 2.10.5</title>
-  
+
   <section><title>Fixed Bugs and Malfunctions</title>
   <list>
     <item>
@@ -655,12 +838,12 @@
     </item>
   </list>
   </section>
-  
+
   </section>
 
 
   <section><title>ODBC 2.10.4</title>
-  
+
   <section><title>Improvements and New Features</title>
   <list>
     <item>
@@ -679,7 +862,7 @@
     </item>
   </list>
   </section>
-  
+
   </section>
 
  <section><title>ODBC 2.10.3</title>
@@ -710,7 +893,7 @@
 </section>
 
   <section><title>ODBC 2.10.2</title>
-  
+
     <section><title>Fixed Bugs and Malfunctions</title>
       <list>
         <item>
@@ -725,9 +908,9 @@
     </section>
 
   </section>
-  
+
   <section><title>ODBC 2.10.1</title>
-  
+
     <section><title>Improvements and New Features</title>
       <list>
         <item>
@@ -775,7 +958,7 @@
  </section>
 
   <section><title>ODBC 2.10</title>
-    
+
     <section><title>Improvements and New Features</title>
       <list>
         <item>
@@ -788,11 +971,11 @@
         </item>
       </list>
     </section>
-    
+
   </section>
 
   <section><title>ODBC 2.0.9</title>
-    
+
     <section><title>Improvements and New Features</title>
       <list>
         <item>
@@ -820,9 +1003,9 @@
         </item>
       </list>
     </section>
-    
+
   </section>
-  
+
   <section>
     <title>ODBC 2.0.8</title>
 
@@ -1065,9 +1248,5 @@
         </item>
       </list>
     </section>
-    <!-- p>For information about older versions see
-      <url href="part_notes_history_frame.html">release notes history</url>.</p -->
   </section>
 </chapter>
-
-

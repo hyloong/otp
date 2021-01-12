@@ -1,8 +1,4 @@
 %% -*- erlang-indent-level: 2 -*-
-%%-----------------------------------------------------------------------
-%% %CopyrightBegin%
-%%
-%% Copyright Ericsson AB 2008-2014. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -15,9 +11,6 @@
 %% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 %% See the License for the specific language governing permissions and
 %% limitations under the License.
-%%
-%% %CopyrightEnd%
-%%
 
 %%%----------------------------------------------------------------------
 %%% File    : dialyzer_races.erl
@@ -92,27 +85,28 @@
 -type race_warn_tag() :: ?WARN_WHEREIS_REGISTER | ?WARN_WHEREIS_UNREGISTER
                       | ?WARN_ETS_LOOKUP_INSERT | ?WARN_MNESIA_DIRTY_READ_WRITE.
 
--record(beg_clause, {arg        :: var_to_map1(),
-                     pats       :: var_to_map1(),
-                     guard      :: cerl:cerl()}).
--record(end_clause, {arg        :: var_to_map1(),
-                     pats       :: var_to_map1(),
-                     guard      :: cerl:cerl()}).
+-record(beg_clause, {arg        :: var_to_map1() | 'undefined',
+                     pats       :: var_to_map1() | 'undefined',
+                     guard      :: cerl:cerl() | 'undefined'}).
+-record(end_clause, {arg        :: var_to_map1() | 'undefined',
+                     pats       :: var_to_map1() | 'undefined',
+                     guard      :: cerl:cerl() | 'undefined'}).
 -record(end_case,   {clauses    :: [#end_clause{}]}).
--record(curr_fun,   {status     :: 'in' | 'out',
-                     mfa        :: dialyzer_callgraph:mfa_or_funlbl(),
-                     label      :: label(),
-                     def_vars   :: [core_vars()],
-                     arg_types  :: [erl_types:erl_type()],
-                     call_vars  :: [core_vars()],
-                     var_map    :: dict:dict()}).
+-record(curr_fun,   {status     :: 'in' | 'out' | 'undefined',
+                     mfa        :: dialyzer_callgraph:mfa_or_funlbl()
+                                 | 'undefined',
+                     label      :: label() | 'undefined',
+                     def_vars   :: [core_vars()] | 'undefined',
+                     arg_types  :: [erl_types:erl_type()] | 'undefined',
+                     call_vars  :: [core_vars()] | 'undefined',
+                     var_map    :: dict:dict() | 'undefined'}).
 -record(dep_call,   {call_name  :: dep_calls(),
-                     args       :: args(),
+                     args       :: args() | 'undefined',
                      arg_types  :: [erl_types:erl_type()],
                      vars       :: [core_vars()],
                      state      :: dialyzer_dataflow:state(),
                      file_line  :: file_line(),
-                     var_map    :: dict:dict()}).
+                     var_map    :: dict:dict() | 'undefined'}).
 -record(fun_call,   {caller     :: dialyzer_callgraph:mfa_or_funlbl(),
                      callee     :: dialyzer_callgraph:mfa_or_funlbl(),
                      arg_types  :: [erl_types:erl_type()],
@@ -121,7 +115,7 @@
                      arg        :: var_to_map1()}).
 -record(warn_call,  {call_name  :: warn_calls(),
                      args       :: args(),
-                     var_map    :: dict:dict()}).
+                     var_map    :: dict:dict() | 'undefined'}).
 
 -type case_tags()  :: 'beg_case' | #beg_clause{} | #end_clause{} | #end_case{}.
 -type code()       :: [#dep_call{} | #fun_call{} | #warn_call{} |
@@ -139,8 +133,9 @@
                      fun_mfa    :: dialyzer_callgraph:mfa_or_funlbl(),
                      fun_label  :: label()}).
 
--record(races, {curr_fun                :: dialyzer_callgraph:mfa_or_funlbl(),
-                curr_fun_label          :: label(),
+-record(races, {curr_fun                :: dialyzer_callgraph:mfa_or_funlbl()
+                                         | 'undefined',
+                curr_fun_label          :: label() | 'undefined',
                 curr_fun_args = 'empty' :: core_args(),
                 new_table = 'no_t'      :: table(),
                 race_list = []          :: code(),
@@ -1275,8 +1270,8 @@ filter_named_tables(NamesList) ->
     [] -> [];
     [Head|Tail] ->
       NewHead =
-        case string:rstr(Head, "()") of
-          0 -> [Head];
+        case string:find(Head, "()", trailing) of
+          nomatch -> [Head];
           _Other -> []
         end,
       NewHead ++ filter_named_tables(Tail)
@@ -1563,8 +1558,8 @@ any_args(StrList) ->
   case StrList of
     [] -> false;
     [Head|Tail] ->
-      case string:rstr(Head, "()") of
-        0 -> any_args(Tail);
+      case string:find(Head, "()", trailing) of
+        nomatch -> any_args(Tail);
         _Other -> true
       end
   end.
@@ -1770,10 +1765,8 @@ ets_list_args(MaybeList) ->
   end.
 
 ets_list_argtypes(ListStr) ->
-  ListStr1 = string:strip(ListStr, left, $[),
-  ListStr2 = string:strip(ListStr1, right, $]),
-  ListStr3 = string:strip(ListStr2, right, $.),
-  string:strip(ListStr3, right, $,).
+  ListStr1 = string:trim(ListStr, leading, "$["),
+  string:trim(ListStr1, trailing, "$]$.$,").
 
 ets_tuple_args(MaybeTuple) ->
   case is_tuple(MaybeTuple) of
@@ -1815,7 +1808,7 @@ ets_tuple_argtypes2_helper(TupleStr, ElemStr, NestingLevel) ->
             {[H|ElemStr], NestingLevel, false}
         end,
       case Return of
-        true -> string:tokens(NewElemStr, " |");
+        true -> string:lexemes(NewElemStr, " |");
         false ->
           ets_tuple_argtypes2_helper(T, NewElemStr, NewNestingLevel)
       end
@@ -1894,44 +1887,44 @@ format_args_2(StrArgList, Call) ->
   case Call of
     whereis ->
       lists_key_replace(2, StrArgList,
-	string:tokens(lists:nth(2, StrArgList), " |"));
+	string:lexemes(lists:nth(2, StrArgList), " |"));
     register ->
       lists_key_replace(2, StrArgList,
-	string:tokens(lists:nth(2, StrArgList), " |"));
+	string:lexemes(lists:nth(2, StrArgList), " |"));
     unregister ->
       lists_key_replace(2, StrArgList,
-	string:tokens(lists:nth(2, StrArgList), " |"));
+	string:lexemes(lists:nth(2, StrArgList), " |"));
     ets_new ->
       StrArgList1 = lists_key_replace(2, StrArgList,
-	string:tokens(lists:nth(2, StrArgList), " |")),
+	string:lexemes(lists:nth(2, StrArgList), " |")),
       lists_key_replace(4, StrArgList1,
-        string:tokens(ets_list_argtypes(lists:nth(4, StrArgList1)), " |"));
+        string:lexemes(ets_list_argtypes(lists:nth(4, StrArgList1)), " |"));
     ets_lookup ->
       StrArgList1 = lists_key_replace(2, StrArgList,
-        string:tokens(lists:nth(2, StrArgList), " |")),
+        string:lexemes(lists:nth(2, StrArgList), " |")),
       lists_key_replace(4, StrArgList1,
-        string:tokens(lists:nth(4, StrArgList1), " |"));
+        string:lexemes(lists:nth(4, StrArgList1), " |"));
     ets_insert ->
       StrArgList1 = lists_key_replace(2, StrArgList,
-        string:tokens(lists:nth(2, StrArgList), " |")),
+        string:lexemes(lists:nth(2, StrArgList), " |")),
       lists_key_replace(4, StrArgList1,
         ets_tuple_argtypes2(
         ets_tuple_argtypes1(lists:nth(4, StrArgList1), [], [], 0),
         []));
     mnesia_dirty_read1 ->
       lists_key_replace(2, StrArgList,
-        [mnesia_tuple_argtypes(T) || T <- string:tokens(
+        [mnesia_tuple_argtypes(T) || T <- string:lexemes(
         lists:nth(2, StrArgList), " |")]);
     mnesia_dirty_read2 ->
       lists_key_replace(2, StrArgList,
-        string:tokens(lists:nth(2, StrArgList), " |"));
+        string:lexemes(lists:nth(2, StrArgList), " |"));
     mnesia_dirty_write1 ->
       lists_key_replace(2, StrArgList,
-        [mnesia_record_tab(R) || R <- string:tokens(
+        [mnesia_record_tab(R) || R <- string:lexemes(
         lists:nth(2, StrArgList), " |")]);
     mnesia_dirty_write2 ->
       lists_key_replace(2, StrArgList,
-        string:tokens(lists:nth(2, StrArgList), " |"));
+        string:lexemes(lists:nth(2, StrArgList), " |"));
     function_call -> StrArgList
   end.
 
@@ -1948,18 +1941,16 @@ format_type(Type, State) ->
   erl_types:t_to_string(Type, R).
 
 mnesia_record_tab(RecordStr) ->
-  case string:str(RecordStr, "#") =:= 1 of
-    true ->
-      "'" ++
-        string:sub_string(RecordStr, 2, string:str(RecordStr, "{") - 1) ++
-        "'";
-    false -> RecordStr
+  case erl_scan:string(RecordStr) of
+    {ok, [{'#', _}, {atom, _, Name}|_], _} ->
+      io_lib:write_string(atom_to_list(Name), $');
+    _ -> RecordStr
   end.
 
 mnesia_tuple_argtypes(TupleStr) ->
-  TupleStr1 = string:strip(TupleStr, left, ${),
-  [TupleStr2|_T] = string:tokens(TupleStr1, " ,"),
-  lists:flatten(string:tokens(TupleStr2, " |")).
+  TupleStr1 = string:trim(TupleStr, leading, "${"),
+  [TupleStr2|_T] = string:lexemes(TupleStr1, " ,"),
+  lists:flatten(string:lexemes(TupleStr2, " |")).
 
 -spec race_var_map(var_to_map1(), var_to_map2(), dict:dict(), op()) ->
         dict:dict().
@@ -2242,7 +2233,7 @@ var_type_analysis(FunDefArgs, FunCallTypes, WarnVarArgs, RaceWarnTag,
       case lists_key_member_lists(Vars, FunVarArgs) of
         0 -> [Vars, WVA2, WVA3, WVA4];
         N when is_integer(N) ->
-          NewWVA2 = string:tokens(lists:nth(N + 1, FunVarArgs), " |"),
+          NewWVA2 = string:lexemes(lists:nth(N + 1, FunVarArgs), " |"),
           [Vars, NewWVA2, WVA3, WVA4]
       end;
     ?WARN_WHEREIS_UNREGISTER ->
@@ -2251,7 +2242,7 @@ var_type_analysis(FunDefArgs, FunCallTypes, WarnVarArgs, RaceWarnTag,
       case lists_key_member_lists(Vars, FunVarArgs) of
         0 -> [Vars, WVA2];
         N when is_integer(N) ->
-          NewWVA2 = string:tokens(lists:nth(N + 1, FunVarArgs), " |"),
+          NewWVA2 = string:lexemes(lists:nth(N + 1, FunVarArgs), " |"),
           [Vars, NewWVA2]
       end;
     ?WARN_ETS_LOOKUP_INSERT ->
@@ -2261,7 +2252,7 @@ var_type_analysis(FunDefArgs, FunCallTypes, WarnVarArgs, RaceWarnTag,
         case lists_key_member_lists(Vars1, FunVarArgs) of
           0 -> [Vars1, WVA2];
           N1 when is_integer(N1) ->
-            NewWVA2 = string:tokens(lists:nth(N1 + 1, FunVarArgs), " |"),
+            NewWVA2 = string:lexemes(lists:nth(N1 + 1, FunVarArgs), " |"),
             [Vars1, NewWVA2]
         end,
       Vars2 =
@@ -2291,10 +2282,10 @@ var_type_analysis(FunDefArgs, FunCallTypes, WarnVarArgs, RaceWarnTag,
           NewWVA2 =
             case Arity of
               1 ->
-                [mnesia_record_tab(R) || R <- string:tokens(
+                [mnesia_record_tab(R) || R <- string:lexemes(
                   lists:nth(2, FunVarArgs), " |")];
               2 ->
-                string:tokens(lists:nth(N + 1, FunVarArgs), " |")
+                string:lexemes(lists:nth(N + 1, FunVarArgs), " |")
             end,
           [Vars, NewWVA2|T]
       end

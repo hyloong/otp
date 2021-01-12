@@ -4,7 +4,7 @@
 <chapter>
   <header>
     <copyright>
-      <year>2001</year><year>2013</year>
+      <year>2001</year><year>2017</year>
       <holder>Ericsson AB. All Rights Reserved.</holder>
     </copyright>
     <legalnotice>
@@ -90,7 +90,7 @@ tail_recursive_fib(N, Current, Next, Fibs) ->
     <p>Lists comprehensions still have a reputation for being slow.
     They used to be implemented using funs, which used to be slow.</p>
 
-    <p>In recent Erlang/OTP releases (including R12B), a list comprehension:</p>
+    <p>A list comprehension:</p>
 
     <code type="erl"><![CDATA[
 [Expr(E) || E <- List]]]></code>
@@ -102,7 +102,7 @@ tail_recursive_fib(N, Current, Next, Fibs) ->
     [Expr(E)|'lc^0'(Tail, Expr)];
 'lc^0'([], _Expr) -> [].</code>
 
-    <p>In R12B, if the result of the list comprehension will <em>obviously</em>
+    <p>If the result of the list comprehension will <em>obviously</em>
     not be used, a list will not be constructed. For example, in this code:</p>
     
     <code type="erl"><![CDATA[
@@ -131,12 +131,20 @@ some_function(...),
     'lc^0'(Tail, Expr);
 'lc^0'([], _Expr) -> [].</code>
 
+    <p>The compiler also understands that assigning to '_' means that
+    the value will not used. Therefore, the code in the following example
+    will also be optimized:</p>
+
+    <code type="erl"><![CDATA[
+_ = [io:put_chars(E) || E <- List],
+ok.]]></code>
+
   </section>
 
   <section>
     <title>Deep and Flat Lists</title>
 
-    <p><seealso marker="stdlib:lists#flatten/1">lists:flatten/1</seealso>
+    <p><seemfa marker="stdlib:lists#flatten/1">lists:flatten/1</seemfa>
     builds an entirely new list. It is therefore expensive, and even
     <em>more</em> expensive than the <c>++</c> operator (which copies its
     left argument, but not its right argument).</p>
@@ -149,10 +157,10 @@ some_function(...),
        so there is no reason to flatten the list before sending it to
        the port.</item>
       <item>When calling BIFs that accept deep lists, such as
-      <seealso marker="erts:erlang#list_to_binary/1">list_to_binary/1</seealso> or
-      <seealso marker="erts:erlang#iolist_to_binary/1">iolist_to_binary/1</seealso>.</item>
+      <seemfa marker="erts:erlang#list_to_binary/1">list_to_binary/1</seemfa> or
+      <seemfa marker="erts:erlang#iolist_to_binary/1">iolist_to_binary/1</seemfa>.</item>
       <item>When you know that your list is only one level deep, you can use
-      <seealso marker="stdlib:lists#append/1">lists:append/1</seealso>.</item>
+      <seemfa marker="stdlib:lists#append/1">lists:append/1</seemfa>.</item>
     </list>
 
     <section>
@@ -209,11 +217,11 @@ some_function(...),
   <section>
     <title>Recursive List Functions</title>
 
-    <p>In Section 7.2, the following myth was exposed:
-    <seealso marker="myths#tail_recursive">Tail-Recursive Functions
-    are Much Faster Than Recursive Functions</seealso>.</p>
+    <p>In section about myths, the following myth was exposed:
+    <seeguide marker="myths#tail_recursive">Tail-Recursive Functions
+    are Much Faster Than Recursive Functions</seeguide>.</p>
 
-    <p>To summarize, in R12B there is usually not much difference between
+    <p>There is usually not much difference between
     a body-recursive list function and tail-recursive function that reverses
     the list at the end. Therefore, concentrate on writing beautiful code
     and forget about the performance of your list functions. In the

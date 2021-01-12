@@ -1,7 +1,7 @@
 #
 # %CopyrightBegin%
 #
-# Copyright Ericsson AB 2009-2012. All Rights Reserved.
+# Copyright Ericsson AB 2009-2020. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -22,6 +22,7 @@ include $(ERL_TOP)/make/$(TARGET)/otp.mk
 
 MODULES =  \
 	eunit_SUITE \
+	tc0 \
 	tlatin \
 	tutf8
 
@@ -41,8 +42,8 @@ RELSYSDIR = $(RELEASE_PATH)/eunit_test
 # ----------------------------------------------------
 # FLAGS
 # ----------------------------------------------------
-ERL_MAKE_FLAGS += -pa $(ERL_TOP)/lib/test_server/ebin
-ERL_COMPILE_FLAGS += -I$(ERL_TOP)/lib/test_server/include
+ERL_MAKE_FLAGS +=
+ERL_COMPILE_FLAGS +=
 
 EBIN = .
 

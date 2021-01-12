@@ -1,7 +1,7 @@
 /*
  * %CopyrightBegin%
  *
- * Copyright Ericsson AB 1996-2013. All Rights Reserved.
+ * Copyright Ericsson AB 1996-2020. All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -27,12 +27,13 @@
 #include "global.h"
 #include "erl_process.h"
 #include "error.h"
-#define ERL_WANT_HIPE_BIF_WRAPPER__
 #include "bif.h"
-#undef ERL_WANT_HIPE_BIF_WRAPPER__
 #include "big.h"
 #include "erl_binary.h"
 #include "erl_bits.h"
+
+#define L2B_B2L_MIN_EXEC_REDS (CONTEXT_REDS/4)
+#define L2B_B2L_RESCHED_REDS (CONTEXT_REDS/40)
 
 static Export binary_to_list_continue_export;
 static Export list_to_binary_continue_export;
@@ -44,13 +45,8 @@ void
 erts_init_binary(void)
 {
     /* Verify Binary alignment... */
-    if ((((UWord) &((Binary *) 0)->orig_bytes[0]) % ((UWord) 8)) != 0) {
-	/* I assume that any compiler should be able to optimize this
-	   away. If not, this test is not very expensive... */
-	erl_exit(ERTS_ABORT_EXIT,
-		 "Internal error: Address of orig_bytes[0] of a Binary"
-		 " is *not* 8-byte aligned\n");
-    }
+    ERTS_CT_ASSERT((offsetof(Binary,orig_bytes) % 8) == 0);
+    ERTS_CT_ASSERT((offsetof(ErtsMagicBinary,u.aligned.data) % 8) == 0);
 
     erts_init_trap_export(&binary_to_list_continue_export,
 			  am_erts_internal, am_binary_to_list_continue, 1,
@@ -62,14 +58,36 @@ erts_init_binary(void)
 
 }
 
+static ERTS_INLINE
+Eterm build_proc_bin(ErlOffHeap* ohp, Eterm* hp, Binary* bptr)
+{
+    ProcBin* pb = (ProcBin *) hp;
+    pb->thing_word = HEADER_PROC_BIN;
+    pb->size = bptr->orig_size;
+    pb->next = ohp->first;
+    ohp->first = (struct erl_off_heap_header*)pb;
+    pb->val = bptr;
+    pb->bytes = (byte*) bptr->orig_bytes;
+    pb->flags = 0;
+    OH_OVERHEAD(ohp, pb->size / sizeof(Eterm));
+
+    return make_binary(pb);
+}
+
+/** @brief Initiate a ProcBin for a full Binary.
+ *  @param hp must point to PROC_BIN_SIZE available heap words.
+ */
+Eterm erts_build_proc_bin(ErlOffHeap* ohp, Eterm* hp, Binary* bptr)
+{
+    return build_proc_bin(ohp, hp, bptr);
+}
+
 /*
  * Create a brand new binary from scratch.
  */
-
 Eterm
-new_binary(Process *p, byte *buf, Uint len)
+new_binary(Process *p, const byte *buf, Uint len)
 {
-    ProcBin* pb;
     Binary* bptr;
 
     if (len <= ERL_ONHEAP_BIN_LIMIT) {
@@ -86,65 +104,64 @@ new_binary(Process *p, byte *buf, Uint len)
      * Allocate the binary struct itself.
      */
     bptr = erts_bin_nrml_alloc(len);
-    erts_refc_init(&bptr->refc, 1);
     if (buf != NULL) {
 	sys_memcpy(bptr->orig_bytes, buf, len);
     }
 
-    /*
-     * Now allocate the ProcBin on the heap.
-     */
-    pb = (ProcBin *) HAlloc(p, PROC_BIN_SIZE);
-    pb->thing_word = HEADER_PROC_BIN;
-    pb->size = len;
-    pb->next = MSO(p).first;
-    MSO(p).first = (struct erl_off_heap_header*)pb;
-    pb->val = bptr;
-    pb->bytes = (byte*) bptr->orig_bytes;
-    pb->flags = 0;
+    return build_proc_bin(&MSO(p), HAlloc(p, PROC_BIN_SIZE), bptr);
+}
+
+Eterm
+erts_heap_factory_new_binary(ErtsHeapFactory *hfact, byte *buf, Uint len,
+                             Uint reserve_size)
+{
+    Eterm *hp;
+    Binary* bptr;
+
+    if (len <= ERL_ONHEAP_BIN_LIMIT) {
+	ErlHeapBin* hb;
+        hp = erts_produce_heap(hfact, heap_bin_size(len), reserve_size);
+        hb = (ErlHeapBin *) hp;
+	hb->thing_word = header_heap_bin(len);
+	hb->size = len;
+	if (buf != NULL) {
+	    sys_memcpy(hb->data, buf, len);
+	}
+	return make_binary(hb);
+    }
 
     /*
-     * Miscellanous updates. Return the tagged binary.
+     * Allocate the binary struct itself.
      */
-    OH_OVERHEAD(&(MSO(p)), pb->size / sizeof(Eterm));
-    return make_binary(pb);
+    bptr = erts_bin_nrml_alloc(len);
+    if (buf != NULL) {
+	sys_memcpy(bptr->orig_bytes, buf, len);
+    }
+
+    hp = erts_produce_heap(hfact, PROC_BIN_SIZE, reserve_size);
+
+    return build_proc_bin(hfact->off_heap, hp, bptr);
 }
+
+
 
 /* 
  * When heap binary is not desired...
  */
 
-Eterm erts_new_mso_binary(Process *p, byte *buf, int len)
+Eterm erts_new_mso_binary(Process *p, byte *buf, Uint len)
 {
-    ProcBin* pb;
     Binary* bptr;
 
     /*
      * Allocate the binary struct itself.
      */
     bptr = erts_bin_nrml_alloc(len);
-    erts_refc_init(&bptr->refc, 1);
     if (buf != NULL) {
 	sys_memcpy(bptr->orig_bytes, buf, len);
     }
 
-    /*
-     * Now allocate the ProcBin on the heap.
-     */
-    pb = (ProcBin *) HAlloc(p, PROC_BIN_SIZE);
-    pb->thing_word = HEADER_PROC_BIN;
-    pb->size = len;
-    pb->next = MSO(p).first;
-    MSO(p).first = (struct erl_off_heap_header*)pb;
-    pb->val = bptr;
-    pb->bytes = (byte*) bptr->orig_bytes;
-    pb->flags = 0;
-
-    /*
-     * Miscellanous updates. Return the tagged binary.
-     */
-    OH_OVERHEAD(&(MSO(p)), pb->size / sizeof(Eterm));
-    return make_binary(pb);
+    return build_proc_bin(&MSO(p), HAlloc(p, PROC_BIN_SIZE), bptr);
 }
 
 /*
@@ -303,40 +320,106 @@ BIF_RETTYPE binary_to_integer_2(BIF_ALIST_2)
 
 }
 
+static Eterm integer_to_binary(Process *c_p, Eterm num, int base)
+{
+    Eterm res;
+
+    if (is_small(num)) {
+        char s[128];
+        char *c = s;
+        Uint digits;
+
+        digits = Sint_to_buf(signed_val(num), base, &c, sizeof(s));
+        res = new_binary(c_p, (byte*)c, digits);
+    } else {
+        const int DIGITS_PER_RED = 16;
+        Uint digits, n;
+        byte *bytes;
+
+        digits = big_integer_estimate(num, base);
+
+        if ((digits / DIGITS_PER_RED) > ERTS_BIF_REDS_LEFT(c_p)) {
+            ErtsSchedulerData *esdp = erts_get_scheduler_data();
+
+            /* This could take a very long time, tell the caller to reschedule
+             * us to a dirty CPU scheduler if we aren't already on one. */
+            if (esdp->type == ERTS_SCHED_NORMAL) {
+                return THE_NON_VALUE;
+            }
+        } else {
+            BUMP_REDS(c_p, digits / DIGITS_PER_RED);
+        }
+
+        bytes = (byte*)erts_alloc(ERTS_ALC_T_TMP, sizeof(byte) * digits);
+        n = erts_big_to_binary_bytes(num, base, (char*)bytes, digits);
+        res = new_binary(c_p, bytes + digits - n, n);
+        erts_free(ERTS_ALC_T_TMP, (void*)bytes);
+    }
+
+    return res;
+}
+
 BIF_RETTYPE integer_to_binary_1(BIF_ALIST_1)
-{   
-    Uint size;
+{
     Eterm res;
 
     if (is_not_integer(BIF_ARG_1)) {
-	BIF_ERROR(BIF_P, BADARG);
+        BIF_ERROR(BIF_P, BADARG);
     }
 
-    if (is_small(BIF_ARG_1)) {
-	char *c;
-	struct Sint_buf ibuf;
+    res = integer_to_binary(BIF_P, BIF_ARG_1, 10);
 
-	/* Enhancement: If we can calculate the buffer size exactly
-	 * we could avoid an unnecessary copy of buffers.
-	 * Useful if size determination is faster than a copy.
-	 */
-	c = Sint_to_buf(signed_val(BIF_ARG_1), &ibuf);
-	size = sys_strlen(c);
-	res = new_binary(BIF_P, (byte *)c, size);
-    } else {
-	byte* bytes;
-	Uint n = 0;
-
-	/* Here we also have multiple copies of buffers
-	 * due to new_binary interface
-	 */
-	size = big_decimal_estimate(BIF_ARG_1) - 1; /* remove null */
-	bytes = (byte*) erts_alloc(ERTS_ALC_T_TMP, sizeof(byte)*size);
-	n = erts_big_to_binary_bytes(BIF_ARG_1, (char *)bytes, size);
-	res = new_binary(BIF_P, bytes + size - n, n);
-	erts_free(ERTS_ALC_T_TMP, (void *) bytes);
+    if (is_non_value(res)) {
+        ErtsCodeMFA *mfa = &BIF_TRAP_EXPORT(BIF_integer_to_binary_1)->info.mfa;
+        Eterm args[1];
+        args[0] = BIF_ARG_1;
+        return erts_schedule_bif(BIF_P,
+                                 args,
+                                 BIF_I,
+                                 mfa,
+                                 integer_to_binary_1,
+                                 ERTS_SCHED_DIRTY_CPU,
+                                 am_erlang,
+                                 am_integer_to_binary,
+                                 1);
     }
-    BIF_RET(res);
+
+    return res;
+}
+
+BIF_RETTYPE integer_to_binary_2(BIF_ALIST_2)
+{
+    Eterm res;
+    SWord base;
+
+    if (is_not_integer(BIF_ARG_1) || is_not_small(BIF_ARG_2)) {
+        BIF_ERROR(BIF_P, BADARG);
+    }
+
+    base = signed_val(BIF_ARG_2);
+    if (base < 2 || base > 36) {
+        BIF_ERROR(BIF_P, BADARG);
+    }
+
+    res = integer_to_binary(BIF_P, BIF_ARG_1, base);
+
+    if (is_non_value(res)) {
+        ErtsCodeMFA *mfa = &BIF_TRAP_EXPORT(BIF_integer_to_binary_2)->info.mfa;
+        Eterm args[2];
+        args[0] = BIF_ARG_1;
+        args[1] = BIF_ARG_2;
+        return erts_schedule_bif(BIF_P,
+                                 args,
+                                 BIF_I,
+                                 mfa,
+                                 integer_to_binary_2,
+                                 ERTS_SCHED_DIRTY_CPU,
+                                 am_erlang,
+                                 am_integer_to_binary,
+                                 2);
+    }
+
+    return res;
 }
 
 #define ERTS_B2L_BYTES_PER_REDUCTION 256
@@ -352,9 +435,10 @@ typedef struct {
     Uint bitoffs;
 } ErtsB2LState;
 
-static void b2l_state_destructor(Binary *mbp)
+static int b2l_state_destructor(Binary *mbp)
 {
     ASSERT(ERTS_MAGIC_BIN_DESTRUCTOR(mbp) == b2l_state_destructor);
+    return 1;
 }
 
 static BIF_RETTYPE
@@ -415,10 +499,10 @@ binary_to_list_chunk(Process *c_p,
 }
 
 static ERTS_INLINE BIF_RETTYPE
-binary_to_list(Process *c_p, Eterm *hp, Eterm tail, byte *bytes, Uint size, Uint bitoffs)
+binary_to_list(Process *c_p, Eterm *hp, Eterm tail, byte *bytes,
+	       Uint size, Uint bitoffs, int reds_left, int one_chunk)
 {
-    int reds_left = ERTS_BIF_REDS_LEFT(c_p);
-    if (size < reds_left*ERTS_B2L_BYTES_PER_REDUCTION) {
+    if (one_chunk) {
 	Eterm res;
 	BIF_RETTYPE ret;
 	int bump_reds = (size - 1)/ERTS_B2L_BYTES_PER_REDUCTION + 1;
@@ -442,18 +526,17 @@ binary_to_list(Process *c_p, Eterm *hp, Eterm tail, byte *bytes, Uint size, Uint
 	sp->size = size;
 	sp->bitoffs = bitoffs;
 
-	hp = HAlloc(c_p, PROC_BIN_SIZE);
-	mb = erts_mk_magic_binary_term(&hp, &MSO(c_p), mbp);
+	hp = HAlloc(c_p, ERTS_MAGIC_REF_THING_SIZE);
+	mb = erts_mk_magic_ref(&hp, &MSO(c_p), mbp);
 	return binary_to_list_chunk(c_p, mb, sp, reds_left, 0);
     }
 }
 
 static BIF_RETTYPE binary_to_list_continue(BIF_ALIST_1)
 {
-    Binary *mbp = ((ProcBin *) binary_val(BIF_ARG_1))->val;
+    Binary *mbp = erts_magic_ref2bin(BIF_ARG_1);
 
     ASSERT(ERTS_MAGIC_BIN_DESTRUCTOR(mbp) == b2l_state_destructor);
-
     ASSERT(BIF_P->flags & F_DISABLE_GC);
 
     return binary_to_list_chunk(BIF_P,
@@ -463,8 +546,6 @@ static BIF_RETTYPE binary_to_list_continue(BIF_ALIST_1)
 				1);
 }
 
-HIPE_WRAPPER_BIF_DISABLE_GC(binary_to_list, 1)
-
 BIF_RETTYPE binary_to_list_1(BIF_ALIST_1)
 {
     Eterm real_bin;
@@ -472,11 +553,29 @@ BIF_RETTYPE binary_to_list_1(BIF_ALIST_1)
     Uint size;
     Uint bitsize;
     Uint bitoffs;
+    int reds_left;
+    int one_chunk;
 
     if (is_not_binary(BIF_ARG_1)) {
 	goto error;
     }
+
     size = binary_size(BIF_ARG_1);
+    reds_left = ERTS_BIF_REDS_LEFT(BIF_P);
+    one_chunk = size < reds_left*ERTS_B2L_BYTES_PER_REDUCTION;
+    if (!one_chunk) {
+	if (size < L2B_B2L_MIN_EXEC_REDS*ERTS_B2L_BYTES_PER_REDUCTION) {
+	    if (reds_left <= L2B_B2L_RESCHED_REDS) {
+		/* Yield and do it with full context reds... */
+		ERTS_BIF_YIELD1(BIF_TRAP_EXPORT(BIF_binary_to_list_1),
+				BIF_P, BIF_ARG_1);
+	    }
+	    /* Allow a bit more reductions... */
+	    one_chunk = 1;
+	    reds_left = L2B_B2L_MIN_EXEC_REDS;
+	}
+    }
+
     ERTS_GET_REAL_BIN(BIF_ARG_1, real_bin, offset, bitoffs, bitsize);
     if (bitsize != 0) {
 	goto error;
@@ -486,14 +585,13 @@ BIF_RETTYPE binary_to_list_1(BIF_ALIST_1)
     } else {
 	Eterm* hp = HAlloc(BIF_P, 2 * size);
 	byte* bytes = binary_bytes(real_bin)+offset;
-	return binary_to_list(BIF_P, hp, NIL, bytes, size, bitoffs);
+	return binary_to_list(BIF_P, hp, NIL, bytes, size,
+			      bitoffs, reds_left, one_chunk);
     }
 
     error:
 	BIF_ERROR(BIF_P, BADARG);
 }
-
-HIPE_WRAPPER_BIF_DISABLE_GC(binary_to_list, 3)
 
 BIF_RETTYPE binary_to_list_3(BIF_ALIST_3)
 {
@@ -505,6 +603,8 @@ BIF_RETTYPE binary_to_list_3(BIF_ALIST_3)
     Uint start;
     Uint stop;
     Eterm* hp;
+    int reds_left;
+    int one_chunk;
 
     if (is_not_binary(BIF_ARG_1)) {
 	goto error;
@@ -513,6 +613,21 @@ BIF_RETTYPE binary_to_list_3(BIF_ALIST_3)
 	goto error;
     }
     size = binary_size(BIF_ARG_1);
+    reds_left = ERTS_BIF_REDS_LEFT(BIF_P);
+    one_chunk = size < reds_left*ERTS_B2L_BYTES_PER_REDUCTION;
+    if (!one_chunk) {
+	if (size < L2B_B2L_MIN_EXEC_REDS*ERTS_B2L_BYTES_PER_REDUCTION) {
+	    if (reds_left <= L2B_B2L_RESCHED_REDS) {
+		/* Yield and do it with full context reds... */
+		ERTS_BIF_YIELD3(BIF_TRAP_EXPORT(BIF_binary_to_list_3),
+				BIF_P, BIF_ARG_1, BIF_ARG_2, BIF_ARG_3);
+	    }
+	    /* Allow a bit more reductions... */
+	    one_chunk = 1;
+	    reds_left = L2B_B2L_MIN_EXEC_REDS;
+	}
+    }
+
     ERTS_GET_BINARY_BYTES(BIF_ARG_1, bytes, bitoffs, bitsize);
     if (start < 1 || start > size || stop < 1 ||
 	stop > size || stop < start ) {
@@ -520,12 +635,11 @@ BIF_RETTYPE binary_to_list_3(BIF_ALIST_3)
     }
     i = stop-start+1;
     hp = HAlloc(BIF_P, 2*i);
-    return binary_to_list(BIF_P, hp, NIL, bytes+start-1, i, bitoffs);
+    return binary_to_list(BIF_P, hp, NIL, bytes+start-1, i,
+			  bitoffs, reds_left, one_chunk);
     error:
 	BIF_ERROR(BIF_P, BADARG);
 }
-
-HIPE_WRAPPER_BIF_DISABLE_GC(bitstring_to_list, 1)
 
 BIF_RETTYPE bitstring_to_list_1(BIF_ALIST_1)
 {
@@ -537,11 +651,27 @@ BIF_RETTYPE bitstring_to_list_1(BIF_ALIST_1)
     byte* bytes;
     Eterm previous = NIL;
     Eterm* hp;
+    int reds_left;
+    int one_chunk;
 
     if (is_not_binary(BIF_ARG_1)) {
 	BIF_ERROR(BIF_P, BADARG);
     }
     size = binary_size(BIF_ARG_1);
+    reds_left = ERTS_BIF_REDS_LEFT(BIF_P);
+    one_chunk = size < reds_left*ERTS_B2L_BYTES_PER_REDUCTION;
+    if (!one_chunk) {
+	if (size < L2B_B2L_MIN_EXEC_REDS*ERTS_B2L_BYTES_PER_REDUCTION) {
+	    if (reds_left <= L2B_B2L_RESCHED_REDS) {
+		/* Yield and do it with full context reds... */
+		ERTS_BIF_YIELD1(BIF_TRAP_EXPORT(BIF_bitstring_to_list_1),
+				BIF_P, BIF_ARG_1);
+	    }
+	    /* Allow a bit more reductions... */
+	    one_chunk = 1;
+	    reds_left = L2B_B2L_MIN_EXEC_REDS;
+	}
+    }
     ERTS_GET_REAL_BIN(BIF_ARG_1, real_bin, offset, bitoffs, bitsize);
     bytes = binary_bytes(real_bin)+offset;
     if (bitsize == 0) {
@@ -566,7 +696,8 @@ BIF_RETTYPE bitstring_to_list_1(BIF_ALIST_1)
 	hp += 2;
     }
 
-    return binary_to_list(BIF_P, hp, previous, bytes, size, bitoffs);
+    return binary_to_list(BIF_P, hp, previous, bytes, size,
+			  bitoffs, reds_left, one_chunk);
 }
 
 
@@ -672,12 +803,13 @@ list_to_binary_engine(ErtsL2BState *sp)
     }
 }
 
-static void
+static int
 l2b_state_destructor(Binary *mbp)
 {
     ErtsL2BState *sp = ERTS_MAGIC_BIN_DATA(mbp); 
     ASSERT(ERTS_MAGIC_BIN_DESTRUCTOR(mbp) == l2b_state_destructor);
     DESTROY_SAVED_ESTACK(&sp->buf.iolist.estack);
+    return 1;
 }
 
 static ERTS_INLINE Eterm
@@ -735,8 +867,8 @@ list_to_binary_chunk(Eterm mb_eterm,
 	    ERTS_L2B_STATE_MOVE(new_sp, sp);
 	    sp = new_sp;
 
-	    hp = HAlloc(c_p, PROC_BIN_SIZE);
-	    mb_eterm = erts_mk_magic_binary_term(&hp, &MSO(c_p), mbp);
+	    hp = HAlloc(c_p, ERTS_MAGIC_REF_THING_SIZE);
+	    mb_eterm = erts_mk_magic_ref(&hp, &MSO(c_p), mbp);
 
 	    ASSERT(is_value(mb_eterm));
 
@@ -782,9 +914,9 @@ list_to_binary_chunk(Eterm mb_eterm,
 
 static BIF_RETTYPE list_to_binary_continue(BIF_ALIST_1)
 {
-    Binary *mbp = ((ProcBin *) binary_val(BIF_ARG_1))->val;
-    ASSERT(ERTS_MAGIC_BIN_DESTRUCTOR(mbp) == l2b_state_destructor);
+    Binary *mbp = erts_magic_ref2bin(BIF_ARG_1);
 
+    ASSERT(ERTS_MAGIC_BIN_DESTRUCTOR(mbp) == l2b_state_destructor);
     ASSERT(BIF_P->flags & F_DISABLE_GC);
 
     return list_to_binary_chunk(BIF_ARG_1,
@@ -795,7 +927,18 @@ static BIF_RETTYPE list_to_binary_continue(BIF_ALIST_1)
 
 BIF_RETTYPE erts_list_to_binary_bif(Process *c_p, Eterm arg, Export *bif)
 {
+    int orig_reds_left = ERTS_BIF_REDS_LEFT(c_p);
     BIF_RETTYPE ret;
+
+    if (orig_reds_left < L2B_B2L_MIN_EXEC_REDS) {
+	if (orig_reds_left <= L2B_B2L_RESCHED_REDS) {
+	    /* Yield and do it with full context reds... */
+	    ERTS_BIF_PREP_YIELD1(ret, bif, c_p, arg);
+	    return ret;
+	}
+	/* Allow a bit more reductions... */
+	orig_reds_left = L2B_B2L_MIN_EXEC_REDS;
+    }
 
     if (is_nil(arg))
 	ERTS_BIF_PREP_RET(ret, new_binary(c_p, (byte *) "", 0));
@@ -818,7 +961,6 @@ BIF_RETTYPE erts_list_to_binary_bif(Process *c_p, Eterm arg, Export *bif)
 						       bif,
 						       erts_iolist_size_yielding,
 						       erts_iolist_to_buf_yielding);
-	    int orig_reds_left = ERTS_BIF_REDS_LEFT(c_p);
 
 	    /*
 	     * First try to do it all at once without having to use
@@ -891,28 +1033,25 @@ BIF_RETTYPE erts_list_to_binary_bif(Process *c_p, Eterm arg, Export *bif)
     return ret;
 }
 
-HIPE_WRAPPER_BIF_DISABLE_GC(list_to_binary, 1)
-
 BIF_RETTYPE list_to_binary_1(BIF_ALIST_1)
 {
-    return erts_list_to_binary_bif(BIF_P, BIF_ARG_1, bif_export[BIF_list_to_binary_1]);
+    return erts_list_to_binary_bif(BIF_P, BIF_ARG_1, BIF_TRAP_EXPORT(BIF_list_to_binary_1));
 }
-
-HIPE_WRAPPER_BIF_DISABLE_GC(iolist_to_binary, 1)
 
 BIF_RETTYPE iolist_to_binary_1(BIF_ALIST_1)
 {
     if (is_binary(BIF_ARG_1)) {
-	BIF_RET(BIF_ARG_1);
+        if (binary_bitsize(BIF_ARG_1) == 0) {
+            BIF_RET(BIF_ARG_1);
+        }
+        BIF_ERROR(BIF_P, BADARG);
     }
-    return erts_list_to_binary_bif(BIF_P, BIF_ARG_1, bif_export[BIF_iolist_to_binary_1]);
+    return erts_list_to_binary_bif(BIF_P, BIF_ARG_1, BIF_TRAP_EXPORT(BIF_iolist_to_binary_1));
 }
 
 static int bitstr_list_len(ErtsIOListState *);
 static ErlDrvSizeT list_to_bitstr_buf_yielding(ErtsIOList2BufState *);
 static ErlDrvSizeT list_to_bitstr_buf_not_yielding(ErtsIOList2BufState *);
-
-HIPE_WRAPPER_BIF_DISABLE_GC(list_to_bitstring, 1)
 
 BIF_RETTYPE list_to_bitstring_1(BIF_ALIST_1)
 {
@@ -932,7 +1071,7 @@ BIF_RETTYPE list_to_bitstring_1(BIF_ALIST_1)
 	else {
 	    ErtsL2BState state = ERTS_L2B_STATE_INITER(BIF_P,
 						       BIF_ARG_1,
-						       bif_export[BIF_list_to_bitstring_1],
+						       BIF_TRAP_EXPORT(BIF_list_to_bitstring_1),
 						       bitstr_list_len,
 						       list_to_bitstr_buf_yielding);
 	    int orig_reds_left = ERTS_BIF_REDS_LEFT(BIF_P);
@@ -1004,51 +1143,47 @@ BIF_RETTYPE list_to_bitstring_1(BIF_ALIST_1)
 
 BIF_RETTYPE split_binary_2(BIF_ALIST_2)
 {
-    Uint pos;
-    ErlSubBin* sb1;
-    ErlSubBin* sb2;
-    size_t orig_size;
-    Eterm orig;
-    Uint offset;
-    Uint bit_offset;
-    Uint bit_size;
-    Eterm* hp;
+    size_t orig_size, left_size, right_size;
+    Uint byte_offset, bit_offset, bit_size;
+    Uint split_at;
+
+    Eterm *hp, *hp_end;
+    Eterm left, right;
+    Eterm real_bin;
+    Eterm result;
+    byte *bptr;
 
     if (is_not_binary(BIF_ARG_1)) {
-	goto error;
+        BIF_ERROR(BIF_P, BADARG);
+    } else if (!term_to_Uint(BIF_ARG_2, &split_at)) {
+        BIF_ERROR(BIF_P, BADARG);
+    } else if ((orig_size = binary_size(BIF_ARG_1)) < split_at) {
+        BIF_ERROR(BIF_P, BADARG);
     }
-    if (!term_to_Uint(BIF_ARG_2, &pos)) {
-	goto error;
-    }
-    if ((orig_size = binary_size(BIF_ARG_1)) < pos) {
-	goto error;
-    }
-    hp = HAlloc(BIF_P, 2*ERL_SUB_BIN_SIZE+3);
-    ERTS_GET_REAL_BIN(BIF_ARG_1, orig, offset, bit_offset, bit_size);
-    sb1 = (ErlSubBin *) hp;
-    sb1->thing_word = HEADER_SUB_BIN;
-    sb1->size = pos;
-    sb1->offs = offset;
-    sb1->orig = orig;
-    sb1->bitoffs = bit_offset;
-    sb1->bitsize = 0;
-    sb1->is_writable = 0;
-    hp += ERL_SUB_BIN_SIZE;
 
-    sb2 = (ErlSubBin *) hp;
-    sb2->thing_word = HEADER_SUB_BIN;
-    sb2->size = orig_size - pos;
-    sb2->offs = offset + pos;
-    sb2->orig = orig;
-    sb2->bitoffs = bit_offset;
-    sb2->bitsize = bit_size;	/* The extra bits go into the second binary. */
-    sb2->is_writable = 0;
-    hp += ERL_SUB_BIN_SIZE;
+    left_size = split_at;
+    right_size = orig_size - split_at;
 
-    return TUPLE2(hp, make_binary(sb1), make_binary(sb2));
-    
-    error:
-	BIF_ERROR(BIF_P, BADARG);
+    ERTS_GET_REAL_BIN(BIF_ARG_1, real_bin, byte_offset, bit_offset, bit_size);
+    bptr = binary_bytes(real_bin);
+
+    hp = HAlloc(BIF_P, EXTRACT_SUB_BIN_HEAP_NEED * 2 + 3);
+    hp_end = hp + (EXTRACT_SUB_BIN_HEAP_NEED * 2 + 3);
+
+    left = erts_extract_sub_binary(&hp, real_bin, bptr,
+                                   byte_offset * 8 + bit_offset,
+                                   left_size * 8);
+
+    right = erts_extract_sub_binary(&hp, real_bin, bptr,
+                                    (byte_offset + split_at) * 8 + bit_offset,
+                                    right_size * 8 + bit_size);
+
+    result = TUPLE2(hp, left, right);
+    hp += 3;
+
+    HRelease(BIF_P, hp_end, hp);
+
+    return result;
 }
 
 

@@ -1,7 +1,7 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2005-2014. All Rights Reserved.
+%% Copyright Ericsson AB 2005-2020. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -22,12 +22,11 @@
 
 %%% Description : SSH connection protocol 
 
--type channel_id()           :: integer().
+-define(DEFAULT_PACKET_SIZE, 65536).
+-define(DEFAULT_WINDOW_SIZE, 10*?DEFAULT_PACKET_SIZE).
 
--define(DEFAULT_PACKET_SIZE, 32768).
--define(DEFAULT_WINDOW_SIZE, 2*?DEFAULT_PACKET_SIZE).
 -define(DEFAULT_TIMEOUT, 5000).
--define(MAX_PROTO_VERSION, 255).
+-define(MAX_PROTO_VERSION, 255).      % Max length of the hello string
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %%
@@ -240,7 +239,7 @@
 
 -record(channel,
 	{
-	  type,          %% "session", "x11", "forwarded-tcpip", "direct-tcpip"
+	  type,          %% "session"
 	  sys,           %% "none", "shell", "exec" "subsystem"
 	  user,          %% "user" process id (default to cm user)
 	  flow_control, 
@@ -248,6 +247,9 @@
 	  local_id,           %% local channel id
 
 	  recv_window_size,
+	  recv_window_pending = 0, %% Sum of window size updates that has not
+	                           %% yet been sent. This limits the number
+	                           %% of sent update msgs.
 	  recv_packet_size,
 	  recv_close = false,
 
@@ -261,11 +263,8 @@
 -record(connection, {
 	  requests = [], %% [{ChannelId, Pid}...] awaiting reply on request,
 	  channel_cache,
-	  port_bindings,
 	  channel_id_seed,
 	  cli_spec,
-	  address, 
-	  port,
 	  options,
 	  exec,
 	  system_supervisor,

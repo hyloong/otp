@@ -37,6 +37,7 @@ what different type of break actions that are enabled.
 
 Same Same but Different
 -----------------------
+
 Even though `trace_pattern` use the same technique as the non-blocking
 code loading with replicated generations of data structures and an
 atomic switch, the implementations are quite separate from each
@@ -51,13 +52,13 @@ the new instrumented code. Normally loaded code can only be reached
 through external functions calls. Trace settings must be activated
 instantaneously without the need of external function calls.
 
-The choosen solution is instead for tracing to use the technique of
+The chosen solution is instead for tracing to use the technique of
 replication applied on the data structures for breakpoints. Two
 generations of breakpoints are kept and indentified by index of 0 and
 1. The global atomic variables `erts_active_bp_index` will determine
 which generation of breakpoints running code will use.
 
-### Atomicy Without Atomic Operations
+### Atomicity Without Atomic Operations
 
 Not using the code loading generations (or any other code duplication)
 means that `trace_pattern` must at some point write to the active beam
@@ -72,6 +73,7 @@ aligned write operation on all hardware architectures we use.
 
 Adding a new Breakpoint
 -----------------------
+
 This is a simplified sequence describing what `trace_pattern` goes
 through when adding a new breakpoint.
 
@@ -82,7 +84,7 @@ through when adding a new breakpoint.
    instruction word in the breakpoint.
 
 3. Write a pointer to the breakpoint at offset -4 from the first
-   instruction "func_info" header.
+   instruction "func\_info" header.
 
 4. Set the staging part of the breakpoint as enabled with specified
    breakpoint data.
@@ -139,7 +141,7 @@ and removing breakpoints.
 
 2. Allocate new breakpoint structures with a disabled active part and
    the original beam instruction. Write a pointer to the breakpoint in
-   "func_info" header at offset -4.
+   "func\_info" header at offset -4.
 
 3. Update the staging part of all affected breakpoints. Disable
    breakpoints that are to be removed.

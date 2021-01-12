@@ -1,7 +1,7 @@
 %%
 %% %CopyrightBegin%
 %% 
-%% Copyright Ericsson AB 1997-2011. All Rights Reserved.
+%% Copyright Ericsson AB 1997-2018. All Rights Reserved.
 %% 
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -105,9 +105,9 @@ do(Info) ->
 		    Code = proplists:get_value(code,Head,unknown),
 		    transfer_log(Info, "-", AuthUser, Date, Code, Size),
 		    {proceed, Info#mod.data};
-		{_StatusCode, Response} ->
-		    transfer_log(Info,"-",AuthUser,Date,200,
-				 httpd_util:flatlength(Response)),
+		{StatusCode, Response} ->
+		    transfer_log(Info, "-", AuthUser, Date, StatusCode,
+				 erlang:iolist_size(Response)),
 		    {proceed,Info#mod.data};
 		undefined ->
 		    transfer_log(Info,"-",AuthUser,Date,200,0),

@@ -1,7 +1,7 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 1997-2015. All Rights Reserved.
+%% Copyright Ericsson AB 1997-2020. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -19,12 +19,18 @@
 %%
 -module(inet_SUITE).
 
--include_lib("test_server/include/test_server.hrl").
+-include_lib("common_test/include/ct.hrl").
 -include_lib("kernel/include/inet.hrl").
+-include_lib("kernel/src/inet_res.hrl").
 -include_lib("kernel/src/inet_dns.hrl").
+-include("kernel_test_lib.hrl").
 
--export([all/0, suite/0,groups/0,init_per_suite/1, end_per_suite/1, 
-	 init_per_group/2,end_per_group/2,
+-export([
+         all/0, suite/0, groups/0,
+         init_per_suite/1, end_per_suite/1, 
+	 init_per_group/2, end_per_group/2,
+         init_per_testcase/2, end_per_testcase/2,
+
 	 t_gethostbyaddr/0, t_gethostbyaddr/1,
 	 t_getaddr/0, t_getaddr/1,
 	 t_gethostbyname/0, t_gethostbyname/1,
@@ -34,32 +40,57 @@
 	 ipv4_to_ipv6/0, ipv4_to_ipv6/1,
 	 host_and_addr/0, host_and_addr/1,
 	 t_gethostnative/1, 
-	 gethostnative_parallell/1, cname_loop/1, 
+	 gethostnative_parallell/1, cname_loop/1,
+         missing_hosts_reload/1, hosts_file_quirks/1,
          gethostnative_soft_restart/0, gethostnative_soft_restart/1,
 	 gethostnative_debug_level/0, gethostnative_debug_level/1,
 	 lookup_bad_search_option/1,
 	 getif/1,
 	 getif_ifr_name_overflow/1,getservbyname_overflow/1, getifaddrs/1,
-	 parse_strict_address/1, simple_netns/1, simple_netns_open/1]).
+	 parse_strict_address/1, ipv4_mapped_ipv6_address/1,
+         simple_netns/1, simple_netns_open/1,
+         add_del_host/1, add_del_host_v6/1,
+         simple_bind_to_device/1, simple_bind_to_device_open/1
+        ]).
 
--export([get_hosts/1, get_ipv6_hosts/1, parse_hosts/1, parse_address/1,
-	 kill_gethost/0, parallell_gethost/0, test_netns/0]).
--export([init_per_testcase/2, end_per_testcase/2]).
+-export([
+         get_hosts/1, get_ipv6_hosts/1, parse_hosts/1, parse_address/1,
+	 kill_gethost/0, parallell_gethost/0, test_netns/0
+        ]).
 
-suite() -> [{ct_hooks,[ts_install_cth]}].
+
+
+suite() ->
+    [
+     {ct_hooks,[ts_install_cth]},
+     {timetrap,{minutes,1}}
+    ].
 
 all() -> 
-    [t_gethostbyaddr, t_gethostbyname, t_getaddr,
+    [
+     t_gethostbyaddr, t_gethostbyname, t_getaddr,
      t_gethostbyaddr_v6, t_gethostbyname_v6, t_getaddr_v6,
      ipv4_to_ipv6, host_and_addr, {group, parse},
      t_gethostnative, gethostnative_parallell, cname_loop,
+     missing_hosts_reload, hosts_file_quirks,
      gethostnative_debug_level, gethostnative_soft_restart,
      lookup_bad_search_option,
      getif, getif_ifr_name_overflow, getservbyname_overflow,
-     getifaddrs, parse_strict_address, simple_netns, simple_netns_open].
+     getifaddrs, parse_strict_address, simple_netns, simple_netns_open,
+     add_del_host, add_del_host_v6,
+     simple_bind_to_device, simple_bind_to_device_open
+    ].
 
 groups() -> 
-    [{parse, [], [parse_hosts, parse_address]}].
+    [
+     {parse, [], parse_cases()}
+    ].
+
+parse_cases() ->
+    [
+     parse_hosts,
+     parse_address
+    ].
 
 %% Required configuaration
 required(v4) ->
@@ -77,11 +108,38 @@ required(hosts) ->
 	    [{require, test_hosts}]
     end.     
 
-init_per_suite(Config) ->
-    Config.
 
-end_per_suite(_Config) ->
-    ok.
+init_per_suite(Config0) ->
+
+    ?P("init_per_suite -> entry with"
+       "~n      Config: ~p"
+       "~n      Nodes:  ~p", [Config0, erlang:nodes()]),
+
+    case ?LIB:init_per_suite([{allow_skip, false} | Config0]) of
+        {skip, _} = SKIP ->
+            SKIP;
+
+        Config1 when is_list(Config1) ->
+            
+            ?P("init_per_suite -> end when "
+               "~n      Config: ~p", [Config1]),
+            
+            Config1
+    end.
+
+end_per_suite(Config0) ->
+
+    ?P("end_per_suite -> entry with"
+       "~n      Config: ~p"
+       "~n      Nodes:  ~p", [Config0, erlang:nodes()]),
+
+    Config1 = ?LIB:end_per_suite(Config0),
+
+    ?P("end_per_suite -> "
+            "~n      Nodes: ~p", [erlang:nodes()]),
+
+    Config1.
+
 
 init_per_group(_GroupName, Config) ->
     Config.
@@ -89,43 +147,44 @@ init_per_group(_GroupName, Config) ->
 end_per_group(_GroupName, Config) ->
     Config.
 
+init_per_testcase(gethostnative_debug_level, Config) ->
+    ?TT(?MINS(2)),
+    Config;
+init_per_testcase(gethostnative_soft_restart, Config) ->
+    ?TT(?MINS(2)),
+    Config;
 init_per_testcase(lookup_bad_search_option, Config) ->
     Db = inet_db,
     Key = res_lookup,
-    %% The bad option can not enter through inet_db:set_lookup/1,
+    %% The bad option cannot enter through inet_db:set_lookup/1,
     %% but through e.g .inetrc.
     Prev = ets:lookup(Db, Key),
     ets:delete(Db, Key),
     ets:insert(Db, {Key,[lookup_bad_search_option]}),
-    ?t:format("Misconfigured resolver lookup order", []),
-    Dog = test_server:timetrap(test_server:seconds(60)),
-    [{Key,Prev},{watchdog,Dog}|Config];
+    ?P("init_per_testcase -> Misconfigured resolver lookup order"),
+    [{Key,Prev}|Config];
 init_per_testcase(_Func, Config) ->
-    Dog = test_server:timetrap(test_server:seconds(60)),
-    [{watchdog,Dog}|Config].
+    Config.
 
 end_per_testcase(lookup_bad_search_option, Config) ->
-    Dog = ?config(watchdog, Config),
-    test_server:timetrap_cancel(Dog),
     Db = inet_db,
     Key = res_lookup,
-    Prev = ?config(Key, Config),
+    Prev = proplists:get_value(Key, Config),
     ets:delete(Db, Key),
     ets:insert(Db, Prev),
-    ?t:format("Restored resolver lookup order", []);
-end_per_testcase(_Func, Config) ->
-    Dog = ?config(watchdog, Config),
-    test_server:timetrap_cancel(Dog).
+    ?P("end_per_testcase -> Restored resolver lookup order");
+end_per_testcase(_Func, _Config) ->
+    ok.
 
 t_gethostbyaddr() ->
     required(v4).
-t_gethostbyaddr(doc) -> "Test the inet:gethostbyaddr/1 function.";
+%% Test the inet:gethostbyaddr/1 function.
 t_gethostbyaddr(Config) when is_list(Config) ->
     {Name,FullName,IPStr,{A,B,C,D}=IP,Aliases,_,_} = ct:get_config(test_host_ipv4_only),
     Rname = integer_to_list(D) ++ "." ++
-            integer_to_list(C) ++ "." ++
-            integer_to_list(B) ++ "." ++
-            integer_to_list(A) ++ ".in-addr.arpa",
+	integer_to_list(C) ++ "." ++
+	integer_to_list(B) ++ "." ++
+	integer_to_list(A) ++ ".in-addr.arpa",
     {ok,HEnt} = inet:gethostbyaddr(IPStr),
     {ok,HEnt} = inet:gethostbyaddr(IP),
     {error,Error} = inet:gethostbyaddr(Name),
@@ -142,11 +201,13 @@ t_gethostbyaddr(Config) when is_list(Config) ->
             ok;
         _ ->
             io:format("alias list: ~p", [HEnt#hostent.h_aliases]),
-            io:format("check alias list: ~p", [[Aliases,[Rname]]]),
+            io:format(
+	      "check alias list: ~p", [[Aliases,tl(Aliases),[Rname]]]),
             io:format("name: ~p", [HEnt#hostent.h_name]),
             io:format("check name: ~p", [[Name,FullName]]),
-            check_elems([{HEnt#hostent.h_name,[Name,FullName]},
-                         {HEnt#hostent.h_aliases,[[],Aliases,[Rname]]}])
+            check_elems(
+	      [{HEnt#hostent.h_name,[Name,FullName]},
+	       {HEnt#hostent.h_aliases,[[],Aliases,tl(Aliases),[Rname]]}])
     end,
 
     {_DName, _DFullName, DIPStr, DIP, _, _, _} = ct:get_config(test_dummy_host),
@@ -155,79 +216,78 @@ t_gethostbyaddr(Config) when is_list(Config) ->
     ok.
 
 t_gethostbyaddr_v6() -> required(v6).
-t_gethostbyaddr_v6(doc) -> "Test the inet:gethostbyaddr/1 inet6 function.";
+%% Test the inet:gethostbyaddr/1 inet6 function.
 t_gethostbyaddr_v6(Config) when is_list(Config) ->
-    ?line {Name6, FullName6, IPStr6, IP6, Aliases6} =
+    {Name6, FullName6, IPStr6, IP6, Aliases6} =
 	ct:get_config(test_host_ipv6_only),
 
-    ?line case inet:gethostbyaddr(IPStr6) of
+    case inet:gethostbyaddr(IPStr6) of
         %% Even if IPv6 is not supported, the native resolver may succeed
 	%% looking up the host. DNS lookup will probably fail.
 	{error,nxdomain} ->
 	    {skip, "IPv6 test fails! IPv6 not supported on this host!?"};
 	{ok,HEnt6} ->
-	    ?line {ok,HEnt6} = inet:gethostbyaddr(IP6),
-	    ?line {error,Error6} = inet:gethostbyaddr(Name6),
-	    ?line ok = io:format("Failure reason: ~p: ~s",
-				 [Error6, inet:format_error(Error6)]),
-	    ?line HEnt6_ = HEnt6#hostent{h_addrtype = inet6,
-					 h_length = 16,
-					 h_addr_list = [IP6]},
-	    ?line HEnt6_ = HEnt6,
-	    ?line check_elems([{HEnt6#hostent.h_name,[Name6,FullName6]},
-			       {HEnt6#hostent.h_aliases,[[],Aliases6]}]),
+	    {ok,HEnt6} = inet:gethostbyaddr(IP6),
+	    {error,Error6} = inet:gethostbyaddr(Name6),
+	    ok = io:format("Failure reason: ~p: ~s",
+			   [Error6, inet:format_error(Error6)]),
+	    HEnt6_ = HEnt6#hostent{h_addrtype = inet6,
+				   h_length = 16,
+				   h_addr_list = [IP6]},
+	    HEnt6_ = HEnt6,
+	    check_elems(
+	      [{HEnt6#hostent.h_name,[Name6,FullName6]},
+	       {HEnt6#hostent.h_aliases,[[],Aliases6,tl(Aliases6)]}]),
 
-	    ?line {_DName6, _DFullName6, DIPStr6, DIP6, _} =
-		      ct:get_config(test_dummy_ipv6_host),
-	    ?line {error,nxdomain} = inet:gethostbyaddr(DIPStr6),
-	    ?line {error,nxdomain} = inet:gethostbyaddr(DIP6),    
+	    {_DName6, _DFullName6, DIPStr6, DIP6, _} =
+		ct:get_config(test_dummy_ipv6_host),
+	    {error,nxdomain} = inet:gethostbyaddr(DIPStr6),
+	    {error,nxdomain} = inet:gethostbyaddr(DIP6),
 	    ok
     end.
 
 t_gethostbyname() -> required(v4).
-t_gethostbyname(doc) -> "Test the inet:gethostbyname/1 function.";
-t_gethostbyname(suite) -> [];
+%% Test the inet:gethostbyname/1 function.
 t_gethostbyname(Config) when is_list(Config) ->
-    ?line {Name,FullName,IPStr,IP,Aliases,IP_46_Str,_} =
+    {Name,FullName,IPStr,IP,Aliases,IP_46_Str,_} =
 	ct:get_config(test_host_ipv4_only),
-    ?line {ok,_} = inet:gethostbyname(IPStr),
-    ?line {ok,HEnt} = inet:gethostbyname(Name),
-    ?line {ok,HEnt} = inet:gethostbyname(list_to_atom(Name)),
-    ?line HEnt_ = HEnt#hostent{h_addrtype = inet,
-			       h_length = 4,
-			       h_addr_list = [IP]},
+    {ok,_} = inet:gethostbyname(IPStr),
+    {ok,HEnt} = inet:gethostbyname(Name),
+    {ok,HEnt} = inet:gethostbyname(list_to_atom(Name)),
+    HEnt_ = HEnt#hostent{h_addrtype = inet,
+			 h_length = 4,
+			 h_addr_list = [IP]},
 
-    ?line HEnt_ = HEnt,
-    ?line check_elems([{HEnt#hostent.h_name,[Name,FullName]},
-		       {HEnt#hostent.h_aliases,[[],Aliases]}]),
-    ?line {ok,HEntF} = inet:gethostbyname(FullName),
-    ?line HEntF_ = HEntF#hostent{h_name = FullName,
-				 h_addrtype = inet,
-				 h_length = 4,
-				 h_addr_list = [IP]},
-    ?line HEntF_ = HEntF,
-    ?line check_elems([{HEnt#hostent.h_aliases,[[],Aliases]}]),
+    HEnt_ = HEnt,
+    check_elems([{HEnt#hostent.h_name,[Name,FullName]},
+		 {HEnt#hostent.h_aliases,[[],Aliases,tl(Aliases)]}]),
+    {ok,HEntF} = inet:gethostbyname(FullName),
+    HEntF_ = HEntF#hostent{h_name = FullName,
+			   h_addrtype = inet,
+			   h_length = 4,
+			   h_addr_list = [IP]},
+    HEntF_ = HEntF,
+    check_elems([{HEnt#hostent.h_aliases,[[],Aliases,tl(Aliases)]}]),
     %%
-    ?line FullNameU = toupper(FullName),
-    ?line {ok,HEntU} = inet:gethostbyname(FullNameU),
-    ?line FullNameU = toupper(HEntU#hostent.h_name),
-    ?line #hostent{
+    FullNameU = toupper(FullName),
+    {ok,HEntU} = inet:gethostbyname(FullNameU),
+    FullNameU = toupper(HEntU#hostent.h_name),
+    #hostent{
        h_addrtype = inet,
        h_length = 4,
        h_addr_list = [IP]} = HEntU,
-    ?line check_elems(
-	    [{[toupper(H) || H <- HEntU#hostent.h_aliases],
-	      [[],[toupper(A) || A <- Aliases]]}]),
+    check_elems(
+      [{[toupper(H) || H <- HEntU#hostent.h_aliases],
+	[[],[toupper(A) || A <- Aliases]]}]),
 
-    ?line {DName, _DFullName, _DIPStr, _DIP, _, _, _} =
+    {DName, _DFullName, _DIPStr, _DIP, _, _, _} =
 	ct:get_config(test_dummy_host),
-    ?line {error,nxdomain} = inet:gethostbyname(DName),
-    ?line {error,nxdomain} = inet:gethostbyname(IP_46_Str),
+    {error,nxdomain} = inet:gethostbyname(DName),
+    {error,nxdomain} = inet:gethostbyname(IP_46_Str),
     ok.
 
 t_gethostbyname_v6() -> required(v6).
-t_gethostbyname_v6(doc) -> "Test the inet:gethostbyname/1 inet6 function.";
-t_gethostbyname_v6(suite) -> [];
+%% Test the inet:gethostbyname/1 inet6 function.
 t_gethostbyname_v6(Config) when is_list(Config) ->
     {Name, FullName, IPStr, IP, Aliases} =
 	ct:get_config(test_host_ipv6_only),
@@ -242,7 +302,7 @@ t_gethostbyname_v6(Config) when is_list(Config) ->
 			     h_length = 16} = HEnt,
 		    check_elems(
 		      [{HEnt#hostent.h_name,[Name,FullName]},
-		       {HEnt#hostent.h_aliases,[[],Aliases]}]);
+		       {HEnt#hostent.h_aliases,[[],Aliases,tl(Aliases)]}]);
 		[IP46] -> % IPv4 compatible address
 		    {ok,HEnt4} = inet:gethostbyname(Name, inet),
 		    #hostent{h_addrtype = inet,
@@ -262,7 +322,7 @@ t_gethostbyname_v6(Config) when is_list(Config) ->
 			     h_addrtype = inet6,
 			     h_length = 16} = HEntF,
 		    check_elems(
-		      [{HEnt#hostent.h_aliases,[[],Aliases]}]);
+		      [{HEnt#hostent.h_aliases,[[],Aliases,tl(Aliases)]}]);
 		[IP46F] -> % IPv4 compatible address
 		    {ok,HEnt4F} = inet:gethostbyname(FullName, inet),
 		    #hostent{h_addrtype = inet,
@@ -287,33 +347,31 @@ check_elem(Val, [Val|_], _) -> ok;
 check_elem(Val, [_|Tests], Tests0) ->
     check_elem(Val, Tests, Tests0);
 check_elem(Val, [], Tests0) ->
-    ?t:fail({no_match,Val,Tests0}).
+    ct:fail({no_match,Val,Tests0}).
 
 
 t_getaddr() -> required(v4).
-t_getaddr(doc) -> "Test the inet:getaddr/2 function.";
-t_getaddr(suite) -> [];
+%% Test the inet:getaddr/2 function.
 t_getaddr(Config) when is_list(Config) ->
-    ?line {Name,FullName,IPStr,IP,_,IP_46_Str,IP46} =
+    {Name,FullName,IPStr,IP,_,IP_46_Str,IP46} =
 	ct:get_config(test_host_ipv4_only),
-    ?line {ok,IP} = inet:getaddr(list_to_atom(Name), inet),
-    ?line {ok,IP} = inet:getaddr(Name, inet),
-    ?line {ok,IP} = inet:getaddr(FullName, inet),
-    ?line {ok,IP} = inet:getaddr(IP, inet),
-    ?line {ok,IP} = inet:getaddr(IPStr, inet),
-    ?line {error,nxdomain} = inet:getaddr(IP_46_Str, inet),
-    ?line {error,eafnosupport} = inet:getaddr(IP46, inet),
+    {ok,IP} = inet:getaddr(list_to_atom(Name), inet),
+    {ok,IP} = inet:getaddr(Name, inet),
+    {ok,IP} = inet:getaddr(FullName, inet),
+    {ok,IP} = inet:getaddr(IP, inet),
+    {ok,IP} = inet:getaddr(IPStr, inet),
+    {error,nxdomain} = inet:getaddr(IP_46_Str, inet),
+    {error,eafnosupport} = inet:getaddr(IP46, inet),
 
-    ?line {DName, DFullName, DIPStr, DIP, _, _, _} = ct:get_config(test_dummy_host),
-    ?line {error,nxdomain} = inet:getaddr(DName, inet),
-    ?line {error,nxdomain} = inet:getaddr(DFullName, inet),
-    ?line {ok,DIP} = inet:getaddr(DIPStr, inet),
-    ?line {ok,DIP} = inet:getaddr(DIP, inet),
+    {DName, DFullName, DIPStr, DIP, _, _, _} = ct:get_config(test_dummy_host),
+    {error,nxdomain} = inet:getaddr(DName, inet),
+    {error,nxdomain} = inet:getaddr(DFullName, inet),
+    {ok,DIP} = inet:getaddr(DIPStr, inet),
+    {ok,DIP} = inet:getaddr(DIP, inet),
     ok.
 
 t_getaddr_v6() -> required(v4) ++ required(v6).
-t_getaddr_v6(doc) -> "Test the inet:getaddr/2 function.";
-t_getaddr_v6(suite) -> [];
+%% Test the inet:getaddr/2 function.
 t_getaddr_v6(Config) when is_list(Config) ->
     {Name,FullName,IPStr,IP,_} =
 	ct:get_config(test_host_ipv6_only),
@@ -341,16 +399,15 @@ t_getaddr_v6(Config) when is_list(Config) ->
     end.
 
 ipv4_to_ipv6() -> required(v4).
-ipv4_to_ipv6(doc) -> "Test if IPv4 address is converted to IPv6 address.";
-ipv4_to_ipv6(suite) -> [];
+%% Test if IPv4 address is converted to IPv6 address.
 ipv4_to_ipv6(Config) when is_list(Config) ->
     %% Test what happens if an IPv4 address is looked up in an IPv6 context.
     %% If the native resolver succeeds to look it up, an IPv4 compatible
     %% address should be returned. If no IPv6 support on this host, an
     %% error should beturned.
-    ?line {_Name,_FullName,IPStr,_IP,Aliases,IP_46_Str,IP_46} =
+    {_Name,_FullName,IPStr,_IP,Aliases,IP_46_Str,IP_46} =
 	ct:get_config(test_host_ipv4_only),
-    ?line IP4to6Res =
+    IP4to6Res =
 	case inet:getaddr(IPStr, inet6) of
 	    {ok,IP_46} ->
 		io:format("IPv4->IPv6: success~n"),
@@ -362,36 +419,37 @@ ipv4_to_ipv6(Config) when is_list(Config) ->
 		io:format("IPv6->IPv4: eafnosupport~n"),
 		E;
 	    Other ->
-		?line ?t:fail({ipv4_to_ipv6_lookup_failed,Other})
+		ct:fail({ipv4_to_ipv6_lookup_failed,Other})
 	end,
-    ?line case {IP4to6Res,inet:gethostbyname(IPStr, inet6)} of
-	      {true,{ok,HEnt}} ->
-		  ?line HEnt_ = HEnt#hostent{h_addrtype = inet6,
-					     h_length = 16,
-					     h_addr_list = [IP_46]},
-		  ?line HEnt_ = HEnt,
-		  ?line check_elems([{HEnt#hostent.h_name,[IP_46_Str,IPStr]},
-				     {HEnt#hostent.h_aliases,[[],Aliases]}]);
-	      {_,IP4to6Res} -> ok
-	  end,
+    case {IP4to6Res,inet:gethostbyname(IPStr, inet6)} of
+	{true,{ok,HEnt}} ->
+	    HEnt_ = HEnt#hostent{h_addrtype = inet6,
+				 h_length = 16,
+				 h_addr_list = [IP_46]},
+	    HEnt_ = HEnt,
+	    check_elems([{HEnt#hostent.h_name,[IP_46_Str,IPStr]},
+			 {HEnt#hostent.h_aliases,[[],Aliases,tl(Aliases)]}]);
+	{_,IP4to6Res} -> ok
+    end,
     ok.
 
-host_and_addr() -> required(hosts).
-host_and_addr(doc) -> ["Test looking up hosts and addresses. Use 'ypcat hosts' ",
-		       "or the local eqivalent to find all hosts."];
-host_and_addr(suite) -> [];
-host_and_addr(Config) when is_list(Config) ->
-    ?line Dog = test_server:timetrap(test_server:minutes(5)),
 
-    ?line lists:foreach(fun try_host/1, get_hosts(Config)),
-    ?line test_server:timetrap_cancel(Dog),
+%% Test looking up hosts and addresses. Use 'ypcat hosts'
+%% or the local eqivalent to find all hosts.
+
+host_and_addr() ->
+    ?P("host_and_addr -> entry"),
+    [{timetrap,{minutes,5}}|required(hosts)].
+
+host_and_addr(Config) when is_list(Config) ->
+    lists:foreach(fun try_host/1, get_hosts(Config)),
     ok.
 
 try_host({Ip0, Host}) ->
-    ?line {ok,Ip} = inet:getaddr(Ip0, inet),
-    ?line {ok,{hostent, _, _, inet, _, Ips1}} = inet:gethostbyaddr(Ip),
-    ?line {ok,{hostent, _, _, inet, _, _Ips2}} = inet:gethostbyname(Host),
-    ?line true = lists:member(Ip, Ips1),
+    {ok, Ip}                             = inet:getaddr(Ip0, inet),
+    {ok,{hostent, _, _, inet, _, Ips1}}  = inet:gethostbyaddr(Ip),
+    {ok,{hostent, _, _, inet, _, _Ips2}} = inet:gethostbyname(Host),
+    true = lists:member(Ip, Ips1),
     ok.
 
 %% Get all hosts from the system using 'ypcat hosts' or the local
@@ -438,105 +496,139 @@ get_hosts([C|Rest], Cur, Ip, Result) ->
     get_hosts(Rest, [C|Cur], Ip, Result);
 get_hosts([], _, _, Result) ->
     Result.
-    
+
 
 parse_hosts(Config) when is_list(Config) ->
-    ?line DataDir = ?config(data_dir,Config),
-    ?line HostFile = filename:join(DataDir, "hosts"),
-    ?line inet_parse:hosts(HostFile),
-    ?line HostFileErr1 = filename:join(DataDir, "hosts_err1"),
-    ?line inet_parse:hosts(HostFileErr1),
-    ?line Resolv = filename:join(DataDir,"resolv.conf"),
-    ?line inet_parse:resolv(Resolv),
-    ?line ResolvErr1 = filename:join(DataDir,"resolv.conf.err1"),
-    ?line inet_parse:resolv(ResolvErr1).
+    DataDir = proplists:get_value(data_dir,Config),
+    HostFile = filename:join(DataDir, "hosts"),
+    inet_parse:hosts(HostFile),
+    HostFileErr1 = filename:join(DataDir, "hosts_err1"),
+    inet_parse:hosts(HostFileErr1),
+    Resolv = filename:join(DataDir,"resolv.conf"),
+    inet_parse:resolv(Resolv),
+    ResolvErr1 = filename:join(DataDir,"resolv.conf.err1"),
+    inet_parse:resolv(ResolvErr1).
 
 parse_address(Config) when is_list(Config) ->
-    V4Strict =
+    V4Reversable =
 	[{{0,0,0,0},"0.0.0.0"},
-	 {{1,2,3,4},"1.2.3.4"},
+         {{1,2,3,4},"1.2.3.4"},
 	 {{253,252,251,250},"253.252.251.250"},
 	 {{1,2,255,254},"1.2.255.254"}],
-    V6Strict =
+    V6Reversable =
 	[{{0,0,0,0,0,0,0,0},"::"},
+	 {{0,0,0,0,0,0,0,1},"::1"},
+	 {{0,0,0,0,0,0,0,2},"::0.0.0.2"},
 	 {{15,0,0,0,0,0,0,2},"f::2"},
-	 {{15,16#f11,0,0,0,0,256,2},"f:f11::0100:2"},
-	 {{0,0,0,0,0,0,0,16#17},"::17"},
-	 {{16#700,0,0,0,0,0,0,0},"0700::"},
-	 {{0,0,0,0,0,0,2,1},"::2:1"},
+	 {{15,16#f11,0,0,0,0,256,2},"f:f11::100:2"},
+	 {{16#700,0,0,0,0,0,0,0},"700::"},
+	 {{0,0,0,0,0,0,2,1},"::0.2.0.1"},
 	 {{0,0,0,0,0,3,2,1},"::3:2:1"},
 	 {{0,0,0,0,4,3,2,1},"::4:3:2:1"},
 	 {{0,0,0,5,4,3,2,1},"::5:4:3:2:1"},
 	 {{0,0,6,5,4,3,2,1},"::6:5:4:3:2:1"},
-	 {{0,7,6,5,4,3,2,1},"::7:6:5:4:3:2:1"},
+	 {{0,7,6,5,4,3,2,1},"0:7:6:5:4:3:2:1"},
 	 {{7,0,0,0,0,0,0,0},"7::"},
 	 {{7,6,0,0,0,0,0,0},"7:6::"},
 	 {{7,6,5,0,0,0,0,0},"7:6:5::"},
 	 {{7,6,5,4,0,0,0,0},"7:6:5:4::"},
 	 {{7,6,5,4,3,0,0,0},"7:6:5:4:3::"},
 	 {{7,6,5,4,3,2,0,0},"7:6:5:4:3:2::"},
-	 {{7,6,5,4,3,2,1,0},"7:6:5:4:3:2:1::"},
+	 {{7,6,5,4,3,2,1,0},"7:6:5:4:3:2:1:0"},
+	 {{0,0,6,5,4,3,0,0},"::6:5:4:3:0:0"},
+	 {{0,0,6,5,4,0,0,0},"0:0:6:5:4::"},
+	 {{8,0,0,5,4,0,0,1},"8::5:4:0:0:1"},
+	 {{8,0,0,5,0,0,0,1},"8:0:0:5::1"},
+	 {{0,7,6,5,4,3,2,0},"0:7:6:5:4:3:2:0"},
+	 {{0,0,6,5,4,3,0,0},"::6:5:4:3:0:0"},
+	 {{0,0,0,5,4,0,0,0},"::5:4:0:0:0"},
+	 {{0,0,0,0,4,0,0,0},"::4:0:0:0"},
+	 {{0,0,0,5,0,0,0,0},"0:0:0:5::"},
 	 {{16#c11,16#c22,16#5c33,16#c440,16#55c0,16#c66c,16#77,16#88},
-	  "c11:0c22:5c33:c440:55c0:c66c:77:0088"},
+	  "c11:c22:5c33:c440:55c0:c66c:77:88"},
+	 {{0,16#c22,16#5c33,16#c440,16#55c0,16#c66c,16#77,16#88},
+	  "0:c22:5c33:c440:55c0:c66c:77:88"},
 	 {{16#c11,0,16#5c33,16#c440,16#55c0,16#c66c,16#77,16#88},
-	  "c11::5c33:c440:55c0:c66c:77:0088"},
+	  "c11:0:5c33:c440:55c0:c66c:77:88"},
 	 {{16#c11,16#c22,0,16#c440,16#55c0,16#c66c,16#77,16#88},
-	  "c11:0c22::c440:55c0:c66c:77:0088"},
+	  "c11:c22:0:c440:55c0:c66c:77:88"},
 	 {{16#c11,16#c22,16#5c33,0,16#55c0,16#c66c,16#77,16#88},
-	  "c11:0c22:5c33::55c0:c66c:77:0088"},
+	  "c11:c22:5c33:0:55c0:c66c:77:88"},
 	 {{16#c11,16#c22,16#5c33,16#c440,0,16#c66c,16#77,16#88},
-	  "c11:0c22:5c33:c440::c66c:77:0088"},
+	  "c11:c22:5c33:c440:0:c66c:77:88"},
 	 {{16#c11,16#c22,16#5c33,16#c440,16#55c0,0,16#77,16#88},
-	  "c11:0c22:5c33:c440:55c0::77:0088"},
+	  "c11:c22:5c33:c440:55c0:0:77:88"},
 	 {{16#c11,16#c22,16#5c33,16#c440,16#55c0,16#c66c,0,16#88},
-	  "c11:0c22:5c33:c440:55c0:c66c::0088"},
+	  "c11:c22:5c33:c440:55c0:c66c:0:88"},
+	 {{16#c11,16#c22,16#5c33,16#c440,16#55c0,16#c66c,16#77,0},
+	  "c11:c22:5c33:c440:55c0:c66c:77:0"},
+	 {{0,0,16#5c33,16#c440,16#55c0,16#c66c,16#77,16#88},
+	  "::5c33:c440:55c0:c66c:77:88"},
 	 {{16#c11,0,0,16#c440,16#55c0,16#c66c,16#77,16#88},
-	  "c11::c440:55c0:c66c:77:0088"},
+	  "c11::c440:55c0:c66c:77:88"},
 	 {{16#c11,16#c22,0,0,16#55c0,16#c66c,16#77,16#88},
-	  "c11:0c22::55c0:c66c:77:0088"},
+	  "c11:c22::55c0:c66c:77:88"},
 	 {{16#c11,16#c22,16#5c33,0,0,16#c66c,16#77,16#88},
-	  "c11:0c22:5c33::c66c:77:0088"},
+	  "c11:c22:5c33::c66c:77:88"},
 	 {{16#c11,16#c22,16#5c33,16#c440,0,0,16#77,16#88},
-	  "c11:0c22:5c33:c440::77:0088"},
+	  "c11:c22:5c33:c440::77:88"},
 	 {{16#c11,16#c22,16#5c33,16#c440,16#55c0,0,0,16#88},
-	  "c11:0c22:5c33:c440:55c0::0088"},
+	  "c11:c22:5c33:c440:55c0::88"},
+	 {{16#c11,16#c22,16#5c33,16#c440,16#55c0,16#c66c,0,0},
+	  "c11:c22:5c33:c440:55c0:c66c::"},
+	 {{0,0,0,16#c440,16#55c0,16#c66c,16#77,16#88},
+	  "::c440:55c0:c66c:77:88"},
 	 {{16#c11,0,0,0,16#55c0,16#c66c,16#77,16#88},
-	  "c11::55c0:c66c:77:0088"},
+	  "c11::55c0:c66c:77:88"},
 	 {{16#c11,16#c22,0,0,0,16#c66c,16#77,16#88},
-	  "c11:0c22::c66c:77:0088"},
+	  "c11:c22::c66c:77:88"},
 	 {{16#c11,16#c22,16#5c33,0,0,0,16#77,16#88},
-	  "c11:0c22:5c33::77:0088"},
+	  "c11:c22:5c33::77:88"},
 	 {{16#c11,16#c22,16#5c33,16#c440,0,0,0,16#88},
-	  "c11:0c22:5c33:c440::0088"},
+	  "c11:c22:5c33:c440::88"},
+	 {{16#c11,16#c22,16#5c33,16#c440,16#55c0,0,0,0},
+	  "c11:c22:5c33:c440:55c0::"},
+	 {{0,0,0,0,16#55c0,16#c66c,16#77,16#88},
+	  "::55c0:c66c:77:88"},
 	 {{16#c11,0,0,0,0,16#c66c,16#77,16#88},
-	  "c11::c66c:77:0088"},
+	  "c11::c66c:77:88"},
 	 {{16#c11,16#c22,0,0,0,0,16#77,16#88},
-	  "c11:0c22::77:0088"},
+	  "c11:c22::77:88"},
 	 {{16#c11,16#c22,16#5c33,0,0,0,0,16#88},
-	  "c11:0c22:5c33::0088"},
+	  "c11:c22:5c33::88"},
+	 {{16#c11,16#c22,16#5c33,16#c440,0,0,0,0},
+	  "c11:c22:5c33:c440::"},
+	 {{0,0,0,0,0,16#c66c,16#77,16#88},
+	  "::c66c:77:88"},
 	 {{16#c11,0,0,0,0,0,16#77,16#88},
-	  "c11::77:0088"},
+	  "c11::77:88"},
 	 {{16#c11,16#c22,0,0,0,0,0,16#88},
-	  "c11:0c22::0088"},
-	 {{0,0,0,0,0,65535,258,65534},"::FFFF:1.2.255.254"},
+	  "c11:c22::88"},
+	 {{16#c11,16#c22,16#5c33,0,0,0,0,0},
+	  "c11:c22:5c33::"},
+	 {{0,0,0,0,0,65535,258,65534},"::ffff:1.2.255.254"},
+         {{16#fe80,12345,0,0,0,0,0,16#12},"fe80::12%012345"},
 	 {{16#ffff,16#ffff,16#ffff,16#ffff,16#ffff,16#ffff,16#ffff,16#ffff},
 	  "ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff"}
-	|[{{D2,0,0,0,0,P,(D1 bsl 8) bor D2,(D3 bsl 8) bor D4},
-	   erlang:integer_to_list(D2, 16)++"::"++Q++S}
-	  || {{D1,D2,D3,D4},S} <- V4Strict,
-	     {P,Q} <- [{0,""},{16#17,"17:"},{16#ff0,"0ff0:"}]]],
+         |[{list_to_tuple(P++[(D1 bsl 8) bor D2,(D3 bsl 8) bor D4]),
+            Q++S}
+           || {{D1,D2,D3,D4},S} <-
+                  tl(V4Reversable),
+              {P,Q} <-
+                  [{[0,0,0,0,0,16#ffff],"::ffff:"},
+                   {[0,0,0,0,0,0],"::"}]]],
     V4Sloppy =
 	[{{10,1,16#98,16#76},"10.0x019876"},
 	 {{8#12,1,8#130,8#321},"012.01.054321"},
-	 {{255,255,255,255},"255.255.255.0377"},
-	 {{255,255,255,255},"0Xff.000000000377.0x0000ff.255"},
-	 {{255,255,255,255},"255.255.65535"},
-	 {{255,255,255,255},"255.0xFF.0177777"},
-	 {{255,255,255,255},"255.16777215"},
-	 {{255,255,255,255},"00377.0XFFFFFF"},
-	 {{255,255,255,255},"4294967295"},
-	 {{255,255,255,255},"0xffffffff"},
-	 {{255,255,255,255},"00000000000037777777777"},
+	 {{252,253,254,255},"252.253.254.0377"},
+	 {{252,253,254,255},"0Xfc.000000000375.0x0000fe.255"},
+	 {{252,253,254,255},"252.253.65279"},
+	 {{252,253,254,255},"252.0xFD.0177377"},
+	 {{252,253,254,255},"252.16645887"},
+	 {{252,253,254,255},"00374.0XFDFEFF"},
+	 {{252,253,254,255},"4244504319"},
+	 {{252,253,254,255},"0xfcfdfeff"},
+	 {{252,253,254,255},"00000000000037477377377"},
 	 {{16#12,16#34,16#56,16#78},"0x12345678"},
 	 {{16#12,16#34,16#56,16#78},"0x12.0x345678"},
 	 {{16#12,16#34,16#56,16#78},"0x12.0X34.0x5678"},
@@ -548,8 +640,14 @@ parse_address(Config) when is_list(Config) ->
 	 {{0,0,0,0},"0.00.0.0"},
 	 {{0,0,0,0},"0.0.000000000000.0"}],
     V6Sloppy =
-	[{{0,0,0,0,0,65535,(D1 bsl 8) bor D2,(D3 bsl 8) bor D4},S}
-	 || {{D1,D2,D3,D4},S} <- V4Strict++V4Sloppy],
+        [{{16#a,16#b,16#c,16#0,16#0,16#d,16#e,16#f},"A:B:C::d:e:f"},
+         {{16#fe80,0,0,0,0,0,0,16#12},"fe80::12%XXXXXXX"}]
+        ++
+        [{{P,0,0,0,0,D2,(D1 bsl 8) bor D2,(D3 bsl 8) bor D4},
+          Q++erlang:integer_to_list(D2, 16)++":"++S}
+         || {{D1,D2,D3,D4},S} <- V4Reversable,
+            {P,Q} <-
+                [{16#2001,"2001::"},{16#177,"177::"},{16#ff0,"Ff0::"}]],
     V4Err =
 	["0.256.0.1",
 	 "1.2.3.4.5",
@@ -593,28 +691,36 @@ parse_address(Config) when is_list(Config) ->
 	 "fec0::fFfF:127.0.0.1."],
     t_parse_address
       (parse_ipv6_address,
-       V6Strict++V6Sloppy++V6Err++V4Err),
+       false,
+       V6Reversable++V6Sloppy++V6Err++V4Err),
     t_parse_address
       (parse_ipv6strict_address,
-       V6Strict++V6Err++V4Err++[S || {_,S} <- V6Sloppy]),
+       true,
+       V6Reversable++V6Err++V4Err),
     t_parse_address
       (parse_ipv4_address,
-       V4Strict++V4Sloppy++V4Err++V6Err++[S || {_,S} <- V6Strict]),
+       false,
+       V4Reversable++V4Sloppy++V4Err++V6Err++[S || {_,S} <- V6Reversable]),
     t_parse_address
       (parse_ipv4strict_address,
-       V4Strict++V4Err++V6Err++[S || {_,S} <- V4Sloppy++V6Strict]).
+       true,
+       V4Reversable++V4Err++V6Err++[S || {_,S} <- V4Sloppy++V6Reversable]).
 
-t_parse_address(Func, []) ->
+t_parse_address(Func, _Reversable, []) ->
     io:format("~p done.~n", [Func]),
     ok;
-t_parse_address(Func, [{Addr,String}|L]) ->
+t_parse_address(Func, Reversable, [{Addr,String}|L]) ->
     io:format("~p = ~p.~n", [Addr,String]),
     {ok,Addr} = inet:Func(String),
-    t_parse_address(Func, L);
-t_parse_address(Func, [String|L]) ->
+    case Reversable of
+        true ->String = inet:ntoa(Addr);
+        false -> ok
+    end,
+    t_parse_address(Func, Reversable, L);
+t_parse_address(Func, Reversable, [String|L]) ->
     io:format("~p.~n", [String]),
     {error,einval} = inet:Func(String),
-    t_parse_address(Func, L).
+    t_parse_address(Func, Reversable, L).
 
 parse_strict_address(Config) when is_list(Config) ->
     {ok, {127,0,0,1}} =
@@ -624,42 +730,59 @@ parse_strict_address(Config) when is_list(Config) ->
     {ok, {3089,3106,23603,50240,0,0,119,136}} =
 	inet:parse_strict_address("c11:0c22:5c33:c440::077:0088").
 
-t_gethostnative(suite) ->[];
-t_gethostnative(doc) ->[];
+ipv4_mapped_ipv6_address(Config) when is_list(Config) ->
+    {D1,D2,D3,D4} = IPv4Address =
+        {rand:uniform(256) - 1,
+         rand:uniform(256) - 1,
+         rand:uniform(256) - 1,
+         rand:uniform(256) - 1},
+    E7 = (D1 bsl 8) bor D2,
+    E8 = (D3 bsl 8) bor D4,
+    io:format("IPv4Address: ~p.~n", [IPv4Address]),
+    {0,0,0,0,0,65535,E7,E8} = inet:ipv4_mapped_ipv6_address(IPv4Address),
+    IPv6Address =
+        {rand:uniform(65536) - 1,
+         rand:uniform(65536) - 1,
+         rand:uniform(65536) - 1,
+         rand:uniform(65536) - 1,
+         rand:uniform(65536) - 1,
+         rand:uniform(65536) - 1, E7, E8},
+    IPv4Address = inet:ipv4_mapped_ipv6_address(IPv6Address),
+    ok.
+
 t_gethostnative(Config) when is_list(Config) ->
-%% this will result in 26 bytes sent which causes problem in Windows
-%% if the port-program has not assured stdin to be read in BINARY mode
-%% OTP-2555
-    ?line case inet_gethost_native:gethostbyname(
-	    "a23456789012345678901234") of
+    %% this will result in 26 bytes sent which causes problem in Windows
+    %% if the port-program has not assured stdin to be read in BINARY mode
+    %% OTP-2555
+    case inet_gethost_native:gethostbyname(
+	   "a23456789012345678901234") of
 	{error,notfound} ->
-	    ?line ok;
+	    ok;
 	{error,no_data} ->
-	    ?line ok
+	    ok;
+	{error,try_again} ->
+	    ok
     end.
 
-gethostnative_parallell(suite) ->    
-    [];
-gethostnative_parallell(doc) ->
-    ["Check that the emulator survives crashes in gethost_native"];
+%% Check that the emulator survives crashes in gethost_native.
 gethostnative_parallell(Config) when is_list(Config) ->
-    ?line {ok,Hostname} = inet:gethostname(),
-    ?line {ok,_} = inet:gethostbyname(Hostname),
+    {ok,Hostname} = inet:gethostname(),
+    {ok,_} = inet:gethostbyname(Hostname),
     case whereis(inet_gethost_native) of
 	Pid when is_pid(Pid) ->
-	    ?line do_gethostnative_parallell();
+	    do_gethostnative_parallell();
 	_ ->
-	    ?line {skipped, "Not running native gethostbyname"}
+	    {skipped, "Not running native gethostbyname"}
     end.
 
 do_gethostnative_parallell() ->
-    ?line PA = filename:dirname(code:which(?MODULE)),
-    ?line {ok,Node} = ?t:start_node(gethost_parallell, slave, 
-				     [{args, "-pa " ++ PA}]),
-    ?line ok = rpc:call(Node, ?MODULE, parallell_gethost, []),
-    ?line receive after 10000 -> ok end,
-    ?line pong = net_adm:ping(Node),
-    ?line ?t:stop_node(Node),
+    PA = filename:dirname(code:which(?MODULE)),
+    {ok,Node} = test_server:start_node(gethost_parallell, slave,
+				       [{args, "-pa " ++ PA}]),
+    ok = rpc:call(Node, ?MODULE, parallell_gethost, []),
+    receive after 10000 -> ok end,
+    pong = net_adm:ping(Node),
+    test_server:stop_node(Node),
     ok.
 
 parallell_gethost() ->
@@ -752,7 +875,7 @@ wait_for_gethost(N) ->
 	    %% This is what I call an exit tuple :)
 	    exit({inet,gethostbyname, returned, Otherwise, 'when',
 		  'N','=',N,'and','hostname','=',Hostname,'and',
-		 kill_gethost_n,'=',get(kill_gethost_n)})
+		  kill_gethost_n,'=',get(kill_gethost_n)})
     end,
     case whereis(inet_gethost_native) of
 	Pid when is_pid(Pid) ->
@@ -764,122 +887,348 @@ wait_for_gethost(N) ->
 	    end,
 	    wait_for_gethost(N-1)
     end.
-	    
-cname_loop(suite) ->
-    [];
-cname_loop(doc) ->
-    ["Check that the resolver handles a CNAME loop"];
+
+%% Check that the resolver handles a CNAME loop.
 cname_loop(Config) when is_list(Config) ->
     %% getbyname (hostent_by_domain)
-    ?line ok = inet_db:add_rr("mydomain.com", in, ?S_CNAME, ttl, "mydomain.com"),
-    ?line {error,nxdomain} = inet_db:getbyname("mydomain.com", ?S_A),
-    ?line ok = inet_db:del_rr("mydomain.com", in, ?S_CNAME, "mydomain.com"),
+    ok = inet_db:add_rr("mydomain.com", in, ?S_CNAME, ttl, "mydomain.com"),
+    {error,nxdomain} = inet_db:getbyname("mydomain.com", ?S_A),
+    ok = inet_db:del_rr("mydomain.com", in, ?S_CNAME, "mydomain.com"),
     %% res_hostent_by_domain
     RR = #dns_rr{domain = "mydomain.com",
 		 class = in,
 		 type = ?S_CNAME,
 		 data = "mydomain.com"},
     Rec = #dns_rec{anlist = [RR]},
-    ?line {error,nxdomain} = inet_db:res_hostent_by_domain("mydomain.com", ?S_A, Rec),
+    {error,nxdomain} = inet_db:res_hostent_by_domain("mydomain.com", ?S_A, Rec),
     ok.
 
+
+%% Test that hosts file gets reloaded correctly in case when it
+% was missing during initial startup
+missing_hosts_reload(Config) when is_list(Config) ->
+    RootDir = proplists:get_value(priv_dir,Config),
+    HostsFile = filename:join(RootDir, atom_to_list(?MODULE) ++ ".hosts"),
+    InetRc = filename:join(RootDir, "inetrc"),
+    ok = file:write_file(InetRc, "{hosts_file, \"" ++ HostsFile ++ "\"}.\n"),
+    {error, enoent} = file:read_file_info(HostsFile),
+    % start a node
+    Pa = filename:dirname(code:which(?MODULE)),
+    {ok, TestNode} = test_server:start_node(?MODULE, slave,
+        [{args, "-pa " ++ Pa ++ " -kernel inetrc '\"" ++ InetRc ++ "\"'"}]),
+    % ensure it has our RC
+    Rc = rpc:call(TestNode, inet_db, get_rc, []),
+    {hosts_file, HostsFile} = lists:keyfind(hosts_file, 1, Rc),
+    % ensure it does not resolve
+    {error, nxdomain} = rpc:call(TestNode, inet_hosts, gethostbyname, ["somehost"]),
+    % write hosts file
+    ok = file:write_file(HostsFile, "1.2.3.4 somehost"),
+    % wait for cached timestamp to expire
+    timer:sleep(?RES_FILE_UPDATE_TM * 1000 + 100),
+    % ensure it DOES resolve
+    {ok,{hostent,"somehost",[],inet,4,[{1,2,3,4}]}} =
+        rpc:call(TestNode, inet_hosts, gethostbyname, ["somehost"]),
+    % cleanup
+    true = test_server:stop_node(TestNode).
+
+
+%% The /etc/hosts file format and limitations is quite undocumented.
+%%
+%% Our implementation of the hosts file resolver tries to
+%% do the right thing.  Here is an attempt to define "the right thing",
+%% and this test case tries to check most of these rules:
+%%
+%% * A hosts file consists of entries with one IP address,
+%%   and a list of host names.  The IP address is IPv4 or IPv6.
+%%   The first host name is the primary host name
+%%   and the others are aliases.
+%%
+%% * A lookup for an IP address should return one #hostent{} record
+%%   with the one IP address from the query, and the host names
+%%   from all entries with the same IP address concatenated.
+%%   The first host name from the first hosts file entry
+%%   with the requested IP address will be the primary host name
+%%   and all others are aliases.  All host names are returned
+%%   as in the hosts file entries i.e character case is preserved.
+%%
+%% * A lookup for a host name is character case insensitive.
+%%
+%% * A lookup for a host name should return one #hostent{} record
+%%   with the host name list from the first hosts file entry
+%%   with an IP address of the requested address family
+%%   that has a matching host name, as it is in the hosts file
+%%   i.e character case is preserved.  The IP addresses in the
+%%   returned #hostent{} record should be the first from the
+%%   same matching hosts file entry, followed by all others
+%%   for which there is a matching host name and address family.
+%%   There should be no duplicates among the returned IP addresses.
+%%
+%% * These rules are of the opinion that if duplicate host names
+%%   with the same character casing occurs for the same IP
+%%   address, it is a configuration error, so it is not tested for
+%%   and there is no preferred behaviour.
+hosts_file_quirks(Config) when is_list(Config) ->
+    Records = [R1, R2, R3, R4, R5] =
+        [#hostent{
+            h_name = h_ex(Name),
+            h_aliases = [h_ex(Alias) || Alias <- Aliases],
+            h_addrtype = Fam,
+            h_length =
+                case Fam of
+                    inet -> 4;
+                    inet6 -> 16
+                end,
+            h_addr_list =
+                [case Fam of
+                     inet -> inet_ex(N);
+                     inet6 -> inet6_ex(N)
+                 end]}
+         || {{Fam,N}, Name, Aliases} <-
+                [{{inet,1}, "a", ["B"]},
+                 {{inet,2}, "D", []},
+                 {{inet6,3}, "A", ["c"]},
+                 {{inet,1}, "c", []},
+                 {{inet,5}, "A", []}]],
+    true = R1#hostent.h_addr_list =:= R4#hostent.h_addr_list,
+    R14 =
+        R1#hostent{
+          h_aliases =
+              R1#hostent.h_aliases ++
+              [R4#hostent.h_name | R4#hostent.h_aliases]},
+    R145 =
+        R14#hostent{
+          h_addr_list =
+              R1#hostent.h_addr_list ++ R5#hostent.h_addr_list},
+    %%
+    RootDir = proplists:get_value(priv_dir,Config),
+    HostsFile = filename:join(RootDir, atom_to_list(?MODULE) ++ "-quirks.hosts"),
+    InetRc = filename:join(RootDir, "quirks.inetrc"),
+    ok = file:write_file(HostsFile, hostents_to_list(Records)),
+    ok = file:write_file(InetRc, "{hosts_file, \"" ++ HostsFile ++ "\"}.\n"),
+    %%
+    %% start a node
+    Pa = filename:dirname(code:which(?MODULE)),
+    {ok, TestNode} = test_server:start_node(?MODULE, slave,
+        [{args, "-pa " ++ Pa ++ " -kernel inetrc '\"" ++ InetRc ++ "\"'"}]),
+    %% ensure it has our RC
+    Rc = rpc:call(TestNode, inet_db, get_rc, []),
+    {hosts_file, HostsFile} = lists:keyfind(hosts_file, 1, Rc),
+    %%
+    %% check entries
+    io:format("Check hosts file contents~n", []),
+    V1 =
+      [{R14, inet_ex(1)},
+       {R2, inet_ex(2)},
+       {R3, inet6_ex(3)},
+       {R5, inet_ex(5)},
+       {R145, h_ex("a"), inet},
+       {R14, h_ex("b"), inet},
+       {R14, h_ex("c"), inet},
+       {R2, h_ex("d"), inet},
+       {R3, h_ex("a"), inet6},
+       {R3, h_ex("c"), inet6}
+      ],
+    hosts_file_quirks_verify(TestNode, V1),
+    %%
+    %% test add and del
+    ok =
+        rpc:call(
+          TestNode, inet_db, add_host,
+          [inet_ex(1), [h_ex("a"), h_ex("B")]]),
+    io:format("Check after add host~n", []),
+    hosts_file_quirks_verify(
+      TestNode,
+      [{R1, inet_ex(1)},
+       {R2, inet_ex(2)},
+       {R3, inet6_ex(3)},
+       {R5, inet_ex(5)},
+       {R1, h_ex("a"), inet},
+       {R1, h_ex("b"), inet},
+       {R14, h_ex("c"), inet},
+       {R2, h_ex("d"), inet},
+       {R3, h_ex("a"), inet6},
+       {R3, h_ex("c"), inet6}
+      ]),
+    ok = rpc:call(TestNode, inet_db, del_host, [inet_ex(1)]),
+    io:format("Check after del host~n", []),
+    hosts_file_quirks_verify(TestNode, V1),
+    %%
+    %% cleanup
+    true = test_server:stop_node(TestNode).
+
+hosts_file_quirks_verify(_TestNode, Vs) ->
+    hosts_file_quirks_verify(_TestNode, Vs, true).
+%%
+hosts_file_quirks_verify(_TestNode, [], Ok) ->
+    case Ok of
+        true -> ok;
+        false -> error(verify_failed)
+    end;
+hosts_file_quirks_verify(TestNode, [V | Vs], Ok) ->
+    case
+        case V of
+            {R, Addr} ->
+                {R, rpc:call(TestNode, inet_hosts, gethostbyaddr, [Addr])};
+            {R, Host, Fam} ->
+                {R, rpc:call(TestNode, inet_hosts, gethostbyname, [Host, Fam])}
+        end
+    of
+        {nxdomain, {error, nxdomain}} ->
+            hosts_file_quirks_verify(TestNode, Vs, Ok);
+        {_R_1, {error, nxdomain}} ->
+            io:format("Verify failed ~p: nxdomain~n", [V]),
+            hosts_file_quirks_verify(TestNode, Vs, false);
+        {R_1, {ok, R_1}} ->
+            hosts_file_quirks_verify(TestNode, Vs, Ok);
+        {_R_1, {ok, R_2}} ->
+            io:format("Verify failed ~p: ~p~n", [V, R_2]),
+            hosts_file_quirks_verify(TestNode, Vs, false)
+    end.
+
+%% Expand entry
+h_ex(H) -> H ++ ".example.com".
+inet_ex(N) -> {127,17,17,N}.
+inet6_ex(N) -> {0,0,0,0,17,17,17,N}.
+
+hostents_to_list([]) -> [];
+hostents_to_list([R | Rs]) ->
+    #hostent{
+       h_name = Name,
+       h_aliases = Aliases,
+       h_addr_list = [IP]} = R,
+    [inet:ntoa(IP), $\t,
+     lists:join($\s, [Name | Aliases]), $\r, $\n
+     | hostents_to_list(Rs)].
 
 
 %% These must be run in the whole suite since they need
 %% the host list and require inet_gethost_native to be started.
 %%
 -record(gethostnative_control, {control_seq,
-				control_interval=100,
-				lookup_delay=10,
-				lookup_count=300,
-				lookup_processes=20}).
+				control_interval = 100,
+				lookup_delay     = 10,
+				lookup_count     = 300,
+				lookup_processes = 20}).
 
 gethostnative_soft_restart() -> required(hosts).
-gethostnative_soft_restart(suite) ->    
-    [];
-gethostnative_soft_restart(doc) ->
-    ["Check that no name lookups fails during soft restart "
-     "of inet_gethost_native"];
-gethostnative_soft_restart(Config) when is_list(Config) ->
-    ?line gethostnative_control(Config, 
-				#gethostnative_control{
-				  control_seq=[soft_restart]}).
 
+%% Check that no name lookups fails during soft restart
+%% of inet_gethost_native.
+gethostnative_soft_restart(Config) when is_list(Config) ->
+    Opts  = gethostnative_adjusted_opts(Config,
+                                        [soft_restart]),
+    gethostnative_control(Config, Opts).
 
 gethostnative_debug_level() -> required(hosts).
-gethostnative_debug_level(suite) ->    
-    [];
-gethostnative_debug_level(doc) ->
-    ["Check that no name lookups fails during debug level change "
-     "of inet_gethost_native"];
+
+%% Check that no name lookups fails during debug level change
+%% of inet_gethost_native.
 gethostnative_debug_level(Config) when is_list(Config) ->
-    ?line gethostnative_control(Config, 
-				#gethostnative_control{
-				  control_seq=[{debug_level,1},
-					       {debug_level,0}]}).
+    Opts  = gethostnative_adjusted_opts(Config,
+                                        [{debug_level, 1},
+                                         {debug_level, 0}]),
+    gethostnative_control(Config, Opts).
 
-gethostnative_control(Config, Optrec) ->
-    ?line case inet_db:res_option(lookup) of
-	      [native] ->
-		  case whereis(inet_gethost_native) of
-		      Pid when is_pid(Pid) ->
-			  ?line gethostnative_control_1(Config, Optrec);
-		      _ ->
-			  ?line {skipped, "Not running native gethostbyname"}
-		  end;
-	      _ ->
-		  ?line {skipped, "Native not only lookup metod"}
-	 end.
+gethostnative_adjusted_opts(Config, CtrlSeq) ->
+    Factor = ?config(kernel_factor, Config),
+    gethostnative_adjusted_opts2(Factor, CtrlSeq).
 
-gethostnative_control_1(Config,
-			#gethostnative_control{
-			  control_seq=Seq,
-			  control_interval=Interval,
-			  lookup_delay=Delay,
-			  lookup_count=Cnt,
-			  lookup_processes=N}) ->
-    ?line {ok, Hostname} = inet:gethostname(),
-    ?line {ok, _} = inet:gethostbyname(Hostname),
-    ?line Hosts = 
-	[Hostname|[H || {_,H} <- get_hosts(Config)]
-	 ++[H++D || H <- ["www.","www1.","www2.",""],
-		    D <- ["erlang.org","erlang.se"]]
-	 ++[H++"cslab.ericsson.net" || H <- ["morgoth.","hades.","styx."]]],
+gethostnative_adjusted_opts2(1, CtrlSeq) ->
+    #gethostnative_control{control_seq = CtrlSeq};
+gethostnative_adjusted_opts2(F, CtrlSeq) ->
+    Opts = #gethostnative_control{control_seq = CtrlSeq},
+    gethostnative_adjusted_opts3(F, Opts).
+
+gethostnative_adjusted_opts3(
+  F,
+  #gethostnative_control{lookup_count     = Cnt,
+                         lookup_processes = NProc} = Opts) ->
+    Adjust = fun(X) ->
+                     if
+                         F > 10 ->
+                             X div 4;
+                         F > 5 ->
+                             X div 3;
+                         F > 2 -> 
+                             (2 * X) div 3;
+                         true ->
+                             X
+                     end
+             end,
+    Opts#gethostnative_control{lookup_count     = Adjust(Cnt),
+                               lookup_processes = Adjust(NProc)}.
+
+
+gethostnative_control(Config, Opts) ->
+    case inet_db:res_option(lookup) of
+	[native] ->
+	    case whereis(inet_gethost_native) of
+		Pid when is_pid(Pid) ->
+		    gethostnative_control_1(Config, Opts);
+		_ ->
+		    {skipped, "Not running native gethostbyname"}
+	    end;
+	_ ->
+	    {skipped, "Native not only lookup metod"}
+    end.
+
+gethostnative_control_1(
+  Config,
+  #gethostnative_control{control_seq      = Seq,
+                         control_interval = Interval,
+                         lookup_delay     = Delay,
+                         lookup_count     = Cnt,
+                         lookup_processes = N}) ->
+    ?P("gethostnative control -> begin with"
+       "~n      Ctrl Seq:      ~p"
+       "~n      Ctrl interval: ~p"
+       "~n      Lookup delay:  ~p"
+       "~n      Lookup count:  ~p"
+       "~n      Lookup procs:  ~p", [Seq, Interval, Delay, Cnt, N]),
+    {ok, Hostname} = inet:gethostname(),
+    {ok, _}        = inet:gethostbyname(Hostname),
+    Hosts          =
+        [Hostname|[H || {_,H} <- get_hosts(Config)]
+         ++[H++D || H <- ["www.","www1.","www2.",""],
+        	    D <- ["erlang.org","erlang.se"]]
+         ++[H++"cslab.ericsson.net" || H <- ["morgoth.","hades.","styx."]]],
+    ?P("ctrl-1: Hosts: "
+       "~n   ~p", [Hosts]),
     %% Spawn some processes to do parallel lookups while
     %% I repeatedly do inet_gethost_native:control/1.
-    ?line TrapExit = process_flag(trap_exit, true),
-    ?line gethostnative_control_2([undefined], Interval, Delay, Cnt, N, Hosts),
-    ?line test_server:format(
-	    "First intermission: now starting control sequence ~w\n",
-	    [Seq]),
-    ?line erlang:display(first_intermission),
-    ?line gethostnative_control_2(Seq, Interval, Delay, Cnt, N, Hosts),
-    ?line erlang:display(second_intermission),
-    ?line test_server:format(
-	    "Second intermission:  now stopping control sequence ~w\n",
-	    [Seq]),
-    ?line gethostnative_control_2([undefined], Interval, Delay, Cnt, N, Hosts),
-    ?line true = process_flag(trap_exit, TrapExit),
-    ?line ok.
+    TrapExit = process_flag(trap_exit, true),
+    gethostnative_control_2([undefined], Interval, Delay, Cnt, N, Hosts),
+    erlang:display(first_intermission),
+    ?P("ctrl-1: First intermission: "
+       "~n   Now starting control sequence ~p", [Seq]),
+    gethostnative_control_2(Seq, Interval, Delay, Cnt, N, Hosts),
+    erlang:display(second_intermission),
+    ?P("ctrl-1: Second intermission: "
+       "~n   Now stopping control sequence ~p", [Seq]),
+    gethostnative_control_2([undefined], Interval, Delay, Cnt, N, Hosts),
+    true = process_flag(trap_exit, TrapExit),
+    ?P("control-1: done"),
+    ok.
 
 gethostnative_control_2(Seq, Interval, Delay, Cnt, N, Hosts) ->
-    ?line Tag = make_ref(),
-    ?line Parent = self(),
-    ?line Lookupers = 
-	[spawn_link(
-	   fun () -> 
-		   random:seed(),
-		   lookup_loop(Hosts, Delay, Tag, Parent, Cnt, Hosts) 
-	   end)
-	 || _ <- lists:seq(1, N)],
+    Tag       = make_ref(),
+    Parent    = self(),
+    Lookup    = fun() ->
+                        ?P("lookuper starting"),
+                        lookup_loop(Hosts, Delay, Tag, Parent, Cnt, Hosts) 
+                end,
+    Lookupers = [spawn_link(Lookup) || _ <- lists:seq(1, N)],
     control_loop(Seq, Interval, Tag, Lookupers, Seq),
     gethostnative_control_3(Tag, ok).
 
 gethostnative_control_3(Tag, Reason) ->
     receive
-	{Tag,Error} ->
-	    ?line gethostnative_control_3(Tag, Error)
+	{Tag, Lookuper, Error} ->
+            ?P("control-3: received lookup error from ~p: ~p",
+               [Lookuper, Error]),
+	    gethostnative_control_3(Tag, Error)
     after 0 ->
+            ?P("control-3: no (more) lookup errors"),
 	    Reason
     end.
 
@@ -893,52 +1242,76 @@ control_loop([Op|Ops], Interval, Tag, Lookupers, Seq) ->
 		 Seq).
 
 control_loop_1(Op, Interval, Tag, Lookupers) ->
-    ?line
-	receive
-	    {'EXIT',Pid,Reason} ->
-		?line case Reason of
-			  Tag -> % Done
-			      ?line control_loop_1
-				      (Op, Interval, Tag,
-				       lists:delete(Pid, Lookupers));
-			  _ ->
-			      ?line io:format("Lookuper ~p died: ~p",
-					      [Pid,Reason]),
-			      ?line test_server:fail("Lookuper died")
-		      end
-	after Interval ->
-		?line if Op =/= undefined -> 
-			      ?line ok = inet_gethost_native:control(Op);
-			 true ->
-			      ?line ok
-		      end,
-		?line Lookupers
-	end.
+    ?P("ctrl-loop-1: await lookuper exit"),
+    receive
+        {'EXIT', _Pid, {timetrap_timeout, _, _}} ->
+            ?P("ctrl-loop-1: "
+               "timetrap timeout while ~w lookupers remaining: "
+               "~n   Op:       ~p"
+               "~n   Interval: ~p"
+               "~n   Tag:      ~p",
+               [length(Lookupers), Op, Interval, Tag]),
+            if
+                (Op =/= undefined) ->
+                    exit({timetrap, {Op, Tag, length(Lookupers)}});
+                true ->
+                    exit({timetrap, {Tag, length(Lookupers)}})
+            end;
+
+	{'EXIT', Pid, Reason} ->
+	    case Reason of
+		Tag -> % Done
+                    ?P("ctrl-loop-1: "
+                       "received expected exit from lookuper ~p", [Pid]),
+		    control_loop_1
+		      (Op, Interval, Tag,
+		       lists:delete(Pid, Lookupers));
+		_ ->
+                    ?P("ctrl-loop-1: "
+                       "received unexpected exit from ~p: "
+                       "~n   ~p", [Pid, Reason]),
+		    ct:fail(?F("Unexpected exit from ~p", [Pid]))
+	    end
+
+    after Interval ->
+            ?P("ctrl-loop-1: "
+               "timeout => (maybe) attempt control ~p when"
+               "~n   Lookupers: ~p", [Op, Lookupers]),
+	    if Op =/= undefined ->
+		    ok = inet_gethost_native:control(Op);
+	       true ->
+		    ok
+	    end,
+	    Lookupers
+    end.
 
 lookup_loop(_, _Delay, Tag, _Parent,  0, _Hosts) ->
+    ?P("lookup-loop: done with ~p", [Tag]),
     exit(Tag);
 lookup_loop([], Delay, Tag, Parent, Cnt, Hosts) ->
+    ?P("lookup-loop: begin lookup (~p) again when count = ~p", [Tag, Cnt]),
     lookup_loop(Hosts, Delay, Tag, Parent, Cnt, Hosts);
 lookup_loop([H|Hs], Delay, Tag, Parent, Cnt, Hosts) ->
+    ?P("lookup-loop: try lookup (~p, ~p) ~p", [Tag, Cnt, H]),
     case inet:gethostbyname(H) of
-	{ok,_Hent} -> ok;
-	{error,nxdomain} -> ok;
+	{ok, _Hent} ->
+            ?P("lookup-loop: lookup => found"),
+            ok;
+	{error, nxdomain} ->
+            ?P("lookup-loop: lookup => nxdomain"),
+            ok;
 	Error ->
-	    ?line io:format("Name lookup error for ~p for ~p: ~p",
-			    [self(),H,Error]),
-	    Parent ! {Tag,Error}
+	    ?P("loopkup-loop: lookup => error for ~p: ~p", [H, Error]),
+	    Parent ! {Tag, self(), Error}
     end,
-    receive 
-    after random:uniform(Delay) -> 
+    receive
+    after rand:uniform(Delay) ->
 	    lookup_loop(Hs, Delay, Tag, Parent, Cnt-1, Hosts) 
     end.
 
 
 
-lookup_bad_search_option(suite) ->
-    [];
-lookup_bad_search_option(doc) ->
-    ["Test lookup with erroneously configured lookup option (OTP-12133)"];
+%% Test lookup with erroneously configured lookup option (OTP-12133).
 lookup_bad_search_option(Config) when is_list(Config) ->
     %% Manipulation of resolver config is done in init_per_testcase
     %% and end_per_testcase to ensure cleanup.
@@ -948,24 +1321,21 @@ lookup_bad_search_option(Config) when is_list(Config) ->
 
 
 
-getif(suite) ->
-    [];
-getif(doc) ->
-    ["Tests basic functionality of getiflist, getif, and ifget"];
+%% Tests basic functionality of getiflist, getif, and ifget.
 getif(Config) when is_list(Config) ->
-    ?line case os:type() of
-	      {unix,Osname} ->
-		  ?line do_getif(Osname);
-	      {_,_} ->
-		  {skip,"inet:getif/0 probably not supported"}
-	  end.
+    case os:type() of
+	{unix,Osname} ->
+	    do_getif(Osname);
+	{_,_} ->
+	    {skip,"inet:getif/0 probably not supported"}
+    end.
 
 do_getif(Osname) ->
-    ?line {ok,Hostname} = inet:gethostname(),
-    ?line {ok,Address} = inet:getaddr(Hostname, inet),
-    ?line {ok,Loopback} = inet:getaddr("localhost", inet),
-    ?line {ok,Interfaces} = inet:getiflist(),
-    ?line HWAs =
+    {ok,Hostname} = inet:gethostname(),
+    {ok,Address} = inet:getaddr(Hostname, inet),
+    {ok,Loopback} = inet:getaddr("localhost", inet),
+    {ok,Interfaces} = inet:getiflist(),
+    HWAs =
 	lists:sort(
 	  lists:foldl(
 	    fun (I, Acc) ->
@@ -974,10 +1344,10 @@ do_getif(Osname) ->
 			{ok,[]} -> Acc
 		    end
 	    end, [], Interfaces)),
-    ?line io:format("HWAs = ~p~n", [HWAs]),
-    ?line (Osname =/= sunos)
-	andalso ((length(HWAs) > 0) orelse (?t:fail(no_HWAs))),
-    ?line Addresses = 
+    io:format("HWAs = ~p~n", [HWAs]),
+    (Osname =/= sunos)
+	andalso ((length(HWAs) > 0) orelse (ct:fail(no_HWAs))),
+    Addresses =
 	lists:sort(
 	  lists:foldl(
 	    fun (I, Acc) ->
@@ -986,139 +1356,151 @@ do_getif(Osname) ->
 			{ok,[]} -> Acc
 		    end
 	    end, [], Interfaces)),
-    ?line {ok,Getif} = inet:getif(),
-    ?line Addresses = lists:sort([A || {A,_,_} <- Getif]),
-    ?line true = ip_member(Address, Addresses),
-    ?line true = ip_member(Loopback, Addresses),
-    ?line ok.
+    {ok,Getif} = inet:getif(),
+    Addresses = lists:sort([A || {A,_,_} <- Getif]),
+    true = ip_member(Address, Addresses),
+    true = ip_member(Loopback, Addresses),
+    ok.
 
-getif_ifr_name_overflow(doc) ->
-    "Test long interface names do not overrun buffer";
+%% Test long interface names do not overrun buffer.
 getif_ifr_name_overflow(Config) when is_list(Config) ->
-    ?line case os:type() of
-	      {unix,Osname} ->
-		  ?line do_getif_ifr_name_overflow(Osname);
-	      {_,_} ->
-		  {skip,"inet:ifget/2 probably not supported"}
-	  end.
+    case os:type() of
+	{unix,Osname} ->
+	    do_getif_ifr_name_overflow(Osname);
+	{_,_} ->
+	    {skip,"inet:ifget/2 probably not supported"}
+    end.
 
 do_getif_ifr_name_overflow(_) ->
     %% emulator should not crash
-    ?line {ok,[]} = inet:ifget(lists:duplicate(128, "x"), [addr]),
+    {ok,[]} = inet:ifget(lists:duplicate(128, "x"), [addr]),
     ok.
 
-getservbyname_overflow(doc) ->
-    "Test long service names do not overrun buffer";
+%% Test long service names do not overrun buffer.
 getservbyname_overflow(Config) when is_list(Config) ->
     %% emulator should not crash
-    ?line {error,einval} = inet:getservbyname(list_to_atom(lists:flatten(lists:duplicate(128, "x"))), tcp),
+    {error,einval} = inet:getservbyname(list_to_atom(lists:flatten(lists:duplicate(128, "x"))), tcp),
     ok.
 
-getifaddrs(doc) ->
-    "Test inet:gifaddrs/0";
+%% Test inet:gifaddrs/0.
 getifaddrs(Config) when is_list (Config) ->
-    ?line {ok,IfAddrs} = inet:getifaddrs(),
-    ?line ?t:format("IfAddrs = ~p.~n", [IfAddrs]),
-    ?line
-	case
-	    {os:type(),
-	     [If ||
-		 {If,Opts} <- IfAddrs,
-		 lists:keymember(hwaddr, 1, Opts)]} of
-	    {{unix,sunos},[]} -> ok;
-	    {OT,[]} ->
-		?t:fail({should_have_hwaddr,OT});
-	    _ -> ok
-	end,
-    ?line Addrs =
-	[element(1, A) || A <- ifaddrs(IfAddrs)],
-    ?line ?t:format("Addrs = ~p.~n", [Addrs]),
-    ?line [check_addr(Addr) || Addr <- Addrs],
+    {ok,IfAddrs} = inet:getifaddrs(),
+    io:format("IfAddrs = ~p.~n", [IfAddrs]),
+    case [If || {If,Opts} <- IfAddrs, lists:keymember(hwaddr, 1, Opts)] of
+        [] ->
+            case os:type() of
+                {unix,sunos} -> ok;
+                OT ->
+                    ct:fail({should_have_hwaddr,OT})
+            end;
+        [_|_] -> ok
+    end,
+    Addrs = ifaddrs(IfAddrs),
+    io:format("Addrs = ~p.~n", [Addrs]),
+    [check_addr(Addr) || Addr <- Addrs],
     ok.
 
 check_addr(Addr)
   when tuple_size(Addr) =:= 8,
        element(1, Addr) band 16#FFC0 =:= 16#FE80 ->
-    ?line ?t:format("Addr: ~p link local; SKIPPED!~n", [Addr]),
+    io:format("Addr: ~p link local; SKIPPED!~n", [Addr]),
     ok;
 check_addr(Addr) ->
-    ?line ?t:format("Addr: ~p.~n", [Addr]),
-    ?line Ping = "ping",
-    ?line Pong = "pong",
-    ?line {ok,L} = gen_tcp:listen(0, [{ip,Addr},{active,false}]),
-    ?line {ok,P} = inet:port(L),
-    ?line {ok,S1} = gen_tcp:connect(Addr, P, [{active,false}]),
-    ?line {ok,S2} = gen_tcp:accept(L),
-    ?line ok = gen_tcp:send(S2, Ping),
-    ?line {ok,Ping} = gen_tcp:recv(S1, length(Ping)),
-    ?line ok = gen_tcp:send(S1, Pong),
-    ?line ok = gen_tcp:close(S1),
-    ?line {ok,Pong} = gen_tcp:recv(S2, length(Pong)),
-    ?line ok = gen_tcp:close(S2),
-    ?line ok = gen_tcp:close(L),
-    ok.
+    io:format("Addr: ~p.~n", [Addr]),
+    Ping = "ping",
+    Pong = "pong",
+    {ok,L} = gen_tcp:listen(0, [{ip,Addr},{active,false}]),
+    {ok,P} = inet:port(L),
+    {ok,S1} = gen_tcp:connect(Addr, P, [{active,false}]),
+    {ok,S2} = gen_tcp:accept(L),
+    ok = gen_tcp:send(S2, Ping),
+    {ok,Ping} = gen_tcp:recv(S1, length(Ping)),
+    ok = gen_tcp:send(S1, Pong),
+    ok = gen_tcp:close(S1),
+    {ok,Pong} = gen_tcp:recv(S2, length(Pong)),
+    ok = gen_tcp:close(S2),
+    ok = gen_tcp:close(L).
 
--record(ifopts, {name,flags,addrs=[],hwaddr}).
+ifaddrs(IfOpts) ->
+    IfMap = collect_ifopts(IfOpts),
+    ChkFun =
+        fun Self({{_,Flags} = Key, Opts}, ok) ->
+                Broadcast = lists:member(broadcast, Flags),
+                P2P = lists:member(pointtopoint, Flags),
+                case Opts of
+                    [{addr,_},{netmask,_},{broadaddr,_}|Os]
+                      when Broadcast ->
+                        Self({Key, Os}, ok);
+                    [{addr,_},{netmask,_},{dstaddr,_}|Os]
+                      when P2P ->
+                        Self({Key, Os}, ok);
+                    [{addr,_},{netmask,_}|Os] ->
+                        Self({Key, Os}, ok);
+                    [{hwaddr,_}|Os] ->
+                        Self({Key, Os}, ok);
+                    [] ->
+                        ok
+                end
+        end,
+    fold_ifopts(ChkFun, ok, IfMap),
+    AddrsFun =
+        fun ({{_,Flags}, Opts}, Acc) ->
+                case
+                    lists:member(running, Flags)
+                    andalso (not lists:member(pointtopoint, Flags))
+                of
+                    true ->
+                        lists:reverse(
+                          [Addr || {addr,Addr} <- Opts],
+                          Acc);
+                    false ->
+                        Acc
+                end
+        end,
+    fold_ifopts(AddrsFun, [], IfMap).
 
-ifaddrs([]) -> [];
-ifaddrs([{If,Opts}|IOs]) ->
-    ?line #ifopts{flags=Flags} = Ifopts =
-	check_ifopts(Opts, #ifopts{name=If}),
-    ?line case Flags =/= undefined andalso lists:member(up, Flags) of
-	      true  ->
-		  Ifopts#ifopts.addrs;
-	      false ->
-		  []
-	  end++ifaddrs(IOs).
+collect_ifopts(IfOpts) ->
+    collect_ifopts(IfOpts, #{}).
+%%
+collect_ifopts(IfOpts, IfMap) ->
+    case IfOpts of
+        [{If,[{flags,Flags}|Opts]}|IfOs] ->
+            Key = {If,Flags},
+            case maps:is_key(Key, IfMap) of
+                true ->
+                    ct:fail({unexpected_ifopts,IfOpts,IfMap});
+                false ->
+                    collect_ifopts(IfOs, IfMap, Opts, Key, [])
+            end;
+        [] ->
+            IfMap;
+        _ ->
+            ct:fail({unexpected_ifopts,IfOpts,IfMap})
+    end.
+%%
+collect_ifopts(IfOpts, IfMap, Opts, Key, R) ->
+    case Opts of
+        [{flags,_}|_] ->
+            {If,_} = Key,
+            collect_ifopts(
+              [{If,Opts}|IfOpts], maps:put(Key, lists:reverse(R), IfMap));
+        [OptVal|Os] ->
+            collect_ifopts(IfOpts, IfMap, Os, Key, [OptVal|R]);
+        [] ->
+            collect_ifopts(IfOpts, maps:put(Key, lists:reverse(R), IfMap))
+    end.
 
-check_ifopts([], #ifopts{name=If,flags=Flags,addrs=Raddrs}=Ifopts) ->
-    Addrs = lists:reverse(Raddrs),
-    R = Ifopts#ifopts{addrs=Addrs},
-    ?t:format("~p.~n", [R]),
-    %% See how we did...
-    if  is_list(Flags) -> ok;
-	true ->
-	    ?t:fail({flags_undefined,If})
-    end,
-    case lists:member(broadcast, Flags) of
-	true ->
-	    [case A of
-		 {_,_,_} -> A;
-		 {T,_} when tuple_size(T) =:= 8 -> A;
-		 _ ->
-		     ?t:fail({broaddr_missing,If,A})
-	     end || A <- Addrs];
-	false ->
-	    [case A of {_,_} -> A;
-		 _ ->
-		     ?t:fail({should_have_netmask,If,A})
-	     end || A <- Addrs]
-    end,
-    R;
-check_ifopts([{flags,Flags}|Opts], #ifopts{flags=undefined}=Ifopts) ->
-    check_ifopts(Opts, Ifopts#ifopts{flags=Flags});
-check_ifopts([{flags,Fs}|Opts], #ifopts{flags=Flags}=Ifopts) ->
-    case Fs of
-	Flags ->
-	    check_ifopts(Opts, Ifopts#ifopts{});
-	_ ->
-	    ?t:fail({multiple_flags,Fs,Ifopts})
-    end;
-check_ifopts(
-  [{addr,Addr},{netmask,Netmask},{broadaddr,Broadaddr}|Opts],
-  #ifopts{addrs=Addrs}=Ifopts) ->
-    check_ifopts(Opts, Ifopts#ifopts{addrs=[{Addr,Netmask,Broadaddr}|Addrs]});
-check_ifopts(
-  [{addr,Addr},{netmask,Netmask}|Opts],
-  #ifopts{addrs=Addrs}=Ifopts) ->
-    check_ifopts(Opts, Ifopts#ifopts{addrs=[{Addr,Netmask}|Addrs]});
-check_ifopts([{addr,Addr}|Opts], #ifopts{addrs=Addrs}=Ifopts) ->
-    check_ifopts(Opts, Ifopts#ifopts{addrs=[{Addr}|Addrs]});
-check_ifopts([{hwaddr,Hwaddr}|Opts], #ifopts{hwaddr=undefined}=Ifopts)
-  when is_list(Hwaddr) ->
-    check_ifopts(Opts, Ifopts#ifopts{hwaddr=Hwaddr});
-check_ifopts([{hwaddr,HwAddr}|_], #ifopts{}=Ifopts) ->
-    ?t:fail({multiple_hwaddrs,HwAddr,Ifopts}).
+fold_ifopts(Fun, Acc, IfMap) ->
+    fold_ifopts(Fun, Acc, IfMap, maps:keys(IfMap)).
+%%
+fold_ifopts(Fun, Acc, IfMap, Keys) ->
+    case Keys of
+        [Key|Ks] ->
+            Opts = maps:get(Key, IfMap),
+            fold_ifopts(Fun, Fun({Key,Opts}, Acc), IfMap, Ks);
+        [] ->
+            Acc
+    end.
 
 %% Works just like lists:member/2, except that any {127,_,_,_} tuple
 %% matches any other {127,_,_,_}. We do this to handle Linux systems
@@ -1152,9 +1534,13 @@ simple_netns(Config) when is_list(Config) ->
 	    jog_netns_opt(L),
 	    ok = gen_tcp:close(L),
 	    %%
-	    {ok,S} = gen_sctp:open(),
-	    jog_netns_opt(S),
-	    ok = gen_sctp:close(S);
+	    case gen_sctp:open() of
+		{ok,S} ->
+		    jog_netns_opt(S),
+		    ok = gen_sctp:close(S);
+		{error,eprotonosupport} ->
+		    ok
+	    end;
 	{error,einval} ->
 	    {skip,"setns() not supported"}
     end.
@@ -1168,24 +1554,28 @@ jog_netns_opt(S) ->
     ok.
 
 
+%% Smoke test netns support.
 simple_netns_open(Config) when is_list(Config) ->
+    %% Note: {error,enoent} will be returned if the run-time executable
+    %%       has support for netns, but /proc/self/ns/net is missing.
     case gen_udp:open(0, [binary,{netns,"/"},inet]) of
 	{ok,U} ->
 	    ok = gen_udp:close(U);
-	{error,E1} when E1 =:= einval; E1 =:= eperm ->
+	{error,E1} when E1 =:= einval; E1 =:= eperm; E1 =:= enoent ->
 	    ok
     end,
     case gen_tcp:listen(0, [binary,{netns,"/"},inet]) of
 	{ok,T} ->
 	    ok = gen_tcp:close(T);
-	{error,E2} when E2 =:= einval; E2 =:= eperm ->
+	{error,E2} when E2 =:= einval; E2 =:= eperm; E2 =:= enoent ->
 	    ok
     end,
     try gen_sctp:open(0, [binary,{netns,"/"},inet]) of
 	{ok,S} ->
 	    ok = gen_sctp:close(S);
 	{error,E3}
-	  when E3 =:= einval; E3 =:= eperm; E3 =:= eprotonosupport ->
+	  when E3 =:= einval; E3 =:= eperm;
+	       E3 =:= enoent; E3 =:= eprotonosupport ->
 	    ok
     catch
 	error:badarg ->
@@ -1258,3 +1648,110 @@ cmd(CmdString) ->
     io:put_chars(["# ",CmdString,io_lib:nl()]),
     io:put_chars([os:cmd(CmdString++" ; echo '  =>' $?")]),
     ok.
+
+-define(CAP_NET_RAW, 13).        %% from /usr/include/linux/capability.h
+
+can_bind_to_device({unix, linux}, {Major, _, _})
+  when Major > 2 ->
+    Status = os:cmd("cat /proc/self/status | grep CapEff"),
+    [_, CapEffStr] = string:tokens(Status, [$\n, $\t]),
+    CapEff = list_to_integer(CapEffStr, 16),
+    if CapEff band (1 bsl ?CAP_NET_RAW) =/= 0 ->
+            ok;
+       true ->
+            {skip,"insufficient capabilities, CAP_NET_RAW not granted"}
+    end;
+can_bind_to_device(_OS, _Version) ->
+    {skip,"socket option bind_to_device not supported on this OS or version"}.
+
+simple_bind_to_device(Config) when is_list(Config) ->
+    case can_bind_to_device(os:type(), os:version()) of
+        ok ->
+            {ok,U} = gen_udp:open(0),
+            jog_bind_to_device_opt(U),
+            ok = gen_udp:close(U),
+            %%
+            {ok,L} = gen_tcp:listen(0, []),
+            jog_bind_to_device_opt(L),
+            ok = gen_tcp:close(L),
+            %%
+            case gen_sctp:open() of
+                {ok,S} ->
+                    jog_bind_to_device_opt(S),
+                    ok = gen_sctp:close(S);
+                {error,eprotonosupport} ->
+                    ok
+            end;
+        Other ->
+            Other
+    end.
+
+%% Smoke test bind_to_device support.
+simple_bind_to_device_open(Config) when is_list(Config) ->
+    case can_bind_to_device(os:type(), os:version()) of
+        ok ->
+            {ok,U} = gen_udp:open(0, [binary,{bind_to_device,<<"lo">>},inet]),
+            ok = gen_udp:close(U),
+            {ok,T} = gen_tcp:listen(0, [binary,{bind_to_device,<<"lo">>},inet]),
+            ok = gen_tcp:close(T),
+
+            case gen_sctp:open(0, [binary,{bind_to_device,<<"lo">>},inet]) of
+                {ok,S} ->
+                    ok = gen_sctp:close(S);
+                {error,eprotonosupport} ->
+                    ok
+            end;
+        Other ->
+            Other
+    end.
+
+jog_bind_to_device_opt(S) ->
+    %% This is just jogging the option mechanics
+    ok = inet:setopts(S, [{bind_to_device,<<>>}]),
+    {ok,[{bind_to_device,<<>>}]} = inet:getopts(S, [bind_to_device]),
+    ok = inet:setopts(S, [{bind_to_device,<<"lo">>}]),
+    {ok,[{bind_to_device,<<"lo">>}]} = inet:getopts(S, [bind_to_device]),
+    ok.
+
+add_del_host(_Config) ->
+    Name = "foo.com",
+    Alias = "bar.org",
+    Ip = {69,89,31,226},
+    HostEnt = #hostent{
+        h_name = Name,
+        h_aliases = [Alias],
+        h_addrtype = inet,
+        h_length = 4,
+        h_addr_list = [Ip]
+    },
+    {error, nxdomain} = inet_hosts:gethostbyname(Name, inet),
+    ok = inet_db:add_host(Ip, [Name, Alias]),
+    {ok, HostEnt} = inet_hosts:gethostbyname(Name, inet),
+    {ok, HostEnt} = inet_hosts:gethostbyname(Alias, inet),
+    ok = inet_db:del_host(Ip),
+    {error, nxdomain} = inet_hosts:gethostbyname(Name, inet),
+    {error, nxdomain} = inet_hosts:gethostbyname(Alias, inet),
+    ok = inet_db:add_host(Ip, [Name, Alias]),
+    {ok, HostEnt} = inet_hosts:gethostbyname(Name, inet).
+
+add_del_host_v6(_Config) ->
+    Name = "foo.com",
+    Alias = "bar.org",
+    Ip = {32,1,219,8,10,11,18,240},
+    HostEnt = #hostent{
+        h_name = Name,
+        h_aliases = [Alias],
+        h_addrtype = inet6,
+        h_length = 16,
+        h_addr_list = [Ip]
+    },
+    {error, nxdomain} = inet_hosts:gethostbyname(Name, inet6),
+    ok = inet_db:add_host(Ip, [Name, Alias]),
+    {ok, HostEnt} = inet_hosts:gethostbyname(Name, inet6),
+    {ok, HostEnt} = inet_hosts:gethostbyname(Alias, inet6),
+    ok = inet_db:del_host(Ip),
+    {error, nxdomain} = inet_hosts:gethostbyname(Name, inet6),
+    {error, nxdomain} = inet_hosts:gethostbyname(Alias, inet6),
+    ok = inet_db:add_host(Ip, [Name, Alias]),
+    {ok, HostEnt} = inet_hosts:gethostbyname(Name, inet6).
+

@@ -2,7 +2,7 @@
 /*
  * %CopyrightBegin%
  *
- * Copyright Ericsson AB 1998-2013. All Rights Reserved.
+ * Copyright Ericsson AB 1998-2020. All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -29,7 +29,7 @@
 #ifdef HAVE_STDLIB_H
 #  include <stdlib.h>
 #endif
-
+#include <time.h>
 /* forward declarations */
 
 static void usage(EpmdVars *);
@@ -80,48 +80,6 @@ static char *mystrdup(char *s)
     strcpy(r,s);
     return r;
 }
-
-#ifdef VXWORKS
-int start_epmd(a0, a1, a2, a3, a4, a5, a6, a7, a8, a9)
-char *a0, *a1, *a2, *a3, *a4, *a5, *a6, *a7, *a8, *a9;     
-{
-  char*  argarr[] = {a0,a1,a2,a3,a4,a5,a6,a7,a8,a9};
-  int    i;
-  char** argv = malloc(sizeof(char *)*10);
-  int    argvsiz = 10;
-  int    argc = 1;
-  char*  tmp = malloc(100);
-  int    tmpsiz = 100;
-  char*  pplast;
-  char*  token;
-  
-  argv[0] = mystrdup("epmd");
-  argv[1] = NULL;
-  
-  for(i=0;i<10;++i)
-    {
-      if(argarr[i] == NULL || *argarr[i] == '\0')
-	continue;
-      if(strlen(argarr[i]) >= tmpsiz)
-	tmp = realloc(tmp, tmpsiz = (strlen(argarr[i])+1));
-      strcpy(tmp,argarr[i]);
-      for(token = strtok_r(tmp," ",&pplast);
-	  token != NULL;
-	  token = strtok_r(NULL," ",&pplast))
-	{
-	  if(argc >= argvsiz - 1)
-	    argv = realloc(argv,sizeof(char *) * (argvsiz += 10));
-	  argv[argc++] = mystrdup(token);
-	  argv[argc] = NULL;
-	}
-    }
-  free(tmp);
-  return taskSpawn("epmd",100,VX_FP_TASK,20000,epmd_main,
-		   argc,(int) argv,1,
-		   0,0,0,0,0,0,0);
-}
-#endif    /* WxWorks */
-
 
 int epmd(int argc, char **argv)
 {
@@ -343,7 +301,7 @@ static void run_daemon(EpmdVars *g)
     for (fd = 0; fd < g->max_conn ; fd++) /* close all files ... */
         close(fd);
     /* Syslog on linux will try to write to whatever if we dont
-       inform it of that the log is closed. */
+       inform it that the log is closed. */
     closelog();
 
     /* These shouldn't be needed but for safety... */
@@ -397,13 +355,6 @@ static void run_daemon(EpmdVars *g)
 }
 #endif
 
-#if defined(VXWORKS)
-static void run_daemon(EpmdVars *g)
-{
-    run(g);
-}
-#endif
-
 
 /***************************************************************************
  *  Misc support routines
@@ -437,6 +388,11 @@ static void usage(EpmdVars *g)
     fprintf(stderr, "        epmd -kill even if there "
 	    "are registered nodes.\n");
     fprintf(stderr, "        Also allows forced unregister (epmd -stop).\n");
+#ifdef HAVE_SYSTEMD_DAEMON
+    fprintf(stderr, "    -systemd\n");
+    fprintf(stderr, "        Wait for socket from systemd. The option makes sense\n");
+    fprintf(stderr, "        when started from .socket unit.\n");
+#endif /* HAVE_SYSTEMD_DAEMON */
     fprintf(stderr, "\nDbgExtra options\n");
     fprintf(stderr, "    -packet_timeout Seconds\n");
     fprintf(stderr, "        Set the number of seconds a connection can be\n");
@@ -462,11 +418,6 @@ static void usage(EpmdVars *g)
     fprintf(stderr, "        Forcibly unregisters a name with epmd\n");
     fprintf(stderr, "        (only allowed if -relaxed_command_check was given when \n");
     fprintf(stderr, "        epmd was started).\n");
-#ifdef HAVE_SYSTEMD_DAEMON
-    fprintf(stderr, "    -systemd\n");
-    fprintf(stderr, "        Wait for socket from systemd. The option makes sense\n");
-    fprintf(stderr, "        when started from .socket unit.\n");
-#endif /* HAVE_SYSTEMD_DAEMON */
     epmd_cleanup_exit(g,1);
 }
 
@@ -474,7 +425,7 @@ static void usage(EpmdVars *g)
  *  Error reporting - dbg_printf() & dbg_tty_printf & dbg_perror()
  *
  *  The first form will print out on tty or syslog depending on
- *  if it runs as deamon or not. The second form will never print
+ *  if it runs as daemon or not. The second form will never print
  *  out on syslog.
  *
  *  The arguments are
@@ -592,8 +543,10 @@ void epmd_cleanup_exit(EpmdVars *g, int exitval)
       free(g->argv);
   }
 #ifdef HAVE_SYSTEMD_DAEMON
-  sd_notifyf(0, "STATUS=Exited.\n"
-                "ERRNO=%i", exitval);
+  if (g->is_systemd){
+    sd_notifyf(0, "STATUS=Exited.\n"
+               "ERRNO=%i", exitval);
+  }
 #endif /* HAVE_SYSTEMD_DAEMON */
   exit(exitval);
 }

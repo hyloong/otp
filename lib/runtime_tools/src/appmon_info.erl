@@ -1,7 +1,7 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 1996-2013. All Rights Reserved.
+%% Copyright Ericsson AB 1996-2018. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -307,9 +307,10 @@ do_work(Key, State) ->
     {Cmd, Aux, From, _OldRef, Old, Opts} = retrieve(WorkStore, Key),
     {ok, Result} = do_work2(Cmd, Aux, From, Old, Opts),
     if
-	Result==Old -> ok;
-	true ->
-	    From ! {delivery, self(), Cmd, Aux, Result}
+        Result==Old -> ok;
+        true ->
+            From ! {delivery, self(), Cmd, Aux, Result},
+            ok
     end,
     case get_opt(timeout, Opts) of
 	at_most_once ->
@@ -393,7 +394,7 @@ del_task(Key, WorkStore) ->
 	{_Cmd, _Aux, _From, Ref, _Old, Opts} ->
 	    if
 		Ref /= nil ->
-		    timer:cancel(Ref),
+                    {ok,_} = timer:cancel(Ref),
 		    receive
 			{do_it, Key} ->
 			    Opts
@@ -689,7 +690,7 @@ find_avoid() ->
 			       [P|Accu];
 			   _ -> Accu end end,
 		[undefined],
-		[application_controller, init, error_logger, gs, 
+		[application_controller, init, gs,
 		 node_serv, appmon, appmon_a, appmon_info]).
 
 
@@ -712,7 +713,11 @@ format(P) when is_pid(P) ->
 	_ -> pid_to_list(P)
     end;
 format(P) when is_port(P) ->
-    "port " ++ integer_to_list(element(2, erlang:port_info(P, id)));
+    case erlang:port_info(P, id) of
+        undefined -> "port closed";
+        {_, Pid} ->
+            "port " ++ integer_to_list(Pid)
+    end;
 format(X) ->
     io:format("What: ~p~n", [X]),
     "???".

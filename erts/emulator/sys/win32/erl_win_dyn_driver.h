@@ -1,7 +1,7 @@
 /*
  * %CopyrightBegin%
  * 
- * Copyright Ericsson AB 2003-2013. All Rights Reserved.
+ * Copyright Ericsson AB 2003-2018. All Rights Reserved.
  * 
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -40,7 +40,6 @@ WDD_TYPEDEF(int, driver_exit, (ErlDrvPort, int));
 WDD_TYPEDEF(int, driver_failure_eof, (ErlDrvPort));
 WDD_TYPEDEF(void, erl_drv_busy_msgq_limits, (ErlDrvPort, ErlDrvSizeT *, ErlDrvSizeT *));
 WDD_TYPEDEF(int, driver_select, (ErlDrvPort, ErlDrvEvent, int, int));
-WDD_TYPEDEF(int, driver_event, (ErlDrvPort, ErlDrvEvent,ErlDrvEventData));
 WDD_TYPEDEF(int, driver_output, (ErlDrvPort, char *, ErlDrvSizeT));
 WDD_TYPEDEF(int, driver_output2, (ErlDrvPort, char *, ErlDrvSizeT ,char *, ErlDrvSizeT));
 WDD_TYPEDEF(int, driver_output_binary, (ErlDrvPort, char *, ErlDrvSizeT, ErlDrvBinary*, ErlDrvSizeT, ErlDrvSizeT));
@@ -103,6 +102,11 @@ WDD_TYPEDEF(ErlDrvSInt, driver_pdl_inc_refc, (ErlDrvPDL));
 WDD_TYPEDEF(ErlDrvSInt, driver_pdl_dec_refc, (ErlDrvPDL));
 WDD_TYPEDEF(void, driver_system_info, (ErlDrvSysInfo *, size_t));
 WDD_TYPEDEF(int, driver_get_now, (ErlDrvNowData *));
+WDD_TYPEDEF(ErlDrvTime, erl_drv_monotonic_time, (ErlDrvTimeUnit));
+WDD_TYPEDEF(ErlDrvTime, erl_drv_time_offset, (ErlDrvTimeUnit));
+WDD_TYPEDEF(ErlDrvTime, erl_drv_convert_time_unit, (ErlDrvTime,
+						    ErlDrvTimeUnit,
+						    ErlDrvTimeUnit));
 WDD_TYPEDEF(int, driver_monitor_process, (ErlDrvPort port, 
 					  ErlDrvTermData process, 
 					  ErlDrvMonitor *monitor));
@@ -145,8 +149,8 @@ WDD_TYPEDEF(ErlDrvTid, erl_drv_thread_self, (void));
 WDD_TYPEDEF(int, erl_drv_equal_tids, (ErlDrvTid tid1, ErlDrvTid tid2));
 WDD_TYPEDEF(void, erl_drv_thread_exit, (void *resp));
 WDD_TYPEDEF(int, erl_drv_thread_join, (ErlDrvTid, void **respp));
-WDD_TYPEDEF(int, erl_drv_putenv, (char *key, char *value));
-WDD_TYPEDEF(int, erl_drv_getenv, (char *key, char *value, size_t *value_size));
+WDD_TYPEDEF(int, erl_drv_putenv, (const char *key, char *value));
+WDD_TYPEDEF(int, erl_drv_getenv, (const char *key, char *value, size_t *value_size));
 
 typedef struct {
     WDD_FTYPE(null_func) *null_func;
@@ -157,7 +161,7 @@ typedef struct {
     WDD_FTYPE(driver_failure_eof) *driver_failure_eof;
     WDD_FTYPE(erl_drv_busy_msgq_limits) *erl_drv_busy_msgq_limits;
     WDD_FTYPE(driver_select) *driver_select;
-    WDD_FTYPE(driver_event) *driver_event;
+    void *REMOVED_driver_event;
     WDD_FTYPE(driver_output) *driver_output;
     WDD_FTYPE(driver_output2) *driver_output2;
     WDD_FTYPE(driver_output_binary) *driver_output_binary;
@@ -217,6 +221,9 @@ typedef struct {
     WDD_FTYPE(driver_pdl_dec_refc) *driver_pdl_dec_refc;
     WDD_FTYPE(driver_system_info) *driver_system_info;
     WDD_FTYPE(driver_get_now) *driver_get_now;
+    WDD_FTYPE(erl_drv_monotonic_time) *erl_drv_monotonic_time;
+    WDD_FTYPE(erl_drv_time_offset) *erl_drv_time_offset;
+    WDD_FTYPE(erl_drv_convert_time_unit) *erl_drv_convert_time_unit;
     WDD_FTYPE(driver_monitor_process) *driver_monitor_process;
     WDD_FTYPE(driver_demonitor_process) *driver_demonitor_process;
     WDD_FTYPE(driver_get_monitored_process) *driver_get_monitored_process;
@@ -268,7 +275,6 @@ extern TWinDynDriverCallbacks WinDynDriverCallbacks;
 #define driver_failure_eof (WinDynDriverCallbacks.driver_failure_eof)
 #define erl_drv_busy_msgq_limits (WinDynDriverCallbacks.erl_drv_busy_msgq_limits)
 #define driver_select (WinDynDriverCallbacks.driver_select)
-#define driver_event (WinDynDriverCallbacks.driver_event)
 #define driver_output (WinDynDriverCallbacks.driver_output)
 #define driver_output2 (WinDynDriverCallbacks.driver_output2)
 #define driver_output_binary (WinDynDriverCallbacks.driver_output_binary)
@@ -328,6 +334,9 @@ extern TWinDynDriverCallbacks WinDynDriverCallbacks;
 #define driver_pdl_dec_refc (WinDynDriverCallbacks.driver_pdl_dec_refc)
 #define driver_system_info (WinDynDriverCallbacks.driver_system_info)
 #define driver_get_now (WinDynDriverCallbacks.driver_get_now)
+#define erl_drv_monotonic_time (WinDynDriverCallbacks.erl_drv_monotonic_time)
+#define erl_drv_time_offset (WinDynDriverCallbacks.erl_drv_time_offset)
+#define erl_drv_convert_time_unit (WinDynDriverCallbacks.erl_drv_convert_time_unit)
 #define driver_monitor_process \
 (WinDynDriverCallbacks.driver_monitor_process)
 #define driver_demonitor_process \
@@ -403,7 +412,7 @@ do {				                        \
 ((W).driver_failure_eof) = driver_failure_eof;		\
 ((W).erl_drv_busy_msgq_limits) = erl_drv_busy_msgq_limits;\
 ((W).driver_select) = driver_select;			\
-((W).driver_event) = driver_event;			\
+((W).REMOVED_driver_event) = NULL;			\
 ((W).driver_output) = driver_output;			\
 ((W).driver_output2) = driver_output2;			\
 ((W).driver_output_binary) = driver_output_binary;	\
@@ -463,6 +472,9 @@ do {				                        \
 ((W).driver_pdl_dec_refc) = driver_pdl_dec_refc;	\
 ((W).driver_system_info) = driver_system_info;		\
 ((W).driver_get_now) = driver_get_now;		        \
+((W).erl_drv_monotonic_time) = erl_drv_monotonic_time;	\
+((W).erl_drv_time_offset) = erl_drv_time_offset;	\
+((W).erl_drv_convert_time_unit) = erl_drv_convert_time_unit; \
 ((W).driver_monitor_process) = driver_monitor_process;    \
 ((W).driver_demonitor_process) = driver_demonitor_process;  \
 ((W).driver_get_monitored_process) = driver_get_monitored_process;      \

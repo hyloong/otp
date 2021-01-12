@@ -1,7 +1,7 @@
 %%
 %% %CopyrightBegin%
 %% 
-%% Copyright Ericsson AB 2004-2012. All Rights Reserved.
+%% Copyright Ericsson AB 2004-2020. All Rights Reserved.
 %% 
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -27,26 +27,31 @@
 -export([all/0, suite/0,groups/0,init_per_suite/1, end_per_suite/1, 
 	 init_per_group/2,end_per_group/2,
 	 init_per_testcase/2,end_per_testcase/2,
+         verify_highest_opcode/1,
 	 two/1,test1/1,fail/1,float_bin/1,in_guard/1,in_catch/1,
 	 nasty_literals/1,coerce_to_float/1,side_effect/1,
-	 opt/1,otp_7556/1,float_arith/1,otp_8054/1]).
+	 opt/1,otp_7556/1,float_arith/1,otp_8054/1,
+         strings/1,bad_size/1]).
 
--include_lib("test_server/include/test_server.hrl").
+-include_lib("common_test/include/ct.hrl").
 
-suite() -> [{ct_hooks,[ts_install_cth]}].
+suite() ->
+    [{ct_hooks,[ts_install_cth]},
+     {timetrap,{minutes,1}}].
 
-all() -> 
-    test_lib:recompile(?MODULE),
+all() ->
     [{group,p}].
 
-groups() -> 
+groups() ->
     [{p,[parallel],
-      [two,test1,fail,float_bin,in_guard,in_catch,
+      [verify_highest_opcode,
+       two,test1,fail,float_bin,in_guard,in_catch,
        nasty_literals,side_effect,opt,otp_7556,float_arith,
-       otp_8054]}].
+       otp_8054,strings,bad_size]}].
 
 
 init_per_suite(Config) ->
+    test_lib:recompile(?MODULE),
     Config.
 
 end_per_suite(_Config) ->
@@ -60,13 +65,24 @@ end_per_group(_GroupName, Config) ->
 
 
 init_per_testcase(Case, Config) when is_atom(Case), is_list(Config) ->
-    Dog = test_server:timetrap(?t:minutes(1)),
-    [{watchdog,Dog}|Config].
+    Config.
 
 end_per_testcase(Case, Config) when is_atom(Case), is_list(Config) ->
-    Dog = ?config(watchdog, Config),
-    ?t:timetrap_cancel(Dog),
     ok.
+
+verify_highest_opcode(_Config) ->
+    case ?MODULE of
+        bs_construct_r21_SUITE ->
+            {ok,Beam} = file:read_file(code:which(?MODULE)),
+            case test_lib:highest_opcode(Beam) of
+                Highest when Highest =< 163 ->
+                    ok;
+                TooHigh ->
+                    ct:fail({too_high_opcode_for_21,TooHigh})
+            end;
+        _ ->
+            ok
+    end.
 
 two(Config) when is_list(Config) ->
     <<0,1,2,3,4,6,7,8,9>> = two_1([0], [<<1,2,3,4>>,<<6,7,8,9>>]),
@@ -86,7 +102,7 @@ id(I) -> I.
 -define(T(B, L), {B, ??B, L}).
 -define(N(B), {B, ??B, unknown}).
 
--define(FAIL(Expr), ?line {'EXIT',{badarg,_}} = (catch Expr)).
+-define(FAIL(Expr), {'EXIT',{badarg,_}} = (catch Expr)).
 
 l(I_13, I_big1, I_16, Bin) ->
     [
@@ -153,6 +169,8 @@ l(I_13, I_big1, I_16, Bin) ->
 	[0,0,0,0, 0,0,0,0, 0,0,0,0, 0,0,0,0,
 	 16#77,16#FF,16#FF,16#FF,16#FF,16#FF,16#FF,16#FF,16#FF,16#FF,16#FF,
 	 16#FF,16#FF,16#FF,16#FF,16#FF,16#FF]),
+     ?T(<< (<<"abc",7:3>>):3/binary >>,
+        [$a,$b,$c]),
 
      %% Mix different units.
      ?T(<<37558955:(I_16-12)/unit:8,1:1>>,
@@ -200,7 +218,7 @@ one_test({C_bin, E_bin, Str, Bytes}) when is_list(Bytes) ->
 	true ->
 	    io:format("ERROR: Compiled: ~p. Expected ~p. Got ~p.~n",
 		      [Str, Bytes, bitstring_to_list(C_bin)]),
-	    test_server:fail(comp)
+	    ct:fail(comp)
     end,
     if
 	E_bin == Bin ->
@@ -208,7 +226,7 @@ one_test({C_bin, E_bin, Str, Bytes}) when is_list(Bytes) ->
 	true ->
 	    io:format("ERROR: Interpreted: ~p. Expected ~p. Got ~p.~n",
 		      [Str, Bytes, bitstring_to_list(E_bin)]),
-	    test_server:fail(comp)
+	    ct:fail(comp)
     end;
 one_test({C_bin, E_bin, Str, Result}) ->
     io:format("  ~s ~p~n", [Str, C_bin]),
@@ -229,7 +247,7 @@ one_test({C_bin, E_bin, Str, Result}) ->
 		    io:format("ERROR: Compiled not equal to interpreted:"
 			      "~n ~p, ~p.~n",
 			      [bitstring_to_list(C_bin), bitstring_to_list(E_bin)]),
-		    test_server:fail(comp);
+		    ct:fail(comp);
 		0 ->
 		    ok;
 		%% For situations where the final bits may not matter, like
@@ -261,15 +279,15 @@ equal_lists(A, B, R) ->
     end.
 
 test1(Config) when is_list(Config) ->
-    ?line I_13 = i(13),
-    ?line I_big1 = big(1),
-    ?line I_16 = i(16),
-    ?line Bin = i(<<16#A5,16#5A,16#C3>>),
-    ?line Vars = lists:sort([{'I_13',I_13},
-			     {'I_big1',I_big1},
-			     {'I_16',I_16},
-			     {'Bin',Bin}]),
-    ?line lists:foreach(fun one_test/1, eval_list(l(I_13, I_big1, I_16, Bin), Vars)).
+    I_13 = i(13),
+    I_big1 = big(1),
+    I_16 = i(16),
+    Bin = i(<<16#A5,16#5A,16#C3>>),
+    Vars = lists:sort([{'I_13',I_13},
+		       {'I_big1',I_big1},
+		       {'I_16',I_16},
+		       {'Bin',Bin}]),
+    lists:foreach(fun one_test/1, eval_list(l(I_13, I_big1, I_16, Bin), Vars)).
 
 fail(Config) when is_list(Config) ->
     I_minus_777 = i(-777),
@@ -278,68 +296,102 @@ fail(Config) when is_list(Config) ->
     %% One negative field size, but the sum of field sizes will be 1 byte.
     %% Make sure that we reject that properly.
 
-    ?line {'EXIT',{badarg,_}} = (catch <<I_minus_777:2048/unit:8,
-					57:I_minus_2047/unit:8>>),
+    {'EXIT',{badarg,_}} = (catch <<I_minus_777:2048/unit:8,
+				   57:I_minus_2047/unit:8>>),
 
     %% Same thing, but use literals.
-    ?line {'EXIT',{badarg,_}} = (catch <<I_minus_777:2048/unit:8,
-					57:(-2047)/unit:8>>),
+    {'EXIT',{badarg,_}} = (catch <<I_minus_777:2048/unit:8,
+				   57:(-2047)/unit:8>>),
 
     %% Not numbers.
-    ?line {'EXIT',{badarg,_}} = (catch <<45:(i(not_a_number))>>),
-    ?line {'EXIT',{badarg,_}} = (catch <<13:8,45:(i(not_a_number))>>),
+    {'EXIT',{badarg,_}} = (catch <<45:(i(not_a_number))>>),
+    {'EXIT',{badarg,_}} = (catch <<13:8,45:(i(not_a_number))>>),
 
     %% Unaligned sizes.
     BadSz = i(7),
     Bitstr = i(<<42:17>>),
 
-    ?line {'EXIT',{badarg,_}} = (catch <<Bitstr:4/binary>>),
-    ?line {'EXIT',{badarg,_}} = (catch <<Bitstr:BadSz/binary>>),
+    {'EXIT',{badarg,_}} = (catch <<Bitstr:4/binary>>),
+    {'EXIT',{badarg,_}} = (catch <<Bitstr:BadSz/binary>>),
 
-    ?line [] = [X || {X} <- [], X == <<Bitstr:BadSz/binary>>],
-    ?line [] = [X || {X} <- [], X == <<Bitstr:4/binary>>],
+    [] = [X || {X} <- [], X == <<Bitstr:BadSz/binary>>],
+    [] = [X || {X} <- [], X == <<Bitstr:4/binary>>],
 
     %% Literals with incorrect type.
-    ?line {'EXIT',{badarg,_}} = (catch <<42.0/integer>>),
-    ?line {'EXIT',{badarg,_}} = (catch <<42/binary>>),
-    ?line {'EXIT',{badarg,_}} = (catch <<an_atom/integer>>),
-    
+    {'EXIT',{badarg,_}} = (catch <<42.0/integer>>),
+    {'EXIT',{badarg,_}} = (catch <<42/binary>>),
+    {'EXIT',{badarg,_}} = (catch <<an_atom/integer>>),
+
+    %% Bad literal sizes
+    Bin = i(<<>>),
+    {'EXIT',{badarg,_}} = (catch <<0:(-1)>>),
+    {'EXIT',{badarg,_}} = (catch <<Bin/binary,0:(-1)>>),
+    {'EXIT',{badarg,_}} = (catch <<0:(-(1 bsl 100))>>),
+    {'EXIT',{badarg,_}} = (catch <<Bin/binary,0:(-(1 bsl 100))>>),
+
+    %% Unaligned sizes with literal binaries.
+    {'EXIT',{badarg,_}} = (catch <<0,(<<7777:17>>)/binary>>),
+
+    %% Make sure that variables are bound even if binary
+    %% construction fails.
+    {'EXIT',{badarg,_}} = (catch case <<face:(V0 = 42)>> of
+                                    _Any -> V0
+                                end),
+    {'EXIT',{badarg,_}} = (catch case <<face:(V1 = 3)>> of
+                                     a when V1 ->
+                                         office
+                                 end),
+    {'EXIT',{badarg,_}} = (catch <<13:(put(?FUNCTION_NAME, 17))>>),
+    17 = erase(?FUNCTION_NAME),
+    {'EXIT',{badarg,_}} = (catch fail_1()),
+
+    %% Size exceeds length of binary. 'native' is redundant for
+    %% binaries, but when it was present sys_core_fold would not
+    %% detect the overlong binary and beam_ssa_opt would crash.
+    {'EXIT',{badarg,_}} = (catch << <<$t/little-signed>>:42/native-bytes >>),
+    {'EXIT',{badarg,_}} = (catch << <<$t/little-signed>>:42/bytes >>),
+
     ok.
+
+fail_1() ->
+    case <<(V0 = 1),[]/utf32>> of
+        _ when V0 -> true
+    end.
 
 float_bin(Config) when is_list(Config) ->
     %% Some more coverage.
-    ?line {<<1,2,3>>,7.0} = float_bin_1(4),
+    {<<1,2,3>>,7.0} = float_bin_1(4),
     F = 42.0,
-    ?line <<42,0,0,0,0,0,0,69,64>> = <<(id(42)),F/little-float>>,
+    <<42,0,0,0,0,0,0,69,64>> = <<(id(42)),F/little-float>>,
     ok.
 
 float_bin_1(F) ->
     {<<1,2,3>>,F+3.0}.
 
 in_guard(Config) when is_list(Config) ->
-    ?line 1 = in_guard_1(<<16#74ad:16>>, 16#e95, 5),
-    ?line 2 = in_guard_1(<<16#3A,16#F7,"hello">>, 16#3AF7, <<"hello">>),
-    ?line 3 = in_guard_1(<<16#FBCD:14,3.1415/float,3:2>>, 16#FBCD, 3.1415),
-    ?line 3 = in_guard_1(<<16#FBCD:14,3/float,3:2>>, 16#FBCD, 3),
-    ?line 3 = in_guard_1(<<16#FBCD:14,(2 bsl 226)/float,3:2>>, 16#FBCD, 2 bsl 226),
-    ?line nope = in_guard_1(<<1>>, 42, b),
-    ?line nope = in_guard_1(<<1>>, a, b),
-    ?line nope = in_guard_1(<<1,2>>, 1, 1),
-    ?line nope = in_guard_1(<<4,5>>, 1, 2.71),
-    ?line nope = in_guard_1(<<4,5>>, 1, <<12,13>>),
+    1 = in_guard_1(<<16#74ad:16>>, 16#e95, 5),
+    2 = in_guard_1(<<16#3A,16#F7,"hello">>, 16#3AF7, <<"hello">>),
+    3 = in_guard_1(<<16#FBCD:14,3.1415/float,3:2>>, 16#FBCD, 3.1415),
+    3 = in_guard_1(<<16#FBCD:14,3/float,3:2>>, 16#FBCD, 3),
+    3 = in_guard_1(<<16#FBCD:14,(2 bsl 226)/float,3:2>>, 16#FBCD, 2 bsl 226),
+    nope = in_guard_1(<<1>>, 42, b),
+    nope = in_guard_1(<<1>>, a, b),
+    nope = in_guard_1(<<1,2>>, 1, 1),
+    nope = in_guard_1(<<4,5>>, 1, 2.71),
+    nope = in_guard_1(<<4,5>>, 1, <<12,13>>),
 
-    ?line 1 = in_guard_2(<<0,56>>, 7, blurf),
-    ?line 2 = in_guard_2(<<1,255>>, 511, blurf),
-    ?line 3 = in_guard_2(<<0,3>>, 0, blurf),
-    ?line 4 = in_guard_2(<<>>, 1, {<<7:16>>}),
-    ?line nope = in_guard_2(<<4,5>>, 1, blurf),
+    1 = in_guard_2(<<0,56>>, 7, blurf),
+    2 = in_guard_2(<<1,255>>, 511, blurf),
+    3 = in_guard_2(<<0,3>>, 0, blurf),
+    4 = in_guard_2(<<>>, 1, {<<7:16>>}),
+    nope = in_guard_2(<<4,5>>, 1, blurf),
 
-    ?line 42 = in_guard_3(<<1,2,3,42>>, <<1,2,3>>),
-    ?line 42 = in_guard_3(<<1,2,3,42>>, <<1,2,3>>),
-    ?line nope = in_guard_3(<<>>, <<>>),
+    42 = in_guard_3(<<1,2,3,42>>, <<1,2,3>>),
+    42 = in_guard_3(<<1,2,3,42>>, <<1,2,3>>),
+    nope = in_guard_3(<<>>, <<>>),
 
-    ?line ok = in_guard_4(<<15:4>>, 255),
-    ?line nope = in_guard_4(<<15:8>>, 255),
+    ok = in_guard_4(<<15:4>>, 255),
+    nope = in_guard_4(<<15:8>>, 255),
     ok.
 
 in_guard_1(Bin, A, B) when <<A:13,B:3>> == Bin -> 1;
@@ -361,10 +413,10 @@ in_guard_4(Bin, A) when <<A:4>> =:= Bin -> ok;
 in_guard_4(_, _) -> nope.
 
 in_catch(Config) when is_list(Config) ->
-    ?line <<42,0,5>> = small(42, 5),
-    ?line <<255>> = small(255, <<1,2,3,4,5,6,7,8,9>>),
-    ?line <<1,2>> = small(<<7,8,9,10>>, 258),
-    ?line <<>> = small(<<1,2,3,4,5>>, <<7,8,9,10>>),
+    <<42,0,5>> = small(42, 5),
+    <<255>> = small(255, <<1,2,3,4,5,6,7,8,9>>),
+    <<1,2>> = small(<<7,8,9,10>>, 258),
+    <<>> = small(<<1,2,3,4,5>>, <<7,8,9,10>>),
 
     <<15,240,0,42>> = small2(255, 42),
     <<7:20>> = small2(<<1,2,3>>, 7),
@@ -413,20 +465,20 @@ small2(A, B) ->
 nasty_literals(Config) when is_list(Config) ->
     case erlang:system_info(endian) of
 	big ->
-	    ?line [0,42] = binary_to_list(id(<<42:16/native>>));
+	    [0,42] = binary_to_list(id(<<42:16/native>>));
 	little ->
-	    ?line [42,0] = binary_to_list(id(<<42:16/native>>))
+	    [42,0] = binary_to_list(id(<<42:16/native>>))
     end,
 
-    ?line Bin0 = id(<<1,2,3,0:10000000,4,5,6>>),
-    ?line 1250006 = size(Bin0),
-    ?line <<1,2,3,0:10000000,4,5,6>> = Bin0,
+    Bin0 = id(<<1,2,3,0:10000000,4,5,6>>),
+    1250006 = size(Bin0),
+    <<1,2,3,0:10000000,4,5,6>> = Bin0,
 
-    ?line Bin1 = id(<<0:10000000,7,8,-1:10000000,9,10,0:10000000>>),
-    ?line 3750004 = size(Bin1),
-    ?line <<0:10000000,7,8,-1:10000000/signed,9,10,0:10000000>> = Bin1,
+    Bin1 = id(<<0:10000000,7,8,-1:10000000,9,10,0:10000000>>),
+    3750004 = size(Bin1),
+    <<0:10000000,7,8,-1:10000000/signed,9,10,0:10000000>> = Bin1,
 
-    ?line <<255,255,0,0,0>> = id(<<255,255,0,0,0>>),
+    <<255,255,0,0,0>> = id(<<255,255,0,0,0>>),
 
     %% Coverage.
     I = 16#7777FFFF7777FFFF7777FFFF7777FFFF7777FFFF7777FFFF,
@@ -435,18 +487,18 @@ nasty_literals(Config) when is_list(Config) ->
     ok.
 
 -define(COF(Int0),
-	?line (fun(Int) ->
-		       true = <<Int:32/float>> =:= <<(float(Int)):32/float>>,
-		       true = <<Int:64/float>> =:= <<(float(Int)):64/float>>
-			   end)(nonliteral(Int0)),
- 	?line true = <<Int0:32/float>> =:= <<(float(Int0)):32/float>>,
- 	?line true = <<Int0:64/float>> =:= <<(float(Int0)):64/float>>).
+	(fun(Int) ->
+		 true = <<Int:32/float>> =:= <<(float(Int)):32/float>>,
+		 true = <<Int:64/float>> =:= <<(float(Int)):64/float>>
+	 end)(nonliteral(Int0)),
+	true = <<Int0:32/float>> =:= <<(float(Int0)):32/float>>,
+	true = <<Int0:64/float>> =:= <<(float(Int0)):64/float>>).
 
 -define(COF64(Int0),
-	?line (fun(Int) ->
-		       true = <<Int:64/float>> =:= <<(float(Int)):64/float>>
-			   end)(nonliteral(Int0)),
- 	?line true = <<Int0:64/float>> =:= <<(float(Int0)):64/float>>).
+	(fun(Int) ->
+		 true = <<Int:64/float>> =:= <<(float(Int)):64/float>>
+	 end)(nonliteral(Int0)),
+	true = <<Int0:64/float>> =:= <<(float(Int0)):64/float>>).
 
 nonliteral(X) -> X.
     
@@ -467,7 +519,7 @@ coerce_to_float(Config) when is_list(Config) ->
 side_effect(Config) when is_list(Config) ->
     {'EXIT',{badarg,_}} = (catch side_effect_1(a)),
     {'EXIT',{badarg,_}} = (catch side_effect_1(<<>>)),
-    ?line ok = side_effect_1(42),
+    ok = side_effect_1(42),
     ok.
 
 side_effect_1(A) ->
@@ -477,32 +529,32 @@ side_effect_1(A) ->
 -record(otp_7029, {a,b}).
 
 opt(Config) when is_list(Config) ->
-    ?line 42 = otp_7029(#otp_7029{a = <<>>,b = 42}),
+    42 = otp_7029(#otp_7029{a = <<>>,b = 42}),
     N = 16,
-    ?line <<1,3,65>> = id(<<1,833:N>>),
-    ?line <<1,66,3>> = id(<<1,834:N/little>>),
-    ?line <<1,65,136,0,0>> = id(<<1,17.0:32/float>>),
-    ?line <<1,64,8,0,0,0,0,0,0>> = id(<<1,3.0:N/float-unit:4>>),
-    ?line <<1,0,0,0,0,0,0,8,64>> = id(<<1,3.0:N/little-float-unit:4>>),
-    ?line {'EXIT',{badarg,_}} = (catch id(<<3.1416:N/float>>)),
+    <<1,3,65>> = id(<<1,833:N>>),
+    <<1,66,3>> = id(<<1,834:N/little>>),
+    <<1,65,136,0,0>> = id(<<1,17.0:32/float>>),
+    <<1,64,8,0,0,0,0,0,0>> = id(<<1,3.0:N/float-unit:4>>),
+    <<1,0,0,0,0,0,0,8,64>> = id(<<1,3.0:N/little-float-unit:4>>),
+    {'EXIT',{badarg,_}} = (catch id(<<3.1416:N/float>>)),
 
     B = <<1,2,3,4,5>>,
-    ?line <<0,1,2,3,4,5>> = id(<<0,B/binary>>),
-    ?line <<1,2,3,4,5,19>> = id(<<B:5/binary,19>>),
-    ?line <<1,2,3,42>> = id(<<B:3/binary,42>>),
+    <<0,1,2,3,4,5>> = id(<<0,B/binary>>),
+    <<1,2,3,4,5,19>> = id(<<B:5/binary,19>>),
+    <<1,2,3,42>> = id(<<B:3/binary,42>>),
 
-    ?line {'EXIT',_} = (catch <<<<23,56,0,2>>:(2.5)/binary>>),
-    ?line {'EXIT',_} = (catch <<<<23,56,0,2>>:(-16)/binary>>),
-    ?line {'EXIT',_} = (catch <<<<23,56,0,2>>:(anka)>>),
-    ?line {'EXIT',_} = (catch <<<<23,56,0,2>>:64/float>>),
-    ?line {'EXIT',_} = (catch <<<<23,56,0,2:7>>/binary>>),
+    {'EXIT',_} = (catch <<<<23,56,0,2>>:(2.5)/binary>>),
+    {'EXIT',_} = (catch <<<<23,56,0,2>>:(-16)/binary>>),
+    {'EXIT',_} = (catch <<<<23,56,0,2>>:(anka)>>),
+    {'EXIT',_} = (catch <<<<23,56,0,2>>:64/float>>),
+    {'EXIT',_} = (catch <<<<23,56,0,2:7>>/binary>>),
 
     %% Test constant propagation - there should be a warning.
     BadSz = 2.5,
     {'EXIT',_} = (catch <<<<N,56,0,2>>:BadSz/binary>>),
 
     case id(false) of
-	true -> ?line opt_dont_call_me();
+	true -> opt_dont_call_me();
 	false -> ok
     end,
 
@@ -530,7 +582,8 @@ otp_7556(Bin, A, B, C) ->
 %% for a binary construction with a later allocation).
 
 float_arith(Config) when is_list(Config) ->
-    ?line {<<1,2,3,64,69,0,0,0,0,0,0>>,21.0} = do_float_arith(<<1,2,3>>, 42, 2),
+    {<<1,2,3,64,69,0,0,0,0,0,0>>,21.0} = do_float_arith(<<1,2,3>>, 42, 2),
+
     ok.
 
 do_float_arith(Bin0, X, Y)  ->
@@ -538,7 +591,7 @@ do_float_arith(Bin0, X, Y)  ->
     {Bin,X / Y}.
 
 otp_8054(Config) when is_list(Config) ->
-    ?line <<"abc">> = otp_8054_1([null,1,2,3], <<"abc">>),
+    <<"abc">> = otp_8054_1([null,1,2,3], <<"abc">>),
     ok.
 
 otp_8054_1([H|T], Bin) ->
@@ -553,3 +606,93 @@ otp_8054_1([H|T], Bin) ->
 	end,
     otp_8054_1(T, Bin);
 otp_8054_1([], Bin) -> Bin.
+
+-define(LONG_STRING,
+        "3lz7Q4au2i3DJWNlNhWuzmvA7gYWGXG+LAPtgtlEO2VGSxRqL2WOoHW"
+        "QxORTQfJw17mNEU8i87UKvEPbo9YY8ppiM7vfaG88TTyfEzgUMTgY3I"
+        "vsikMBELPz2AayVz5aaMh9PBFTZ4DkBIFxURBUKHho4Vgt7IzYnWNgn"
+        "3ON5D9VS89TPANK5/PwSUoMQYZ2fk5VLbq7D1ExlnCScvTDnF/WHMQ3"
+        "m2GUcQWb+ajfOf3bnP7EX4f1Q3d/1Soe6lEpf1KN/5S7A/ugjMhy4+H"
+        "Zuo1J1J6CCwEVZ/wDc79OpDPPj/qOGhDK73F8DaMcynZ91El+01vfTn"
+        "uUxNFUHLpuoQ==").
+
+strings(Config) ->
+    L = length(Config),
+
+    <<$a:16,$b:16,$c:16,L:32>> = <<"abc":16,L:32>>,
+
+    %% Empty strings.
+    <<L:16>> = <<L:16,""/utf8>>,
+    <<L:16>> = <<L:16,"":(length(Config))>>,
+    <<L:16>> = <<L:16,"":(BindMe = 42)>>,
+    42 = BindMe,
+    <<L:16>> = <<"":70,L:16>>,
+    <<L:16>> = <<L:16,"":$F>>,
+
+    %% Cover handling of a huge partially literal string.
+    Bin = id(<<L:32,?LONG_STRING>>),
+    <<L:32,?LONG_STRING>> = Bin,
+
+    %% Bad sizes for empty strings.
+    {'EXIT',{badarg,_}} = (catch <<"":(-42)>>),
+    {'EXIT',{badarg,_}} = (catch <<"":bad_size>>),
+    {'EXIT',{badarg,_}} = (catch bad_empty_string_1()),
+    {'EXIT',{badarg,_}} = (catch bad_empty_string_2()),
+    error = bad_empty_string_3(),
+    error = bad_empty_string_4(true),
+    error = bad_empty_string_4(false),
+
+    ok.
+
+bad_empty_string_1() ->
+    <<"":(V0 = true)>>,
+    V0.
+
+bad_empty_string_2() ->
+    <<"":(V0 = -1)>>,
+    V0.
+
+bad_empty_string_3() when <<a, "":96>> -> ok;
+bad_empty_string_3() -> error.
+
+bad_empty_string_4(V) when <<"","eFN"/utf8-native>>, V -> ok;
+bad_empty_string_4(_) -> error.
+
+bad_size(_Config) ->
+    {'EXIT',{badarg,_}} = (catch bad_float_size()),
+    {'EXIT',{badarg,_}} = (catch bad_float_size(<<"abc">>)),
+    {'EXIT',{badarg,_}} = (catch bad_integer_size()),
+    {'EXIT',{badarg,_}} = (catch bad_integer_size(<<"xyz">>)),
+    {'EXIT',{badarg,_}} = (catch bad_integer_size2()),
+    {'EXIT',{badarg,_}} = (catch bad_binary_size()),
+    {'EXIT',{badarg,_}} = (catch bad_binary_size(<<"xyz">>)),
+    {'EXIT',{badarg,_}} = (catch bad_binary_size2()),
+    ok.
+
+bad_float_size() ->
+    <<4.087073429964284:case 0 of 0 -> art end/float>>.
+
+bad_float_size(Bin) ->
+    <<Bin/binary,4.087073429964284:case 0 of 0 -> art end/float>>.
+
+bad_integer_size() ->
+    <<0:case 0 of 0 -> art end/integer>>.
+
+bad_integer_size(Bin) ->
+    <<Bin/binary,0:case 0 of 0 -> art end/integer>>.
+
+bad_integer_size2() ->
+    <<
+      <<(id(42))>>:[ <<>> || <<123:true>> <= <<>> ],
+      <<(id(100))>>:7>>.
+
+bad_binary_size() ->
+    <<<<"abc">>:case 0 of 0 -> art end/binary>>.
+
+bad_binary_size(Bin) ->
+    <<Bin/binary,<<"abc">>:case 0 of 0 -> art end/binary>>.
+
+bad_binary_size2() ->
+    <<
+      <<(id(42))>>:[ <<>> || <<123:true>> <= <<>> ]/binary,
+      <<(id(100))>>:7>>.

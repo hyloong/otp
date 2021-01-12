@@ -1,7 +1,7 @@
 /*
  * %CopyrightBegin%
  * 
- * Copyright Ericsson AB 1997-2013. All Rights Reserved.
+ * Copyright Ericsson AB 1997-2018. All Rights Reserved.
  * 
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -95,7 +95,7 @@ struct sys_time_internal_state_read_mostly__ {
 };
 
 struct sys_time_internal_state_write_freq__ {
-    erts_smp_mtx_t mtime_mtx;
+    erts_mtx_t mtime_mtx;
     ULONGLONG wrap;
     ULONGLONG last_tick_count;
 };
@@ -141,15 +141,27 @@ SystemTime2MilliSec(SYSTEMTIME *stp)
     return stime;
 }
 
+#define SKIP 0x3FF
+
 static ErtsMonotonicTime
 os_monotonic_time_qpc(void)
 {
     LARGE_INTEGER pc;
 
-    if (!(*internal_state.r.o.pQueryPerformanceCounter)(&pc))
-	erl_exit(ERTS_ABORT_EXIT, "QueryPerformanceCounter() failed\n");
+    ErtsMonotonicTime temp;
 
-    return (ErtsMonotonicTime) pc.QuadPart;
+    /*
+     * Windows QPC does not ensure that the returned clocks
+     * are monotonic over several threads, reduce resolution to ensure
+     * that we return monotonic clocks even on multiple threads.
+     */
+    do {
+        if (!(*internal_state.r.o.pQueryPerformanceCounter)(&pc))
+            erts_exit(ERTS_ABORT_EXIT, "QueryPerformanceCounter() failed\n");
+        temp = (ErtsMonotonicTime) pc.QuadPart;
+    } while(!(temp & SKIP));
+
+    return temp & (ERTS_I64_LITERAL(0xFFFFFFFFFFFFFFFF)-SKIP);
 }
 
 static void
@@ -164,7 +176,7 @@ os_times_qpc(ErtsMonotonicTime *mtimep, ErtsSystemTime *stimep)
     GetSystemTime(&st);
 
     if (!qpcr)
-	erl_exit(ERTS_ABORT_EXIT, "QueryPerformanceCounter() failed\n");
+	erts_exit(ERTS_ABORT_EXIT, "QueryPerformanceCounter() failed\n");
 
     *mtimep = (ErtsMonotonicTime) pc.QuadPart;
 
@@ -187,8 +199,6 @@ os_monotonic_time_gtc32(void)
 {
     ErtsMonotonicTime mtime;
     Uint32 ticks = (Uint32) GetTickCount();
-    ERTS_CHK_EXTEND_OS_MONOTONIC_TIME(&internal_state.wr.m.os_mtime_xtnd,
-				      ticks);
     mtime = ERTS_EXTEND_OS_MONOTONIC_TIME(&internal_state.wr.m.os_mtime_xtnd,
 					  ticks);
     mtime <<= ERTS_GET_TICK_COUNT_TIME_UNIT_SHIFT;
@@ -205,8 +215,6 @@ os_times_gtc32(ErtsMonotonicTime *mtimep, ErtsSystemTime *stimep)
     ticks = (Uint32) GetTickCount();
     GetSystemTime(&st);
 
-    ERTS_CHK_EXTEND_OS_MONOTONIC_TIME(&internal_state.wr.m.os_mtime_xtnd,
-				      ticks);
     mtime = ERTS_EXTEND_OS_MONOTONIC_TIME(&internal_state.wr.m.os_mtime_xtnd,
 					  ticks);
     mtime <<= ERTS_GET_TICK_COUNT_TIME_UNIT_SHIFT;
@@ -251,7 +259,7 @@ sys_hrtime_qpc(void)
     LARGE_INTEGER pc;
 
     if (!(*internal_state.r.o.pQueryPerformanceCounter)(&pc))
-	erl_exit(ERTS_ABORT_EXIT, "QueryPerformanceCounter() failed\n");
+	erts_exit(ERTS_ABORT_EXIT, "QueryPerformanceCounter() failed\n");
 
     ASSERT(pc.QuadPart > 0);
 
@@ -265,8 +273,6 @@ sys_hrtime_gtc32(void)
 {
     ErtsSysHrTime time;
     Uint32 ticks = (Uint32) GetTickCount();
-    ERTS_CHK_EXTEND_OS_MONOTONIC_TIME(&internal_state.wr.m.os_mtime_xtnd,
-				      tick_count);
     time = (ErtsSysHrTime) ERTS_EXTEND_OS_MONOTONIC_TIME(&internal_state.wr.m.os_mtime_xtnd,
 							 ticks);
     time *= (ErtsSysHrTime) (1000 * 1000);
@@ -300,8 +306,8 @@ sys_init_time(ErtsSysInitTimeResult *init_resp)
     module = GetModuleHandle(kernel_dll_name);
     if (!module) {
     get_tick_count:
-	erts_smp_mtx_init(&internal_state.w.f.mtime_mtx,
-			  "os_monotonic_time");
+        erts_mtx_init(&internal_state.w.f.mtime_mtx, "os_monotonic_time", NIL,
+            ERTS_LOCK_FLAGS_PROPERTY_STATIC | ERTS_LOCK_FLAGS_CATEGORY_GENERIC);
 	internal_state.w.f.wrap = 0;
 	internal_state.w.f.last_tick_count = 0;
 
@@ -371,18 +377,9 @@ sys_init_time(ErtsSysInitTimeResult *init_resp)
 
 	    internal_state.r.o.pcf = (Uint32) pf.QuadPart;
 	    sys_hrtime_func = sys_hrtime_qpc;
-	    
-	    /*
-	     * We only use QueryPerformanceCounter() for
-	     * os-monotonic-time if its frequency is equal
-	     * to, or larger than GHz in order to ensure
-	     * that the user wont be able to observe faulty
-	     * order between values retrieved on different threads.
-	     */
-	    if (pf.QuadPart < (LONGLONG) 1000*1000*1000)
-		goto get_tick_count64;
 
-	    if (ERTS_DISABLE_USE_OF_QPC_FOR_MONOTONIC_TIME)
+            /* We need at least 0.1 microseconds resolution */
+	    if (pf.QuadPart < (LONGLONG) 9*1000*1000)
 		goto get_tick_count64;
 
 	    init_resp->os_monotonic_time_info.func = "QueryPerformanceCounter";
@@ -397,6 +394,7 @@ sys_init_time(ErtsSysInitTimeResult *init_resp)
 
     erts_sys_time_data__.r.o.os_monotonic_time = os_mtime_func;
     erts_sys_time_data__.r.o.os_times = os_times_func;
+    erts_sys_time_data__.r.o.sys_hrtime = sys_hrtime_func;
     init_resp->os_monotonic_time_unit = time_unit;
     init_resp->have_os_monotonic_time = 1;
     init_resp->have_corrected_os_monotonic_time = 0;

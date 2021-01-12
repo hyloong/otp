@@ -1,7 +1,7 @@
 %%
 %% %CopyrightBegin%
 %% 
-%% Copyright Ericsson AB 1997-2013. All Rights Reserved.
+%% Copyright Ericsson AB 1997-2020. All Rights Reserved.
 %% 
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -62,7 +62,14 @@
         {show_econnreset, boolean()} |
         {sndbuf,          non_neg_integer()} |
         {tos,             non_neg_integer()} |
+        {tclass,          non_neg_integer()} |
+        {ttl,             non_neg_integer()} |
+	{recvtos,         boolean()} |
+	{recvtclass,      boolean()} |
+	{recvttl,         boolean()} |
 	{ipv6_v6only,     boolean()}.
+-type pktoptions_value() ::
+        {pktoptions, inet:ancillary_data()}.
 -type option_name() ::
         active |
         buffer |
@@ -81,6 +88,7 @@
         nodelay |
         packet |
         packet_size |
+        pktoptions |
         priority |
         {raw,
          Protocol :: non_neg_integer(),
@@ -94,34 +102,45 @@
         show_econnreset |
         sndbuf |
         tos |
+        tclass |
+        ttl |
+        recvtos |
+        recvtclass |
+        recvttl |
+        pktoptions |
 	ipv6_v6only.
 -type connect_option() ::
-        {ip, inet:ip_address()} |
+        {ip, inet:socket_address()} |
         {fd, Fd :: non_neg_integer()} |
-        {ifaddr, inet:ip_address()} |
+        {ifaddr, inet:socket_address()} |
         inet:address_family() |
         {port, inet:port_number()} |
         {tcp_module, module()} |
+        {netns, file:filename_all()} |
+        {bind_to_device, binary()} |
         option().
 -type listen_option() ::
-        {ip, inet:ip_address()} |
+        {ip, inet:socket_address()} |
         {fd, Fd :: non_neg_integer()} |
-        {ifaddr, inet:ip_address()} |
+        {ifaddr, inet:socket_address()} |
         inet:address_family() |
         {port, inet:port_number()} |
         {backlog, B :: non_neg_integer()} |
         {tcp_module, module()} |
+        {netns, file:filename_all()} |
+        {bind_to_device, binary()} |
         option().
--type socket() :: port().
+-type socket() :: inet:socket().
 
--export_type([option/0, option_name/0, connect_option/0, listen_option/0]).
+-export_type([option/0, option_name/0, connect_option/0, listen_option/0,
+              socket/0, pktoptions_value/0]).
 
 %%
 %% Connect a socket
 %%
 
 -spec connect(Address, Port, Options) -> {ok, Socket} | {error, Reason} when
-      Address :: inet:ip_address() | inet:hostname(),
+      Address :: inet:socket_address() | inet:hostname(),
       Port :: inet:port_number(),
       Options :: [connect_option()],
       Socket :: socket(),
@@ -132,26 +151,31 @@ connect(Address, Port, Opts) ->
 
 -spec connect(Address, Port, Options, Timeout) ->
                      {ok, Socket} | {error, Reason} when
-      Address :: inet:ip_address() | inet:hostname(),
+      Address :: inet:socket_address() | inet:hostname(),
       Port :: inet:port_number(),
       Options :: [connect_option()],
       Timeout :: timeout(),
       Socket :: socket(),
-      Reason :: inet:posix().
+      Reason :: timeout | inet:posix().
 
-connect(Address, Port, Opts, Time) ->
-    Timer = inet:start_timer(Time),
-    Res = (catch connect1(Address,Port,Opts,Timer)),
-    _ = inet:stop_timer(Timer),
-    case Res of
-	{ok,S} -> {ok,S};
-	{error, einval} -> exit(badarg);
-	{'EXIT',Reason} -> exit(Reason);
-	Error -> Error
+connect(Address, Port, Opts0, Time) ->
+    case inet:gen_tcp_module(Opts0) of
+        {?MODULE, Opts} ->
+            Timer = inet:start_timer(Time),
+            Res = (catch connect1(Address,Port,Opts,Timer)),
+            _ = inet:stop_timer(Timer),
+            case Res of
+                {ok,S} -> {ok,S};
+                {error, einval} -> exit(badarg);
+                {'EXIT',Reason} -> exit(Reason);
+                Error -> Error
+            end;
+        {GenTcpMod, Opts} ->
+            GenTcpMod:connect(Address, Port, Opts, Time)
     end.
 
-connect1(Address,Port,Opts,Timer) ->
-    Mod = mod(Opts, Address),
+connect1(Address, Port, Opts0, Timer) ->
+    {Mod, Opts} = inet:tcp_module(Opts0, Address),
     case Mod:getaddrs(Address,Timer) of
 	{ok,IPs} ->
 	    case Mod:getserv(Port) of
@@ -184,14 +208,19 @@ try_connect([], _Port, _Opts, _Timer, _Mod, Err) ->
       ListenSocket :: socket(),
       Reason :: system_limit | inet:posix().
 
-listen(Port, Opts) ->
-    Mod = mod(Opts, undefined),
-    case Mod:getserv(Port) of
-	{ok,TP} ->
-	    Mod:listen(TP, Opts);
-	{error,einval} ->
-	    exit(badarg);
-	Other -> Other
+listen(Port, Opts0) ->
+    case inet:gen_tcp_module(Opts0) of
+        {?MODULE, Opts1} ->
+            {Mod, Opts} = inet:tcp_module(Opts1),
+            case Mod:getserv(Port) of
+                {ok,TP} ->
+                    Mod:listen(TP, Opts);
+                {error,einval} ->
+                    exit(badarg);
+                Other -> Other
+            end;
+        {GenTcpMod, Opts} ->
+            GenTcpMod:listen(Port, Opts)
     end.
 
 %%
@@ -201,9 +230,11 @@ listen(Port, Opts) ->
 -spec accept(ListenSocket) -> {ok, Socket} | {error, Reason} when
       ListenSocket :: socket(),
       Socket :: socket(),
-      Reason :: closed | timeout | system_limit | inet:posix().
+      Reason :: closed | system_limit | inet:posix().
 
-accept(S) ->
+accept({'$inet', GenTcpMod, _} = S) when is_atom(GenTcpMod) ->
+    GenTcpMod:?FUNCTION_NAME(S, infinity);
+accept(S) when is_port(S) ->
     case inet_db:lookup_socket(S) of
 	{ok, Mod} ->
 	    Mod:accept(S);
@@ -217,6 +248,8 @@ accept(S) ->
       Socket :: socket(),
       Reason :: closed | timeout | system_limit | inet:posix().
 
+accept({'$inet', GenTcpMod, _} = S, Time) when is_atom(GenTcpMod) ->
+    GenTcpMod:?FUNCTION_NAME(S, Time);
 accept(S, Time) when is_port(S) ->
     case inet_db:lookup_socket(S) of
 	{ok, Mod} ->
@@ -234,6 +267,8 @@ accept(S, Time) when is_port(S) ->
       How :: read | write | read_write,
       Reason :: inet:posix().
 
+shutdown({'$inet', GenTcpMod, _} = S, How) when is_atom(GenTcpMod) ->
+    GenTcpMod:?FUNCTION_NAME(S, How);
 shutdown(S, How) when is_port(S) ->
     case inet_db:lookup_socket(S) of
 	{ok, Mod} ->
@@ -249,6 +284,8 @@ shutdown(S, How) when is_port(S) ->
 -spec close(Socket) -> ok when
       Socket :: socket().
 
+close({'$inet', GenTcpMod, _} = S) when is_atom(GenTcpMod) ->
+    GenTcpMod:?FUNCTION_NAME(S);
 close(S) ->
     inet:tcp_close(S).
 
@@ -261,6 +298,8 @@ close(S) ->
       Packet :: iodata(),
       Reason :: closed | inet:posix().
 
+send({'$inet', GenTcpMod, _} = S, Packet) when is_atom(GenTcpMod) ->
+    GenTcpMod:?FUNCTION_NAME(S, Packet);
 send(S, Packet) when is_port(S) ->
     case inet_db:lookup_socket(S) of
 	{ok, Mod} ->
@@ -280,6 +319,8 @@ send(S, Packet) when is_port(S) ->
       Reason :: closed | inet:posix(),
       HttpPacket :: term().
 
+recv({'$inet', GenTcpMod, _} = S, Length) when is_atom(GenTcpMod) ->
+    GenTcpMod:?FUNCTION_NAME(S, Length, infinity);
 recv(S, Length) when is_port(S) ->
     case inet_db:lookup_socket(S) of
 	{ok, Mod} ->
@@ -293,9 +334,11 @@ recv(S, Length) when is_port(S) ->
       Length :: non_neg_integer(),
       Timeout :: timeout(),
       Packet :: string() | binary() | HttpPacket,
-      Reason :: closed | inet:posix(),
+      Reason :: closed | timeout | inet:posix(),
       HttpPacket :: term().
 
+recv({'$inet', GenTcpMod, _} = S, Length, Time) when is_atom(GenTcpMod) ->
+    GenTcpMod:?FUNCTION_NAME(S, Length, Time);
 recv(S, Length, Time) when is_port(S) ->
     case inet_db:lookup_socket(S) of
 	{ok, Mod} ->
@@ -304,6 +347,8 @@ recv(S, Length, Time) when is_port(S) ->
 	    Error
     end.
 
+unrecv({'$inet', GenTcpMod, _} = S, Data) when is_atom(GenTcpMod) ->
+    GenTcpMod:?FUNCTION_NAME(S, Data);
 unrecv(S, Data) when is_port(S) ->
     case inet_db:lookup_socket(S) of
 	{ok, Mod} ->
@@ -319,8 +364,11 @@ unrecv(S, Data) when is_port(S) ->
 -spec controlling_process(Socket, Pid) -> ok | {error, Reason} when
       Socket :: socket(),
       Pid :: pid(),
-      Reason :: closed | not_owner | inet:posix().
+      Reason :: closed | not_owner | badarg | inet:posix().
 
+controlling_process({'$inet', GenTcpMod, _} = S, NewOwner)
+  when is_atom(GenTcpMod) ->
+    GenTcpMod:?FUNCTION_NAME(S, NewOwner);
 controlling_process(S, NewOwner) ->
     case inet_db:lookup_socket(S) of
 	{ok, _Mod} -> % Just check that this is an open socket
@@ -334,32 +382,11 @@ controlling_process(S, NewOwner) ->
 %%
 %% Create a port/socket from a file descriptor 
 %%
-fdopen(Fd, Opts) ->
-    Mod = mod(Opts, undefined),
-    Mod:fdopen(Fd, Opts).
-
-%% Get the tcp_module, but IPv6 address overrides default IPv4
-mod(Address) ->
-    case inet_db:tcp_module() of
-	inet_tcp when tuple_size(Address) =:= 8 ->
-	    inet6_tcp;
-	Mod ->
-	    Mod
+fdopen(Fd, Opts0) ->
+    case inet:gen_tcp_module(Opts0) of
+        {?MODULE, Opts1} ->
+            {Mod, Opts} = inet:tcp_module(Opts1),
+            Mod:fdopen(Fd, Opts);
+        {GenTcpMod, Opts} ->
+            GenTcpMod:fdopen(Fd, Opts)
     end.
-
-%% Get the tcp_module, but option tcp_module|inet|inet6 overrides
-mod([{tcp_module,Mod}|_], _Address) ->
-    Mod;
-mod([inet|_], _Address) ->
-    inet_tcp;
-mod([inet6|_], _Address) ->
-    inet6_tcp;
-mod([{ip, Address}|Opts], _) ->
-    mod(Opts, Address);
-mod([{ifaddr, Address}|Opts], _) ->
-    mod(Opts, Address);
-mod([_|Opts], Address) ->
-    mod(Opts, Address);
-mod([], Address) ->
-    mod(Address).
-

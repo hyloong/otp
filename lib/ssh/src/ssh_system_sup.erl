@@ -1,7 +1,7 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2008-2014. All Rights Reserved.
+%% Copyright Ericsson AB 2008-2020. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -21,7 +21,7 @@
 %%
 %%----------------------------------------------------------------------
 %% Purpose: The ssh server instance supervisor, an instans of this supervisor
-%%          exists for every ip-address and port combination, hangs under  
+%%          exists for every ip-address and port combination, hangs under
 %%          sshd_sup.
 %%----------------------------------------------------------------------
 
@@ -31,64 +31,121 @@
 
 -include("ssh.hrl").
 
--export([start_link/1, stop_listener/1,
-	 stop_listener/3, stop_system/1,
-	 stop_system/3, system_supervisor/3,
-	 subsystem_supervisor/1, channel_supervisor/1, 
-	 connection_supervisor/1, 
-	 acceptor_supervisor/1, start_subsystem/2, restart_subsystem/3,
-	 restart_acceptor/3, stop_subsystem/2]).
+-export([start_link/5, stop_listener/1,
+	 stop_listener/3, stop_system/2,
+	 stop_system/4, system_supervisor/3,
+	 subsystem_supervisor/1, channel_supervisor/1,
+	 connection_supervisor/1,
+	 acceptor_supervisor/1, start_subsystem/6,
+	 stop_subsystem/2,
+         get_options/4
+        ]).
 
 %% Supervisor callback
 -export([init/1]).
 
-%%%=========================================================================
-%%% Internal  API
-%%%=========================================================================
-start_link(ServerOpts) ->
-    Address = proplists:get_value(address, ServerOpts),
-    Port = proplists:get_value(port, ServerOpts),
-    Profile = proplists:get_value(profile,  proplists:get_value(ssh_opts, ServerOpts), ?DEFAULT_PROFILE),
-    Name = make_name(Address, Port, Profile),
-    supervisor:start_link({local, Name}, ?MODULE, [ServerOpts]).
+-define(START(Address, Port, Profile, Options),
+        {ssh_acceptor_sup, start_link, [Address, Port, Profile, Options]}).
 
-stop_listener(SysSup) ->
-    stop_acceptor(SysSup). 
+%%%=========================================================================
+%%% API
+%%%=========================================================================
+start_link(Role, Address, Port, Profile, Options) ->
+    Name = make_name(Address, Port, Profile),
+    supervisor:start_link({local, Name}, ?MODULE, [Role, Address, Port, Profile, Options]).
+
+%%%=========================================================================
+%%%  Supervisor callback
+%%%=========================================================================
+init([server, Address, Port, Profile, Options]) ->
+    SupFlags = #{strategy  => one_for_one,
+                 intensity =>    0,
+                 period    => 3600
+                },
+    ChildSpecs =
+        case ?GET_INTERNAL_OPT(connected_socket,Options,undefined) of
+            undefined ->
+                [#{id       => id(ssh_acceptor_sup, Address, Port, Profile),
+                   start    => ?START(Address,Port,Profile,Options),
+                   restart  => transient,
+                   type     => supervisor
+                  }];
+            _ ->
+                []
+        end,
+    {ok, {SupFlags,ChildSpecs}};
+
+init([client, _Address, _Port, _Profile, _Options]) ->
+    SupFlags = #{strategy  => one_for_one,
+                 intensity =>    0,
+                 period    => 3600
+                },
+    ChildSpecs = [],
+    {ok, {SupFlags,ChildSpecs}}.
+
+%%%=========================================================================
+%%% Service API
+%%%=========================================================================
+stop_listener(SystemSup) ->
+    {Name, AcceptorSup, _, _} = lookup(ssh_acceptor_sup, SystemSup),
+    case supervisor:terminate_child(AcceptorSup, Name) of
+        ok ->
+            supervisor:delete_child(AcceptorSup, Name);
+        Error ->
+            Error
+    end.
 
 stop_listener(Address, Port, Profile) ->
-    Name = make_name(Address, Port, Profile),
-    stop_acceptor(whereis(Name)). 
- 
-stop_system(SysSup) ->
-    Name = sshd_sup:system_name(SysSup),
-    spawn(fun() -> sshd_sup:stop_child(Name) end),
+    stop_listener(
+      system_supervisor(Address, Port, Profile)).
+
+
+stop_system(server, SysSup) -> catch sshd_sup:stop_child(SysSup), ok;
+stop_system(client, SysSup) -> catch sshc_sup:stop_child(SysSup), ok.
+
+stop_system(server, Address, Port, Profile) ->
+    catch sshd_sup:stop_child(Address, Port, Profile),
     ok.
 
-stop_system(Address, Port, Profile) -> 
-    spawn(fun() -> sshd_sup:stop_child(Address, Port, Profile) end),
-    ok.
+
+get_options(Sup, Address, Port, Profile) ->
+    try
+       {ok, #{start:=?START(Address,Port,Profile,Options)}} =
+           supervisor:get_childspec(Sup, id(ssh_acceptor_sup,Address,Port,Profile)),
+       {ok, Options}
+    catch
+        _:_ -> {error,not_found}
+    end.
 
 system_supervisor(Address, Port, Profile) ->
     Name = make_name(Address, Port, Profile),
     whereis(Name).
 
 subsystem_supervisor(SystemSup) ->
-    ssh_subsystem_sup(supervisor:which_children(SystemSup)).
+    {_, Child, _, _} = lookup(ssh_subsystem_sup, SystemSup),
+    Child.
 
 channel_supervisor(SystemSup) ->
-    SubSysSup = ssh_subsystem_sup(supervisor:which_children(SystemSup)),
-    ssh_subsystem_sup:channel_supervisor(SubSysSup).
+    ssh_subsystem_sup:channel_supervisor(
+      subsystem_supervisor(SystemSup)).
 
 connection_supervisor(SystemSup) ->
-    SubSysSup = ssh_subsystem_sup(supervisor:which_children(SystemSup)),
-    ssh_subsystem_sup:connection_supervisor(SubSysSup).
+    ssh_subsystem_sup:connection_supervisor(
+      subsystem_supervisor(SystemSup)).
 
 acceptor_supervisor(SystemSup) ->
-    ssh_acceptor_sup(supervisor:which_children(SystemSup)).
+    {_, Child, _, _} = lookup(ssh_acceptor_sup, SystemSup),
+    Child.
 
-start_subsystem(SystemSup, Options) ->
-    Spec = ssh_subsystem_child_spec(Options),
-    supervisor:start_child(SystemSup, Spec).
+
+start_subsystem(SystemSup, Role, Address, Port, Profile, Options) ->
+    SubsystemSpec =
+        #{id       => make_ref(),
+          start    => {ssh_subsystem_sup, start_link, [Role, Address, Port, Profile, Options]},
+          restart  => temporary,
+          type     => supervisor
+         },
+    supervisor:start_child(SystemSup, SubsystemSpec).
 
 stop_subsystem(SystemSup, SubSys) ->
     case catch lists:keyfind(SubSys, 2, supervisor:which_children(SystemSup)) of
@@ -106,92 +163,21 @@ stop_subsystem(SystemSup, SubSys) ->
 	    ok
     end.
 
-
-restart_subsystem(Address, Port, Profile) ->
-    SysSupName = make_name(Address, Port, Profile),
-    SubSysName = id(ssh_subsystem_sup, Address, Port, Profile),
-    case supervisor:terminate_child(SysSupName, SubSysName) of
-	ok ->
-	    supervisor:restart_child(SysSupName, SubSysName);
-	Error  ->
-	    Error
-    end.
-
-restart_acceptor(Address, Port, Profile) ->
-    SysSupName = make_name(Address, Port, Profile),
-    AcceptorName = id(ssh_acceptor_sup, Address, Port, Profile),
-    supervisor:restart_child(SysSupName, AcceptorName).
-
-%%%=========================================================================
-%%%  Supervisor callback
-%%%=========================================================================
-init([ServerOpts]) ->
-    RestartStrategy = one_for_one,
-    MaxR = 0,
-    MaxT = 3600,
-    Children = child_specs(ServerOpts),
-    {ok, {{RestartStrategy, MaxR, MaxT}, Children}}.
-
 %%%=========================================================================
 %%%  Internal functions
 %%%=========================================================================
-child_specs(ServerOpts) ->
-    [ssh_acceptor_child_spec(ServerOpts)]. 
-  
-ssh_acceptor_child_spec(ServerOpts) ->
-    Address = proplists:get_value(address, ServerOpts),
-    Port = proplists:get_value(port, ServerOpts),
-    Profile = proplists:get_value(profile,  proplists:get_value(ssh_opts, ServerOpts), ?DEFAULT_PROFILE),
-    Name = id(ssh_acceptor_sup, Address, Port, Profile),
-    StartFunc = {ssh_acceptor_sup, start_link, [ServerOpts]},
-    Restart = transient, 
-    Shutdown = infinity,
-    Modules = [ssh_acceptor_sup],
-    Type = supervisor,
-    {Name, StartFunc, Restart, Shutdown, Type, Modules}.
-
-ssh_subsystem_child_spec(ServerOpts) ->
-    Name = make_ref(),
-    StartFunc = {ssh_subsystem_sup, start_link, [ServerOpts]},
-    Restart = temporary,
-    Shutdown = infinity,
-    Modules = [ssh_subsystem_sup],
-    Type = supervisor,
-    {Name, StartFunc, Restart, Shutdown, Type, Modules}.
-
-
 id(Sup, Address, Port, Profile) ->
-    case is_list(Address) of	
-	true ->
-	    {Sup, any, Port, Profile};
-	false ->
-	    {Sup, Address, Port, Profile}
-	end.
+    {Sup, Address, Port, Profile}.
 
 make_name(Address, Port, Profile) ->
-    case is_list(Address) of
-	true  ->
-	    list_to_atom(lists:flatten(io_lib:format("ssh_system_~p_~p_~p_sup", 
-						     [any, Port, Profile])));
-	false  ->
-	    list_to_atom(lists:flatten(io_lib:format("ssh_system_~p_~p_~p_sup", 
-						     [Address, Port, Profile])))
-    end.
+    list_to_atom(lists:flatten(io_lib:format("ssh_system_~s_~p_~p_sup", [fmt_host(Address), Port, Profile]))).
 
-ssh_subsystem_sup([{_, Child, _, [ssh_subsystem_sup]} | _]) ->
-    Child;
-ssh_subsystem_sup([_ | Rest]) ->
-    ssh_subsystem_sup(Rest).
+fmt_host(IP) when is_tuple(IP) -> inet:ntoa(IP);
+fmt_host(A)  when is_atom(A)   -> A;
+fmt_host(S)  when is_list(S)   -> S.
 
-ssh_acceptor_sup([{_, Child, _, [ssh_acceptor_sup]} | _]) ->
-    Child;
-ssh_acceptor_sup([_ | Rest]) ->
-    ssh_acceptor_sup(Rest).
 
-stop_acceptor(Sup) ->
-    [{Name, AcceptorSup}] =
-	[{SupName, ASup} || {SupName, ASup, _, [ssh_acceptor_sup]} <- 
-			  supervisor:which_children(Sup)],
-    supervisor:terminate_child(AcceptorSup, Name).
-
+lookup(SupModule, SystemSup) ->
+    lists:keyfind([SupModule], 4,
+                  supervisor:which_children(SystemSup)).
 

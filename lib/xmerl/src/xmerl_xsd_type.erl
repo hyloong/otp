@@ -1,7 +1,7 @@
 %%
 %% %CopyrightBegin%
 %% 
-%% Copyright Ericsson AB 2006-2011. All Rights Reserved.
+%% Copyright Ericsson AB 2006-2016. All Rights Reserved.
 %% 
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -229,11 +229,13 @@ check_float(Value) ->
 %%     {Mantissa,Exponent}=lists:splitwith(Pred,Value),
 %%     SkipEe = fun([]) -> [];(L) -> tl(L) end,
     case string:tokens(Value,"eE") of
-	[Mantissa,Exponent] ->
-	    {ok,_} = check_decimal(Mantissa),
-	    {ok,_} = check_integer(Exponent);
-	[Mantissa] ->
-	    check_decimal(Mantissa)
+        [Mantissa,Exponent] ->
+            {ok,_} = check_decimal(Mantissa),
+            {ok,_} = check_integer(Exponent),
+            ok;
+        [Mantissa] ->
+            {ok,_} = check_decimal(Mantissa),
+            ok
     end,
     {ok,Value}.
 %%     case {check_decimal(Mantissa),
@@ -367,7 +369,7 @@ check_dateTime("+"++_DateTime) ->
 check_dateTime(DateTime) ->
     [Date,Time] = string:tokens(DateTime,"T"),
     [Y,M,D] = string:tokens(Date,"-"),
-    check_year(Y),
+    {ok,_} = check_year(Y),
     {ok,_} = check_positive_integer(M),
     {ok,_} = check_positive_integer(D),
     check_time(Time).
@@ -1259,9 +1261,9 @@ compare_dateTime(_P,_Q) ->
     indefinite.
     
 fQuotient(A,B) when is_float(A) ->
-    fQuotient(floor(A),B);
+    fQuotient(erlang:floor(A),B);
 fQuotient(A,B) when is_float(B) ->
-    fQuotient(A,floor(B));
+    fQuotient(A,erlang:floor(B));
 fQuotient(A,B) when A >= 0, B >= 0 ->
     A div B;
 fQuotient(A,B) when A < 0, B < 0 ->
@@ -1276,13 +1278,6 @@ fQuotient(A,B) ->
 
 fQuotient(A, Low, High) ->
     fQuotient(A - Low, High - Low).
-
-floor(A) ->
-    case round(A) of
-	I when I > A ->
-	    I - 1;
-	I -> I
-    end.
 
 modulo(A,B) ->
     A - (fQuotient(A,B) * B).
