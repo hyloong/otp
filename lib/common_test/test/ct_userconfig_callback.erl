@@ -1,7 +1,9 @@
 %%--------------------------------------------------------------------
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2010. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2010-2025. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -21,7 +23,7 @@
 -export([check_parameter/1, read_config/1]).
 
 read_config(Str) ->
-    KeyVals = string:tokens(Str, " "),
+    KeyVals = string:lexemes(Str, " "),
     {ok,read_config1(KeyVals)}.
 
 read_config1([Key,Val | KeyVals]) ->

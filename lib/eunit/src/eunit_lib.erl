@@ -1,57 +1,71 @@
-%% This library is free software; you can redistribute it and/or modify
-%% it under the terms of the GNU Lesser General Public License as
-%% published by the Free Software Foundation; either version 2 of the
-%% License, or (at your option) any later version.
+%% %CopyrightBegin%
 %%
-%% This library is distributed in the hope that it will be useful, but
-%% WITHOUT ANY WARRANTY; without even the implied warranty of
-%% MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
-%% Lesser General Public License for more details.
+%% SPDX-License-Identifier: Apache-2.0 OR LGPL-2.1-or-later
 %%
-%% You should have received a copy of the GNU Lesser General Public
-%% License along with this library; if not, write to the Free Software
-%% Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307
-%% USA
+%% Copyright Ericsson AB 2009-2026. All Rights Reserved.
+%% Copyright 2004-2007 Mickaël Rémond, Richard Carlsson
 %%
-%% @copyright 2004-2007 Mickaël Rémond, Richard Carlsson
-%% @author Mickaël Rémond <mickael.remond@process-one.net>
-%%   [http://www.process-one.net/]
-%% @author Richard Carlsson <carlsson.richard@gmail.com>
-%% @private
-%% @see eunit
-%% @doc Utility functions for eunit
+%% Licensed under the Apache License, Version 2.0 (the "License");
+%% you may not use this file except in compliance with the License.
+%% You may obtain a copy of the License at
+%%
+%%     http://www.apache.org/licenses/LICENSE-2.0
+%%
+%% Unless required by applicable law or agreed to in writing, software
+%% distributed under the License is distributed on an "AS IS" BASIS,
+%% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+%% See the License for the specific language governing permissions and
+%% limitations under the License.
+%%
+%% Alternatively, you may use this file under the terms of the GNU Lesser
+%% General Public License (the "LGPL") as published by the Free Software
+%% Foundation; either version 2.1, or (at your option) any later version.
+%% If you wish to allow use of your version of this file only under the
+%% terms of the LGPL, you should delete the provisions above and replace
+%% them with the notice and other provisions required by the LGPL; see
+%% <http://www.gnu.org/licenses/>. If you do not delete the provisions
+%% above, a recipient may use your version of this file under the terms of
+%% either the Apache License or the LGPL.
+%%
+%% %CopyrightEnd%
+%%
+%% Utility functions for eunit
 
 -module(eunit_lib).
+-moduledoc false.
+
+-compile([{nowarn_possibly_unsafe_function, {erlang, list_to_atom, 1}},
+          {nowarn_possibly_unsafe_function, {file, path_consult, 2}}]).
 
 -include("eunit.hrl").
 -include("eunit_internal.hrl").
 
 
--export([dlist_next/1, uniq/1, fun_parent/1, is_string/1, command/1,
+-export([dlist_next/1, uniq/1, is_string/1, command/1,
 	 command/2, command/3, trie_new/0, trie_store/2, trie_match/2,
 	 split_node/1, consult_file/1, list_dir/1, format_exit_term/1,
-	 format_exception/1, format_exception/2, format_error/1,
-         is_not_test/1]).
+	 format_exception/1, format_exception/2, format_error/1, format_error/2,
+         format_stacktrace/1, is_not_test/1]).
 
+-export_type([exception/0, exception_class/0, stack_trace/0, module_name/0,
+              function_name/0, arg_list/0]).
+
+-define(DEFAULT_DEPTH, 20).
 
 %% Type definitions for describing exceptions
-%%
-%% @type exception() = {exceptionClass(), Reason::term(), stackTrace()}
-%%
-%% @type exceptionClass() = error | exit | throw
-%%
-%% @type stackTrace() = [{moduleName(), functionName(), arity() | argList()}]
-%%
-%% @type moduleName() = atom()
-%% @type functionName() = atom()
-%% @type argList() = [term()]
-%% @type fileName() = string()
+
+-type exception() :: {exception_class(), Reason::term(), stack_trace()}.
+-type exception_class() :: error | exit | throw.
+-type stack_trace() :: [{module_name(), function_name(), arity() | arg_list()}].
+-type module_name() :: atom().
+-type function_name() :: atom().
+-type arg_list() :: [term()].
 
 
 %% ---------------------------------------------------------------------
 %% Formatting of error descriptors
 format_exception(Exception) ->
-    format_exception(Exception, 20).
+    format_exception(Exception, ?DEFAULT_DEPTH).
 
 format_exception({Class,Term,Trace}, Depth)
   when is_atom(Class), is_list(Trace) ->
@@ -102,7 +116,7 @@ format_stacktrace(Trace) ->
     format_stacktrace(Trace, "in function", "in call from").
 
 format_stacktrace([{M,F,A,L}|Fs], Pre, Pre1) when is_integer(A) ->
-    [io_lib:fwrite("~ts ~w:~w/~w~ts\n",
+    [io_lib:fwrite("~ts ~w:~tw/~w~ts\n",
                    [Pre, M, F, A, format_stacktrace_location(L)])
      | format_stacktrace(Fs, Pre1, Pre1)];
 format_stacktrace([{M,F,As,L}|Fs], Pre, Pre1) when is_list(As) ->
@@ -116,9 +130,9 @@ format_stacktrace([{M,F,As,L}|Fs], Pre, Pre1) when is_list(As) ->
 		io_lib:fwrite("~ts ~ts ~ts",
 			      [format_arg(A1),F,format_arg(A2)]);
 	    false ->
-		io_lib:fwrite("~w(~ts)", [F,format_arglist(As)])
+		io_lib:fwrite("~tw(~ts)", [F,format_arglist(As)])
 	end,
-    [io_lib:fwrite("~ts ~w:~w/~w~ts\n  called as ~ts\n",
+    [io_lib:fwrite("~ts ~w:~tw/~w~ts\n  called as ~ts\n",
 		   [Pre,M,F,A,format_stacktrace_location(L),C])
      | format_stacktrace(Fs,Pre1,Pre1)];
 format_stacktrace([{M,F,As}|Fs], Pre, Pre1) ->
@@ -154,38 +168,41 @@ is_op(erlang, F, A) ->
 is_op(_M, _F, _A) ->
     false.
 
-format_error({bad_test, Term}) ->
-    error_msg("bad test descriptor", "~tP", [Term, 15]);
-format_error({bad_generator, {{M,F,A}, Term}}) ->
-    error_msg(io_lib:format("result from generator ~w:~w/~w is not a test",
+format_error(Error) ->
+    format_error(Error, ?DEFAULT_DEPTH).
+
+format_error({bad_test, Term}, Depth) ->
+    error_msg("bad test descriptor", "~tP", [Term, Depth]);
+format_error({bad_generator, {{M,F,A}, Term}}, Depth) ->
+    error_msg(io_lib:format("result from generator ~w:~tw/~w is not a test",
                             [M,F,A]),
-              "~tP", [Term, 15]);
-format_error({generator_failed, {{M,F,A}, Exception}}) ->
-    error_msg(io_lib:format("test generator ~w:~w/~w failed",[M,F,A]),
-              "~ts", [format_exception(Exception)]);
-format_error({no_such_function, {M,F,A}})
+              "~tP", [Term, Depth]);
+format_error({generator_failed, {{M,F,A}, Exception}}, Depth) ->
+    error_msg(io_lib:format("test generator ~w:~tw/~w failed",[M,F,A]),
+              "~ts", [format_exception(Exception, Depth)]);
+format_error({no_such_function, {M,F,A}}, _)
   when is_atom(M), is_atom(F), is_integer(A) ->
-    error_msg(io_lib:format("no such function: ~w:~w/~w", [M,F,A]),
+    error_msg(io_lib:format("no such function: ~w:~tw/~w", [M,F,A]),
 	      "", []);
-format_error({module_not_found, M}) ->
+format_error({module_not_found, M}, _) ->
     error_msg("test module not found", "~tp", [M]);
-format_error({application_not_found, A}) when is_atom(A) ->
+format_error({application_not_found, A}, _) when is_atom(A) ->
     error_msg("application not found", "~w", [A]);
-format_error({file_read_error, {_R, Msg, F}}) ->
+format_error({file_read_error, {_R, Msg, F}}, _) ->
     error_msg("error reading file", "~ts: ~ts", [Msg, F]);
-format_error({setup_failed, Exception}) ->
+format_error({setup_failed, Exception}, Depth) ->
     error_msg("context setup failed", "~ts",
-	      [format_exception(Exception)]);
-format_error({cleanup_failed, Exception}) ->
+	      [format_exception(Exception, Depth)]);
+format_error({cleanup_failed, Exception}, Depth) ->
     error_msg("context cleanup failed", "~ts",
-	      [format_exception(Exception)]);
-format_error({{bad_instantiator, {{M,F,A}, Term}}, _DummyException}) ->
-    error_msg(io_lib:format("result from instantiator ~w:~w/~w is not a test",
+	      [format_exception(Exception, Depth)]);
+format_error({{bad_instantiator, {{M,F,A}, Term}}, _DummyException}, Depth) ->
+    error_msg(io_lib:format("result from instantiator ~w:~tw/~w is not a test",
                             [M,F,A]),
-              "~tP", [Term, 15]);
-format_error({instantiation_failed, Exception}) ->
+              "~tP", [Term, Depth]);
+format_error({instantiation_failed, Exception}, Depth) ->
     error_msg("instantiation of subtests failed", "~ts",
-	      [format_exception(Exception)]).
+	      [format_exception(Exception, Depth)]).
 
 error_msg(Title, Fmt, Args) ->
     Msg = io_lib:format("**"++Fmt, Args),    % gets indentation right
@@ -197,13 +214,13 @@ format_exception_test_() ->
         "\nymmud:rorre"++_,
         lists:reverse(lists:flatten(
           format_exception(try erlang:error(dummy)
-                           catch C:R -> {C, R, erlang:get_stacktrace()}
+                           catch C:R:S -> {C, R, S}
                            end)))),
      ?_assertMatch(
         "\nymmud:rorre"++_,
         lists:reverse(lists:flatten(
           format_exception(try erlang:error(dummy, [a])
-                           catch C:R -> {C, R, erlang:get_stacktrace()}
+                           catch C:R:S -> {C, R, S}
                            end))))].
 -endif.
 
@@ -369,29 +386,6 @@ split_node_2(As, Cs) ->
     {list_to_atom(lists:reverse(As)), list_to_atom(Cs)}.
 
 %% ---------------------------------------------------------------------
-%% Get the name of the containing function for a fun. (This is encoded
-%% in the name of the generated function that implements the fun.)
-fun_parent(F) ->
-    {module, M} = erlang:fun_info(F, module),
-    {name, N} = erlang:fun_info(F, name),
-    case erlang:fun_info(F, type) of
-	{type, external} ->
-	    {arity, A} = erlang:fun_info(F, arity),
-	    {M, N, A};
-	{type, local} ->
-	    [$-|S] = atom_to_list(N),
-	    C1 = string:chr(S, $/),
-	    C2 = string:chr(S, $-),
-	    {M, list_to_atom(string:sub_string(S, 1, C1 - 1)),
-	     list_to_integer(string:sub_string(S, C1 + 1, C2 - 1))}
-    end.
-
--ifdef(TEST).
-fun_parent_test() ->
-    {?MODULE,fun_parent_test,0} = fun_parent(fun () -> ok end).
--endif.
-
-%% ---------------------------------------------------------------------
 %% Ye olde uniq function
 
 uniq([X, X | Xs]) -> uniq([X | Xs]);    
@@ -399,6 +393,7 @@ uniq([X | Xs]) -> [X | uniq(Xs)];
 uniq([]) -> [].
 
 -ifdef(TEST).
+-dialyzer({[no_fail_call, no_improper_lists], uniq_test_/0}).
 uniq_test_() ->
     {"uniq",
      [?_assertError(function_clause, uniq(ok)),
@@ -459,6 +454,7 @@ normalize([]) ->
 
 -ifdef(TEST).
 
+-dialyzer({no_match, cmd_test_/0}).
 cmd_test_() ->
     ([?_test({0, "hello\n"} = ?_cmd_("echo hello"))]
      ++ case os:type() of
@@ -502,8 +498,8 @@ win32_cmd_tests() ->
 %% ---------------------------------------------------------------------
 %% Wrapper around file:path_consult
 
-%% @throws {file_read_error, {Reason::atom(), Message::string(),
-%%                            fileName()}}
+%% Throws {file_read_error, {Reason::atom(), Message::string(),
+%%                           filename()}}
 
 consult_file(File) ->
     case file:path_consult(["."]++code:get_path(), File) of
@@ -517,8 +513,7 @@ consult_file(File) ->
 %% ---------------------------------------------------------------------
 %% Wrapper around file:list_dir
 
-%% @throws {file_read_error, {Reason::atom(), Message::string(),
-%%                            fileName()}}
+%% Throws {file_read_error, {Reason::atom(), Message::string(), filename()}}
 
 list_dir(Dir) ->
     case file:list_dir(Dir) of
@@ -537,6 +532,7 @@ list_dir(Dir) ->
 trie_new() ->
     gb_trees:empty().
 
+-dialyzer({no_opaque_union, [trie_store/2]}).
 trie_store([_ | _], []) ->
     [];
 trie_store([E | Es], T) ->

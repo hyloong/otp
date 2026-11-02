@@ -1,8 +1,10 @@
 %%
 %% %CopyrightBegin%
-%% 
-%% Copyright Ericsson AB 2007-2011. All Rights Reserved.
-%% 
+%%
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2007-2025. All Rights Reserved.
+%%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
 %% You may obtain a copy of the License at
@@ -14,7 +16,7 @@
 %% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 %% See the License for the specific language governing permissions and
 %% limitations under the License.
-%% 
+%%
 %% %CopyrightEnd%
 %%
 
@@ -47,7 +49,6 @@
 	 print/3, print/4
 	]).
 
--export([behaviour_info/1]).
 
 %% Internal exports
 -export([start/4]).
@@ -65,6 +66,7 @@
 
 
 -include_lib("megaco/include/megaco.hrl").
+-include("megaco_test_lib.hrl").
 
 
 %%----------------------------------------------------------------------
@@ -90,15 +92,32 @@
 %%%  API
 %%%=========================================================================
 
-behaviour_info(callbacks) ->
-    [
-     {init,         1}, 
-     {handle_parse, 2},
-     {handle_exec,  2},
-     {terminate,    2}
-    ];
-behaviour_info(_Other) ->
-    undefined.
+-callback init(Args) -> {ok, State} | {error, Reason} when
+      Args :: term(),
+      State :: term(),
+      Reason :: term().
+
+-callback handle_parse(Instruction, State) -> 
+    {ok, NewInstruction, NewState} |
+    {error, Reason} when
+      Instruction    :: term(),
+      State          :: term(),
+      NewInstruction :: term(),
+      NewState       :: term(),
+      Reason         :: term().
+
+-callback handle_exec(Instruction, State) -> 
+    {ok, NewState} |
+    {error, Reason} when
+      Instruction :: term(),
+      State       :: term(),
+      NewState    :: term(),
+      Reason      :: term().
+
+-callback terminate(Reason, State) -> 
+    megaco:void() when
+      Reason :: term(),
+      State :: term().
 
 
 %%----------------------------------------------------------------------
@@ -406,7 +425,7 @@ handler_main(Parent, Mod, State, []) ->
 	
 handler_main(Parent, Mod, State, [Instruction|Instructions]) ->
     d("handler_main -> entry with"
-      "~n   Instruction: ~p", [Instruction]),
+      "~n      Instruction: ~p", [Instruction]),
     receive
 	{stop, Parent} ->
 	    d("handler_main -> premature stop requested"),
@@ -418,6 +437,8 @@ handler_main(Parent, Mod, State, [Instruction|Instructions]) ->
 	    Result = (catch Mod:terminate({parent_died, Reason}, State)),
 	    exit({parent_died, Reason, Result})
     after 0 ->
+            d("handler_main -> exec: "
+              "~n      Instruction: ~p", [Instruction]),
 	    case (catch handler_callback_exec(Mod, State, Instruction)) of
 		{ok, NewState} ->
 		    handler_main(Parent, Mod, NewState, Instructions);
@@ -518,37 +539,38 @@ debug(F, A) ->
     debug(get(debug), F, A).
 
 debug(true, F, A) ->
-    print(" DBG", F, A);
-debug(_, _F, _A) ->
+    print(false, " DBG", F, A);
+debug(_, _, _) ->
     ok.
 
 
+print(Pre, F, A) ->
+    print(true, Pre, F, A).
+
+
 error(F, A) ->
-    print(" ERROR", F, A).
+    print(true, " ERROR", F, A).
 
 
-print(P, F, A) ->
-    print(P, get(name), F, A).
+print(true = _Verbose, Pre, F, A) ->
+    FStr = ?F("*** [~s] ~p ~s~s *** " ++ 
+                  "~n   " ++ F ++ "~n~n", 
+              [?FTS(), self(), string_name(), Pre | A]),
+    io:format(user, FStr, []),
+    io:format(standard_io, FStr, []);
+print(false = _Verbose, Pre, F, A) ->
+    FStr = ?F("*** [~s] ~p ~s~s *** " ++ 
+                  "~n   " ++ F ++ "~n~n", 
+              [?FTS(), self(), string_name(), Pre | A]),
+    io:format(FStr, []).
 
-print([], undefined, F, A) ->
-    io:format("*** [~s] ~p *** " ++ 
-	      "~n   " ++ F ++ "~n", 
-	      [format_timestamp(now()),self()|A]);
-print(P, undefined, F, A) ->
-    io:format("*** [~s] ~p ~s *** " ++ 
-	      "~n   " ++ F ++ "~n", 
-	      [format_timestamp(now()),self(),P|A]);
-print(P, N, F, A) ->
-    io:format("*** [~s] ~p ~s~s *** " ++ 
-	      "~n   " ++ F ++ "~n", 
-	      [format_timestamp(now()),self(),N,P|A]).
+string_name() ->
+    case get(name) of
+        N when is_list(N) ->
+            N;
+        undefined ->
+            "";
+        N when is_atom(N) ->
+            atom_to_list(N)
+    end.
 
-
-format_timestamp({_N1, _N2, N3} = Now) ->
-    {Date, Time}     = calendar:now_to_datetime(Now),
-    {YYYY, MM, DD}   = Date,
-    {Hour, Min, Sec} = Time,
-    FormatDate = 
-        io_lib:format("~.4w-~.2.0w-~.2.0w ~.2.0w:~.2.0w:~.2.0w 4~w",
-                      [YYYY, MM, DD, Hour, Min, Sec, round(N3/1000)]),  
-    lists:flatten(FormatDate).

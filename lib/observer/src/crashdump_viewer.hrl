@@ -1,8 +1,10 @@
 %%
 %% %CopyrightBegin%
-%% 
-%% Copyright Ericsson AB 2003-2013. All Rights Reserved.
-%% 
+%%
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2003-2025. All Rights Reserved.
+%%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
 %% You may obtain a copy of the License at
@@ -14,7 +16,7 @@
 %% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 %% See the License for the specific language governing permissions and
 %% limitations under the License.
-%% 
+%%
 %% %CopyrightEnd%
 %%
 -define(space, undefined).
@@ -42,7 +44,7 @@
 	}).
 
 -record(proc,
-	%% Initial data according to the follwoing:
+	%% Initial data according to the following:
 	%% 
 	%% msg_q_len, reds, memory and stack_heap are integers because it must
 	%% be possible to sort on them. All other fields are strings
@@ -80,6 +82,10 @@
 	 old_heap,
 	 heap_unused,
 	 old_heap_unused,
+         bin_vheap,
+         old_bin_vheap,
+         bin_vheap_unused,
+         old_bin_vheap_unused,
 	 new_heap_start,
 	 new_heap_top,
 	 stack_top,
@@ -95,19 +101,27 @@
 
 -record(port,
 	{id,
+         state,
+         task_flags=0,
 	 slot,
 	 connected,
 	 links,
 	 name,
 	 monitors,
-	 controls}).
+         suspended,
+	 controls,
+         input,
+         output,
+         queue,
+         port_data}).
 
 -record(sched,
 	{name,
+         type,
 	 process,
 	 port,
 	 run_q=0,
-	 port_q=0,
+	 port_q,
 	 details=#{}
 	}).
 
@@ -118,6 +132,7 @@
 	 slot,
 	 id,
 	 name,
+         is_named,
 	 data_type="hash",
 	 buckets="-",
 	 size,

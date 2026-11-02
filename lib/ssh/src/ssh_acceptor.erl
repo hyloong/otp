@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2008-2015. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2008-2025. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -21,131 +23,250 @@
 %%
 
 -module(ssh_acceptor).
+-moduledoc false.
 
 -include("ssh.hrl").
 
 %% Internal application API
--export([start_link/5,
+-export([start_link/3,
 	 number_of_connections/1]).
 
-%% spawn export  
--export([acceptor_init/6, acceptor_loop/6]).
+%% spawn export
+-export([acceptor_init/4, acceptor_loop/6]).
+
+-behaviour(ssh_dbg).
+-export([ssh_dbg_trace_points/0, ssh_dbg_flags/1, ssh_dbg_on/1, ssh_dbg_off/1,
+         ssh_dbg_format/2, ssh_dbg_format/3]).
 
 -define(SLEEP_TIME, 200).
 
 %%====================================================================
 %% Internal application API
 %%====================================================================
-start_link(Port, Address, SockOpts, Opts, AcceptTimeout) ->
-    Args = [self(), Port, Address, SockOpts, Opts, AcceptTimeout],
-    proc_lib:start_link(?MODULE, acceptor_init, Args).
+%% Supposed to be called in a child-spec of the ssh_acceptor_sup
+start_link(SystemSup, Address, Options) ->
+    proc_lib:start_link(?MODULE, acceptor_init, [self(),SystemSup,Address,Options]).
+
+
+accept(ListenSocket, AcceptTimeout, Options) ->
+    {_, Callback, _} = ?GET_OPT(transport, Options),
+    Callback:accept(ListenSocket, AcceptTimeout).
+
+close(Socket, Options) ->
+    {_, Callback, _} = ?GET_OPT(transport, Options),
+    Callback:close(Socket).
 
 %%--------------------------------------------------------------------
 %%% Internal functions
 %%--------------------------------------------------------------------
-acceptor_init(Parent, Port, Address, SockOpts, Opts, AcceptTimeout) ->
-    {_, Callback, _} =  
-	proplists:get_value(transport, Opts, {tcp, gen_tcp, tcp_closed}),
-    case (catch do_socket_listen(Callback, Port, [{active, false} | SockOpts])) of
-	{ok, ListenSocket} ->
-	    proc_lib:init_ack(Parent, {ok, self()}),
-	    acceptor_loop(Callback, 
-			  Port, Address, Opts, ListenSocket, AcceptTimeout);
-	Error ->
-	    proc_lib:init_ack(Parent, Error),
-	    error
+acceptor_init(Parent, SystemSup,
+              #address{address=Address, port=Port, profile=_Profile},
+              Opts) ->
+    ssh_lib:set_label(server,
+                      {acceptor,
+                       list_to_binary(ssh_lib:format_address_port(Address, Port))}),
+    AcceptTimeout = ?GET_INTERNAL_OPT(timeout, Opts, ?DEFAULT_TIMEOUT),
+    {LSock, _LHost, _LPort, _SockOwner} =
+        ?GET_INTERNAL_OPT(lsocket, Opts, undefined),
+    proc_lib:init_ack(Parent, {ok, self()}),
+    acceptor_loop(Port, Address, Opts, LSock, AcceptTimeout, SystemSup).
+
+%%%----------------------------------------------------------------
+acceptor_loop(Port, Address, Opts, ListenSocket, AcceptTimeout, SystemSup) ->
+    try
+        case accept(ListenSocket, AcceptTimeout, Opts) of
+            {ok,Socket} ->
+                PeerName = inet:peername(Socket),
+                MaxSessions = ?GET_OPT(max_sessions, Opts),
+                NumSessions = number_of_connections(SystemSup),
+                ParallelLogin = ?GET_OPT(parallel_login, Opts),
+                case handle_connection(Address, Port, PeerName, Opts, Socket,
+                                       MaxSessions, NumSessions, ParallelLogin) of
+                    {error,Error} ->
+                        catch close(Socket, Opts),
+                        handle_error(Error, Address, Port, PeerName);
+                    _ ->
+                        ok
+                end;
+            {error,Error} ->
+                handle_error(Error, Address, Port, undefined)
+        end
+    catch
+        Class:Err:Stack ->
+            handle_error({error, {unhandled,Class,Err,Stack}}, Address, Port, undefined)
+    end,
+    ?MODULE:acceptor_loop(Port, Address, Opts, ListenSocket, AcceptTimeout, SystemSup).
+
+%%%----------------------------------------------------------------
+handle_connection(_Address, _Port, _Peer, _Options, _Socket,
+                  MaxSessions, NumSessions, _ParallelLogin)
+  when NumSessions >= MaxSessions->
+    {error,{max_sessions,MaxSessions}};
+handle_connection(_Address, _Port, {error,Error}, _Options, _Socket,
+                  _MaxSessions, _NumSessions, _ParallelLogin) ->
+    {error,Error};
+handle_connection(Address, Port, _Peer, Options, Socket,
+                  _MaxSessions, _NumSessions, ParallelLogin)
+  when ParallelLogin == false ->
+    handle_connection(Address, Port, Options, Socket);
+handle_connection(Address, Port, _Peer, Options, Socket,
+                  _MaxSessions, _NumSessions, ParallelLogin)
+  when ParallelLogin == true ->
+    Ref = make_ref(),
+    Pid = spawn_link(
+            fun() ->
+                    process_flag(trap_exit, true),
+                    receive
+                        {start,Ref} ->
+                            handle_connection(Address, Port, Options, Socket)
+                    after 10000 ->
+                            {error, timeout2}
+                    end
+            end),
+    catch gen_tcp:controlling_process(Socket, Pid),
+    Pid ! {start,Ref},
+    ok.
+
+handle_connection(Address, Port, Options0, Socket) ->
+    Options = ?PUT_INTERNAL_OPT([{user_pid, self()}
+                                ], Options0),
+    ssh_system_sup:start_connection(server,
+                                   #address{address = Address,
+                                            port = Port,
+                                            profile = ?GET_OPT(profile,Options)
+                                           },
+                                   Socket,
+                                   Options).
+
+%%%----------------------------------------------------------------
+handle_error(Reason, ToAddress, ToPort, {ok, {FromIP,FromPort}}) ->
+    handle_error(Reason, ToAddress, ToPort, FromIP, FromPort);
+
+handle_error(Reason, ToAddress, ToPort, _) ->
+    handle_error(Reason, ToAddress, ToPort, undefined, undefined).
+
+
+handle_error(Reason, ToAddress, ToPort, FromAddress, FromPort) ->
+    case Reason of
+        {max_sessions, MaxSessions} ->
+            MsgFun =
+                fun(debug) ->
+                        lists:concat(["Ssh login attempt to ",
+                                      ssh_lib:format_address_port(ToAddress,ToPort),
+                                      " from ",
+                                      ssh_lib:format_address_port(FromAddress,FromPort),
+                                      " denied due to option max_sessions limits to ",
+                                      MaxSessions, " sessions."]);
+                   (_) ->
+                        ["Ssh login attempt denied max_session limits"]
+                end,
+            error_logger:info_report(?SELECT_MSG(MsgFun));
+        Limit when Limit==enfile ; Limit==emfile ->
+            %% Out of sockets...
+            MsgFun =
+                fun(debug) ->
+                        [atom_to_list(Limit),": out of accept sockets on ",
+                         ssh_lib:format_address_port(ToAddress, ToPort),
+                         " - retrying"];
+                   (_) ->
+                        ["Out of accept sockets on - retrying"]
+                end,
+            error_logger:info_report(?SELECT_MSG(MsgFun)),
+            timer:sleep(?SLEEP_TIME);
+        closed ->
+            MsgFun =
+                fun(debug) ->
+                        ["The ssh accept socket on ", ssh_lib:format_address_port(ToAddress,ToPort),
+                         "was closed by a third party."];
+                   (_) ->
+                        ["The ssh accept socket on was closed by a third party"]
+                end,
+            error_logger:info_report(?SELECT_MSG(MsgFun));
+        timeout ->
+            ok;
+        Error when is_list(Error) ->
+            ok;
+        Error when FromAddress=/=undefined,
+                   FromPort=/=undefined ->
+            MsgFun =
+                fun(debug) ->
+                        ["Accept failed on ",ssh_lib:format_address_port(ToAddress,ToPort),
+                         " for connect from ",ssh_lib:format_address_port(FromAddress,FromPort),
+                         io_lib:format(": ~p", [Error])];
+                   (_) ->
+                        [io_lib:format("Accept failed on for connection: ~p", [Error])]
+                end,
+            error_logger:info_report(?SELECT_MSG(MsgFun));
+        Error ->
+            MsgFun =
+                fun(debug) ->
+                        ["Accept failed on ",ssh_lib:format_address_port(ToAddress,ToPort),
+                         io_lib:format(": ~p", [Error])];
+                   (_) ->
+                        [io_lib:format("Accept failed on for connection: ~p", [Error])]
+                end,
+            error_logger:info_report(?SELECT_MSG(MsgFun))
     end.
-   
-do_socket_listen(Callback, Port, Opts) ->
-    case Callback:listen(Port, Opts) of
-	{error, nxdomain} ->
-	    Callback:listen(Port, lists:delete(inet6, Opts));
-	{error, enetunreach} ->
-	    Callback:listen(Port, lists:delete(inet6, Opts));
-	{error, eafnosupport} ->
-	    Callback:listen(Port, lists:delete(inet6, Opts));
-	Other ->
-	    Other
-    end.
-    
-acceptor_loop(Callback, Port, Address, Opts, ListenSocket, AcceptTimeout) ->
-    case (catch Callback:accept(ListenSocket, AcceptTimeout)) of
-	{ok, Socket} ->
-	    handle_connection(Callback, Address, Port, Opts, Socket),
-	    ?MODULE:acceptor_loop(Callback, Port, Address, Opts,
-				  ListenSocket, AcceptTimeout);
-	{error, Reason} ->
-	    handle_error(Reason),
-	    ?MODULE:acceptor_loop(Callback, Port, Address, Opts,
-				  ListenSocket, AcceptTimeout);
-	{'EXIT', Reason} ->
-	    handle_error(Reason),
-	    ?MODULE:acceptor_loop(Callback, Port, Address, Opts,
-				  ListenSocket, AcceptTimeout)
-    end.
 
-handle_connection(Callback, Address, Port, Options, Socket) ->
-    SSHopts = proplists:get_value(ssh_opts, Options, []),
-    Profile =  proplists:get_value(profile, SSHopts, ?DEFAULT_PROFILE),
-    SystemSup = ssh_system_sup:system_supervisor(Address, Port, Profile),
+%%%----------------------------------------------------------------
+number_of_connections(SysSupPid) ->
+    lists:foldl(fun({_Ref,_Pid,supervisor,[ssh_connection_sup]}, N) -> N+1;
+                   (_, N) -> N
+                end, 0, supervisor:which_children(SysSupPid)).
 
-    MaxSessions = proplists:get_value(max_sessions,SSHopts,infinity),
-    case number_of_connections(SystemSup) < MaxSessions of
-	true ->
-	    {ok, SubSysSup} = ssh_system_sup:start_subsystem(SystemSup, Options),
-	    ConnectionSup = ssh_subsystem_sup:connection_supervisor(SubSysSup),
-	    Timeout = proplists:get_value(negotiation_timeout, SSHopts, 2*60*1000),
-	    ssh_connection_handler:start_connection(server, Socket,
-						    [{supervisors, [{system_sup, SystemSup},
-								    {subsystem_sup, SubSysSup},
-								    {connection_sup, ConnectionSup}]}
-						     | Options], Timeout);
-	false ->
-	    Callback:close(Socket),
-	    IPstr = if is_tuple(Address) -> inet:ntoa(Address);
-		     true -> Address
-		  end,
-	    Str = try io_lib:format('~s:~p',[IPstr,Port])
-		  catch _:_ -> "port "++integer_to_list(Port)
-		  end,
-	    error_logger:info_report("Ssh login attempt to "++Str++" denied due to option "
-				     "max_sessions limits to "++ io_lib:write(MaxSessions) ++
-				     " sessions."
-				     ),
-	    {error,max_sessions}
-    end.
+%%%################################################################
+%%%#
+%%%# Tracing
+%%%#
 
+ssh_dbg_trace_points() -> [connections, tcp].
 
-handle_error(timeout) ->
-    ok;
+ssh_dbg_flags(tcp) -> [c];
+ssh_dbg_flags(connections) -> [c].
 
-handle_error(enfile) ->
-    %% Out of sockets...
-    timer:sleep(?SLEEP_TIME);
+ssh_dbg_on(tcp) -> dbg:tpl(?MODULE, accept, 3, x),
+                   dbg:tpl(?MODULE, close, 2, x);
 
-handle_error(emfile) ->
-    %% Too many open files -> Out of sockets...
-    timer:sleep(?SLEEP_TIME);
+ssh_dbg_on(connections) -> dbg:tp(?MODULE,  acceptor_init, 4, x),
+                           dbg:tpl(?MODULE, handle_connection, 4, x).
 
-handle_error(closed) ->
-    error_logger:info_report("The ssh accept socket was closed by " 
-			     "a third party. "
-			     "This will not have an impact on ssh "
-			     "that will open a new accept socket and " 
-			     "go on as nothing happened. It does however "
-			     "indicate that some other software is behaving "
-			     "badly."),
-    exit(normal);
+ssh_dbg_off(tcp) -> dbg:ctpl(?MODULE, accept, 3),
+                    dbg:ctpl(?MODULE, close, 2);
 
-handle_error(Reason) ->
-    String = lists:flatten(io_lib:format("Accept error: ~p", [Reason])),
-    error_logger:error_report(String),
-    exit({accept_failed, String}).    
+ssh_dbg_off(connections) -> dbg:ctp(?MODULE, acceptor_init, 4),
+                            dbg:ctp(?MODULE, handle_connection, 4).
 
+ssh_dbg_format(tcp, {call, {?MODULE,accept, [ListenSocket, _AcceptTimeout, _Options]}}, Stack) ->
+    {skip, [{lsock,ListenSocket}|Stack]};
+ssh_dbg_format(tcp, {return_from, {?MODULE,accept,3}, {ok,Sock}}, [{lsock,ListenSocket}|Stack]) ->
+    {["TCP accept\n",
+      io_lib:format("ListenSock: ~p~n"
+                    "New Socket: ~p~n", [ListenSocket,Sock])
+     ], Stack};
+ssh_dbg_format(tcp, {return_from, {?MODULE,accept,3}, {error,timeout}}, [{lsock,_ListenSocket}|Stack]) ->
+    {skip, Stack};
+ssh_dbg_format(tcp, {return_from, {?MODULE,accept,3}, Return}, [{lsock,ListenSocket}|Stack]) ->
+    {["TCP accept returned\n",
+      io_lib:format("ListenSock: ~p~n"
+                    "Return: ~p~n", [ListenSocket,Return])
+     ], Stack}.
 
-number_of_connections(SystemSup) ->
-    length([X || 
-	       {R,X,supervisor,[ssh_subsystem_sup]} <- supervisor:which_children(SystemSup),
-	       is_pid(X),
-	       is_reference(R)
-	  ]).
+ssh_dbg_format(tcp, {return_from, {?MODULE,close,2}, _Return}) ->
+    skip;
+ssh_dbg_format(connections, {return_from, {?MODULE,acceptor_init,4}, _Ret}) ->
+    skip;
+ssh_dbg_format(connections, {call, {?MODULE,handle_connection,[_Address,_Port,_Options,_Sock]}}) ->
+    skip;
+ssh_dbg_format(Tracepoint, Event = {call, {?MODULE, Function, Args}}) ->
+    [io_lib:format("~w:~w/~w> ~s", [?MODULE, Function, length(Args)] ++
+                       ssh_dbg_comment(Tracepoint, Event))];
+ssh_dbg_format(Tracepoint, Event = {return_from, {?MODULE,Function,Arity}, Ret}) ->
+    [io_lib:format("~w:~w/~w returned ~W> ~s", [?MODULE, Function, Arity, Ret, 2] ++
+                  ssh_dbg_comment(Tracepoint, Event))].
+
+ssh_dbg_comment(tcp, {call, {?MODULE,close, [Socket, _Options]}}) ->
+    [io_lib:format("TCP close listen socket Socket: ~p~n", [Socket])];
+ssh_dbg_comment(connections, {call, {?MODULE,acceptor_init, [_Parent, _SysSup, Address, _Opts]}}) ->
+    [io_lib:format("Starting LISTENER on ~s", [ssh_lib:format_address(Address)])];
+ssh_dbg_comment(connections, {return_from, {?MODULE,handle_connection,4}, {error,Error}}) ->
+    [io_lib:format("Starting connection to server failed: Error = ~p", [Error])].

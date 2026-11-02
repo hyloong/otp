@@ -1,7 +1,9 @@
 /*
  * %CopyrightBegin%
  *
- * Copyright Ericsson AB 2009-2011. All Rights Reserved.
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Copyright Ericsson AB 2009-2025. All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -47,6 +49,12 @@ ethr_event_init(ethr_event *e)
 }
 
 int
+ethr_event_prepare_timed(ethr_event *e)
+{
+    return 0;
+}
+
+int
 ethr_event_destroy(ethr_event *e)
 {
     BOOL res = CloseHandle(e->handle);
@@ -65,11 +73,14 @@ ethr_event_reset(ethr_event *e)
     ethr_event_reset__(e);
 }
 
+#define MILLISECONDS_PER_WEEK__ (7*24*60*60*1000)
+
 static ETHR_INLINE int
 wait(ethr_event *e, int spincount, ethr_sint64_t timeout)
 {
     DWORD code, tmo;
     int sc, res, until_yield = ETHR_YIELD_AFTER_BUSY_LOOPS;
+    int timeout_res = ETIMEDOUT;
 
     if (timeout < 0)
 	tmo = INFINITE;
@@ -82,11 +93,19 @@ wait(ethr_event *e, int spincount, ethr_sint64_t timeout)
 	return ETIMEDOUT;
     }	    
     else {
+        ethr_sint64_t tmo_ms;
 	/*
 	 * Timeout in nano-seconds, but we can only
 	 * wait for milli-seconds...
 	 */
-	tmo = (DWORD) (timeout - 1) / (1000*1000) + 1;
+	tmo_ms = (timeout - 1) / (1000*1000) + 1;
+        if (tmo_ms <= MILLISECONDS_PER_WEEK__) {
+            tmo = (DWORD) tmo_ms;
+        }
+        else {
+            tmo = MILLISECONDS_PER_WEEK__;
+            timeout_res = EINTR;
+        }
     }
 
     if (spincount < 0)
@@ -125,7 +144,7 @@ wait(ethr_event *e, int spincount, ethr_sint64_t timeout)
 
 	code = WaitForSingleObject(e->handle, tmo);
         if (code == WAIT_TIMEOUT)
-            return ETIMEDOUT;
+            return timeout_res;
 	if (code != WAIT_OBJECT_0)
 	    ETHR_FATAL_ERROR__(ethr_win_get_errno__());
     }

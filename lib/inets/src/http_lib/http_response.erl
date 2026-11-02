@@ -1,8 +1,10 @@
 %%
 %% %CopyrightBegin%
-%% 
-%% Copyright Ericsson AB 2005-2009. All Rights Reserved.
-%% 
+%%
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2005-2026. All Rights Reserved.
+%%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
 %% You may obtain a copy of the License at
@@ -14,11 +16,12 @@
 %% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 %% See the License for the specific language governing permissions and
 %% limitations under the License.
-%% 
+%%
 %% %CopyrightEnd%
 %%
 
 -module(http_response).
+-moduledoc false.
 
 -include("http_internal.hrl").
 
@@ -31,16 +34,11 @@
 %%   Value - string()	
 %%                                   
 %% Description: Creates a http_response_h-record used internally to
-%%              handle http-headers.
+%%              handle http-headers, assumes reversed list of headers
+%%              to unfold multiline headers with obs-folds
 %%-------------------------------------------------------------------------
-headers([], Headers) ->
-    Headers;
-
-headers([Header | Tail], Headers) ->  
-    {Key, [$: | Value]} =
-	lists:splitwith(fun($:) -> false; (_) -> true end, Header), 
-    headers(Tail, headers(http_util:to_lower(string:strip(Key)), 
-			  string:strip(Value), Headers)).
+headers(RevLines, Headers) ->
+    fill_headers(RevLines, [], Headers).
 
 %%-------------------------------------------------------------------------
 %% headers(#http_response_h{}) -> HeaderList
@@ -68,6 +66,25 @@ header_list(Headers) ->
 %%%========================================================================
 %%% Internal functions
 %%%========================================================================
+fill_headers([], _, Headers) ->
+    Headers;
+fill_headers([[]], _, Headers) ->
+    Headers;
+fill_headers([[Ch|HeaderFold]|Tail], Folded, Headers)
+  when Ch == $\t; Ch == $\s ->
+    fill_headers(Tail, [HeaderFold|Folded], Headers);
+fill_headers([Header | Tail], Folded, Headers) ->
+    Unfolded = unfold([Header|Folded]),
+    {Key, [$: | Value]} =
+	lists:splitwith(fun($:) -> false; (_) -> true end, Unfolded),
+    fill_headers(Tail, [], headers(http_util:to_lower(string:strip(Key)),
+				   string:strip(Value), Headers)).
+
+unfold([L]) ->
+    L;
+unfold(Folded) ->
+    string:join(Folded, " ").
+
 headers("cache-control", Value, Headers) ->
     Headers#http_response_h{'cache-control'= Value};
 headers("connection", Value, Headers) ->
@@ -111,7 +128,10 @@ headers("content-encoding", Value, Headers) ->
 headers("content-language", Value, Headers) ->
     Headers#http_response_h{'content-language' = Value};
 headers("content-length", Value, Headers) ->
-    Headers#http_response_h{'content-length' = Value};
+    case is_valid_content_length(Value) of
+        true -> Headers#http_response_h{'content-length' = Value};
+        false -> throw({error, {invalid_content_length, Value}})
+    end;
 headers("content-location", Value, Headers) ->
     Headers#http_response_h{'content-location' = Value};
 headers("content-md5", Value, Headers) ->
@@ -207,3 +227,8 @@ key_value_tuple(_, undefined) ->
     undefined;
 key_value_tuple(Key, Value) ->
     {Key, Value}.
+
+is_valid_content_length("") ->
+    false;
+is_valid_content_length(Value) ->
+    lists:all(fun(C) -> C >= $0 andalso C =< $9 end, Value).

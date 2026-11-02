@@ -1,8 +1,10 @@
 %%
 %% %CopyrightBegin%
-%% 
-%% Copyright Ericsson AB 2008-2011. All Rights Reserved.
-%% 
+%%
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2008-2025. All Rights Reserved.
+%%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
 %% You may obtain a copy of the License at
@@ -14,79 +16,128 @@
 %% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 %% See the License for the specific language governing permissions and
 %% limitations under the License.
-%% 
+%%
 %% %CopyrightEnd%
 %%
 
 -module(bs_utf_SUITE).
 
--export([all/0, suite/0,groups/0,init_per_suite/1, end_per_suite/1, 
-	 init_per_group/2,end_per_group/2,
-	 init_per_testcase/2,end_per_testcase/2,
+-export([all/0, suite/0, init_per_suite/1, end_per_suite/1,
 	 utf8_roundtrip/1,utf16_roundtrip/1,utf32_roundtrip/1,
 	 utf8_illegal_sequences/1,utf16_illegal_sequences/1,
 	 utf32_illegal_sequences/1,
-	 bad_construction/1]).
+	 bad_construction/1,
+         utf8_big_file/1]).
 
--include_lib("test_server/include/test_server.hrl").
+-include_lib("common_test/include/ct.hrl").
+-include_lib("stdlib/include/assert.hrl").
 
--define(FAIL(Expr), ?line fail_check(catch Expr, ??Expr, [])).
+-define(FAIL(Expr),
+        fail_check((fun() ->
+                        try Expr
+                        catch error:R:S -> {'EXIT', {R, S}}
+                        end
+                    end)(), ??Expr, [])).
 
-init_per_testcase(Func, Config) when is_atom(Func), is_list(Config) ->
-    Dog = ?t:timetrap(?t:minutes(6)),
-    [{watchdog,Dog}|Config].
+suite() ->
+    [{ct_hooks,[ts_install_cth]},
+     {timetrap, {minutes, 6}}].
 
-end_per_testcase(_Func, Config) ->
-    Dog = ?config(watchdog, Config),
-    ?t:timetrap_cancel(Dog).
-
-suite() -> [{ct_hooks,[ts_install_cth]}].
-
-all() -> 
+all() ->
     [utf8_roundtrip, utf16_roundtrip, utf32_roundtrip,
      utf8_illegal_sequences, utf16_illegal_sequences,
-     utf32_illegal_sequences, bad_construction].
-
-groups() -> 
-    [].
+     utf32_illegal_sequences, bad_construction,
+     utf8_big_file].
 
 init_per_suite(Config) ->
+    %% Make sure that calls to id/1 will hide types.
+    id(Config),
     Config.
 
-end_per_suite(_Config) ->
-    ok.
-
-init_per_group(_GroupName, Config) ->
+end_per_suite(Config) ->
     Config.
-
-end_per_group(_GroupName, Config) ->
-    Config.
-
 
 utf8_roundtrip(Config) when is_list(Config) ->
-    ?line utf8_roundtrip(0, 16#D7FF),
-    ?line utf8_roundtrip(16#E000, 16#10FFFF),
+    utf8_roundtrip(0, 16#D7FF),
+    utf8_roundtrip(16#E000, 16#10FFFF),
     ok.
 
-utf8_roundtrip(First, Last) when First =< Last ->
-    Bin = int_to_utf8(First),
+utf8_roundtrip(First, Last) ->
+    %% Hide types.
+    do_utf8_roundtrip(id(First), id(Last)).
+
+do_utf8_roundtrip(First, Last) when First =< Last ->
+    Bin = int_to_utf8(id(First)),
     Bin = id(<<First/utf8>>),
     Bin = id(<<(id(<<>>))/binary,First/utf8>>),
-    Unaligned = id(<<3:2,First/utf8>>),
-    <<_:2,Bin/binary>> = Unaligned,
+
+    <<0:7/unit:8,Bin/binary>> = id(<<0:7/unit:8,First/utf8>>),
+
+    %% Here a heap binary and a sub binary will be allocated. If the
+    %% write in the utf8 segment extends beyond the end of heap binary,
+    %% it will overwrite the header for the sub binary.
+    <<-1:(64-9)/signed,Bin/binary>> = id(<<-1:(64-9),First/utf8>>),
+    <<-1:63/signed,Bin/binary>> = id(<<-1:63,First/utf8>>),
+
+    if
+        is_integer(First) ->
+            Bin = id(<<First/utf8>>)
+    end,
+
+    <<1:1,Bin/binary>> = id(<<1:1,First/utf8>>),
+    <<0:1,Bin/binary>> = id(<<0:1,First/utf8>>),
+    <<3:2,Bin/binary>> = id(<<3:2,First/utf8>>),
+    <<5:3,Bin/binary>> = id(<<5:3,First/utf8>>),
+    <<13:4,Bin/binary>> = id(<<13:4,First/utf8>>),
+    <<21:5,Bin/binary>> = id(<<21:5,First/utf8>>),
+    <<51:6,Bin/binary>> = id(<<51:6,First/utf8>>),
+    <<107:7,Bin/binary>> = id(<<107:7,First/utf8>>),
+
     <<First/utf8>> = Bin,
     <<First/utf8>> = make_unaligned(Bin),
-    utf8_roundtrip(First+1, Last);
-utf8_roundtrip(_, _) -> ok.
+
+    %% Matching of utf8 segments use different code paths dependending
+    %% on the the number of bytes available in the binary. Make sure
+    %% we test both code paths.
+    <<First/utf8,0:64>> = id(<<Bin/binary,0:64>>),
+    <<0:3,First/utf8,0:64>> = id(<<0:3,Bin/binary,0:64>>),
+
+    unaligned_match(First),
+
+    Bin = id(<<First/utf8>>),
+    do_utf8_roundtrip(First+1, Last);
+do_utf8_roundtrip(_, _) -> ok.
+
+unaligned_match(Char) ->
+    %% We create a REFC binary so that we can create sub binaries
+    %% and control the contents just beyond the end of the binary.
+    _ = [begin
+             Bin = id(<<0:64/unit:8,0:Offset,Char/utf8>>),
+             <<0:64/unit:8,0:Offset,Char/utf8>> = Bin,
+             unaligned_match(Bin, Offset, 8)
+         end || Offset <- lists:seq(1, 7)],
+    ok.
+
+unaligned_match(_Bin, _Offset, 0) ->
+    ok;
+unaligned_match(Bin, Offset, N) ->
+    Size = bit_size(Bin),
+    <<Shorter:(Size-1)/bits,_:1>> = Bin,
+    try
+        <<0:64/unit:8,0:Offset,Char/utf8>> = Shorter,
+        ct:fail({short_binary_accepted,Shorter,Char})
+    catch
+        error:{badmatch,_} ->
+            unaligned_match(Shorter, Offset, N - 1)
+    end.
 
 utf16_roundtrip(Config) when is_list(Config) ->
     Big = fun utf16_big_roundtrip/1,
     Little = fun utf16_little_roundtrip/1,
     PidRefs = [spawn_monitor(fun() ->
-				     do_utf16_roundtrip(Fun)
-			     end) || Fun <- [Big,Little]],
-    [receive {'DOWN',Ref,process,Pid,Reason} -> normal=Reason end ||
-	{Pid,Ref} <- PidRefs],
+                                     do_utf16_roundtrip(Fun)
+                             end) || Fun <- [Big,Little]],
+    [receive {'DOWN',Ref,process,Pid,Reason} -> normal=Reason end || {Pid,Ref} <- PidRefs],
     ok.
 
 do_utf16_roundtrip(Fun) ->
@@ -154,26 +205,27 @@ utf32_little_roundtrip(Char) ->
     ok.
 
 utf8_illegal_sequences(Config) when is_list(Config) ->
-    ?line fail_range(16#10FFFF+1, 16#10FFFF+512), %Too large.
-    ?line fail_range(16#D800, 16#DFFF),		%Reserved for UTF-16.
+    fail_range(16#10FFFF+1, 16#10FFFF+512), %Too large.
+    fail_range(16#D800, 16#DFFF),		%Reserved for UTF-16.
 
     %% Illegal first character.
-    ?line [fail(<<I,16#8F,16#8F,16#8F>>) || I <- lists:seq(16#80, 16#BF)],
+    [fail(<<I,16#8F,16#8F,16#8F>>) || I <- lists:seq(16#80, 16#BF)],
 
     %% Short sequences.
-    ?line short_sequences(16#80, 16#10FFFF),
+    short_sequences(16#80, 16#10FFFF),
 
     %% Overlong sequences. (Using more bytes than necessary
     %% is not allowed.)
-    ?line overlong(0, 127, 2),
-    ?line overlong(128, 16#7FF, 3),
-    ?line overlong(16#800, 16#FFFF, 4),
+    overlong(0, 127, 2),
+    overlong(128, 16#7FF, 3),
+    overlong(16#800, 16#FFFF, 4),
     ok.
 
 fail_range(Char, End) when Char =< End ->
-    {'EXIT',_} = (catch <<Char/utf8>>),
+    ?assertError(_, <<Char/utf8>>),
     Bin = int_to_utf8(Char),
     fail(Bin),
+    fail(<<Bin/binary,0:64>>),
     fail_range(Char+1, End);
 fail_range(_, _) -> ok.
 
@@ -187,9 +239,9 @@ short_sequences(Char, End) ->
 short_sequences_1(Char, Step, End) when Char =< End ->
     CharEnd = lists:min([Char+Step-1,End]),
     [spawn_monitor(fun() ->
-			   io:format("~p - ~p\n", [Char,CharEnd]),
-			   do_short_sequences(Char, CharEnd)
-		   end)|short_sequences_1(Char+Step, Step, End)];
+                           io:format("~p - ~p\n", [Char,CharEnd]),
+                           do_short_sequences(Char, CharEnd)
+                   end)|short_sequences_1(Char+Step, Step, End)];
 short_sequences_1(_, _, _) -> [].
 
 do_short_sequences(Char, End) when Char =< End ->
@@ -226,11 +278,19 @@ overlong(Char, Last, NumBytes) when Char =< Last ->
 overlong(_, _, _) -> ok.
 
 overlong(Char, NumBytes) when NumBytes < 5 ->
-    case int_to_utf8(Char, NumBytes) of
+    Bin = int_to_utf8(Char, NumBytes),
+    case <<(int_to_utf8(Char, NumBytes))/binary>> of
 	<<Char/utf8>>=Bin ->
-	    ?t:fail({illegal_encoding_accepted,Bin,Char});
+	    ct:fail({illegal_encoding_accepted,Bin,Char});
 	<<OtherChar/utf8>>=Bin ->
-	    ?t:fail({illegal_encoding_accepted,Bin,Char,OtherChar});
+	    ct:fail({illegal_encoding_accepted,Bin,Char,OtherChar});
+	_ -> ok
+    end,
+    case <<(int_to_utf8(Char, NumBytes))/binary,0:64>> of
+	<<Char/utf8,0:64>>=Bin2 ->
+	    ct:fail({illegal_encoding_accepted,Bin2,Char});
+	<<OtherChar2/utf8,0:64>>=Bin2 ->
+	    ct:fail({illegal_encoding_accepted,Bin2,Char,OtherChar2});
 	_ -> ok
     end,
     overlong(Char, NumBytes+1);
@@ -238,25 +298,32 @@ overlong(_, _) -> ok.
 
 fail(Bin) ->
     fail_1(Bin),
-    fail_1(make_unaligned(Bin)).
+    fail_1(make_unaligned(Bin)),
+    BinExt = <<Bin/binary,0:64>>,
+    fail_2(BinExt),
+    fail_2(make_unaligned(BinExt)).
 
 fail_1(<<Char/utf8>>=Bin) ->
-    ?t:fail({illegal_encoding_accepted,Bin,Char});
+    ct:fail({illegal_encoding_accepted,Bin,Char});
 fail_1(_) -> ok.
+
+fail_2(<<Char/utf8,0:64>>=Bin) ->
+    ct:fail({illegal_encoding_accepted,Bin,Char});
+fail_2(_) -> ok.
 
 
 utf16_illegal_sequences(Config) when is_list(Config) ->
-    ?line utf16_fail_range(16#10FFFF+1, 16#10FFFF+512), %Too large.
-    ?line utf16_fail_range(16#D800, 16#DFFF),		%Reserved for UTF-16.
+    utf16_fail_range(16#10FFFF+1, 16#10FFFF+512), %Too large.
+    utf16_fail_range(16#D800, 16#DFFF),	          %Reserved for UTF-16.
 
-    ?line lonely_hi_surrogate(16#D800, 16#DFFF),
-    ?line leading_lo_surrogate(16#DC00, 16#DFFF),
+    lonely_hi_surrogate(16#D800, 16#DFFF),
+    leading_lo_surrogate(16#DC00, 16#DFFF),
     
     ok.
 
 utf16_fail_range(Char, End) when Char =< End ->
-    {'EXIT',_} = (catch <<Char/big-utf16>>),
-    {'EXIT',_} = (catch <<Char/little-utf16>>),
+    ?assertError(_, <<Char/big-utf16>>),
+    ?assertError(_, <<Char/little-utf16>>),
     utf16_fail_range(Char+1, End);
 utf16_fail_range(_, _) -> ok.
 
@@ -265,9 +332,9 @@ lonely_hi_surrogate(Char, End) when Char =< End ->
     BinLittle = <<Char:16/little>>,
     case {BinBig,BinLittle} of
 	{<<Bad/big-utf16>>,_} ->
-	    ?t:fail({lonely_hi_surrogate_accepted,Bad});
+	    ct:fail({lonely_hi_surrogate_accepted,Bad});
 	{_,<<Bad/little-utf16>>} ->
-	    ?t:fail({lonely_hi_surrogate_accepted,Bad});
+	    ct:fail({lonely_hi_surrogate_accepted,Bad});
 	{_,_} ->
 	    ok
     end,
@@ -284,9 +351,9 @@ leading_lo_surrogate(HiSurr, LoSurr, End) when LoSurr =< End ->
     BinLittle = <<HiSurr:16/little,LoSurr:16/little>>,
     case {BinBig,BinLittle} of
 	{<<Bad/big-utf16,_/bits>>,_} ->
-	    ?t:fail({leading_lo_surrogate_accepted,Bad});
+	    ct:fail({leading_lo_surrogate_accepted,Bad});
 	{_,<<Bad/little-utf16,_/bits>>} ->
-	    ?t:fail({leading_lo_surrogate_accepted,Bad});
+	    ct:fail({leading_lo_surrogate_accepted,Bad});
 	{_,_} ->
 	    ok
     end,
@@ -294,20 +361,24 @@ leading_lo_surrogate(HiSurr, LoSurr, End) when LoSurr =< End ->
 leading_lo_surrogate(_, _, _) -> ok.
 
 utf32_illegal_sequences(Config) when is_list(Config) ->
-    ?line utf32_fail_range(16#10FFFF+1, 16#10FFFF+512), %Too large.
-    ?line utf32_fail_range(16#D800, 16#DFFF),		%Reserved for UTF-16.
-    ?line utf32_fail_range(-100, -1),
+    utf32_fail_range(16#10FFFF+1, 16#10FFFF+512), %Too large.
+    utf32_fail_range(16#D800, 16#DFFF),		%Reserved for UTF-16.
+    utf32_fail_range(-100, -1),
+
+    <<>> = id(<< 0 || <<X/utf32>> <= <<"àxxx">>, true =:= X >>),
+    <<>> = id(<< 0 || <<X/little-utf32>> <= <<"àxxx">>, true =:= X >>),
+
     ok.
 
 utf32_fail_range(Char, End) when Char =< End ->
-    {'EXIT',_} = (catch <<Char/big-utf32>>),
-    {'EXIT',_} = (catch <<Char/little-utf32>>),
+    ?assertError(_, <<Char/big-utf32>>),
+    ?assertError(_, <<Char/little-utf32>>),
     case {<<Char:32>>,<<Char:32/little>>} of
-	{<<Unexpected/utf32>>,_} ->
-	    ?line ?t:fail(Unexpected);
-	{_,<<Unexpected/little-utf32>>} ->
-	    ?line ?t:fail(Unexpected);
-	{_,_} -> ok
+        {<<Unexpected/utf32>>,_} ->
+            ct:fail(Unexpected);
+        {_,<<Unexpected/little-utf32>>} ->
+            ct:fail(Unexpected);
+        {_,_} -> ok
     end,
     utf32_fail_range(Char+1, End);
 utf32_fail_range(_, _) -> ok.
@@ -316,17 +387,34 @@ bad_construction(Config) when is_list(Config) ->
     ?FAIL(<<3.14/utf8>>),
     ?FAIL(<<3.1415/utf16>>),
     ?FAIL(<<3.1415/utf32>>),
+    ?assertError(_, <<(id(3.14))/utf8>>),
+    ?assertError(_, <<(id(3.1415))/utf16>>),
+    ?assertError(_, <<(id(3.1415))/utf32>>),
 
     ?FAIL(<<(-1)/utf8>>),
     ?FAIL(<<(-1)/utf16>>),
-    {'EXIT',_} = (catch <<(id(-1))/utf8>>),
-    {'EXIT',_} = (catch <<(id(-1))/utf16>>),
-    {'EXIT',_} = (catch <<(id(-1))/utf32>>),
+    ?assertError(_, <<(id(-1))/utf8>>),
+    ?assertError(_, <<(id(-1))/utf16>>),
+    ?assertError(_, <<(id(-1))/utf32>>),
 
     ?FAIL(<<16#D800/utf8>>),
     ?FAIL(<<16#D800/utf16>>),
     ?FAIL(<<16#D800/utf32>>),
+    ?assertError(_, <<(id(16#D800))/utf8>>),
+    ?assertError(_, <<(id(16#D800))/utf16>>),
+    ?assertError(_, <<(id(16#D800))/utf32>>),
 
+    ok.
+
+utf8_big_file(Config) ->
+    DataDir = get_data_dir(Config),
+    {ok, Bin} = file:read_file(filename:join(DataDir, "NormalizationTest.txt")),
+    List = unicode:characters_to_list(Bin),
+    _ = [begin
+             io:format("~p\n", [Offset]),
+             <<0:Offset, Rest/binary>> = id(<<0:Offset, Bin/binary>>),
+             List = [Char || <<Char/utf8>> <= Rest]
+         end || Offset <- lists:seq(0, 8)],
     ok.
 
 %% This function intentionally allows construction of
@@ -377,24 +465,21 @@ int_to_utf8(I, 4) ->
     B1 = (I bsr 18),
     <<1:1,1:1,1:1,1:1,0:1,B1:3,1:1,0:1,B2:6,1:1,0:1,B3:6,1:1,0:1,B4:6>>.
 
-make_unaligned(Bin0) when is_binary(Bin0) ->
-    Bin1 = <<0:3,Bin0/binary,31:5>>,
-    Sz = byte_size(Bin0),
-    <<0:3,Bin:Sz/binary,31:5>> = id(Bin1),
-    Bin.
+make_unaligned(Bin) ->
+    erts_debug:unaligned_bitstring(Bin, 3).
 
 fail_check({'EXIT',{badarg,_}}, Str, Vars) ->
     try	evaluate(Str, Vars) of
 	Res ->
 	    io:format("Interpreted result: ~p", [Res]),
-	    ?t:fail(did_not_fail_in_intepreted_code)
+	    ct:fail(did_not_fail_in_intepreted_code)
     catch
 	error:badarg ->
 	    ok
     end;
 fail_check(Res, _, _) ->
     io:format("Compiled result: ~p", [Res]),
-    ?t:fail(did_not_fail_in_compiled_code).
+    ct:fail(did_not_fail_in_compiled_code).
 
 evaluate(Str, Vars) ->
     {ok,Tokens,_} =
@@ -405,5 +490,19 @@ evaluate(Str, Vars) ->
 	    Result
     end.
 
+%% Fall back to the original data directory for cloned modules.
+get_data_dir(Config) ->
+    Data = proplists:get_value(data_dir, Config),
+    case filelib:is_dir(Data) of
+        true ->
+            Data;
+        false ->
+            Suffixes = ["_no_opt_SUITE",
+                        "_stripped_types_SUITE"],
+            lists:foldl(fun(Suffix, Acc) ->
+                                Opts = [{return,list}],
+                                re:replace(Acc, Suffix, "_SUITE", Opts)
+                        end, Data, Suffixes)
+    end.
+
 id(I) -> I.
-    

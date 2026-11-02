@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 1997-2013. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 1997-2026. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -18,15 +20,23 @@
 %% %CopyrightEnd%
 %%
 -module(disk_log_1).
+-moduledoc false.
+
+-compile([{nowarn_possibly_unsafe_function, {erlang, binary_to_term, 1}},
+          nowarn_deprecated_catch]).
 
 %% Efficient file based log - implementation part
 
 -export([int_open/4, ext_open/4, logl/1, close/3, truncate/3, chunk/5, 
          sync/2, write_cache/2]).
--export([mf_int_open/7, mf_int_log/3, mf_int_close/2, mf_int_inc/2, 
-	 mf_ext_inc/2, mf_int_chunk/4, mf_int_chunk_step/3, 
+-export([mf_int_open/7, mf_int_log/3, mf_int_close/2, mf_int_inc/2,
+	 mf_ext_inc/2, mf_int_chunk/4, mf_int_chunk_step/3,
 	 mf_sync/1, mf_write_cache/1]).
 -export([mf_ext_open/7, mf_ext_log/3, mf_ext_close/2]).
+-export([open_rotate_log_file/3, do_rotate/2,
+         rotate_ext_log/3, rotate_write_cache/1, rotate_ext_close/1,
+         change_size_rotate/2, get_rotate_size/1,
+         rotate_files/2]).
 
 -export([print_index_file/1]).
 -export([read_index_file/1]).
@@ -37,6 +47,8 @@
 -export([get_wrap_size/1]).
 -export([is_head/1]).
 -export([position/3, truncate_at/3, fwrite/4, fclose/2]).
+-export([set_quiet/1, is_quiet/0]).
+-export([remove_files/4]).
 
 -compile({inline,[{scan_f2,7}]}).
 
@@ -79,6 +91,7 @@ log(FdC, FileName, X) ->
 logl(X) ->
     logl(X, [], 0).
 
+-dialyzer({no_improper_lists, logl/3}).
 logl([X | T], Bs, Size) ->
     Sz = byte_size(X),
     BSz = <<Sz:?SIZESZ/unit:8>>,
@@ -453,7 +466,7 @@ new_ext_file(FName, Head) ->
 %% -> {FdC, {NoItemsWritten, NoBytesWritten}} | throw(Error)
 ext_log_head(Fd, Head) ->
     case lh(Head, external) of
-	{ok, BinHead} -> 
+	{ok, BinHead} ->
             Size = byte_size(BinHead),
             {ok, FdC} = fwrite_header(Fd, BinHead, Size),
             {FdC, {1, Size}};
@@ -499,7 +512,10 @@ lh(H, _F) -> % cannot happen
 
 repair(In, File) ->
     FSz = file_size(File),
-    error_logger:info_msg("disk_log: repairing ~tp ...\n", [File]),
+    case is_quiet() of
+        true -> ok;
+        _ -> error_logger:info_msg("disk_log: repairing ~tp ...\n", [File])
+    end,
     Tmp = add_ext(File, "TMP"),
     {ok, {_Alloc, Out, {0, _}, _FileSize}} = new_int_file(Tmp, none),
     scan_f_read(<<>>, In, Out, File, FSz, Tmp, ?MAX_CHUNK_SIZE, 0, 0).
@@ -625,7 +641,7 @@ is_head(Bin) when is_binary(Bin) ->
 %%          Writes MaxB bytes on each file.  
 %%          Creates a file called Name.idx in the Dir.  This
 %%          file contains the last written FileName as one byte, and
-%%          follwing that, the sizes of each file (size 0 number of items).
+%%          following that, the sizes of each file (size 0 number of items).
 %%          On startup, this file is read, and the next available
 %%          filename is used as first log file.
 %%          Reports can be browsed with Report Browser Tool (rb), or
@@ -673,7 +689,7 @@ mf_int_open(FName, MaxB, MaxF, Repair, Mode, Head, Version) ->
     end.
 
 %% -> {ok, handle(), Lost} | {error, Error, handle()}
-mf_int_inc(Handle, Head) -> 
+mf_int_inc(Handle, Head) ->
     #handle{filename = FName, cur_cnt = CurCnt, acc_cnt = AccCnt, 
 	    cur_name = FileName, curF = CurF, maxF = MaxF, 
 	    cur_fdc = CurFdC, noFull = NoFull} = Handle,
@@ -727,7 +743,7 @@ mf_int_log(Handle, Bins, Head, No0, Wraps) ->
 					    noFull = NoFull + 1},
 		    case catch close(CurFdC, FileName, read_write) of
 			ok ->
-			    mf_int_log(Handle1, Bins, Head, No0 + Nh, 
+			    mf_int_log(Handle1, Bins, Head, No0 + Nh,
 				       [Lost | Wraps]);
 			Error ->
 			    Lost1 = Lost + sum(Wraps),
@@ -768,8 +784,11 @@ mf_int_chunk(Handle, {FileNo, Pos}, Bin, N) ->
     NFileNo = inc(FileNo, Handle#handle.maxF),
     case catch int_open(FName, true, read_only, any) of
 	{error, _Reason} ->
-	   error_logger:info_msg("disk_log: chunk error. File ~tp missing.\n\n",
-				 [FName]),
+	    case is_quiet() of
+		true -> ok;
+		_ -> error_logger:info_msg("disk_log: chunk error. File ~tp missing.\n\n",
+					   [FName])
+	    end,
 	    mf_int_chunk(Handle, {NFileNo, 0}, [], N);
 	{ok, {_Alloc, FdC, _HeadSize, _FileSize}} ->
 	    case chunk(FdC, FName, Pos, Bin, N) of
@@ -796,9 +815,12 @@ mf_int_chunk_read_only(Handle, {FileNo, Pos}, Bin, N) ->
     NFileNo = inc(FileNo, Handle#handle.maxF),
     case catch int_open(FName, true, read_only, any) of
 	{error, _Reason} ->
-	   error_logger:info_msg("disk_log: chunk error. File ~tp missing.\n\n",
-				 [FName]),
-	   mf_int_chunk_read_only(Handle, {NFileNo, 0}, [], N);
+	    case is_quiet() of
+		true -> ok;
+		_ -> error_logger:info_msg("disk_log: chunk error. File ~tp missing.\n\n",
+					   [FName])
+	    end,
+	    mf_int_chunk_read_only(Handle, {NFileNo, 0}, [], N);
 	{ok, {_Alloc, FdC, _HeadSize, _FileSize}} ->
 	    case do_chunk_read_only(FdC, FName, Pos, Bin, N) of
 		{NewFdC, eof} ->
@@ -834,7 +856,10 @@ mf_write_cache(#handle{filename = FName, cur_fdc = FdC} = Handle) ->
 %% -> {Reply, handle()}; Reply = ok | Error
 mf_sync(#handle{filename = FName, cur_fdc = FdC} = Handle) ->
     {Reply, NewFdC} = fsync(FdC, FName),
-    {Reply, Handle#handle{cur_fdc = NewFdC}}.
+    {Reply, Handle#handle{cur_fdc = NewFdC}};
+mf_sync(#rotate_handle{file = FName, cur_fdc = FdC} = Handle) ->
+    {Reply, NewFdC} = fsync(FdC, FName),
+    {Reply, Handle#rotate_handle{cur_fdc = NewFdC}}.
 
 %% -> ok | throw(FileError)
 mf_int_close(#handle{filename = FName, curF = CurF, cur_name = FileName, 
@@ -844,7 +869,7 @@ mf_int_close(#handle{filename = FName, curF = CurF, cur_name = FileName,
     ok.
 
 %% -> {ok, handle(), Cnt} | throw(FileError)
-mf_ext_open(FName, MaxB, MaxF, Repair, Mode, Head, Version) -> 
+mf_ext_open(FName, MaxB, MaxF, Repair, Mode, Head, Version) ->
     {First, Sz, TotSz, NFiles} = read_index_file(Repair, FName, MaxF),
     write_size_file(Mode, FName, MaxB, MaxF, Version),
     NewMaxF = if 
@@ -854,37 +879,37 @@ mf_ext_open(FName, MaxB, MaxF, Repair, Mode, Head, Version) ->
 		      MaxF
 	      end,
     {ok, FdC, FileName, Lost, {NoItems, NoBytes}, CurB} = 
-	ext_file_open(FName, First, 0, 0, Head, Repair, Mode),
+        ext_file_open(FName, First, 0, 0, Head, Repair, Mode),
     CurCnt = Sz + NoItems - Lost,
     {ok, #handle{filename = FName, maxB = MaxB, cur_name = FileName, 
-		 maxF = NewMaxF, cur_cnt = CurCnt, acc_cnt = -Sz,
-		 curF = First, cur_fdc = FdC, firstPos = NoBytes,
-		 curB = CurB, noFull = 0, accFull = 0},
+        	 maxF = NewMaxF, cur_cnt = CurCnt, acc_cnt = -Sz,
+        	 curF = First, cur_fdc = FdC, firstPos = NoBytes,
+        	 curB = CurB, noFull = 0, accFull = 0},
      TotSz + CurCnt}.
 
 %% -> {ok, handle(), Lost} 
 %%   | {error, Error, handle()}
 %%   | throw(FatalError)
 %% Fatal errors should always terminate the log.
-mf_ext_inc(Handle, Head) -> 
-    #handle{filename = FName, cur_cnt = CurCnt, cur_name = FileName, 
-	    acc_cnt = AccCnt, curF = CurF, maxF = MaxF, cur_fdc = CurFdC, 
-	    noFull = NoFull} = Handle,
+mf_ext_inc(Handle, Head) ->
+    #handle{filename = FName, cur_cnt = CurCnt, cur_name = FileName,
+        acc_cnt = AccCnt, curF = CurF, maxF = MaxF, cur_fdc = CurFdC,
+        noFull = NoFull} = Handle,
     case catch wrap_ext_log(FName, CurF, MaxF, CurCnt, Head) of
-	{NewF, NewMaxF, NewFdC, NewFileName, Nh, FirstPos, Lost} ->
-	    Handle1 = Handle#handle{cur_fdc = NewFdC, curF = NewF, 
-				    cur_name = NewFileName,
-				    cur_cnt = Nh, acc_cnt = AccCnt + CurCnt, 
-				    maxF = NewMaxF, firstPos = FirstPos, 
-				    curB = FirstPos, noFull = NoFull + 1},
-	    case catch fclose(CurFdC, FileName) of
-		ok ->
-		    {ok, Handle1, Lost};
-		Error -> % Error in the last file, new file opened.
-		    {error, Error, Handle1}
-	    end;
-	Error ->
-	    {error, Error, Handle}
+        {NewF, NewMaxF, NewFdC, NewFileName, Nh, FirstPos, Lost} ->
+            Handle1 = Handle#handle{cur_fdc = NewFdC, curF = NewF,
+                cur_name = NewFileName,
+                cur_cnt = Nh, acc_cnt = AccCnt + CurCnt,
+                maxF = NewMaxF, firstPos = FirstPos,
+                curB = FirstPos, noFull = NoFull + 1},
+            case catch fclose(CurFdC, FileName) of
+                ok ->
+                    {ok, Handle1, Lost};
+                Error -> % Error in the last file, new file opened.
+                    {error, Error, Handle1}
+            end;
+        Error ->
+            {error, Error, Handle}
     end.
 
 %% -> {ok, handle(), Logged, Lost, NoWraps} | {ok, handle(), Logged} 
@@ -957,18 +982,202 @@ mf_ext_close(#handle{filename = FName, curF = CurF,
     Res.
 
 %% -> {ok, handle()} | throw(FileError)
-change_size_wrap(Handle, {NewMaxB, NewMaxF}, Version) ->
-    FName = Handle#handle.filename,
+change_size_wrap(#handle{filename = FName} = Handle, {NewMaxB, NewMaxF}, Version) ->
     {_MaxB, MaxF} = get_wrap_size(Handle),
+    BiggerMaxF = lists:max([MaxF, get_old_max_f(Handle#handle.maxF)]),
     write_size_file(read_write, FName, NewMaxB, NewMaxF, Version),
     if
-	NewMaxF > MaxF ->
-	    remove_files(FName, MaxF + 1, NewMaxF),
-	    {ok, Handle#handle{maxB = NewMaxB, maxF = NewMaxF}};
-	NewMaxF < MaxF ->
-	    {ok, Handle#handle{maxB = NewMaxB, maxF = {NewMaxF, MaxF}}};
-	true ->
-	    {ok, Handle#handle{maxB = NewMaxB, maxF = NewMaxF}}
+        NewMaxF > BiggerMaxF ->
+            remove_files(wrap, FName, MaxF + 1, NewMaxF),
+            {ok, Handle#handle{maxB = NewMaxB, maxF = NewMaxF}};
+        NewMaxF < BiggerMaxF ->
+            {ok, Handle#handle{maxB = NewMaxB, maxF = {NewMaxF, BiggerMaxF}}};
+        true ->
+            {ok, Handle#handle{maxB = NewMaxB, maxF = NewMaxF}}
+    end.
+
+change_size_rotate(#rotate_handle{maxB = MaxB, maxF = MaxF, file = FName} = Handle, {NewMaxB, NewMaxF}) ->
+    {MaxB, MaxF1} = get_size(MaxB, MaxF),
+    if
+        NewMaxF > MaxF1 ->
+            remove_files(rotate, FName, MaxF1, NewMaxF),
+            {ok, Handle#rotate_handle{maxB = NewMaxB, maxF = NewMaxF}};
+        NewMaxF < MaxF1 ->
+            remove_files(rotate, FName, NewMaxF, MaxF1),
+            {ok, Handle#rotate_handle{maxB = NewMaxB, maxF = NewMaxF}};
+        true ->
+            {ok, Handle#rotate_handle{maxB = NewMaxB, maxF = NewMaxF}}
+    end.
+
+open_rotate_log_file(FileName, Size, Head) ->
+    try
+        case filelib:ensure_dir(FileName) of
+            ok ->
+                case file:open(FileName, [raw, binary, read, append]) of
+                    {ok, Fd} ->
+                        {FdC1, _HeadSize} = ext_log_head(Fd, Head),
+                        {FdC, FileSize} = position_close(FdC1, FileName, cur),       
+                        {ok,#file_info{inode=INode}} =
+                            file:read_file_info(FileName,[raw]),
+                        {MaxB, MaxF} = Size,
+			RotHandle = #rotate_handle{file = FileName,
+						   cur_fdc = FdC,
+						   maxB = MaxB,
+						   maxF = MaxF,
+						   curB = FileSize,
+                                                   firstPos = FileSize,
+						   inode = INode},
+			update_rotation(RotHandle),
+			{ok, RotHandle};
+                    Error ->
+                        Error
+                end;
+            Error ->
+                Error
+        end
+    catch
+        _:Reason -> {error,Reason}
+    end.
+
+update_rotation(#rotate_handle{file = FName, maxF = MaxF}) ->
+    maybe_remove_archives(MaxF, FName),
+    maybe_update_compress(0, MaxF,FName).
+
+maybe_remove_archives(Count, FName) ->
+    Archive = rotate_file_name(FName, Count),
+    case file:read_file_info(Archive,[raw]) of
+        {error,enoent} ->
+            ok;
+        _ ->
+            _ = file:delete(Archive),
+            maybe_remove_archives(Count+1, FName)
+    end.
+
+maybe_update_compress(MaxF, MaxF, _FName) ->
+    ok;
+maybe_update_compress(N, MaxF, FName) ->
+    FileName = add_ext(FName, N),
+    case file:read_file_info(FileName,[raw]) of
+        {ok,_} ->
+            compress_file(FileName);
+        _ ->
+            ok
+    end,
+    maybe_update_compress(N+1, MaxF, FName).    
+
+do_rotate(#rotate_handle{file = FName, maxF = MaxF, cur_fdc = FdC} = RotHandle, Head) ->
+    #cache{fd = Fd, c = C} = FdC,
+    {_, _C1} = write_cache(Fd, FName, C),
+    _ = delayed_write_close(Fd),
+    rotate_files(FName, MaxF),
+    {ok, NewFdC, FileSize} = ensure_open(FName, Head),
+    {ok,#file_info{inode=INode}} = file:read_file_info(FName,[raw]),
+    RotHandle#rotate_handle{cur_fdc = NewFdC, inode = INode, curB = FileSize, firstPos = FileSize}.
+
+rotate_files(FileName,0) ->
+    _ = file:delete(FileName),
+    ok;
+rotate_files(FileName, 1) ->
+    FileName0 = FileName ++".0",
+    Rename = file:rename(FileName, FileName0),
+    %% Rename may fail if file has been deleted. If it has, then
+    %% we do not need to compress it...
+    if Rename =:= ok -> compress_file(FileName0);
+        true -> ok
+    end,
+    ok;
+rotate_files(FileName, Count) ->
+    _ = file:rename(rotate_file_name(FileName, Count-2), rotate_file_name(FileName, Count-1)),
+    rotate_files(FileName, Count-1).
+
+rotate_file_name(FileName, Count) ->
+    concat([FileName, ".", Count, ".gz"]).
+
+compress_file(FileName) ->
+    {ok,In} = file:open(FileName,[read,binary]),
+    {ok,Out} = file:open(FileName++".gz",[write]),
+    Z = zlib:open(),
+    zlib:deflateInit(Z, default, deflated, 31, 8, default),
+    compress_data(Z,In,Out),
+    zlib:deflateEnd(Z),
+    zlib:close(Z),
+    _ = file:close(In),
+    _ = file:close(Out),
+    _ = file:delete(FileName),
+    ok.
+
+compress_data(Z,In,Out) ->
+    case file:read(In,100000) of
+        {ok,Data} ->
+            Compressed = zlib:deflate(Z, Data),
+            _ = file:write(Out,Compressed),
+            compress_data(Z,In,Out);
+        eof ->
+            Compressed = zlib:deflate(Z, <<>>, finish),
+            _ = file:write(Out,Compressed),
+            ok
+    end.
+
+rotate_ext_log(Handle, Bin, Head) ->
+    rotate_ext_log(Handle, Bin, Head, 0).
+
+rotate_ext_log(Handle, [], _Head, N) ->
+    {ok, Handle, N};
+rotate_ext_log(Handle, Bins, Head, N0) ->
+    #rotate_handle{file = FileName, maxB = MaxB, cur_fdc = CurFdC, 
+            curB = CurB, firstPos = FirstPos} = Handle,
+    {FirstBins, LastBins, NoBytes, N} = 
+	ext_split_bins(CurB, MaxB, FirstPos, Bins),
+    case FirstBins of
+	[] ->
+            Handle1 = do_rotate(Handle, Head),
+	    rotate_ext_log(Handle1, Bins, Head, N0);
+	_ ->
+	    case fwrite(CurFdC, FileName, FirstBins, NoBytes) of
+                {ok, NewCurFdC} ->
+		    Handle1 = Handle#rotate_handle{cur_fdc = NewCurFdC, 
+                                            curB = CurB + NoBytes},
+		    rotate_ext_log(Handle1, LastBins, Head, N0 + N);
+		{Error, NewCurFdC} ->
+		    Handle1 = Handle#rotate_handle{cur_fdc = NewCurFdC},
+		    {error, Error, Handle1}
+	    end
+    end.
+
+%% -> {Reply, handle()}; Reply = ok | Error
+rotate_write_cache(#rotate_handle{file = FName, cur_fdc = FdC} = Handle) ->
+    erase(write_cache_timer_is_running),
+    #cache{fd = Fd, c = C} = FdC,
+    {Reply, NewFdC} = write_cache(Fd, FName, C),
+    {Reply, Handle#rotate_handle{cur_fdc = NewFdC}}.
+
+rotate_ext_close(#rotate_handle{file = FName, cur_fdc = CurFdC}) ->
+    (catch fclose(CurFdC, FName)).
+
+ensure_open(Filename, Head) ->
+    case filelib:ensure_dir(Filename) of
+        ok ->
+            case open_update(Filename) of
+                {ok, Fd} ->
+                    {FdC1, _HeadSize} = ext_log_head(Fd, Head),
+                    {FdC, FileSize} = position_close(FdC1, Filename, cur),
+                    {ok, FdC, FileSize};
+                Error ->
+                    exit({could_not_reopen_file,Error})
+            end;
+        Error ->
+            exit({could_not_create_dir_for_file,Error})
+    end.
+
+%% A special close that closes the FD properly when the delayed write close failed
+delayed_write_close(Fd) ->
+    case file:close(Fd) of
+        %% We got an error while closing, could be a delayed write failing
+        %% So we close again in order to make sure the file is closed.
+        {error, _} ->
+            file:close(Fd);
+        Res ->
+            Res
     end.
 
 %%-----------------------------------------------------------------
@@ -1026,7 +1235,7 @@ ext_file_open(FName, NewFile, OldFile, OldCnt, Head, Repair, Mode) ->
 -define(index_file_name(F), add_ext(F, "idx")).
 
 read_index_file(truncate, FName, MaxF) ->
-    remove_files(FName, 2, MaxF),
+    remove_files(wrap, FName, 2, MaxF),
     _ = file:delete(?index_file_name(FName)),
     {1, 0, 0, 0};
 read_index_file(_, FName, _MaxF) ->
@@ -1128,7 +1337,7 @@ write_index_file(read_write, FName, NewFile, OldFile, OldCnt) ->
 		    _ = file:close(Fd),
 		    case R of
 			{ok, <<Lost:SzSz/unit:8>>} -> Lost;
-			{ok, _} -> 
+			{ok, _} ->
                             throw({error, {invalid_index_file, FileName}});
 			eof    -> 0;
 			Error2 -> file_error(FileName, Error2)
@@ -1142,6 +1351,7 @@ write_index_file(read_write, FName, NewFile, OldFile, OldCnt) ->
 	    file_error(FileName, E)
     end.
 
+-dialyzer({no_improper_lists, to_8_bytes/4}).
 to_8_bytes(<<N:32,T/binary>>, NT, FileName, Fd) ->
     to_8_bytes(T, [NT | <<N:64>>], FileName, Fd);
 to_8_bytes(B, NT, _FileName, _Fd) when byte_size(B) =:= 0 ->
@@ -1276,6 +1486,7 @@ ext_split_bins(CurB, MaxB, FirstPos, Bins) ->
     MaxBs = MaxB - CurB, IsFirst = CurB =:= FirstPos,
     ext_split_bins(MaxBs, IsFirst, [], Bins, 0, 0).
 
+-dialyzer({no_improper_lists, ext_split_bins/6}).
 ext_split_bins(MaxBs, IsFirst, First, [X | Last], Bs, N) ->
     NBs = Bs + byte_size(X),
     if
@@ -1296,6 +1507,7 @@ int_split_bins(CurB, MaxB, FirstPos, Bins) ->
     MaxBs = MaxB - CurB, IsFirst = CurB =:= FirstPos,
     int_split_bins(MaxBs, IsFirst, [], Bins, 0, 0).
 
+-dialyzer({no_improper_lists, int_split_bins/6}).
 int_split_bins(MaxBs, IsFirst, First, [X | Last], Bs, N) ->
     Sz = byte_size(X),
     NBs = Bs + Sz + ?HEADERSZ,
@@ -1328,12 +1540,12 @@ inc_wrap(FName, CurF, MaxF) ->
 	    if 
 		CurF >= NewMaxF ->
 		    %% We are at or above the new number of files
-		    remove_files(FName, CurF + 1, OldMaxF),
+		    remove_files(wrap, FName, CurF + 1, OldMaxF),
 		    if 
 			CurF > NewMaxF ->
 			    %% The change was done while the current file was 
 			    %% greater than the new number of files.
-			    %% The index file is not trunctated here, since
+			    %% The index file is not truncated here, since
 			    %% writing the index file while opening the file
 			    %% with index 1 will write the value for the file
 			    %% with extension CurF as well. Next time the 
@@ -1358,9 +1570,10 @@ inc_wrap(FName, CurF, MaxF) ->
 	    {NewFt, MaxF}
     end.
 
-inc(N, {_NewMax, OldMax}) -> inc(N, OldMax, 1);
 inc(N, Max) -> inc(N, Max, 1).
 
+inc(N, {_NewMax, OldMax}, Step) ->
+    inc(N, OldMax, Step);
 inc(N, Max, Step) ->
     Nx = (N + Step) rem Max,
     if
@@ -1375,24 +1588,34 @@ file_size(Fname) ->
 
 %% -> ok | throw(FileError)
 %% Tries to remove each file with name FName.I, N<=I<=Max.
-remove_files(FName, N, Max) ->
-    remove_files(FName, N, Max, ok).
+remove_files(Type, FName, N, Max) ->
+    remove_files(Type, FName, N, Max, ok).
 
-remove_files(_FName, N, Max, ok) when N > Max ->
+remove_files(_Type, _FName, N, Max, ok) when N > Max ->
     ok;
-remove_files(_FName, N, Max, {FileName, Error}) when N > Max ->
+remove_files(_Type, _FName, N, Max, {FileName, Error}) when N > Max ->
     file_error(FileName, Error);
-remove_files(FName, N, Max, Reply) ->
-    FileName = add_ext(FName, N),
+remove_files(Type, FName, N, Max, Reply) ->
+    FileName =
+        case Type of
+            wrap -> add_ext(FName, N);
+            rotate -> rotate_file_name(FName, N)
+        end,
     NewReply = case file:delete(FileName) of
 		   ok -> Reply;
 		   {error, enoent} -> Reply;
 		   Error -> {FileName, Error}
 	       end,
-    remove_files(FName, N + 1, Max, NewReply).
+    remove_files(Type, FName, N + 1, Max, NewReply).
 
 %% -> {MaxBytes, MaxFiles}
 get_wrap_size(#handle{maxB = MaxB, maxF = MaxF}) ->
+    get_size(MaxB, MaxF).
+
+get_rotate_size(#rotate_handle{maxB = MaxB, maxF = MaxF}) ->
+    get_size(MaxB, MaxF).
+
+get_size(MaxB, MaxF) ->
     case MaxF of
 	{NewMaxF,_} -> {MaxB, NewMaxF};
 	MaxF        -> {MaxB, MaxF}
@@ -1412,24 +1635,36 @@ open_truncate(FileName) ->
 
 %%% Functions that access files, and throw on error. 
 
--define(MAX, 16384). % bytes
 -define(TIMEOUT, 2000). % ms
 
 %% -> {Reply, cache()}; Reply = ok | Error
-fwrite(#cache{c = []} = FdC, _FN, B, Size) ->
+fwrite(FdC, _FN, _B, 0) ->
+    {ok, FdC};  % avoid starting a timer for empty writes
+fwrite(#cache{fd = Fd, c = C, sz = Sz} = FdC, FileName, B, Size) ->
+    Sz1 = Sz + Size,
+    C1 = cache_append(C, B),
+    if Sz1 > ?MAX_FWRITE_CACHE ->
+            write_cache(Fd, FileName, C1);
+       true ->
+            maybe_start_timer(C),
+            {ok, FdC#cache{sz = Sz1, c = C1}}
+    end.
+
+cache_append([], B) -> B;
+cache_append(C, B) -> [C | B].
+
+%% if the cache was empty, start timer (unless it's already running)
+maybe_start_timer([]) ->
     case get(write_cache_timer_is_running) of
-        true -> 
+        true ->
             ok;
-        _ -> 
+        _ ->
             put(write_cache_timer_is_running, true),
             erlang:send_after(?TIMEOUT, self(), {self(), write_cache}),
             ok
-    end,
-    {ok, FdC#cache{sz = Size, c = B}};
-fwrite(#cache{sz = Sz, c = C} = FdC, _FN, B, Size) when Sz < ?MAX ->
-    {ok, FdC#cache{sz = Sz+Size, c = [C | B]}};
-fwrite(#cache{fd = Fd, c = C}, FileName, B, _Size) ->
-    write_cache(Fd, FileName, [C | B]).
+    end;
+maybe_start_timer(_C) ->
+    ok.
 
 fwrite_header(Fd, B, Size) ->
     {ok, #cache{fd = Fd, sz = Size, c = B}}.
@@ -1533,6 +1768,12 @@ fclose(#cache{fd = Fd, c = C}, FileName) ->
     _ = write_cache_close(Fd, FileName, C),
     file:close(Fd).
 
+set_quiet(Bool) ->
+    put(quiet, Bool).
+
+is_quiet() ->
+    get(quiet) =:= true.
+
 %% -> {Reply, #cache{}}; Reply = ok | Error
 write_cache(Fd, _FileName, []) ->
     {ok, #cache{fd = Fd}};
@@ -1554,6 +1795,7 @@ write_cache_close(Fd, FileName, C) ->
 
 -spec file_error(file:filename(), {'error', file:posix()}) -> no_return().
 
+
 file_error(FileName, {error, Error}) ->
     throw({error, {file_error, FileName, Error}}).
 
@@ -1562,3 +1804,8 @@ file_error(FileName, {error, Error}) ->
 file_error_close(Fd, FileName, {error, Error}) ->
     _ = file:close(Fd),
     throw({error, {file_error, FileName, Error}}).
+
+get_old_max_f({_, OldMaxF}) ->
+    OldMaxF;
+get_old_max_f(MaxF) ->
+    MaxF.

@@ -1,8 +1,10 @@
 %%
 %% %CopyrightBegin%
-%% 
-%% Copyright Ericsson AB 1996-2012. All Rights Reserved.
-%% 
+%%
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 1996-2026. All Rights Reserved.
+%%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
 %% You may obtain a copy of the License at
@@ -14,11 +16,101 @@
 %% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 %% See the License for the specific language governing permissions and
 %% limitations under the License.
-%% 
+%%
 %% %CopyrightEnd%
 %%
 -module(memsup).
+
+-compile([{nowarn_deprecated_function, [{erlang,exit,2}]}]).
+
+-moduledoc """
+A Memory Supervisor Process
+
+`memsup` is a process which supervises the memory usage for the system and for
+individual processes. It is part of the OS_Mon application, see
+[os_mon](os_mon_app.md). Available for Unix and Windows.
+
+Periodically performs a memory check:
+
+- If more than a certain amount of available system memory is allocated, as
+  reported by the underlying operating system, the alarm
+  `{system_memory_high_watermark, []}` is set. How the amount of available
+  memory is determined depends on the underlying OS and may change as better
+  values become available.
+- If any Erlang process `Pid` in the system has allocated more than a certain
+  amount of total system memory, the alarm
+  `{process_memory_high_watermark, Pid}` is set.
+
+Alarms are reported to the SASL alarm handler, see `m:alarm_handler`. To set an
+alarm, `alarm_handler:set_alarm(Alarm)` is called where `Alarm` is either of the
+alarms specified above.
+
+The alarms are cleared automatically when the alarm cause is no longer valid.
+
+The function [get_memory_data()](`get_memory_data/0`) can be used to retrieve
+the result of the latest periodic memory check.
+
+There is also a interface to system dependent memory data,
+[get_system_memory_data()](`get_system_memory_data/0`). The result is highly
+dependent on the underlying operating system and the interface is targeted
+primarily for systems without virtual memory. However, the output on other
+systems is still valid, although sparse.
+
+A call to `get_system_memory_data/0` is more costly than a call to
+`get_memory_data/0` as data is collected synchronously when this function is
+called.
+
+The total system memory reported under UNIX is the number of physical pages of
+memory times the page size, and the available memory is the number of available
+physical pages times the page size. This is a reasonable measure as swapping
+should be avoided anyway, but the task of defining total memory and available
+memory is difficult because of virtual memory and swapping.
+
+## Configuration
+
+The following configuration parameters can be used to change the default values
+for time intervals and thresholds:
+
+- **`memory_check_interval = int()>0`** - The time interval, in minutes, for the
+  periodic memory check. The default is one minute.
+
+- **`system_memory_high_watermark = float()`** - The threshold, as percentage of
+  system memory, for how much system memory can be allocated before the
+  corresponding alarm is set. The default is 0.80 (80%).
+
+- **`process_memory_high_watermark = float()`** - The threshold, as percentage
+  of system memory, for how much system memory can be allocated by one Erlang
+  process before the corresponding alarm is set. The default is 0.05 (5%).
+
+- **`memsup_helper_timeout = int()>0`** - A timeout, in seconds, for how long
+  the `memsup` process should wait for a result from a memory check. If the
+  timeout expires, a warning message `"OS_MON (memsup) timeout"` is issued via
+  `error_logger` and any pending, synchronous client calls will return a dummy
+  value. Normally, this situation should not occur. There have been cases on
+  Linux, however, where the pseudo file from which system data is read is
+  temporarily unavailable when the system is heavily loaded.
+
+  The default is 30 seconds.
+
+- **`memsup_system_only = bool()`** - Specifies whether the `memsup` process
+  should only check system memory usage (`true`) or not. The default is `false`,
+  meaning that information regarding both system memory usage and Erlang process
+  memory usage is collected.
+
+  It is recommended to set this parameter to `true` on systems with many
+  concurrent processes, as each process memory check makes a traversal of the
+  entire list of processes.
+
+See [config](`e:kernel:config.md`) for information about how to change the
+value of configuration parameters.
+
+### See Also
+
+`m:alarm_handler`, [os_mon](os_mon_app.md)
+""".
 -behaviour(gen_server).
+
+-compile([{nowarn_unsafe_function, {os, cmd, 1}}]).
 
 %% API
 -export([start_link/0]). % for supervisor
@@ -32,10 +124,10 @@
 
 %% gen_server callbacks
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2,
-	 terminate/2, code_change/3]).
+	 terminate/2]).
 
 %% Other exports
--export([format_status/2]).
+-export([format_status/1]).
 
 -include("memsup.hrl").
 
@@ -59,24 +151,119 @@
 	 ext_pending = []     % [{ext,From}]
 	}).
 
+-define(EXT_MEM_MAP, memsup_ext_memory_type_map__).
+
 %%----------------------------------------------------------------------
 %% API
 %%----------------------------------------------------------------------
 
+-doc false.
 start_link() ->
     gen_server:start_link({local, ?MODULE}, ?MODULE, [], []).
 
+-doc """
+Returns the wordsize of the current running operating system.
+""".
+-spec get_os_wordsize() -> Wordsize when Wordsize :: 32 | 64 | unsupported_os.
 get_os_wordsize() ->
     os_mon:call(memsup, get_os_wordsize, infinity).
 
+-doc """
+Returns the result of the latest memory check, where `Total` is the total memory
+size and `Allocated` the allocated memory size, in bytes.
+
+`Worst` is the pid and number of allocated bytes of the largest Erlang process
+on the node. If `memsup` should not collect process data, that is if the
+configuration parameter `memsup_system_only` was set to `true`, `Worst` is
+`undefined`.
+
+The function is normally asynchronous in the sense that it does not invoke a
+memory check, but returns the latest available value. The one exception if is
+the function is called before a first memory check is finished, in which case it
+does not return a value until the memory check is finished.
+
+Returns `{0,0,{pid(),0}}` or `{0,0,undefined}` if `memsup` is not available, or
+if all memory checks so far have timed out.
+""".
+-spec get_memory_data() -> {Total, Allocated, Worst} when
+      Total :: integer(),
+      Allocated :: integer(),
+      Worst :: {Pid, PidAllocated} | undefined,
+      Pid :: pid(),
+      PidAllocated :: integer().
 get_memory_data() ->
     os_mon:call(memsup, get_memory_data, infinity).
 
+-doc """
+Invokes a memory check and returns the resulting, system dependent, data as a
+list of tagged tuples, where `Tag` currently can be one of the following:
+
+- **`total_memory`** - The total amount of memory available to the Erlang
+  emulator, allocated and free. May or may not be equal to the amount of memory
+  configured in the system.
+
+- **`available_memory`** - Informs about the amount memory that is available for
+  increased usage if there is an increased memory need. This value is not based
+  on a calculation of the other provided values and should give a better value
+  of the amount of memory that actually is available than calculating a value
+  based on the other values reported. This value is currently only present on
+  newer Linux kernels. If this value is not available on Linux, you can use the
+  sum of `cached_memory`, `buffered_memory`, and `free_memory` as an
+  approximation.
+
+- **`free_memory`** - The amount of free memory available to the Erlang emulator
+  for allocation.
+
+- **`system_total_memory`** - The amount of memory available to the whole
+  operating system. This may well be equal to `total_memory` but not
+  necessarily.
+
+- **`buffered_memory`** - The amount of memory the system uses for temporary
+  storing raw disk blocks.
+
+- **`cached_memory`** - The amount of memory the system uses for cached files
+  read from disk. On Linux, also memory marked as reclaimable in the kernel slab
+  allocator will be added to this value.
+
+- **`total_swap`** - The amount of total amount of memory the system has
+  available for disk swap.
+
+- **`free_swap`** - The amount of memory the system has available for disk swap.
+
+> #### Note {: .info }
+>
+> Note that new tagged tuples may be introduced in the result at any time
+> without prior notice
+
+Note that the order of the tuples in the resulting list is undefined and may
+change at any time.
+
+All memory sizes are presented as number of _bytes_.
+
+Returns the empty list [] if `memsup` is not available, or if the memory check
+times out.
+""".
+-spec get_system_memory_data() -> MemDataList when
+      MemDataList :: [{Tag, Size}],
+      Tag :: atom(),
+      Size :: integer().
 get_system_memory_data() ->
     os_mon:call(memsup, get_system_memory_data, infinity).
 
+-doc """
+Returns the time interval, in milliseconds, for the periodic memory check.
+""".
+-spec get_check_interval() -> Milliseconds :: timer:time().
 get_check_interval() ->
     os_mon:call(memsup, get_check_interval, infinity).
+-doc """
+Changes the time interval, given in minutes, for the periodic memory check.
+
+The change will take effect after the next memory check and is non-persistent.
+That is, in case of a process restart, this value is forgotten and the default
+value will be used. See [Configuration](`m:memsup#module-configuration`).
+""".
+-spec set_check_interval(Minutes :: non_neg_integer()) -> ok.
 set_check_interval(Minutes) ->
     case param_type(memory_check_interval, Minutes) of
 	true ->
@@ -86,8 +273,20 @@ set_check_interval(Minutes) ->
 	    erlang:error(badarg)
     end.
 
+-doc """
+Returns the threshold, in percent, for process memory allocation.
+""".
+-spec get_procmem_high_watermark() -> integer().
 get_procmem_high_watermark() ->
     os_mon:call(memsup, get_procmem_high_watermark, infinity).
+-doc """
+Changes the threshold, given as a float, for process memory allocation.
+
+The change will take effect during the next periodic memory check and is
+non-persistent. That is, in case of a process restart, this value is forgotten
+and the default value will be used. See [Configuration](`m:memsup#module-configuration`).
+""".
+-spec set_procmem_high_watermark(Float :: term()) -> ok.
 set_procmem_high_watermark(Float) ->
     case param_type(process_memory_high_watermark, Float) of
 	true ->
@@ -97,8 +296,21 @@ set_procmem_high_watermark(Float) ->
 	    erlang:error(badarg)
     end.
 
+-doc """
+Returns the threshold, in percent, for system memory allocation.
+""".
+-spec get_sysmem_high_watermark() -> integer().
 get_sysmem_high_watermark() ->
     os_mon:call(memsup, get_sysmem_high_watermark, infinity).
+-doc """
+Changes the threshold, given as a float, for system memory allocation.
+
+The change will take effect during the next periodic memory check and is
+non-persistent. That is, in case of a process restart, this value is forgotten
+and the default value will be used. See [Configuration](`m:memsup#module-configuration`)
+above.
+""".
+-spec set_sysmem_high_watermark(Float :: term()) -> ok.
 set_sysmem_high_watermark(Float) ->
     case param_type(system_memory_high_watermark, Float) of
 	true ->
@@ -108,8 +320,20 @@ set_sysmem_high_watermark(Float) ->
 	    erlang:error(badarg)
     end.
 
+-doc """
+Returns the timeout value, in seconds, for memory checks.
+""".
+-spec get_helper_timeout() -> Seconds :: integer().
 get_helper_timeout() ->
     os_mon:call(memsup, get_helper_timeout, infinity).
+-doc """
+Changes the timeout value, given in seconds, for memory checks.
+
+The change will take effect for the next memory check and is non-persistent.
+That is, in the case of a process restart, this value is forgotten and the
+default value will be used. See [Configuration](`m:memsup#module-configuration`) above.
+""".
+-spec set_helper_timeout(Seconds :: non_neg_integer()) -> ok.
 set_helper_timeout(Seconds) ->
     case param_type(memsup_helper_timeout, Seconds) of
 	true ->
@@ -118,6 +342,7 @@ set_helper_timeout(Seconds) ->
 	    erlang:error(badarg)
     end.
 
+-doc false.
 dummy_reply(get_memory_data) ->
     dummy_reply(get_memory_data,
 		os_mon:get_env(memsup, memsup_system_only));
@@ -146,6 +371,7 @@ dummy_reply(get_memory_data, true) ->
 dummy_reply(get_memory_data, false) ->
     {0,0,{self(),0}}.
 
+-doc false.
 param_type(memsup_system_only, Val) when Val==true; Val==false -> true;
 param_type(memory_check_interval, Val) when is_integer(Val),
                                             Val>0 -> true;
@@ -159,6 +385,7 @@ param_type(process_memory_high_watermark, Val) when is_number(Val),
 						    Val=<1 -> true;
 param_type(_Param, _Val) -> false.
 
+-doc false.
 param_default(memsup_system_only) -> false;
 param_default(memory_check_interval) -> 1;
 param_default(memsup_helper_timeout) -> 30;
@@ -169,13 +396,14 @@ param_default(process_memory_high_watermark) -> 0.05.
 %% gen_server callbacks
 %%----------------------------------------------------------------------
 
+-doc false.
 init([]) ->
     process_flag(trap_exit, true),
     process_flag(priority, low),
 
     OS = os:type(),
     PortMode = case OS of
-		   {unix, darwin} -> false;
+		   {unix, darwin} -> true;
 		   {unix, freebsd} -> false;
 		   {unix, dragonfly} -> false;
 		   % Linux supports this.
@@ -189,6 +417,7 @@ init([]) ->
 		   _ ->
 		       exit({unsupported_os, OS})
 	       end,
+
     Pid = if
 	      PortMode ->
 		  spawn_link(fun() -> port_init() end);
@@ -203,6 +432,21 @@ init([]) ->
     SysMem = os_mon:get_env(memsup, system_memory_high_watermark),
     ProcMem = os_mon:get_env(memsup, process_memory_high_watermark),
 
+    persistent_term:put(?EXT_MEM_MAP,
+                        #{?MEM_SYSTEM_TOTAL => system_total_memory,
+                          ?MEM_TOTAL => total_memory,
+                          ?MEM_AVAIL => available_memory,
+                          ?MEM_FREE => free_memory,
+                          ?MEM_BUFFERS => buffered_memory,
+                          ?MEM_CACHED => cached_memory,
+                          %% When included cached_x is same as cached...
+                          ?MEM_CACHED_X => cached_memory, 
+                          ?MEM_SHARED => shared_memory,
+                          ?MEM_LARGEST_FREE => largest_free,
+                          ?MEM_NUMBER_OF_FREE => number_of_free,
+                          ?SWAP_TOTAL => total_swap,
+                          ?SWAP_FREE => free_swap}),
+
     %% Initiate first data collection
     self() ! time_to_collect,
 
@@ -216,6 +460,7 @@ init([]) ->
 
 		pid=Pid}}.
 
+-doc false.
 handle_call(get_os_wordsize, _From, State) ->
     Wordsize = get_os_wordsize(State#state.os),
     {reply, Wordsize, State};
@@ -321,10 +566,12 @@ handle_call({set_pid_hw, HW}, _From, State) ->
 handle_call(get_state, _From, State) ->
     {reply, State, State}.
 
+-doc false.
 handle_cast(_Msg, State) ->
     {noreply, State}.
 
 %% It's time to check memory
+-doc false.
 handle_info(time_to_collect, State) ->
     case State#state.wd_timer of
 	undefined ->
@@ -408,18 +655,18 @@ handle_info({collected_sys, {Alloc,Total}}, State) ->
 
     %% Last, if this was a periodic check, start a timer for the next
     %% one. New timeout = interval-time spent collecting,
-    case lists:member(reg, State#state.pending) of
-	true ->
-	    Time = case State2#state.timeout - TimeSpent of
-		       MS when MS<0 ->
-			   0;
-		       MS ->
-			   MS
-		   end,
-	    erlang:send_after(Time, self(), time_to_collect);
-	false ->
-	    ignore
-    end,
+    _ = case lists:member(reg, State#state.pending) of
+            true ->
+                Time = case State2#state.timeout - TimeSpent of
+                           MS when MS<0 ->
+                               0;
+                           MS ->
+                               MS
+                       end,
+                erlang:send_after(Time, self(), time_to_collect);
+            false ->
+                ignore
+        end,
     {noreply, State2#state{wd_timer=undefined, pending=[]}};
 handle_info({'EXIT', Pid, normal}, State) when is_pid(Pid) ->
     %% Temporary pid terminating when job is done
@@ -448,17 +695,17 @@ handle_info(reg_collection_timeout, State) ->
     %% If it is a periodic check which has timed out, start a timer for
     %% the next one
     %% New timeout = interval-helper timeout
-    case lists:member(reg, State#state.pending) of
-	true ->
-	    Time =
-		case State#state.timeout-State#state.helper_timeout of
-		    MS when MS<0 -> 0;
-		    MS -> MS
-		end,
-	    erlang:send_after(Time, self(), time_to_collect);
-	false ->
-	    ignore
-    end,
+    _ = case lists:member(reg, State#state.pending) of
+            true ->
+                Time =
+                case State#state.timeout-State#state.helper_timeout of
+                    MS when MS<0 -> 0;
+                    MS -> MS
+                end,
+                erlang:send_after(Time, self(), time_to_collect);
+            false ->
+                ignore
+        end,
     {noreply, State#state{wd_timer=undefined, pending=[]}};
 handle_info({'EXIT', Pid, cancel}, State) when is_pid(Pid) ->
     %% Temporary pid terminating as ordered
@@ -469,7 +716,7 @@ handle_info({collected_ext_sys, SysMemUsage}, State) ->
 
     %% Cancel watchdog timer (and as a security mearure,
     %% also flush any ext_collection_timeout message)
-    erlang:cancel_timer(State#state.ext_wd_timer),
+    ok = erlang:cancel_timer(State#state.ext_wd_timer, [{async,true}]),
     flush(ext_collection_timeout),
 
     %% Send the reply to all waiting clients, preserving time order
@@ -502,6 +749,7 @@ handle_info({'EXIT', Pid, Reason}, State) when is_pid(Pid) ->
 handle_info(_Info, State) ->
     {noreply, State}.
 
+-doc false.
 terminate(_Reason, State) ->
     if
 	State#state.port_mode -> State#state.pid ! close;
@@ -510,169 +758,25 @@ terminate(_Reason, State) ->
     clear_alarms(),
     ok.
 
-%% os_mon-2.0.1
-%% For live downgrade to/upgrade from os_mon-1.8[.1] and -2.0
-code_change(Vsn, PrevState, "1.8") ->
-    case Vsn of
-
-	%% Downgrade from this version
-	{down, _Vsn} ->
-
-	    %% Kill the helper process, if there is one,
-	    %% and flush messages from it
-	    case PrevState#state.pid of
-		Pid when is_pid(Pid) ->
-		    unlink(Pid), % to prevent 'EXIT' message
-		    exit(Pid, cancel);
-		undefined -> ignore
-	    end,
-	    flush(collected_sys),
-	    flush(collected_ext_sys),
-
-	    %% Cancel timers, flush timeout messages
-	    %% and send dummy replies to any pending clients
-	    case PrevState#state.wd_timer of
-		undefined ->
-		    ignore;
-		TimerRef1 ->
-		    erlang:cancel_timer(TimerRef1),
-		    SysOnly = PrevState#state.sys_only,
-		    MemUsage = dummy_reply(get_memory_data, SysOnly),
-		    SysMemUsage1 = dummy_reply(get_system_memory_data),
-		    reply(PrevState#state.pending,MemUsage,SysMemUsage1)
-	    end,
-	    case PrevState#state.ext_wd_timer of
-		undefined ->
-		    ignore;
-		TimerRef2 ->
-		    erlang:cancel_timer(TimerRef2),
-		    SysMemUsage2 = dummy_reply(get_system_memory_data),
-		    reply(PrevState#state.pending, undef, SysMemUsage2)
-	    end,
-	    flush(reg_collection_timeout),
-	    flush(ext_collection_timeout),
-
-	    %% Downgrade to old state record
-	    State = {state,
-		     PrevState#state.timeout,
-		     PrevState#state.mem_usage,
-		     PrevState#state.worst_mem_user,
-		     PrevState#state.sys_mem_watermark,
-		     PrevState#state.proc_mem_watermark,
-		     not PrevState#state.sys_only, % collect_procmem
-		     undefined, % wd_timer
-		     [],        % pending
-		     undefined, % ext_wd_timer
-		     [],        % ext_pending
-		     PrevState#state.helper_timeout},
-	    {ok, State};
-
-	%% Upgrade to this version
-	_Vsn ->
-
-	    %% Old state record
-	    {state,
-	     Timeout, MemUsage, WorstMemUser,
-	     SysMemWatermark, ProcMemWatermark, CollProc,
-	     WDTimer, Pending, ExtWDTimer, ExtPending,
-	     HelperTimeout} = PrevState,
-	    SysOnly = not CollProc,
-
-	    %% Flush memsup_helper messages
-	    flush(collected_sys),
-	    flush(collected_proc),
-	    flush(collected_ext_sys),
-		     
-	    %% Cancel timers, flush timeout messages
-	    %% and send dummy replies to any pending clients
-	    case WDTimer of
-		undefined ->
-		    ignore;
-		TimerRef1 ->
-		    erlang:cancel_timer(TimerRef1),
-		    MemUsage = dummy_reply(get_memory_data, SysOnly),
-		    Pending2 = lists:map(fun(From) -> {reg,From} end,
-					 Pending),
-		    reply(Pending2, MemUsage, undef)
-	    end,
-	    case ExtWDTimer of
-		undefined ->
-		    ignore;
-		TimerRef2 ->
-		    erlang:cancel_timer(TimerRef2),
-		    SysMemUsage = dummy_reply(get_system_memory_data),
-		    ExtPending2 = lists:map(fun(From) -> {ext,From} end,
-					    ExtPending),
-		    reply(ExtPending2, undef, SysMemUsage)
-	    end,
-	    flush(reg_collection_timeout),
-	    flush(ext_collection_timeout),
-
-	    OS = os:type(),
-	    PortMode = case OS of
-			   {unix, darwin} -> false;
-			   {unix, freebsd} -> false;
-			   {unix, dragonfly} -> false;
-			   {unix, linux} -> false;
-			   {unix, openbsd} -> true;
-			   {unix, netbsd} -> true;
-			   {unix, sunos} -> true;
-			   {win32, _OSname} -> false
-		       end,
-	    Pid = if
-		      PortMode -> spawn_link(fun() -> port_init() end);
-		      not PortMode -> undefined
-		  end,
-
-	    %% Upgrade to this state record
-	    State = #state{os = OS,
-			   port_mode = PortMode,
-			   mem_usage = MemUsage,
-			   worst_mem_user = WorstMemUser,
-			   sys_only  = SysOnly,
-			   timeout         = Timeout,
-			   helper_timeout  = HelperTimeout,
-			   sys_mem_watermark = SysMemWatermark,
-			   proc_mem_watermark = ProcMemWatermark,
-			   pid                = Pid,
-			   wd_timer           = undefined,
-			   ext_wd_timer       = undefined,
-			   pending            = [],
-			   ext_pending        = []},
-	    {ok, State}
-    end;
-code_change(_Vsn, State, "2.0") ->
-
-    %% Restart the port process (it must use new memsup code)
-    Pid = case State#state.port_mode of
-	      true ->
-		  State#state.pid ! close,
-		  spawn_link(fun() -> port_init() end);
-	      false ->
-		  State#state.pid
-	  end,
-    {ok, State#state{pid=Pid}};
-	  
-code_change(_OldVsn, State, _Extra) ->
-    {ok, State}.
-
 %%----------------------------------------------------------------------
 %% Other exports
 %%----------------------------------------------------------------------
 
-format_status(_Opt, [_PDict, #state{timeout=Timeout, mem_usage=MemUsage,
-				    worst_mem_user=WorstMemUser}]) ->
+-doc false.
+format_status(#{ state := #state{timeout=Timeout, mem_usage=MemUsage,
+                                 worst_mem_user=WorstMemUser} } = Status) ->
     {Allocated, Total} = MemUsage,
     WorstMemFormat = case WorstMemUser of
-			 {Pid, Mem} ->
-			     [{"Pid", Pid}, {"Memory", Mem}];
-			 undefined ->
-			     undefined
-		     end,
-    [{data, [{"Timeout", Timeout}]},
-     {items, {"Memory Usage", [{"Allocated", Allocated},
-			       {"Total", Total}]}},
-     {items, {"Worst Memory User", WorstMemFormat}}].
+                         {Pid, Mem} ->
+                             [{"Pid", Pid}, {"Memory", Mem}];
+                         undefined ->
+                             undefined
+                     end,
+    Status#{ state := 
+                 [{"Timeout", Timeout},
+                  {"Memory Usage", [{"Allocated", Allocated},
+                                    {"Total", Total}]},
+                  {"Worst Memory User", WorstMemFormat}] }.
 
 
 %%----------------------------------------------------------------------
@@ -699,10 +803,16 @@ get_os_wordsize_with_uname() ->
     case String of
 	"x86_64"  -> 64;
 	"sparc64" -> 64;
+	"amd64"   -> 64;
+	"ppc64"   -> 64;
+	"ppc64le" -> 64;
+	"s390x"   -> 64;
+        "aarch64" -> 64;                        %Linux
+        "arm64"   -> 64;                        %macOS
 	_         -> 32
     end.
 
-clean_string(String) -> lists:flatten(string:tokens(String,"\r\n\t ")).
+clean_string(String) -> lists:flatten(string:lexemes(String,[[$\r,$\n]|"\n\t "])).
     
 
 %%--Replying to pending clients-----------------------------------------
@@ -720,22 +830,6 @@ reply(Pending, MemUsage, SysMemUsage) ->
 %%--Collect memory data, no port----------------------------------------
 
 %% get_memory_usage(OS) -> {Alloc, Total}
-
-%% Darwin:
-%% Uses vm_stat command.
-get_memory_usage({unix,darwin}) ->
-    Str1 = os:cmd("/usr/bin/vm_stat"),
-    PageSize = 4096,
-
-    {[Free],        Str2} = fread_value("Pages free:~d.", Str1),
-    {[Active],      Str3} = fread_value("Pages active:~d.", Str2),
-    {[Inactive],    Str4} = fread_value("Pages inactive:~d.", Str3),
-    {[Speculative], Str5} = fread_value("Pages speculative:~d.", Str4),
-    {[Wired],       _} = fread_value("Pages wired down:~d.", Str5),
-
-    NMemUsed  = (Wired + Active + Inactive) * PageSize,
-    NMemTotal = NMemUsed + (Free + Speculative) * PageSize,
-    {NMemUsed,NMemTotal};
 
 %% FreeBSD: Look in /usr/include/sys/vmmeter.h for the format of struct
 %% vmmeter
@@ -756,16 +850,6 @@ get_memory_usage({win32,_OSname}) ->
 	io_lib:fread("~d~d~d~d~d~d~d", Result),
     {TotPhys-AvailPhys, TotPhys}.
 
-fread_value(Format, Str0) ->
-    case io_lib:fread(Format, skip_to_eol(Str0)) of
-    	{error, {fread, input}} -> {[0], Str0};
-	{ok, Value, Str1} -> {Value, Str1}
-    end.
-
-skip_to_eol([]) -> [];
-skip_to_eol([$\n | T]) -> T;
-skip_to_eol([_ | T]) -> skip_to_eol(T).
-
 freebsd_sysctl(Def) ->
     list_to_integer(os:cmd("/sbin/sysctl -n " ++ Def) -- "\n").
 
@@ -785,9 +869,6 @@ get_ext_memory_usage(OS, {Alloc, Total}) ->
 	{unix, dragonfly} ->
 	    [{total_memory, Total}, {free_memory, Total-Alloc},
 	     {system_total_memory, Total}];
-	{unix, darwin} ->
-	    [{total_memory, Total}, {free_memory, Total-Alloc},
-	     {system_total_memory, Total}];
 	_ -> % OSs using a port
 	    dummy % not sent anyway
     end.
@@ -801,6 +882,10 @@ port_init() ->
 
 start_portprogram() ->
     os_mon:open_port("memsup",[{packet,1}]).
+
+port_shutdown(Port) ->
+    Port ! {self(), {command, [?EXIT]}},
+    Port ! {self(), close}.
 
 %% The connected process loops are a bit awkward (several different
 %% functions doing almost the same thing) as
@@ -817,7 +902,7 @@ port_idle(Port) ->
 	    get_memory_usage(Port, undefined, Memsup);
 	{Memsup, collect_ext_sys} ->
 	    Port ! {self(), {command, [?SHOW_SYSTEM_MEM]}},
-	    get_ext_memory_usage(Port, [], Memsup);
+	    get_ext_memory_usage(Port, #{}, Memsup);
 	cancel ->
 	    %% Received after reply already has been delivered...
 	    port_idle(Port);
@@ -825,13 +910,13 @@ port_idle(Port) ->
 	    %% Received after reply already has been delivered...
 	    port_idle(Port);
 	close ->
-	    port_close(Port);
+	    port_shutdown(Port);
 	{Port, {data, Data}} ->
 	    exit({port_error, Data});
 	{'EXIT', Port, Reason} ->
 	    exit({port_died, Reason});
 	{'EXIT', _Memsup, _Reason} ->
-	    port_close(Port)
+	    port_shutdown(Port)
     end.
 
 get_memory_usage(Port, Alloc, Memsup) ->
@@ -845,11 +930,11 @@ get_memory_usage(Port, Alloc, Memsup) ->
 	cancel ->
 	    get_memory_usage_cancelled(Port, Alloc);
 	close ->
-	    port_close(Port);
+	    port_shutdown(Port);
 	{'EXIT', Port, Reason} ->
 	    exit({port_died, Reason});
 	{'EXIT', _Memsup, _Reason} ->
-	    port_close(Port)
+	    port_shutdown(Port)
     end.
 get_memory_usage_cancelled(Port, Alloc) ->
     receive
@@ -858,120 +943,106 @@ get_memory_usage_cancelled(Port, Alloc) ->
 	{Port, {data, _Data}} ->
 	    port_idle(Port);
 	close ->
-	    port_close(Port);
+	    port_shutdown(Port);
 	{'EXIT', Port, Reason} ->
 	    exit({port_died, Reason});
 	{'EXIT', _Memsup, _Reason} ->
-	    port_close(Port)
+	    port_shutdown(Port)
+    end.
+
+tag2atag(Port, Tag) ->
+    Tab = persistent_term:get(?EXT_MEM_MAP),
+    try
+        maps:get(Tag, Tab)
+    catch
+        error:_ ->
+            exit({memsup_port_error, {Port,[Tag]}})
     end.
 
 get_ext_memory_usage(Port, Accum, Memsup) ->
-    Tab = [
-	    {?MEM_SYSTEM_TOTAL,   system_total_memory},
-	    {?MEM_TOTAL,          total_memory},
-	    {?MEM_FREE,           free_memory},
-	    {?MEM_BUFFERS,        buffered_memory},
-	    {?MEM_CACHED,         cached_memory},
-	    {?MEM_SHARED,         shared_memory},
-	    {?MEM_LARGEST_FREE,   largest_free},
-	    {?MEM_NUMBER_OF_FREE, number_of_free},
-	    {?SWAP_TOTAL,	  total_swap},
-	    {?SWAP_FREE,	  free_swap}
-	],
     receive
 	{Port, {data, [?SHOW_SYSTEM_MEM_END]}} ->
-	    Memsup ! {collected_ext_sys, Accum},
+	    Memsup ! {collected_ext_sys, maps:to_list(Accum)},
 	    port_idle(Port);
 	{Port, {data, [Tag]}} ->
-	    case lists:keysearch(Tag, 1, Tab) of
-		{value, {Tag, ATag}} ->
-		    get_ext_memory_usage(ATag, Port, Accum, Memsup);
-		_ ->
-		    exit({memsup_port_error, {Port,[Tag]}})
-	    end;
+            get_ext_memory_usage(tag2atag(Port, Tag), Port, Accum,
+                                 Memsup);
 	ext_cancel ->
 	    get_ext_memory_usage_cancelled(Port);
 	close ->
-	    port_close(Port);
+	    port_shutdown(Port);
 	{'EXIT', Port, Reason} ->
 	    exit({port_died, Reason});
 	{'EXIT', _Memsup, _Reason} ->
-	    port_close(Port)
+	    port_shutdown(Port)
     end.
 get_ext_memory_usage_cancelled(Port) ->
-    Tab = [
-	    {?MEM_SYSTEM_TOTAL,   system_total_memory},
-	    {?MEM_TOTAL,          total_memory},
-	    {?MEM_FREE,           free_memory},
-	    {?MEM_BUFFERS,        buffered_memory},
-	    {?MEM_CACHED,         cached_memory},
-	    {?MEM_SHARED,         shared_memory},
-	    {?MEM_LARGEST_FREE,   largest_free},
-	    {?MEM_NUMBER_OF_FREE, number_of_free},
-	    {?SWAP_TOTAL,	  total_swap},
-	    {?SWAP_FREE,	  free_swap}
-	],
     receive
 	{Port, {data, [?SHOW_SYSTEM_MEM_END]}} ->
 	    port_idle(Port);
 	{Port, {data, [Tag]}} ->
-	    case lists:keysearch(Tag, 1, Tab) of
-		{value, {Tag, ATag}} ->
-		    get_ext_memory_usage_cancelled(ATag, Port);
-		_ ->
-		    exit({memsup_port_error, {Port,[Tag]}})
-	    end;
+            get_ext_memory_usage_cancelled(tag2atag(Port, Tag),
+                                           Port);
 	close ->
-	    port_close(Port);
+	    port_shutdown(Port);
 	{'EXIT', Port, Reason} ->
 	    exit({port_died, Reason});
 	{'EXIT', _Memsup, _Reason} ->
-	    port_close(Port)
+	    port_shutdown(Port)
     end.
 
 get_ext_memory_usage(ATag, Port, Accum0, Memsup) ->
     receive
 	{Port, {data, Data}} ->
-	    Accum = [{ATag,erlang:list_to_integer(Data, 16)}|Accum0],
+            Value = erlang:list_to_integer(Data, 16),
+            Accum = case maps:get(ATag, Accum0, undefined) of
+                        undefined ->
+                            maps:put(ATag, Value, Accum0);
+                        PrevValue ->
+                            maps:put(ATag, Value + PrevValue, Accum0)
+                    end,
 	    get_ext_memory_usage(Port, Accum, Memsup);
 	cancel ->
 	    get_ext_memory_usage_cancelled(ATag, Port);
 	close ->
-	    port_close(Port);
+	    port_shutdown(Port);
 	{'EXIT', Port, Reason} ->
 	    exit({port_died, Reason});
 	{'EXIT', _Memsup, _Reason} ->
-	    port_close(Port)
+	    port_shutdown(Port)
     end.
 get_ext_memory_usage_cancelled(_ATag, Port) ->
     receive
 	{Port, {data, _Data}} ->
 	    get_ext_memory_usage_cancelled(Port);
 	close ->
-	    port_close(Port);
+	    port_shutdown(Port);
 	{'EXIT', Port, Reason} ->
 	    exit({port_died, Reason});
 	{'EXIT', _Memsup, _Reason} ->
-	    port_close(Port)
+	    port_shutdown(Port)
     end.
 
 %%--Collect process data------------------------------------------------
 
 %% get_worst_memory_user() -> {Pid, Bytes}
 get_worst_memory_user()  ->
-    get_worst_memory_user(processes(), self(), 0).
+    get_worst_memory_user(erlang:processes_iterator(), self(), 0).
 
-get_worst_memory_user([Pid|Pids], MaxPid, MaxMemBytes) ->
-    case process_memory(Pid) of
-	undefined ->
-	    get_worst_memory_user(Pids, MaxPid, MaxMemBytes);
-	MemoryBytes when MemoryBytes>MaxMemBytes ->
-	    get_worst_memory_user(Pids, Pid, MemoryBytes);
-	_MemoryBytes ->
-	    get_worst_memory_user(Pids, MaxPid, MaxMemBytes)
-    end;
-get_worst_memory_user([], MaxPid, MaxMemBytes) ->
-    {MaxPid, MaxMemBytes}.
+get_worst_memory_user(Iter0, MaxPid, MaxMemBytes) ->
+    case erlang:processes_next(Iter0) of
+        none ->
+            {MaxPid, MaxMemBytes};
+        {Pid, Iter1} ->
+            case process_memory(Pid) of
+                undefined ->
+                    get_worst_memory_user(Iter1, MaxPid, MaxMemBytes);
+                MemoryBytes when MemoryBytes > MaxMemBytes ->
+                    get_worst_memory_user(Iter1, Pid, MemoryBytes);
+                _MemoryBytes ->
+                    get_worst_memory_user(Iter1, MaxPid, MaxMemBytes)
+            end
+    end.
 
 process_memory(Pid) ->
     case process_info(Pid, memory) of

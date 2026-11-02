@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 1996-2013. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 1996-2025. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -18,6 +20,7 @@
 %% %CopyrightEnd%
 %%
 -module(release_handler_1).
+-moduledoc false.
 
 %% External exports
 -export([eval_script/1, eval_script/5,
@@ -147,7 +150,7 @@ split_instructions([], Before) ->
 %%          If PrePurgeMethod == soft_purge, the function will succeed
 %%          only if there is no process running old code of any of the
 %%          modules. Else it will throw {error,Mod}, where Mod is the
-%%          first module found that can not be soft_purged.
+%%          first module found that cannot be soft_purged.
 %%
 %%          If PrePurgeMethod == brutal_purge, the function will
 %%          always succeed and return a list of all modules that are
@@ -248,7 +251,7 @@ syntax_check_script([]) ->
 %%   {load_object_code, [Mod1, Mod2]},
 %%   % delete old version
 %%   {remove, {Mod1, brutal_purge}}, {remove, {Mod2, brutal_purge}},
-%%   % now, some procs migth be running prev current (now old) version
+%%   % now, some procs might be running prev current (now old) version
 %%   % kill them, and load new version
 %%   {load, {Mod1, brutal_purge}}, {load, {Mod2, brutal_purge}}
 %%   % now, there is one version of the code (new, current)
@@ -279,7 +282,7 @@ syntax_check_script([]) ->
 %%    If a process doesn't repsond - never mind.  It will be killed
 %%    later on (if a purge is performed).
 %%    Hmm, we must do something smart here... we should probably kill it,
-%%    but we cant, because its supervisor will restart it directly!  Maybe
+%%    but we can't, because its supervisor will restart it directly!  Maybe
 %%    we should keep a list of those, call supervisor:terminate_child()
 %%    when all others are suspended, and call sup:restart_child() when the
 %%    others are resumed.
@@ -313,11 +316,11 @@ eval({load_object_code, {Lib, LibVsn, Modules}}, EvalState) ->
 	    {NewBins, NewVsns} = 
 		lists:foldl(fun(Mod, {Bins, Vsns}) ->
 				    File = lists:concat([Mod, Ext]),
-				    FName = filename:join([LibDir, "ebin", File]),
-				    case erl_prim_loader:get_file(FName) of
-					{ok, Bin, FName2} ->
+				    FName = root_dir_relative_path(filename:join([LibDir, "ebin", File])),
+				    case erl_prim_loader:read_file(FName) of
+					{ok, Bin} ->
 					    NVsns = add_vsns(Mod, Bin, Vsns),
-					    {[{Mod, Bin, FName2} | Bins],NVsns};
+					    {[{Mod, Bin, FName} | Bins],NVsns};
 					error ->
 					    throw({error, {no_such_file,FName}})
 				    end
@@ -340,14 +343,15 @@ eval(point_of_no_return, EvalState) ->
 		   EvalState#eval_state.libdirs
 	   end,
     lists:foreach(fun({Lib, _LibVsn, LibDir}) ->
-			  Ebin = filename:join(LibDir,"ebin"),
+			  Ebin = root_dir_relative_path(filename:join(LibDir,"ebin")),
 			  code:replace_path(Lib, Ebin)
 		  end,
 		  Libs),
     EvalState;
 eval({load, {Mod, _PrePurgeMethod, PostPurgeMethod}}, EvalState) ->
     Bins = EvalState#eval_state.bins,
-    {value, {_Mod, Bin, File}} = lists:keysearch(Mod, 1, Bins),
+    {value, {_Mod, Bin, File1}} = lists:keysearch(Mod, 1, Bins),
+    File = root_dir_relative_path(File1),
     % load_binary kills all procs running old code
     % if soft_purge, we know that there are no such procs now
     {module,_} = code:load_binary(Mod, File, Bin),
@@ -479,7 +483,7 @@ get_opt(Tag, EvalState, Default) ->
 %% goes for processes that didn't respond to the suspend message.
 %%-----------------------------------------------------------------
 suspend(Mod, Procs, Timeout) ->
-    lists:zf(fun({_Sup, _Name, Pid, Mods}) -> 
+    lists:filtermap(fun({_Sup, _Name, Pid, Mods}) ->
 		     case lists:member(Mod, Mods) of
 			 true ->
 			     case catch sys_suspend(Pid, Timeout) of
@@ -521,7 +525,7 @@ sys_change_code(Pid, Mod, Vsn, Extra, Timeout) ->
     sys:change_code(Pid, Mod, Vsn, Extra, Timeout).
 
 stop(Mod, Procs) ->
-    lists:zf(fun({undefined, _Name, _Pid, _Mods}) ->
+    lists:filtermap(fun({undefined, _Name, _Pid, _Mods}) ->
 		     false;
 		({Sup, Name, _Pid, Mods}) -> 
 		     case lists:member(Mod, Mods) of
@@ -587,12 +591,12 @@ get_supervised_procs() ->
       get_application_names()).
 
 get_supervised_procs(_, Root, Procs, {ok, SupMod}) ->
-    get_procs(maybe_supervisor_which_children(get_proc_state(Root), SupMod, Root), Root) ++
+    get_procs(maybe_supervisor_which_children(Root, SupMod, Root), Root) ++
         [{undefined, undefined, Root, [SupMod]} |  Procs];
 get_supervised_procs(Application, Root, Procs, {error, _}) ->
     error_logger:error_msg("release_handler: cannot find top supervisor for "
                            "application ~w~n", [Application]),
-    get_procs(maybe_supervisor_which_children(get_proc_state(Root), Application, Root), Root) ++ Procs.
+    get_procs(maybe_supervisor_which_children(Root, Application, Root), Root) ++ Procs.
 
 get_application_names() ->
     lists:map(fun({Application, _Name, _Vsn}) ->
@@ -613,41 +617,76 @@ get_procs([{Name, Pid, worker, Mods} | T], Sup) when is_pid(Pid), is_list(Mods) 
     [{Sup, Name, Pid, Mods} | get_procs(T, Sup)];
 get_procs([{Name, Pid, supervisor, Mods} | T], Sup) when is_pid(Pid) ->
     [{Sup, Name, Pid, Mods} | get_procs(T, Sup)] ++
-        get_procs(maybe_supervisor_which_children(get_proc_state(Pid), Name, Pid), Pid);
+        get_procs(maybe_supervisor_which_children(Pid, Name, Pid), Pid);
 get_procs([_H | T], Sup) ->
     get_procs(T, Sup);
 get_procs(_, _Sup) ->
     [].
 
+maybe_supervisor_which_children(Proc, Name, Pid) ->
+    case get_proc_state(Proc) of
+        noproc ->
+            %% process exited before we could interrogate it.
+            %% not necessarily a bug, but reporting a warning as a curiosity.
+            error_logger:warning_msg("release_handler: a process (~p) exited"
+                                     " during supervision tree interrogation."
+                                     " Continuing ...~n", [Proc]),
+            [];
+
+        suspended ->
+            error_logger:error_msg("release_handler: a which_children call"
+                                   " to ~p (~w) was avoided. This supervisor"
+                                   " is suspended and should likely be upgraded"
+                                   " differently. Exiting ...~n", [Name, Pid]),
+            error(suspended_supervisor);
+
+        running ->
+            try supervisor:which_children(Pid) of
+                Res when is_list(Res) ->
+                    Res
+            catch
+                exit:Reason when Reason =/= timeout andalso
+                                 not (is_tuple(Reason) andalso
+                                      element(1,Reason) =:= nodedown) ->
+                    [];
+                exit:Other ->
+                    error_logger:error_msg("release_handler: ~p~nerror during"
+                                           " a which_children call to ~p (~w)."
+                                           " [State: running] Exiting ... ~n",
+                                           [{'EXIT',Other}, Name, Pid]),
+                    error(which_children_failed)
+            end
+    end.
+
 get_proc_state(Proc) ->
-    {status, _, {module, _}, [_, State, _, _, _]} = sys:get_status(Proc),
-    State.
-
-maybe_supervisor_which_children(suspended, Name, Pid) ->
-    error_logger:error_msg("release_handler: a which_children call"
-                           " to ~p (~w) was avoided. This supervisor"
-                           " is suspended and should likely be upgraded"
-                           " differently. Exiting ...~n", [Name, Pid]),
-    error(suspended_supervisor);
-
-maybe_supervisor_which_children(State, Name, Pid) ->
-    case catch supervisor:which_children(Pid) of
-        Res when is_list(Res) ->
-            Res;
-        Other ->
-            error_logger:error_msg("release_handler: ~p~nerror during"
-                                   " a which_children call to ~p (~w)."
-                                   " [State: ~p] Exiting ... ~n",
-                                   [Other, Name, Pid, State]),
-            error(which_children_failed)
+    %% sys:send_system_msg can exit with {noproc, {m,f,a}}.
+    %% This happens if a supervisor exits after which_children has provided
+    %% its pid for interrogation.
+    %% ie. Proc may no longer be running at this point.
+    try sys:get_status(Proc) of
+        %% as per sys:get_status/1, SysState can only be running | suspended.
+        {status, _, {module, _}, [_, State, _, _, _]} when State == running ;
+                                                           State == suspended ->
+            State
+    catch exit:{Reason, {sys, get_status, [Proc]}}
+                when Reason =/= timeout andalso
+                     not (is_tuple(Reason) andalso
+                          element(1,Reason) =:= nodedown) ->
+        noproc
     end.
 
 maybe_get_dynamic_mods(Name, Pid) ->
-    case catch gen:call(Pid, self(), get_modules) of
+    try gen:call(Pid, self(), get_modules) of
         {ok, Res} ->
-            Res;
-        Other ->
-            error_logger:error_msg("release_handler: ~p~nerror during a"
+            Res
+    catch
+        exit:Reason when Reason =/= timeout andalso
+                         not (is_tuple(Reason) andalso
+                              element(1,Reason) =:= nodedown) ->
+            [];
+        exit:Other ->
+            error_logger:error_msg("release_handler: {'EXIT',~p}~n"
+                                   "error during a"
                                    " get_modules call to ~p (~w),"
                                    " there may be an error in it's"
                                    " childspec. Exiting ...~n",
@@ -655,47 +694,18 @@ maybe_get_dynamic_mods(Name, Pid) ->
             error(get_modules_failed)
     end.
 
-%% XXXX
-%% Note: The following is a terrible hack done in order to resolve the
-%% problem stated in ticket OTP-3452.
-
-%% XXXX NOTE WELL: This record is from supervisor.erl. Also the record
-%% name is really `state'. 
--record(supervisor_state, {name,
-                strategy,
-                children = [],
-                dynamics = [],
-                intensity,
-                period,
-                restarts = [],
-                module,
-                args}).
-
 %% Return the name of the call-back module that implements the
 %% (top) supervisor SupPid.
 %% Returns: {ok, Module} | {error,undefined}
 %%
 get_supervisor_module(SupPid) ->
-    case catch get_supervisor_module1(SupPid) of
-	{ok, Module} when is_atom(Module) ->
+    case catch supervisor:get_callback_module(SupPid) of
+	Module when is_atom(Module) ->
 	    {ok, Module};
 	_Other ->
 	    io:format("~w: reason: ~w~n", [SupPid, _Other]),
 	    {error, undefined}
     end.
-
-get_supervisor_module1(SupPid) ->
-    {status, _Pid, {module, _Mod}, 
-     [_PDict, _SysState, _Parent, _Dbg, Misc]} = sys:get_status(SupPid),
-    %% supervisor Misc field changed at R13B04, handle old and new variants here
-    State = case Misc of
-                [_Name, State1, _Type, _Time] ->
-                    State1;
-                [_Header, _Data, {data, [{"State", State2}]}] ->
-                    State2
-            end,
-    %% Cannot use #supervisor_state{module = Module} = State.
-    {ok, element(#supervisor_state.module, State)}.
 
 %%-----------------------------------------------------------------
 %% Func: do_soft_purge/3
@@ -767,14 +777,18 @@ replace_undefined(Vsn,_) -> Vsn.
 %% Returns: Vsn = term()
 %%-----------------------------------------------------------------
 get_current_vsn(Mod) ->
-    File = code:which(Mod),
-    case erl_prim_loader:get_file(File) of
-	{ok, Bin, _File2} ->
-	    get_vsn(Bin);
-	error ->
-	    %% This is the case when a new module is added, there will
-	    %% be no current version of it at the time of this call.
-	    undefined
+    case code:which(Mod) of
+        File when is_list(File) ->
+            case erl_prim_loader:read_file(File) of
+                {ok, Bin} ->
+                    get_vsn(Bin);
+                error ->
+                    undefined
+            end;
+        _ ->
+            %% This is the case when a new module is added, there will
+            %% be no current version of it at the time of this call.
+            undefined
     end.
 
 %%-----------------------------------------------------------------
@@ -798,3 +812,12 @@ get_vsn(Bin) ->
 		    Vsn
 	    end
     end.
+
+root_dir_relative_path(Pathname) ->
+    case filename:pathtype(Pathname) of
+        relative ->
+            filename:join(code:root_dir(), Pathname);
+        _ ->
+            Pathname
+    end.
+

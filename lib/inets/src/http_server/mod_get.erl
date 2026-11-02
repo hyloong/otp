@@ -1,8 +1,10 @@
 %%
 %% %CopyrightBegin%
-%% 
-%% Copyright Ericsson AB 1997-2012. All Rights Reserved.
-%% 
+%%
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 1997-2025. All Rights Reserved.
+%%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
 %% You may obtain a copy of the License at
@@ -14,11 +16,12 @@
 %% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 %% See the License for the specific language governing permissions and
 %% limitations under the License.
-%% 
+%%
 %% %CopyrightEnd%
 %%
 %%
 -module(mod_get).
+-moduledoc false.
 
 -export([do/1]).
 
@@ -32,7 +35,6 @@
 %% do
 
 do(Info) ->
-    ?DEBUG("do -> entry",[]),
     case Info#mod.method of
 	"GET" ->
 	    case proplists:get_value(status, Info#mod.data) of
@@ -57,7 +59,6 @@ do(Info) ->
 
 
 do_get(Info) ->
-    ?DEBUG("do_get -> Request URI: ~p",[Info#mod.request_uri]),
     Path = mod_alias:path(Info#mod.data, Info#mod.config_db, 
 			  Info#mod.request_uri),
  
@@ -71,8 +72,7 @@ send_response(_Socket, _SocketType, Path, Info)->
     case file:open(Path,[raw,binary]) of
 	{ok, FileDescriptor} ->
 	    {FileInfo, LastModified} = get_modification_date(Path),
-	    ?DEBUG("do_get -> FileDescriptor: ~p",[FileDescriptor]),
-	    Suffix = httpd_util:suffix(Path),
+	    Suffix = httpd_util:strip_extension_dot(Path),
 	    MimeType = httpd_util:lookup_mime_default(Info#mod.config_db,
 						      Suffix,"text/plain"),
 	    %% FileInfo = file:read_file_info(Path),
@@ -84,7 +84,7 @@ send_response(_Socket, _SocketType, Path, Info)->
 			       {content_length, Size}|LastModified];
 			  %% OTP-4935
 			 _ ->
-			     %% i.e http/1.0 and http/0.9
+			     %% i.e http/1.0
 			      [{content_type, MimeType},
 			       {content_length, Size}|LastModified]
 			  end,
@@ -94,8 +94,6 @@ send_response(_Socket, _SocketType, Path, Info)->
 				 FileInfo#file_info.size}},
 		      {mime_type,MimeType} | Info#mod.data]};
 	{error, Reason} ->
-	    ?hdrt("send_response -> failed open file", 
-		  [{path, Path}, {reason, Reason}]), 
 	    Status = httpd_file:handle_error(Reason, "open", Info, Path),
 	    {proceed, [{status, Status} | Info#mod.data]}
     end.
@@ -104,7 +102,6 @@ send_response(_Socket, _SocketType, Path, Info)->
 	       
 send(#mod{socket = Socket, socket_type = SocketType} = Info,
      StatusCode, Headers, FileDescriptor) ->
-    ?DEBUG("send -> send header",[]),
     httpd_response:send_header(Info, StatusCode, Headers),
     send_body(SocketType,Socket,FileDescriptor).
 
@@ -112,16 +109,13 @@ send(#mod{socket = Socket, socket_type = SocketType} = Info,
 send_body(SocketType,Socket,FileDescriptor) ->
     case file:read(FileDescriptor,?FILE_CHUNK_SIZE) of
 	{ok,Binary} ->
-	    ?DEBUG("send_body -> send another chunk: ~p",[size(Binary)]),
 	    case httpd_socket:deliver(SocketType,Socket,Binary) of
 		socket_closed ->
-		    ?LOG("send_body -> socket closed while sending",[]),
 		    socket_close;
 		_ ->
 		    send_body(SocketType,Socket,FileDescriptor)
 	    end;
 	eof ->
-	    ?DEBUG("send_body -> done with this file",[]),
 	    eof
     end.
 

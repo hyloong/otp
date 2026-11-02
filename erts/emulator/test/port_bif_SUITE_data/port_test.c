@@ -1,4 +1,26 @@
 /*
+ * %CopyrightBegin%
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Copyright Ericsson AB 1996-2025. All Rights Reserved.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ * %CopyrightEnd%
+ */
+
+/*
  * Author:  Bjorn Gustavsson
  * Purpose: A port program to be used for testing the open_port bif.
  */
@@ -10,6 +32,7 @@
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <fcntl.h>
+#include <ctype.h>
 
 #ifndef __WIN32__
 #include <unistd.h>
@@ -32,14 +55,14 @@
     exit(1); \
 }
 
-#define MAIN(argc, argv) main(argc, argv)
+#define MAIN(argc, argv) int main(argc, argv)
 
 extern int errno;
 
 typedef struct {
     char* progname;	        /* Name of this program (from argv[0]). */
     int header_size;	        /* Number of bytes in each packet header:
-				 * 1, 2, or 4, or 0 for a continous byte stream. */
+				 * 1, 2, or 4, or 0 for a continuous byte stream. */
     int fd_from_erl;	        /* File descriptor from Erlang. */
     int fd_to_erl;	        /* File descriptor to Erlang. */
     unsigned char* io_buf;      /* Buffer for file i/o. */
@@ -68,11 +91,11 @@ typedef struct {
 
 PORT_TEST_DATA* port_data;
 
-static int packet_loop();
-static void reply();
-static void write_reply();
-static void ensure_buf_big_enough();
-static int readn();
+static int packet_loop(void);
+static void reply(char *buf, int size);
+static void write_reply(char *buf, int size);
+static void ensure_buf_big_enough(int size);
+static int readn(int fd, unsigned char *buf, int len);
 static void delay(unsigned ms);
 static void dump(unsigned char* buf, int sz, int max);
 static void replace_stdout(char* filename);
@@ -535,7 +558,7 @@ char* spec;			/* Specification for reply. */
 
     buf = (char *) malloc(total_size);
     if (buf == NULL) {
-	fprintf(stderr, "%s: insufficent memory for reply buffer of size %d\n",
+	fprintf(stderr, "%s: insufficient memory for reply buffer of size %d\n",
 		port_data->progname, total_size);
 	exit(1);
     }

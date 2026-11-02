@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2010-2013. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2010-2025. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -35,9 +37,6 @@
 %% A corresponding error when failure is the best option.
 -define(ERROR(T), erlang:error({T, ?MODULE, ?LINE})).
 
-%% Failure reports always get a stack trace.
--define(STACK, erlang:get_stacktrace()).
-
 %% Warning report for unexpected messages in various processes.
 -define(UNEXPECTED(F,A),
         diameter_lib:warning_report(unexpected, {?MODULE, F, A})).
@@ -58,6 +57,14 @@
 %% 3588, 2.4:
 -define(APP_ID_COMMON, 0).
 -define(APP_ID_RELAY, 16#FFFFFFFF).
+
+%% -define(DBG(F, A),
+%%         io:format("<~s> ~p "
+%%                   "~w:~w[~w] -> " ++ F ++ "~n",
+%%                   [diameter_lib:formated_timestamp(), self(),
+%%                    ?MODULE, ?FUNCTION_NAME, ?LINE | A])).
+-define(DBG(F, A), ignore).
+
 
 %%% ---------------------------------------------------------
 

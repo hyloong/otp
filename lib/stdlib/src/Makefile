@@ -1,7 +1,9 @@
 #
 # %CopyrightBegin%
 #
-# Copyright Ericsson AB 1996-2015. All Rights Reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Copyright Ericsson AB 1996-2026. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -42,6 +44,7 @@ RELSYSDIR = $(RELEASE_PATH)/lib/stdlib-$(VSN)
 # ----------------------------------------------------
 MODULES= \
 	array \
+	argparse \
 	base64 \
 	beam_lib \
 	binary \
@@ -51,25 +54,32 @@ MODULES= \
 	dets_server \
 	dets_sup \
 	dets_utils \
-	dets_v8 \
 	dets_v9 \
 	dict \
+	graph \
 	digraph \
 	digraph_utils \
 	edlin \
+	edlin_key \
+	edlin_context \
 	edlin_expand \
+	edlin_type_suggestion \
 	epp \
+	erl_abstract_code \
 	erl_anno \
 	erl_bits \
 	erl_compile \
+	erl_error \
 	erl_eval \
 	erl_expand_records \
+	erl_features \
 	erl_internal \
 	erl_lint \
 	erl_parse \
 	erl_posix_msg \
 	erl_pp \
 	erl_scan \
+	erl_stdlib_errors \
 	erl_tar \
 	error_logger_file_h \
 	error_logger_tty_h \
@@ -85,14 +95,17 @@ MODULES= \
 	gen_event \
 	gen_fsm \
 	gen_server \
+	gen_statem \
 	io \
+	io_ansi \
 	io_lib \
 	io_lib_format \
 	io_lib_fread \
 	io_lib_pretty \
-	lib \
+	json \
 	lists \
 	log_mf_h \
+	man_docs \
 	maps \
 	math \
 	ms_transform \
@@ -100,6 +113,8 @@ MODULES= \
 	orddict \
 	ordsets \
 	re \
+	records \
+	peer \
 	pool \
 	proc_lib \
 	proplists \
@@ -111,6 +126,8 @@ MODULES= \
 	sets \
 	shell \
 	shell_default \
+	shell_docs \
+	shell_docs_markdown \
 	slave \
 	sofs \
 	string \
@@ -119,8 +136,11 @@ MODULES= \
 	sys \
 	timer \
 	unicode \
+	unicode_util \
+	uri_string \
 	win32reg \
-	zip
+	zip \
+	zstd
 
 HRL_FILES= \
 	../include/assert.hrl \
@@ -130,11 +150,13 @@ HRL_FILES= \
 	../include/qlc.hrl \
 	../include/zip.hrl
 
-INTERNAL_HRL_FILES= dets.hrl
+INTERNAL_HRL_FILES= dets.hrl erl_tar.hrl otp_internal.hrl json.hrl swar_ascii.hrl
 
 ERL_FILES= $(MODULES:%=%.erl)
 
 TARGET_FILES= $(MODULES:%=$(EBIN)/%.$(EMULATOR)) $(APP_TARGET) $(APPUP_TARGET)
+
+ERL_ID_TRANS=../examples/erl_id_trans.erl
 
 APP_FILE= stdlib.app
 
@@ -146,20 +168,31 @@ APPUP_FILE= stdlib.appup
 APPUP_SRC= $(APPUP_FILE).src
 APPUP_TARGET= $(EBIN)/$(APPUP_FILE)
 
+ifeq ($(TARGET),win32)
+  EXE_SUFFIX=.exe
+else
+  EXE_SUFFIX=
+endif
+
 # ----------------------------------------------------
 # FLAGS
 # ----------------------------------------------------
 
-ifeq ($(NATIVE_LIBS_ENABLED),yes)
-ERL_COMPILE_FLAGS += +native
+ERL_COMPILE_FLAGS += -Werror  +warn_deprecated_catch +warn_obsolete_bool_op
+ERL_COMPILE_FLAGS += -I../include -I../../kernel/include
+
+ifeq ($(ERL_DETERMINISTIC),yes)
+	DETERMINISM_FLAG = +deterministic
+	DEP_SKIP_FILES = erl_parse.erl
+else
+	DETERMINISM_FLAG =
 endif
-ERL_COMPILE_FLAGS += -I../include -I../../kernel/include -Werror
 
 # ----------------------------------------------------
 # Targets
 # ----------------------------------------------------
 
-debug opt: $(TARGET_FILES) 
+$(TYPES): $(TARGET_FILES)
 
 clean:
 	rm -f $(TARGET_FILES)
@@ -173,22 +206,31 @@ docs:
 primary_bootstrap_compiler: \
   $(BOOTSTRAP_COMPILER)/ebin/epp.beam \
   $(BOOTSTRAP_COMPILER)/ebin/erl_anno.beam \
+  $(BOOTSTRAP_COMPILER)/ebin/erl_error.beam \
+  $(BOOTSTRAP_COMPILER)/ebin/erl_features.beam \
   $(BOOTSTRAP_COMPILER)/ebin/erl_scan.beam \
   $(BOOTSTRAP_COMPILER)/ebin/erl_parse.beam \
   $(BOOTSTRAP_COMPILER)/ebin/erl_lint.beam \
+  $(BOOTSTRAP_COMPILER)/ebin/graph.beam \
   $(BOOTSTRAP_COMPILER)/ebin/io.beam \
-  $(BOOTSTRAP_COMPILER)/ebin/otp_internal.beam
+  $(BOOTSTRAP_COMPILER)/ebin/otp_internal.beam \
+  $(BOOTSTRAP_COMPILER)/ebin/erl_internal.beam
+
+opt: $(EBIN)/erl_id_trans.beam
 
 $(BOOTSTRAP_COMPILER)/ebin/erl_parse.beam: erl_parse.yrl
 	$(gen_verbose)
-	$(V_at)$(ERLC) -o $(BOOTSTRAP_COMPILER)/egen erl_parse.yrl
-	$(V_at)$(ERLC) -o $(BOOTSTRAP_COMPILER)/ebin $(BOOTSTRAP_COMPILER)/egen/erl_parse.erl
+	$(V_at)$(ERLC) -o $(BOOTSTRAP_COMPILER)/egen $(DETERMINISM_FLAG) erl_parse.yrl
+	$(V_at)$(ERLC) -o $(BOOTSTRAP_COMPILER)/ebin $(DETERMINISM_FLAG) $(BOOTSTRAP_COMPILER)/egen/erl_parse.erl
 
 $(BOOTSTRAP_TOP)/lib/stdlib/egen/erl_parse.erl: erl_parse.yrl
 	$(yecc_verbose)$(ERLC) $(YRL_FLAGS) -o$(BOOTSTRAP_TOP)/lib/stdlib/egen erl_parse.yrl
 
 $(BOOTSTRAP_COMPILER)/ebin/%.beam: %.erl
-	$(V_ERLC) -o $(BOOTSTRAP_COMPILER)/ebin $<
+	$(V_ERLC) -o $(BOOTSTRAP_COMPILER)/ebin $(DETERMINISM_FLAG) $<
+
+$(EBIN)/erl_id_trans.beam: ../examples/erl_id_trans.erl
+	$(V_ERLC) $(ERL_COMPILE_FLAGS) -o $(EBIN) $<
 
 # ----------------------------------------------------
 # Special Build Targets
@@ -200,9 +242,12 @@ $(APP_TARGET): $(APP_SRC) ../vsn.mk
 $(APPUP_TARGET): $(APPUP_SRC) ../vsn.mk
 	$(vsn_verbose)sed -e 's;%VSN%;$(VSN);' $< > $@
 
+unicode_util.erl: ../uc_spec/*
+	escript$(EXE_SUFFIX) ../uc_spec/gen_unicode_mod.escript
+
 # ----------------------------------------------------
 # Release Target
-# ---------------------------------------------------- 
+# ----------------------------------------------------
 include $(ERL_TOP)/make/otp_release_targets.mk
 
 release_spec: opt
@@ -217,22 +262,6 @@ release_spec: opt
 release_docs_spec:
 
 # ----------------------------------------------------
-# Dependencies -- alphabetically, please
-# ---------------------------------------------------- 
-
-$(EBIN)/beam_lib.beam: ../include/erl_compile.hrl ../../kernel/include/file.hrl
-$(EBIN)/dets.beam: dets.hrl ../../kernel/include/file.hrl
-$(EBIN)/dets_server.beam: dets.hrl
-$(EBIN)/dets_utils.beam: dets.hrl
-$(EBIN)/dets_v8.beam: dets.hrl
-$(EBIN)/dets_v9.beam: dets.hrl
-$(EBIN)/erl_bits.beam: ../include/erl_bits.hrl
-$(EBIN)/erl_compile.beam: ../include/erl_compile.hrl ../../kernel/include/file.hrl
-$(EBIN)/erl_lint.beam: ../include/erl_bits.hrl
-$(EBIN)/erl_tar.beam: ../../kernel/include/file.hrl
-$(EBIN)/file_sorter.beam: ../../kernel/include/file.hrl
-$(EBIN)/filelib.beam: ../../kernel/include/file.hrl
-$(EBIN)/filename.beam: ../../kernel/include/file.hrl
-$(EBIN)/qlc_pt.beam: ../include/ms_transform.hrl
-$(EBIN)/shell.beam: ../../kernel/include/file.hrl
-$(EBIN)/zip.beam: ../include/zip.hrl ../../kernel/include/file.hrl
+# Dependencies
+# ----------------------------------------------------
+include $(ERL_TOP)/make/dep.mk

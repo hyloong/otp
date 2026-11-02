@@ -272,10 +272,10 @@ controlIfAllowed(AllowedNetworks,UserNetwork,IfAllowed,IfDenied)->
     end.
 
 
-%---------------------------------------------------------------------%
-%The Denycontrol isn't neccessary to preform since the allow control  %
-%override the deny control                                            %
-%---------------------------------------------------------------------%
+%--------------------------------------------------------------------%
+%The Denycontrol isn't necessary to preform since the allow control  %
+%override the deny control                                           %
+%--------------------------------------------------------------------%
 controlDenyAllow(DeniedNetworks,AllowedNetworks,UserNetwork)->
     case AllowedNetworks of
 	[{allow,all}]->
@@ -657,7 +657,7 @@ getData2(HtAccessFileNames,SplittedPath,Info)->
 
 %----------------------------------------------------------------------
 %HtAccessFilenames is a list the names the accesssfiles can have
-%Path is the shortest match agains all alias and documentroot
+%Path is the shortest match against all alias and documentroot
 %rest of splitted path is a list of the parts of the path
 %Info is the mod recod from the server
 %----------------------------------------------------------------------
@@ -823,7 +823,7 @@ insertData(AccessData,FileData)->
 	    lists:foreach(fun(Elem)->
 				  ets:insert(AccessData,Elem)
 			  end,FileData);
-	[{allow_over_ride,Directives}]when list(Directives)->
+        [{allow_over_ride,Directives}]when is_list(Directives)->
 	    lists:foreach(fun({Key,Value})->
 				  case lists:member(Key,Directives) of
 				      true->
@@ -1134,3 +1134,26 @@ getConfigData()->
 		     ,"/home/gandalf/marting/exjobb/webcover-1.0/priv"}}),
     ets:insert(Tab,{access_file,[".htaccess","kalle","pelle"]}),
     Tab.
+
+%%
+%% %CopyrightBegin%
+%%
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2008-2026. All Rights Reserved.
+%% Copyright Richard Carlsson 2026. All Rights Reserved.
+%%
+%% Licensed under the Apache License, Version 2.0 (the "License");
+%% you may not use this file except in compliance with the License.
+%% You may obtain a copy of the License at
+%%
+%%     http://www.apache.org/licenses/LICENSE-2.0
+%%
+%% Unless required by applicable law or agreed to in writing, software
+%% distributed under the License is distributed on an "AS IS" BASIS,
+%% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+%% See the License for the specific language governing permissions and
+%% limitations under the License.
+%%
+%% %CopyrightEnd%
+%%

@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 1996-2013. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 1996-2026. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -21,7 +23,82 @@
 %%
 -module(mnesia_recovery_test).
 -author('hakan@erix.ericsson.se').
--compile([export_all]).
+
+-compile([{nowarn_possibly_unsafe_function, {erlang, list_to_atom, 1}}]).
+
+-export([init_per_testcase/2, end_per_testcase/2,
+         init_per_group/2, end_per_group/2,
+         all/0, groups/0]).
+
+-export([coord_dies/1, after_full_disc_partition/1,
+         disc_less/1, garb_decision/1,
+         delete_during_start/1,
+         no_master_2/1, no_master_3/1, one_master_2/1, one_master_3/1,
+         two_master_2/1, two_master_3/1, all_master_2/1,
+         all_master_3/1,
+         dirty_read_during_down/1, trans_read_during_down/1,
+         mnesia_down_during_startup_disk_ram/1,
+         mnesia_down_during_startup_init_ram/1,
+         mnesia_down_during_startup_init_disc/1,
+         mnesia_down_during_startup_init_disc_only/1,
+         mnesia_down_during_startup_tm_ram/1,
+         mnesia_down_during_startup_tm_disc/1,
+         mnesia_down_during_startup_tm_disc_only/1,
+         with_checkpoint_same/1, with_checkpoint_other/1,
+         explicit_stop_during_snmp/1,
+         sym_trans_before_commit_kill_coord_node/1,
+         sym_trans_before_commit_kill_coord_pid/1,
+         sym_trans_before_commit_kill_part_after_ask/1,
+         sym_trans_before_commit_kill_part_before_ask/1,
+         sym_trans_after_commit_kill_coord_node/1,
+         sym_trans_after_commit_kill_coord_pid/1,
+         sym_trans_after_commit_kill_part_after_ask/1,
+         sym_trans_after_commit_kill_part_do_commit_pre/1,
+         sym_trans_after_commit_kill_part_do_commit_post/1,
+         sync_dirty_pre_kill_part/1,
+         sync_dirty_pre_kill_coord_node/1,
+         sync_dirty_pre_kill_coord_pid/1,
+         sync_dirty_post_kill_part/1,
+         sync_dirty_post_kill_coord_node/1,
+         sync_dirty_post_kill_coord_pid/1,
+         async_dirty_pre_kill_part/1,
+         async_dirty_pre_kill_coord_node/1,
+         async_dirty_pre_kill_coord_pid/1,
+         async_dirty_post_kill_part/1,
+         async_dirty_post_kill_coord_node/1,
+         async_dirty_post_kill_coord_pid/1,
+         asymtrans_part_ask/1,
+         asymtrans_part_commit_vote/1,
+         asymtrans_part_pre_commit/1,
+         asymtrans_part_log_commit/1,
+         asymtrans_part_do_commit/1,
+         asymtrans_coord_got_votes/1,
+         asymtrans_coord_pid_got_votes/1,
+         asymtrans_coord_log_commit_rec/1,
+         asymtrans_coord_pid_log_commit_rec/1,
+         asymtrans_coord_log_commit_dec/1,
+         asymtrans_coord_pid_log_commit_dec/1,
+         asymtrans_coord_rec_acc_pre_commit_log_commit/1,
+         asymtrans_coord_pid_rec_acc_pre_commit_log_commit/1,
+         asymtrans_coord_rec_acc_pre_commit_done_commit/1,
+         asymtrans_coord_pid_rec_acc_pre_commit_done_commit/1,
+         after_corrupt_files_decision_log_head/1,
+         after_corrupt_files_decision_log_tail/1,
+         after_corrupt_files_latest_log_head/1,
+         after_corrupt_files_latest_log_tail/1,
+         after_corrupt_files_table_dat_head/1,
+         after_corrupt_files_table_dat_tail/1,
+         after_corrupt_files_schema_dat_head/1,
+         after_corrupt_files_schema_dat_tail/1,
+         node_name_as_table_name/1]).
+
+-export([reader/2, check/0, get_all_retainers/1,
+         verify_data/2, verify_where2read/1,
+         do_trans_loop/2,
+         start_stop/3, do_sym_trans/2, do_sync_dirty/2, do_async_dirty/2,
+         do_asym_trans/2, garb_handler/1, mymnesia_start/1
+        ]).
+
 
 -include("mnesia_test_lib.hrl").
 -include_lib("kernel/include/file.hrl").
@@ -47,9 +124,10 @@ all() ->
     [{group, mnesia_down}, {group, explicit_stop},
      coord_dies, {group, schema_trans}, {group, async_dirty},
      {group, sync_dirty}, {group, sym_trans},
-     {group, asym_trans}, after_full_disc_partition,
+     {group, asym_trans}, %% after_full_disc_partition,
      {group, after_corrupt_files}, disc_less, garb_decision,
-     system_upgrade].
+     node_name_as_table_name
+    ].
 
 groups() -> 
     [{schema_trans, [],
@@ -504,12 +582,21 @@ with_checkpoint(Config, Type) when is_list(Config) ->
     ?match(ok, mnesia:deactivate_checkpoint(sune)),
     ?match([], check_chkp(Nodes)),
 
+    Wait = fun(Loop) ->
+		   timer:sleep(300),
+		   sys:get_status(mnesia_monitor),
+		   case lists:member(Kill, mnesia_lib:val({current, db_nodes})) of
+		       true -> Loop(Loop);
+		       false -> ok
+		   end
+	   end,
+
     case Kill of
 	Node1 -> 
 	    ignore;
 	Node2 ->
 	    mnesia_test_lib:kill_mnesia([Kill]),
-	    timer:sleep(500),  %% Just to help debugging
+	    Wait(Wait),
 	    ?match({ok, sune, _}, mnesia:activate_checkpoint([{name, sune}, 
 		{max, mnesia:system_info(tables)}, 
 		{ram_overrides_dump, true}])),
@@ -576,7 +663,7 @@ delete_during_start(Config) when is_list(Config) ->
     mnesia_test_lib:kill_mnesia([N2,N3]),
 %%    timer:sleep(500),
     ?match({[ok,ok],[]}, rpc:multicall([N2,N3], mnesia,start, 
-				       [[{extra_db_nodes,[N1]}]])),
+				       [[{extra_db_nodes,[N1]}, {schema, ?BACKEND}]])),
     [Tab1,Tab2,Tab3|_] = Tabs,
     ?match({atomic, ok}, mnesia:delete_table(Tab1)),
     ?match({atomic, ok}, mnesia:delete_table(Tab2)),
@@ -622,9 +709,9 @@ explicit_stop_during_snmp(Config) when is_list(Config) ->
 	    ?error("test case time out~n", [])
     end,
     ?verify_mnesia(Nodes, []),
-    exit(Do_trans_Pid1, kill),
-    exit(Do_trans_Pid2, kill),
-    exit(Start_stop_Pid, kill),
+    erlang:exit_signal(Do_trans_Pid1, kill),
+    erlang:exit_signal(Do_trans_Pid2, kill),
+    erlang:exit_signal(Start_stop_Pid, kill),
     ok.
 
 do_trans_loop(Tab, Father) ->
@@ -648,6 +735,7 @@ do_trans_loop2(Tab, Father) ->
 	    do_trans_loop2(Tab, Father);
 	Else ->
 	    ?error("Transaction failed: ~p ~n", [Else]),
+            io:format("INFO: ~p~n",[erlang:process_info(self())]),
 	    Father ! test_done,
 	    exit(shutdown)
     end.
@@ -700,13 +788,13 @@ coord_dies(Config) when is_list(Config) ->
     erlang:monitor(process, Pid4),erlang:monitor(process, Pid5),erlang:monitor(process, Pid6),
     
     [receive {Pid,continue} -> ok end || Pid <- [Pid4,Pid5,Pid6]],
-    exit(Pid4,crash),    
+    erlang:exit_signal(Pid4,crash),
     ?match_receive({'DOWN',_,_,Pid4, _}),
     ?match({atomic,[{_,key,1}]}, mnesia:transaction(fun() -> mnesia:read({tab1,key}) end)),
-    exit(Pid5,crash),
+    erlang:exit_signal(Pid5,crash),
     ?match_receive({'DOWN',_,_,Pid5, _}),
     ?match({atomic,[{_,key,1}]}, mnesia:transaction(fun() -> mnesia:read({tab2,key}) end)),
-    exit(Pid6,crash),
+    erlang:exit_signal(Pid6,crash),
     ?match_receive({'DOWN',_,_,Pid6, _}),
     ?match({atomic,[{_,key,1}]}, mnesia:transaction(fun() -> mnesia:read({tab3,key}) end)),
     
@@ -1207,7 +1295,7 @@ kill_after_debug_point(Kill, {DebugNode, Debug_Point}, TransFun, TabsAndDefs, No
     case Kill of
 	coord_pid -> 
 	    ?dl("Intentionally killing pid ~p ", [Pid]),
-	    exit(Pid, normal);
+            erlang:exit_signal(Pid, normal);
 	Node -> 		
 	    mnesia_test_lib:kill_mnesia([Node])
     end,
@@ -1258,7 +1346,7 @@ garb_of_decisions(Kill, Nodes, Tid_list, Trans_res) ->
 	    case length(Tid_list) of
 		1 -> 
 		    %% If there was only one transaction, it should be logged as
-		    %% comitted on every node!
+		    %% committed on every node!
 		    [Tid1] = Tid_list,
 		    verify_garb_transient_logs(Nodes, [Tid1], committed);
 		2 -> 
@@ -1372,7 +1460,7 @@ receive_messages(ListOfMsgs, File, Line) ->
 		    [{Pid, Msg} | receive_messages(ListOfMsgs -- [Msg], File, Line)]
 	    end;
 	Else -> mnesia_test_lib:log("<>WARNING<>~n"
-				    "Recevied unexpected or bad formatted msg~n ~p ~n"
+				    "Received unexpected or bad formatted msg~n ~p ~n"
 				    "While waiting for ~p~n", 
 	 			    [Else, ListOfMsgs], File, Line),
 		receive_messages(ListOfMsgs, File, Line)
@@ -1542,7 +1630,7 @@ disc_less(Config) when is_list(Config) ->
     ?match(ok, rpc:call(Node2, mnesia, start, [])),
 
     timer:sleep(500),
-    ?match(ok, rpc:call(Node3, mnesia, start, [[{extra_db_nodes, [Node1, Node2]}]])),
+    ?match(ok, rpc:call(Node3, mnesia, start, [[{extra_db_nodes, [Node1, Node2]}, {schema, ?BACKEND}]])),
     ?match(ok, rpc:call(Node3, mnesia, wait_for_tables, [[Tab1, Tab2, Tab3], 20000])),
     ?match(ok, rpc:call(Node1, mnesia, wait_for_tables, [[Tab1, Tab2, Tab3], 20000])),
 
@@ -1561,9 +1649,6 @@ disc_less(Config) when is_list(Config) ->
     ?verify_mnesia(Nodes, []).
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-
-system_upgrade(doc) ->
-    ["Test on-line and off-line upgrade of the Mnesia application"].
 
 garb_decision(doc) ->
     ["Test that decisions are garbed correctly."];
@@ -1644,3 +1729,21 @@ check_garb() ->
     catch _:_ -> ok  
     end,
     ok.
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+node_name_as_table_name(doc) ->
+    ["Check node name can be used as table name."];
+node_name_as_table_name(suite) ->
+    [];
+node_name_as_table_name(Config) when is_list(Config) ->
+    [N1, N2] = All = ?acquire_nodes(2, Config),
+    Tab = N1,
+
+    ?match({atomic, ok}, mnesia:create_table(Tab, [{ram_copies, [N1]}])),
+
+    ?match([], mnesia_test_lib:kill_mnesia([N1])),
+    ?match(ok, rpc:call(N1, mnesia, start, [[{extra_db_nodes, [N2]}]])),
+    ?match(ok, rpc:call(N1, mnesia, wait_for_tables, [[Tab], 20000])),
+
+    ?verify_mnesia(All, []).

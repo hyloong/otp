@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2004-2015. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2004-2026. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -18,6 +20,14 @@
 %% %CopyrightEnd%
 %%
 -module(qlc).
+-moduledoc({file, "../doc/src/qlc.md"}).
+
+-compile([{nowarn_possibly_unsafe_function, {erlang, list_to_atom, 1}},
+          {nowarn_possibly_unsafe_function, {erlang, binary_to_term, 1}},
+          nowarn_deprecated_catch,
+          %% Avoid warning for local function error/1 clashing with
+          %% autoimported BIF.
+          {no_auto_import, [error/1]}]).
 
 %%% Purpose: Main API module qlc. Functions for evaluation.
 %%% Other files:
@@ -25,9 +35,9 @@
 
 %% External exports 
 
-%% Avoid warning for local function error/1 clashing with autoimported BIF.
--compile({no_auto_import,[error/1]}).
--export([parse_transform/2, transform_from_evaluator/2]).
+-export([parse_transform/2,
+         parse_transform_info/0,
+         transform_from_evaluator/2]).
 
 -export([q/1, q/2]).
 
@@ -50,6 +60,8 @@
 %% Exported to qlc_pt.erl only:
 -export([template_state/0, aux_name/3, name_suffix/2, vars/1,
          var_ufold/2, var_fold/3, all_selections/1]).
+
+-dialyzer(no_improper_lists).
 
 %% When cache=list lists bigger than ?MAX_LIST_SIZE bytes are put on
 %% file. Also used when merge join finds big equivalence classes.
@@ -147,16 +159,29 @@ get_handle(_) ->
 %%% Exported functions
 %%%
 
+-doc "A literal [query list comprehension](`m:qlc#query_list_comprehension`).".
 -type(query_list_comprehension() :: term()).
+-doc "A [query cursor](`m:qlc#query_cursor`).".
 -opaque(query_cursor() :: {qlc_cursor, term()}).
+-doc "A [query handle](`m:qlc#query_handle`).".
 -opaque(query_handle() :: {qlc_handle, term()}).
 -type(query_handle_or_list() :: query_handle() | list()).
 -type(answers() :: [answer()]).
 -type(answer() :: term()).
+-doc """
+Parse trees for Erlang expression, see section
+[The Abstract Format](`e:erts:absform.md`) in the ERTS User's Guide.
+""".
 -type(abstract_expr() :: erl_parse:abstract_expr()).
+-doc """
+Match specification, see section
+[Match Specifications in Erlang](`e:erts:match_spec.md`) in the ERTS User's
+Guide and `m:ms_transform`.
+""".
 -type(match_expression() :: ets:match_spec()).
 -type(spawn_options() :: default | [proc_lib:spawn_option()]).
 -type(sort_options() :: [sort_option()] | sort_option()).
+-doc "See `m:file_sorter` for a description of the options.".
 -type(sort_option() :: {compressed, boolean()}
                      | {no_files, no_files()}
                      | {order, order()}
@@ -166,6 +191,7 @@ get_handle(_) ->
 -type(order() :: ascending | descending | order_fun()).
 -type(order_fun() :: fun((term(), term()) -> boolean())).
 -type(tmp_directory() :: [] | file:name()).
+-doc "An integer > 1.".
 -type(no_files() :: pos_integer()). % > 1
 -type(key_pos() :: pos_integer() | [pos_integer()]).
 -type(max_list_size() :: non_neg_integer()).
@@ -173,6 +199,11 @@ get_handle(_) ->
 -type(tmp_file_usage() :: allowed | not_allowed | info_msg
                         | warning_msg  | error_msg).
 
+-doc """
+Returns a query handle. When evaluating query handle `QH`, all answers to the
+first query handle in `QHL` are returned, followed by all answers to the
+remaining query handles in `QHL`.
+""".
 -spec(append(QHL) -> QH when
       QHL :: [query_handle_or_list()],
       QH :: query_handle()).
@@ -183,6 +214,13 @@ append(QHs) ->
           end || QH <- QHs],
     #qlc_handle{h = #qlc_append{hl = Hs}}.
 
+-doc """
+Returns a query handle. When evaluating query handle `QH3`, all answers to `QH1`
+are returned, followed by all answers to `QH2`.
+
+[`append(QH1, QH2)`](`append/2`) is equivalent to
+[`append([QH1, QH2])`](`append/1`).
+""".
 -spec(append(QH1, QH2) -> QH3 when
       QH1 :: query_handle_or_list(),
       QH2 :: query_handle_or_list(),
@@ -194,12 +232,37 @@ append(QH1, QH2) ->
           end || QH <- [QH1, QH2]],
     #qlc_handle{h = #qlc_append{hl = Hs}}.
 
+-doc(#{equiv => cursor(QH, [])}).
 -spec(cursor(QH) -> Cursor when
       QH :: query_handle_or_list(),
       Cursor :: query_cursor()).
 cursor(QH) ->
     cursor(QH, []).
 
+-doc """
+Creates a query cursor and makes the calling process the owner of the cursor.
+
+The cursor is to be used as argument to [`next_answers/1,2`](`next_answers/1`)
+and (eventually) `delete_cursor/1`. Calls `erlang:spawn_opt/2` to spawn and link
+to a process that evaluates the query handle. The value of option
+`spawn_options` is used as last argument when calling
+[`spawn_opt/2`](`spawn_opt/2`). Defaults to `[link]`.
+
+_Example:_
+
+```erlang
+1> QH = qlc:q([{X,Y} || X <- [a,b], Y <- [1,2]]),
+QC = qlc:cursor(QH),
+qlc:next_answers(QC, 1).
+[{a,1}]
+2> qlc:next_answers(QC, 1).
+[{a,2}]
+3> qlc:next_answers(QC, all_remaining).
+[{b,1},{b,2}]
+4> qlc:delete_cursor(QC).
+ok
+```
+""".
 -spec(cursor(QH, Options) -> Cursor when
       QH :: query_handle_or_list(),
       Options :: [Option] | Option,
@@ -228,6 +291,7 @@ cursor(QH, Options) ->
             end
     end.
 
+-doc "Deletes a query cursor. Only the owner of the cursor can delete the cursor.".
 -spec(delete_cursor(QueryCursor) -> ok when
       QueryCursor :: query_cursor()).
 delete_cursor(#qlc_cursor{c = {_, Owner}}=C) when Owner =/= self() ->
@@ -237,6 +301,7 @@ delete_cursor(#qlc_cursor{c = {Pid, _}}) ->
 delete_cursor(T) ->
     erlang:error(badarg, [T]).
 
+-doc(#{equiv => eval(QH, [])}).
 -spec(e(QH) -> Answers | Error when
       QH :: query_handle_or_list(),
       Answers :: answers(),
@@ -245,6 +310,7 @@ delete_cursor(T) ->
 e(QH) ->
     eval(QH, []).
 
+-doc(#{equiv => eval(QH, Options)}).
 -spec(e(QH, Options) -> Answers | Error when
       QH :: query_handle_or_list(),
       Options :: [Option] | Option,
@@ -259,6 +325,7 @@ e(QH) ->
 e(QH, Options) ->
     eval(QH, Options).
 
+-doc(#{equiv => eval(QH, [])}).
 -spec(eval(QH) -> Answers | Error when
       QH :: query_handle_or_list(),
       Answers :: answers(),
@@ -267,6 +334,18 @@ e(QH, Options) ->
 eval(QH) ->
     eval(QH, []).
 
+-doc """
+Evaluates a query handle in the calling process and collects all answers in a
+list.
+
+_Example:_
+
+```erlang
+1> QH = qlc:q([{X,Y} || X <- [a,b], Y <- [1,2]]),
+qlc:eval(QH).
+[{a,1},{a,2},{b,1},{b,2}]
+```
+""".
 -spec(eval(QH, Options) -> Answers | Error when
       QH :: query_handle_or_list(),
       Answers :: answers(),
@@ -299,16 +378,17 @@ eval(QH, Options) ->
                             post_funs(Post)
                         end
                 end
-            catch Term ->
-                case erlang:get_stacktrace() of
+            catch throw:Term:Stacktrace ->
+                case Stacktrace of
                     [?THROWN_ERROR | _] ->
                         Term;
-                    Stacktrace ->
+                    _ ->
                         erlang:raise(throw, Term, Stacktrace)
                 end
             end
     end.
 
+-doc(#{equiv => fold(Function, Acc0, QH, [])}).
 -spec(fold(Function, Acc0, QH) ->
                Acc1 | Error when
       QH :: query_handle_or_list(),
@@ -322,6 +402,22 @@ eval(QH, Options) ->
 fold(Fun, Acc0, QH) ->
     fold(Fun, Acc0, QH, []).
 
+-doc """
+Calls `Function` on successive answers to the query handle together with an
+extra argument `AccIn`.
+
+The query handle and the function are evaluated in the
+calling process. `Function` must return a new accumulator, which is passed to
+the next call. `Acc0` is returned if there are no answers to the query handle.
+
+_Example:_
+
+```erlang
+1> QH = [1,2,3,4,5,6],
+qlc:fold(fun(X, Sum) -> X + Sum end, 0, QH).
+21
+```
+""".
 -spec(fold(Function, Acc0, QH, Options) ->
                Acc1 | Error when
       QH :: query_handle_or_list(),
@@ -357,18 +453,23 @@ fold(Fun, Acc0, QH, Options) ->
                             post_funs(Post)
                         end
                 end
-            catch Term ->
-                case erlang:get_stacktrace() of
+            catch throw:Term:Stacktrace ->
+                case Stacktrace of
                     [?THROWN_ERROR | _] ->
                         Term;
-                    Stacktrace ->
+                    _ ->
                         erlang:raise(throw, Term, Stacktrace)
                 end
             end
     end.
 
+-doc """
+Returns a descriptive string in English of an error tuple returned by some of
+the functions of the `qlc` module or the parse transform. This function is
+mainly used by the compiler invoking the parse transform.
+""".
 -spec(format_error(Error) -> Chars when
-      Error :: {error, module(), term()},
+      Error :: {error, module(), term()} | atom() | {atom(), term()} | {atom(), term(), term()},
       Chars :: io_lib:chars()).
 format_error(not_a_query_list_comprehension) ->
     io_lib:format("argument is not a query list comprehension", []);
@@ -386,9 +487,10 @@ format_error(nomatch_pattern) ->
     io_lib:format("pattern cannot possibly match", []);
 format_error(nomatch_filter) ->
     io_lib:format("filter evaluates to 'false'", []);
-format_error({Line, Mod, Reason}) when is_integer(Line) ->
-    io_lib:format("~p: ~ts~n", 
-                  [Line, lists:flatten(Mod:format_error(Reason))]);
+format_error({Location, Mod, Reason}) when is_integer(Location);
+                                           tuple_size(Location) =:= 2 ->
+    io_lib:format("~s: ~ts~n",
+                  [pos(Location), lists:flatten(Mod:format_error(Reason))]);
 %% file_sorter errors
 format_error({bad_object, FileName}) ->
     io_lib:format("the temporary file \"~ts\" holding answers is corrupt",
@@ -407,12 +509,109 @@ format_error({error, Module, Reason}) ->
 format_error(E) ->
     io_lib:format("~tp~n", [E]).
 
+pos({Line,Col}) ->
+    io_lib:format("~w:~w", [Line,Col]);
+pos(Line) ->
+    io_lib:format("~w", [Line]).
+
+-doc(#{equiv => info(QH, [])}).
 -spec(info(QH) -> Info when
       QH :: query_handle_or_list(),
       Info :: abstract_expr() | string()).
 info(QH) ->
     info(QH, []).
 
+-doc """
+Returns information about a query handle. The information describes the
+simplifications and optimizations that are the results of preparing the query
+for evaluation. This function is probably mainly useful during debugging.
+
+The information has the form of an Erlang expression where QLCs most likely
+occur. Depending on the format functions of mentioned QLC tables, it is not
+certain that the information is absolutely accurate.
+
+Options:
+
+- The default is to return a sequence of QLCs in a block, but if option
+  `{flat, false}` is specified, one single QLC is returned.
+- The default is to return a string, but if option `{format, abstract_code}` is
+  specified, abstract code is returned instead. In the abstract code, port
+  identifiers, references, and pids are represented by strings.
+- The default is to return all elements in lists, but if option
+  `{n_elements, NElements}` is specified, only a limited number of elements are
+  returned.
+- The default is to show all parts of objects and match specifications, but if
+  option `{depth, Depth}` is specified, parts of terms below a certain depth are
+  replaced by `'...'`.
+
+_Examples:_
+
+In the following example two simple QLCs are inserted only to hold option
+`{unique, true}`:
+
+```erlang
+1> QH = qlc:q([{X,Y} || X <- [x,y], Y <- [a,b]]),
+io:format("~s~n", [qlc:info(QH, unique_all)]).
+begin
+    V1 =
+        qlc:q([
+               SQV ||
+                   SQV <- [x, y]
+              ],
+              [{unique, true}]),
+    V2 =
+        qlc:q([
+               SQV ||
+                   SQV <- [a, b]
+              ],
+              [{unique, true}]),
+    qlc:q([
+           {X,Y} ||
+               X <- V1,
+               Y <- V2
+          ],
+          [{unique, true}])
+end
+```
+
+In the following example QLC `V2` has been inserted to show the joined
+generators and the join method chosen. A convention is used for lookup join: the
+first generator (`G2`) is the one traversed, the second (`G1`) is the table
+where constants are looked up.
+
+```erlang
+1> E1 = ets:new(e1, []),
+E2 = ets:new(e2, []),
+true = ets:insert(E1, [{1,a},{2,b}]),
+true = ets:insert(E2, [{a,1},{b,2}]),
+Q = qlc:q([{X,Z,W} ||
+{X, Z} <- ets:table(E1),
+{W, Y} <- ets:table(E2),
+X =:= Y]),
+io:format("~s~n", [qlc:info(Q)]).
+begin
+    V1 =
+        qlc:q([
+               P0 ||
+                   P0 = {W, Y} <-
+                       ets:table(#Ref<0.3098908599.2283929601.256549>)
+              ]),
+    V2 =
+        qlc:q([
+               [G1 | G2] ||
+                   G2 <- V1,
+                   G1 <-
+                       ets:table(#Ref<0.3098908599.2283929601.256548>),
+                   element(2, G1) =:= element(1, G2)
+              ],
+              [{join, lookup}]),
+    qlc:q([
+           {X, Z, W} ||
+               [{X, Z} | {W, Y}] <- V2
+          ])
+end
+```
+""".
 -spec(info(QH, Options) -> Info when
       QH :: query_handle_or_list(),
       Options :: [Option] | Option,
@@ -448,23 +647,24 @@ info(QH, Options) ->
                     abstract_code ->
                         abstract_code(AbstractCode);
                     string ->
-                        Hook = fun({special, _Line, String}, _I, _P, _F) ->
+                        Hook = fun({special, _Anno, String}, _I, _P, _F) ->
                                        String
                                end,
                         lists:flatten(erl_pp:expr(AbstractCode, 0, Hook));
                     debug -> % Not documented. Intended for testing only.
                         Info
                 end
-            catch Term ->
-                case erlang:get_stacktrace() of
+            catch throw:Term:Stacktrace ->
+                case Stacktrace of
                     [?THROWN_ERROR | _] ->
                         Term;
-                    Stacktrace ->
+                    _ ->
                         erlang:raise(throw, Term, Stacktrace)
                 end
             end
     end.
 
+-doc(#{equiv => keysort(KeyPos, QH1, [])}).
 -spec(keysort(KeyPos, QH1) -> QH2 when
       KeyPos :: key_pos(),
       QH1 :: query_handle_or_list(),
@@ -472,6 +672,14 @@ info(QH, Options) ->
 keysort(KeyPos, QH) ->
     keysort(KeyPos, QH, []).
 
+-doc """
+Returns a query handle. When evaluating query handle `QH2`, the answers to query
+handle `QH1` are sorted by `file_sorter:keysort/4` according to the options.
+
+The sorter uses temporary files only if `QH1` does not evaluate to a list and
+the size of the binary representation of the answers exceeds `Size` bytes, where
+`Size` is the value of option `size`.
+""".
 -spec(keysort(KeyPos, QH1, SortOptions) -> QH2 when
       KeyPos :: key_pos(),
       SortOptions :: sort_options(),
@@ -495,6 +703,7 @@ keysort(KeyPos, QH, Options) ->
 
 -define(DEFAULT_NUM_OF_ANSWERS, 10).
 
+-doc(#{equiv => next_answers(C, ?DEFAULT_NUM_OF_ANSWERS)}).
 -spec(next_answers(QueryCursor) ->
             Answers | Error when
       QueryCursor :: query_cursor(),
@@ -504,6 +713,14 @@ keysort(KeyPos, QH, Options) ->
 next_answers(C) ->
     next_answers(C, ?DEFAULT_NUM_OF_ANSWERS).
 
+-doc """
+Returns some or all of the remaining answers to a query cursor. Only the owner
+of `QueryCursor` can retrieve answers.
+
+Argument `NumberOfAnswers` determines the maximum number of answers
+returned. If less than the requested number of answers is
+returned, subsequent calls to `next_answers` return `[]`.
+""".
 -spec(next_answers(QueryCursor, NumberOfAnswers) ->
             Answers | Error when
       QueryCursor :: query_cursor(),
@@ -524,6 +741,7 @@ next_answers(#qlc_cursor{c = {Pid, _}}=C, NumOfAnswers) ->
 next_answers(T1, T2) ->
     erlang:error(badarg, [T1, T2]).
 
+-doc false.
 -spec(parse_transform(Forms, Options) -> Forms2 when
       Forms :: [erl_parse:abstract_form()],
       Forms2 :: [erl_parse:abstract_form()],
@@ -533,14 +751,199 @@ next_answers(T1, T2) ->
 parse_transform(Forms, Options) ->
     qlc_pt:parse_transform(Forms, Options).
 
+-doc false.
+-spec parse_transform_info() -> #{'error_location' => 'column'}.
+
+parse_transform_info() ->
+    #{error_location => column}.
+
 %% The funcspecs qlc:q/1 and qlc:q/2 are known by erl_eval.erl and
 %% erl_lint.erl.
+-doc(#{equiv => q(QLC, [])}).
 -spec(q(QLC) -> QH when
       QLC :: query_list_comprehension(),
       QH :: query_handle()).
 q(QLC_lc) ->
     q(QLC_lc, []).
 
+-doc """
+Returns a query handle for a QLC. The QLC must be the first argument to this
+function, otherwise it is evaluated as an ordinary list comprehension. It is
+also necessary to add the following line to the source code:
+
+```erlang
+-include_lib("stdlib/include/qlc.hrl").
+```
+
+This causes a parse transform to substitute a fun for the QLC. The (compiled)
+fun is called when the query handle is evaluated.
+
+When calling `qlc:q/1,2` from the Erlang shell, the parse transform is
+automatically called. When this occurs, the fun substituted for the QLC is not
+compiled but is evaluated by `m:erl_eval`. This is also true when expressions
+are evaluated by `file:eval/1,2` or in the debugger.
+
+To be explicit, this does not work:
+
+```erlang
+...
+A = [X || {X} <- [{1},{2}]],
+QH = qlc:q(A),
+...
+```
+
+Variable `A` is bound to the evaluated value of the list comprehension
+(`[1,2]`). The compiler complains with an error message ("argument is not a
+query list comprehension"); the shell process stops with a `badarg` reason.
+
+Options:
+
+- Option `{cache, ets}` can be used to cache the answers to a QLC. The answers
+  are stored in one ETS table for each cached QLC. When a cached QLC is
+  evaluated again, answers are fetched from the table without any further
+  computations. Therefore, when all answers to a cached QLC have been found, the
+  ETS tables used for caching answers to the qualifiers of the QLC can be
+  emptied. Option `cache` is equivalent to `{cache, ets}`.
+- Option `{cache, list}` can be used to cache the answers to a QLC like
+  `{cache, ets}`. The difference is that the answers are kept in a list (on the
+  process heap). If the answers would occupy more than a certain amount of RAM
+  memory, a temporary file is used for storing the answers. Option
+  `max_list_size` sets the limit in bytes and the temporary file is put on the
+  directory set by option `tmpdir`.
+
+  Option `cache` has no effect if it is known that the QLC is to be evaluated at
+  most once. This is always true for the top-most QLC and also for the list
+  expression of the first generator in a list of qualifiers. Notice that in the
+  presence of side effects in filters or callback functions, the answers to QLCs
+  can be affected by option `cache`.
+
+- Option `{unique, true}` can be used to remove duplicate answers to a QLC. The
+  unique answers are stored in one ETS table for each QLC. The table is emptied
+  every time it is known that there are no more answers to the QLC. Option
+  `unique` is equivalent to `{unique, true}`. If option `unique` is combined
+  with option `{cache, ets}`, two ETS tables are used, but the full answers are
+  stored in one table only. If option `unique` is combined with option
+  `{cache, list}`, the answers are sorted twice using `keysort/3`; once to
+  remove duplicates and once to restore the order.
+
+Options `cache` and `unique` apply not only to the QLC itself but also to the
+results of looking up constants, running match specifications, and joining
+handles.
+
+_Example:_
+
+In the following example the cached results of the merge join are traversed for
+each value of `A`. Notice that without option `cache` the join would have been
+carried out three times, once for each value of `A`.
+
+```erlang
+1> Q = qlc:q([{A,X,Z,W} ||
+A <- [a,b,c],
+{X,Z} <- [{a,1},{b,4},{c,6}],
+{W,Y} <- [{2,a},{3,b},{4,c}],
+X =:= Y],
+{cache, list}),
+io:format("~s~n", [qlc:info(Q)]).
+begin
+    V1 =
+        qlc:q([
+               P0 ||
+                   P0 = {X, Z} <-
+                       qlc:keysort(1, [{a, 1}, {b, 4}, {c, 6}], [])
+              ]),
+    V2 =
+        qlc:q([
+               P0 ||
+                   P0 = {W, Y} <-
+                       qlc:keysort(2, [{2, a}, {3, b}, {4, c}], [])
+              ]),
+    V3 =
+        qlc:q([
+               [G1 | G2] ||
+                   G1 <- V1,
+                   G2 <- V2,
+                   element(1, G1) == element(2, G2)
+              ],
+              [{join, merge}, {cache, list}]),
+    qlc:q([
+           {A, X, Z, W} ||
+               A <- [a, b, c],
+               [{X, Z} | {W, Y}] <- V3,
+               X =:= Y
+          ])
+end
+```
+
+[`sort/1,2`](`sort/1`) and [`keysort/2,3`](`keysort/2`) can also be used for
+caching answers and for removing duplicates. When sorting answers are cached in
+a list, possibly stored on a temporary file, and no ETS tables are used.
+
+Sometimes (see `table/2`) traversal of tables can be done by looking up key
+values, which is assumed to be fast. Under certain (rare) circumstances there
+can be too many key values to look up. [](){: #max_lookup } Option
+`{max_lookup, MaxLookup}` can then be used to limit the number of lookups: if
+more than `MaxLookup` lookups would be required, no lookups are done but the
+table is traversed instead. Defaults to `infinity`, which means that there is no
+limit on the number of keys to look up.
+
+_Example:_
+
+In the following example, using the `gb_table` module from section
+[Implementing a QLC Table](`m:qlc#implementing_a_qlc_table`), there are six keys
+to look up: `{1,a}`, `{1,b}`, `{1,c}`, `{2,a}`, `{2,b}`, and `{2,c}`. The reason
+is that the two elements of key `{X, Y}` are compared separately.
+
+```erlang
+1> T = gb_trees:empty(),
+QH = qlc:q([X || {{X,Y},_} <- gb_table:table(T),
+((X == 1) or (X == 2)) andalso
+((Y == a) or (Y == b) or (Y == c))]),
+io:format("~s~n", [qlc:info(QH)]).
+ets:match_spec_run(
+       lists:flatmap(fun(K) ->
+                            case
+                                gb_trees:lookup(K,
+                                                gb_trees:from_orddict([]))
+                            of
+                                {value, V} ->
+                                    [{K, V}];
+                                none ->
+                                    []
+                            end
+                     end,
+                     [{1, a},
+                      {1, b},
+                      {1, c},
+                      {2, a},
+                      {2, b},
+                      {2, c}]),
+       ets:match_spec_compile([{{{'$1', '$2'}, '_'},
+                                [],
+                                ['$1']}]))
+```
+
+Options:
+
+- Option `{lookup, true}` can be used to ensure that the `qlc` module looks up
+  constants in some QLC table. If there are more than one QLC table among the
+  list expressions of the generators, constants must be looked up in at least
+  one of the tables. The evaluation of the query fails if there are no constants
+  to look up. This option is useful when it would be unacceptable to traverse
+  all objects in some table. Setting option `lookup` to `false` ensures that no
+  constants are looked up (`{max_lookup, 0}` has the same effect). Defaults to
+  `any`, which means that constants are looked up whenever possible.
+- Option `{join, Join}` can be used to ensure that a certain join method is
+  used:
+
+  - `{join, lookup}` invokes the lookup join method.
+  - `{join, merge}` invokes the merge join method.
+  - `{join, nested_loop}` invokes the method of matching every pair of objects
+    from two handles. This method is mostly very slow.
+
+  The evaluation of the query fails if the `qlc` module cannot carry out the
+  chosen join method. Defaults to `any`, which means that some fast join method
+  is used if possible.
+""".
 -spec(q(QLC, Options) -> QH when
       QH :: query_handle(),
       Options :: [Option] | Option,
@@ -565,12 +968,21 @@ q(#qlc_lc{}=QLC_lc, Options) ->
 q(T1, T2) ->
     erlang:error(badarg, [T1, T2]).
 
+-doc(#{equiv => sort(QH, [])}).
 -spec(sort(QH1) -> QH2 when
       QH1 :: query_handle_or_list(),
       QH2 :: query_handle()).
 sort(QH) ->
     sort(QH, []).
 
+-doc """
+Returns a query handle. When evaluating query handle `QH2`, the answers to query
+handle `QH1` are sorted by `file_sorter:sort/3` according to the options.
+
+The sorter uses temporary files only if `QH1` does not evaluate to a list and
+the size of the binary representation of the answers exceeds `Size` bytes, where
+`Size` is the value of option `size`.
+""".
 -spec(sort(QH1, SortOptions) -> QH2 when
       SortOptions :: sort_options(),
       QH1 :: query_handle_or_list(),
@@ -588,6 +1000,7 @@ sort(QH, Options) ->
     end.
 
 %% Note that the generated code is evaluated by (the slow) erl_eval.
+-doc(#{equiv => string_to_handle(QueryString, [])}).
 -spec(string_to_handle(QueryString) -> QH | Error when
       QueryString :: string(),
       QH :: query_handle(),
@@ -596,6 +1009,7 @@ sort(QH, Options) ->
 string_to_handle(Str) ->
     string_to_handle(Str, []).
 
+-doc(#{equiv => string_to_handle(QueryString, Options, erl_eval:new_bindings())}).
 -spec(string_to_handle(QueryString, Options) -> QH | Error when
       QueryString :: string(),
       Options :: [Option] | Option,
@@ -613,6 +1027,29 @@ string_to_handle(Str) ->
 string_to_handle(Str, Options) ->
     string_to_handle(Str, Options, erl_eval:new_bindings()).
 
+-doc """
+A string version of [`q/1,2`](`q/1`). When the query handle is evaluated, the
+fun created by the parse transform is interpreted by `m:erl_eval`. The query
+string is to be one single QLC terminated by a period.
+
+_Example:_
+
+```erlang
+1> L = [1,2,3],
+Bs = erl_eval:add_binding('L', L, erl_eval:new_bindings()),
+QH = qlc:string_to_handle("[X+1 || X <- L].", [], Bs),
+qlc:eval(QH).
+[2,3,4]
+```
+
+This function is probably mainly useful when called from outside of Erlang, for
+example from a driver written in C.
+
+> #### Note {: .info }
+>
+> Query handles created this way may have worse performance than when created
+> directly via [`q/1,2`](`q/1`).
+""".
 -spec(string_to_handle(QueryString, Options, Bindings) -> QH | Error when
       QueryString :: string(),
       Options :: [Option] | Option,
@@ -633,10 +1070,20 @@ string_to_handle(Str, Options, Bindings) when is_list(Str) ->
         badarg ->
             erlang:error(badarg, [Str, Options, Bindings]);
         [Unique, Cache, MaxLookup, Join, Lookup] ->
-            case erl_scan:string(Str) of
+            case erl_scan:string(Str, 1, [text]) of
                 {ok, Tokens, _} ->
-                    case erl_parse:parse_exprs(Tokens) of
-                        {ok, [Expr]} ->
+                    ScanRes =
+                        case erl_eval:extended_parse_exprs(Tokens) of
+                            {ok, [Expr0]} ->
+                                {ok, Expr0};
+                            {ok, _ExprList} ->
+                                erlang:error(badarg,
+                                             [Str, Options, Bindings]);
+                            E ->
+                                E
+                        end,
+                    case ScanRes of
+                        {ok, Expr} ->
                             case qlc_pt:transform_expression(Expr, Bindings) of
                                 {ok, {call, _, _QlcQ,  Handle}} ->
                                     {value, QLC_lc, _} = 
@@ -650,19 +1097,146 @@ string_to_handle(Str, Options, Bindings) when is_list(Str) ->
                                 {not_ok, [{error, Error} | _]} ->
                                     error(Error)
                             end;
-                        {ok, _ExprList} ->
-                            erlang:error(badarg, [Str, Options, Bindings]);
                         {error, ErrorInfo} ->
                             error(ErrorInfo)
                     end;
-                {error, ErrorInfo, _EndLine} ->
+                {error, ErrorInfo, _EndLocation} ->
                     error(ErrorInfo)
             end
     end;
 string_to_handle(T1, T2, T3) ->    
     erlang:error(badarg, [T1, T2, T3]).
 
--spec(table(TraverseFun, Options) -> QH when
+-doc """
+Returns a query handle for a QLC table. In Erlang/OTP there is support for ETS,
+Dets, and Mnesia tables, but many other data structures can be turned into QLC
+tables. This is accomplished by letting function(s) in the module implementing
+the data structure create a query handle by calling `qlc:table/2`.
+
+The different ways to traverse the table and properties of the table are handled
+by callback functions provided as options to `qlc:table/2`.
+
+- Callback function `TraverseFun` is used for traversing the table. It is to
+  return a list of objects terminated by either `[]` or a nullary fun to be used
+  for traversing the not yet traversed objects of the table. Any other return
+  value is immediately returned as value of the query evaluation. Unary
+  `TraverseFun`s are to accept a match specification as argument. The match
+  specification is created by the parse transform by analyzing the pattern of
+  the generator calling `qlc:table/2` and filters using variables introduced in
+  the pattern. If the parse transform cannot find a match specification
+  equivalent to the pattern and filters, `TraverseFun` is called with a match
+  specification returning every object.
+
+  - Modules that can use match specifications for optimized traversal of tables
+    are to call `qlc:table/2` with an unary `TraverseFun`. An example is
+    `ets:table/2`.
+  - Other modules can provide a nullary `TraverseFun`. An example is
+    [`gb_table:table/1`](`m:qlc#gb_table`) in section
+    [Implementing a QLC Table](`m:qlc#implementing_a_qlc_table`).
+
+- Unary callback function `PreFun` is called once before the table is read for
+  the first time. If the call fails, the query evaluation fails.
+
+  Argument `PreArgs` is a list of tagged values. There are two tags,
+  `parent_value` and `stop_fun`, used by Mnesia for managing transactions.
+
+  - The value of `parent_value` is the value returned by `ParentFun`, or
+    `undefined` if there is no `ParentFun`. `ParentFun` is called once just
+    before the call of `PreFun` in the context of the process calling
+    [`eval/1,2`](`eval/1`), [`fold/3,4`](`fold/3`), or
+    [`cursor/1,2`](`cursor/1`).
+  - The value of `stop_fun` is a nullary fun that deletes the cursor if called
+    from the parent, or `undefined` if there is no cursor.
+
+- Nullary callback function `PostFun` is called once after the table was last
+  read. The return value, which is caught, is ignored. If `PreFun` has been
+  called for a table, `PostFun` is guaranteed to be called for that table, even
+  if the evaluation of the query fails for some reason.
+
+  The pre (post) functions for different tables are evaluated in unspecified
+  order.
+
+  Other table access than reading, such as calling `InfoFun`, is assumed to be
+  OK at any time.
+
+- [](){: #lookup_fun } Binary callback function `LookupFun` is used for looking
+  up objects in the table. The first argument `Position` is the key position or
+  an indexed position and the second argument `Keys` is a sorted list of unique
+  values. The return value is to be a list of all objects (tuples), such that
+  the element at `Position` is a member of `Keys`. Any other return value is
+  immediately returned as value of the query evaluation. `LookupFun` is called
+  instead of traversing the table if the parse transform at compile time can
+  determine that the filters match and compare the element at `Position` in such
+  a way that only `Keys` need to be looked up to find all potential answers.
+
+  The key position is obtained by calling `InfoFun(keypos)` and the indexed
+  positions by calling `InfoFun(indices)`. If the key position can be used for
+  lookup, it is always chosen, otherwise the indexed position requiring the
+  least number of lookups is chosen. If there is a tie between two indexed
+  positions, the one occurring first in the list returned by `InfoFun` is
+  chosen. Positions requiring more than [max_lookup](`m:qlc#max_lookup`) lookups
+  are ignored.
+
+- Unary callback function `InfoFun` is to return information about the table.
+  `undefined` is to be returned if the value of some tag is unknown:
+
+  - **`indices`** - Returns a list of indexed positions, a list of positive
+    integers.
+
+  - **`is_unique_objects`** - Returns `true` if the objects returned by
+    `TraverseFun` are unique.
+
+  - **`keypos`** - Returns the position of the table key, a positive integer.
+
+  - **`is_sorted_key`** - Returns `true` if the objects returned by
+    `TraverseFun` are sorted on the key.
+
+  - **`num_of_objects`** - Returns the number of objects in the table, a
+    non-negative integer.
+
+- Unary callback function `FormatFun` is used by [`info/1,2`](`info/1`) for
+  displaying the call that created the query handle of the table. Defaults to
+  `undefined`, which means that `info/1,2` displays a call to `'$MOD':'$FUN'/0`.
+  It is up to `FormatFun` to present the selected objects of the table in a
+  suitable way. However, if a character list is chosen for presentation, it must
+  be an Erlang expression that can be scanned and parsed (a trailing dot is
+  added by `info/1,2` though).
+
+  `FormatFun` is called with an argument that describes the selected objects
+  based on optimizations done as a result of analyzing the filters of the QLC
+  where the call to `qlc:table/2` occurs. The argument can have the following
+  values:
+
+  - **`{lookup, Position, Keys, NElements, DepthFun}`.** - `LookupFun` is used
+    for looking up objects in the table.
+
+  - **`{match_spec, MatchExpression}`** - No way of finding all possible answers
+    by looking up keys was found, but the filters could be transformed into a
+    match specification. All answers are found by calling
+    `TraverseFun(MatchExpression)`.
+
+  - **`{all, NElements, DepthFun}`** - No optimization was found. A match
+    specification matching all objects is used if `TraverseFun` is unary.
+
+    `NElements` is the value of the `info/1,2` option `n_elements`.
+
+    `DepthFun` is a function that can be used for limiting the size of terms;
+    calling `DepthFun(Term)` substitutes `'...'` for parts of `Term` below the
+    depth specified by the `info/1,2` option `depth`.
+
+    If calling `FormatFun` with an argument including `NElements` and `DepthFun`
+    fails, `FormatFun` is called once again with an argument excluding
+    `NElements` and `DepthFun` (`{lookup, Position, Keys}` or `all`).
+
+- [](){: #key_equality } The value of option `key_equality` is to be `'=:='` if
+  the table considers two keys equal if they match, and to be `'=='` if two keys
+  are equal if they compare equal. Defaults to `'=:='`.
+
+For the various options recognized by `table/1,2` in respective module, see
+[`ets`](`ets:table/1`), [`dets`](`dets:table/1`), and
+[`mnesia`](`mnesia:table/1`).
+""".
+-spec table(TraverseFun, Options) -> QH when
       TraverseFun :: TraverseFun0 | TraverseFun1,
       TraverseFun0 :: fun(() -> TraverseResult),
       TraverseFun1 :: fun((match_expression()) -> TraverseResult),
@@ -706,10 +1280,11 @@ string_to_handle(T1, T2, T3) ->
       Mod :: atom(),
       Fun :: atom(),
       Args :: [term()],
-      QH :: query_handle()).
+      QH :: query_handle().
 table(TraverseFun, Options) when is_function(TraverseFun) ->
-    case {is_function(TraverseFun, 0), 
-          IsFun1 = is_function(TraverseFun, 1)} of
+    IsFun0 = is_function(TraverseFun, 0),
+    IsFun1 = is_function(TraverseFun, 1),
+    case {IsFun0, IsFun1} of
         {false, false} ->
             erlang:error(badarg, [TraverseFun, Options]);
         _ ->
@@ -732,32 +1307,40 @@ table(TraverseFun, Options) when is_function(TraverseFun) ->
 table(T1, T2) ->
     erlang:error(badarg, [T1, T2]).
 
--spec(transform_from_evaluator(LC, Bs) -> Expr when
+-doc false.
+-spec(transform_from_evaluator(LC, Bs) -> Return when
       LC :: abstract_expr(),
-      Expr :: abstract_expr(),
-      Bs :: erl_eval:binding_struct()).
+      Bs :: erl_eval:binding_struct(),
+      Return :: {ok, abstract_expr()}
+              | {not_ok, {error, module(), Reason :: term()}}).
 
 transform_from_evaluator(LC, Bs0) ->
     qlc_pt:transform_from_evaluator(LC, Bs0).
 
 -define(TEMPLATE_STATE, 1).
 
+-doc false.
 template_state() ->
     ?TEMPLATE_STATE.
 
+-doc false.
 aux_name(Name, N, AllNames) ->
     {VN, _} = aux_name1(Name, N, AllNames),
     VN.
 
+-doc false.
 name_suffix(A, Suff) ->
     list_to_atom(lists:concat([A, Suff])).
 
+-doc false.
 vars(E) ->
-    var_ufold(fun({var,_L,V}) -> V end, E).
+    var_ufold(fun({var,_A,V}) -> V end, E).
 
+-doc false.
 var_ufold(F, E) ->
     ordsets:from_list(var_fold(F, [], E)).
 
+-doc false.
 all_selections([]) ->
     [[]];
 all_selections([{I,Cs} | ICs]) ->
@@ -769,11 +1352,12 @@ all_selections([{I,Cs} | ICs]) ->
 
 aux_name1(Name, N, AllNames) ->
     SN = name_suffix(Name, N),
-    case sets:is_element(SN, AllNames) of
+    case gb_sets:is_member(SN, AllNames) of
         true -> aux_name1(Name, N + 1, AllNames);
         false -> {SN, N}
     end.
 
+-doc false.
 var_fold(F, A, {var,_,V}=Var) when V =/= '_' ->
     [F(Var) | A];
 var_fold(F, A, T) when is_tuple(T) ->
@@ -808,21 +1392,21 @@ options(Options0, [Key | Keys], L) when is_list(Options0) ->
                 {ok, U};
             {pre_fun, U=undefined} ->
                 {ok, U};
-            {info_fun, Fun} when is_function(Fun), is_function(Fun, 1) ->
+            {info_fun, Fun} when is_function(Fun, 1) ->
                 {ok, Fun};
-            {pre_fun, Fun} when is_function(Fun), is_function(Fun, 1) ->
+            {pre_fun, Fun} when is_function(Fun, 1) ->
                 {ok, Fun};
-            {post_fun, Fun} when is_function(Fun), is_function(Fun, 0) ->
+            {post_fun, Fun} when is_function(Fun, 0) ->
                 {ok, Fun};
-            {lookup_fun, Fun} when is_function(Fun), is_function(Fun, 2) ->
+            {lookup_fun, Fun} when is_function(Fun, 2) ->
                 {ok, Fun};
             {max_lookup, Max} when is_integer(Max), Max >= 0 ->
                 {ok, Max};
             {max_lookup, infinity} ->
                 {ok, -1};
-            {format_fun, Fun} when is_function(Fun), is_function(Fun, 1) ->
+            {format_fun, Fun} when is_function(Fun, 1) ->
                 {ok, Fun};
-            {parent_fun, Fun} when is_function(Fun), is_function(Fun, 0) ->
+            {parent_fun, Fun} when is_function(Fun, 0) ->
                 {ok, Fun};
             {key_equality, KE='=='} ->
                 {ok, KE};
@@ -885,7 +1469,7 @@ options(Options0, [Key | Keys], L) when is_list(Options0) ->
             {depth, Depth} when Depth =:= infinity;
                                 is_integer(Depth), Depth >= 0 ->
                 {ok, Depth};
-            {order, Order} when is_function(Order), is_function(Order, 2);
+            {order, Order} when is_function(Order, 2);
                                 (Order =:= ascending);
                                 (Order =:= descending) ->
                 {ok, Order};
@@ -1007,7 +1591,7 @@ listify(T) ->
 -record(simple_qlc,
         {p,         % atom(), pattern variable
          le,
-         line :: erl_anno:anno(),
+         anno :: erl_anno:anno(),
          init_value,
          optz       % #optz
          }).
@@ -1040,9 +1624,9 @@ cursor_process(H, GUnique, GCache, TmpDir, SpawnOptions, MaxList, TmpUsage) ->
                          Prep = prepare_qlc(H, not_a_list, GUnique, GCache, 
                                             TmpDir, MaxList, TmpUsage),
                          setup_qlc(Prep, Setup)
-                     catch Class:Reason ->
-                           Parent ! {self(), {caught, Class, Reason, 
-                                     erlang:get_stacktrace()}},
+                     catch Class:Reason:Stacktrace ->
+                           Parent ! {self(),
+                                     {caught, Class, Reason, Stacktrace}},
                            exit(normal)
                      end,
                  Parent ! {self(), ok},
@@ -1059,8 +1643,8 @@ parent_fun(Pid, Parent) ->
         {TPid, {parent_fun, Fun}} ->
             V = try 
                     {value, Fun()}
-                catch Class:Reason ->
-                    {parent_fun_caught, Class, Reason, erlang:get_stacktrace()}
+                catch Class:Reason:Stacktrace ->
+                    {parent_fun_caught, Class, Reason, Stacktrace}
             end,
             TPid ! {Parent, V},
             parent_fun(Pid, Parent);
@@ -1085,9 +1669,9 @@ reply(Parent, MonRef, Post, Cont) ->
                         throw_error(Cont)
                 end
             catch 
-                Class:Reason ->
+                Class:Reason:Stacktrace ->
                    post_funs(Post),
-                   Message = {caught, Class, Reason, erlang:get_stacktrace()},
+                   Message = {caught, Class, Reason, Stacktrace},
                    Parent ! {self(), Message},
                    exit(normal)
             end,
@@ -1116,15 +1700,15 @@ wait_for_request(Parent, MonRef, Post) ->
             wait_for_request(Parent, MonRef, Post);
         Other ->
             error_logger:error_msg(
-              "The qlc cursor ~w received an unexpected message:\n~p\n", 
+              "The qlc cursor ~w received an unexpected message:\n~tp\n",
               [self(), Other]),
             wait_for_request(Parent, MonRef, Post)
     end.
 
 %%% End of cursor process functions.
 
-abstract_code({special, Line, String}) ->
-    {string, Line, String};
+abstract_code({special, Anno, String}) ->
+    {string, Anno, String};
 abstract_code(Tuple) when is_tuple(Tuple) ->
     list_to_tuple(abstract_code(tuple_to_list(Tuple)));
 abstract_code([H | T]) ->
@@ -1134,8 +1718,8 @@ abstract_code(Term) ->
 
 %% Also in qlc_pt.erl.
 -define(Q, q).
--define(QLC_Q(L1, L2, L3, L4, LC, Os), 
-        {call,L1,{remote,L2,{atom,L3,?MODULE},{atom,L4,?Q}},[LC | Os]}).
+-define(QLC_Q(A1, A2, A3, A4, LC, Os),
+        {call,A1,{remote,A2,{atom,A3,?MODULE},{atom,A4,?Q}},[LC | Os]}).
 
 abstract(Info, false=_Flat, NElements, Depth) ->
     abstract(Info, NElements, Depth);
@@ -1177,9 +1761,10 @@ abstract1({table, {M, F, As0}}, _NElements, _Depth, Anno)
 abstract1({table, TableDesc}, _NElements, _Depth, _A) ->
     case io_lib:deep_char_list(TableDesc) of
         true ->
-            {ok, Tokens, _} = erl_scan:string(lists:flatten(TableDesc++".")),
-            {ok, [Expr]} = erl_parse:parse_exprs(Tokens),
-            Expr;
+            {ok, Tokens, _} =
+                erl_scan:string(lists:flatten(TableDesc++"."), 1, [text]),
+            {ok, [Expr]} = erl_eval:extended_parse_exprs(Tokens),
+            special(Expr);
         false -> % abstract expression
             TableDesc
     end;
@@ -1206,6 +1791,15 @@ abstract1({list, L}, NElements, Depth, _A) when NElements =:= infinity;
     abstract_term(depth(L, Depth), 1);
 abstract1({list, L}, NElements, Depth, _A) ->
     abstract_term(depth(lists:sublist(L, NElements), Depth) ++ '...', 1).
+
+special({value, _, Thing}) ->
+    abstract_term(Thing);
+special(Tuple) when is_tuple(Tuple) ->
+    list_to_tuple(special(tuple_to_list(Tuple)));
+special([E|Es]) ->
+    [special(E)|special(Es)];
+special(Expr) ->
+    Expr.
 
 depth(List, infinity) ->
     List;
@@ -1258,62 +1852,66 @@ abstract_term(Term) ->
 abstract_term(Term, Line) ->
     abstr_term(Term, anno(Line)).
 
-abstr_term(Tuple, Line) when is_tuple(Tuple) ->
-    {tuple,Line,[abstr_term(E, Line) || E <- tuple_to_list(Tuple)]};
-abstr_term([_ | _]=L, Line) ->
+abstr_term(Tuple, Anno) when is_tuple(Tuple) ->
+    {tuple,Anno,[abstr_term(E, Anno) || E <- tuple_to_list(Tuple)]};
+abstr_term([_ | _]=L, Anno) ->
     case io_lib:char_list(L) of
         true ->
-            erl_parse:abstract(L, erl_anno:line(Line));
+            erl_parse:abstract(L, erl_anno:line(Anno));
         false ->
-            abstr_list(L, Line)
+            abstr_list(L, Anno)
     end;
-abstr_term(Fun, Line) when is_function(Fun) ->
+abstr_term(Fun, Anno) when is_function(Fun) ->
     case erl_eval:fun_data(Fun) of
         {fun_data, _Bs, Cs} ->
-            {'fun', Line, {clauses, Cs}};
+            {'fun', Anno, {clauses, Cs}};
         {named_fun_data, _Bs, Name, Cs} ->
-            {named_fun, Line, Name, Cs};
+            {named_fun, Anno, Name, Cs};
         false ->
             {name, Name} = erlang:fun_info(Fun, name),
             {arity, Arity} = erlang:fun_info(Fun, arity),
             case erlang:fun_info(Fun, type) of
                 {type, external} ->
                     {module, Module} = erlang:fun_info(Fun, module),
-                    {'fun', Line, {function,
-				   {atom,Line,Module},
-				   {atom,Line,Name},
-				   {integer,Line,Arity}}};
+                    {'fun', Anno, {function,
+				   {atom,Anno,Module},
+				   {atom,Anno,Name},
+				   {integer,Anno,Arity}}};
                 {type, local} ->
-                    {'fun', Line, {function,Name,Arity}}
+                    {'fun', Anno, {function,Name,Arity}}
             end
     end;
-abstr_term(PPR, Line) when is_pid(PPR); is_port(PPR); is_reference(PPR) ->
-    {special, Line, lists:flatten(io_lib:write(PPR))};    
-abstr_term(Simple, Line) ->
-    erl_parse:abstract(Simple, erl_anno:line(Line)).
+abstr_term(PPR, Anno) when is_pid(PPR); is_port(PPR); is_reference(PPR) ->
+    {special, Anno, lists:flatten(io_lib:write(PPR))};
+abstr_term(Map, Anno) when is_map(Map) ->
+    {map,Anno,
+     [{map_field_assoc,Anno,abstr_term(K, Anno),abstr_term(V, Anno)} ||
+         K := V <- Map]};
+abstr_term(Simple, Anno) ->
+    erl_parse:abstract(Simple, erl_anno:line(Anno)).
 
-abstr_list([H | T], Line) ->
-    {cons, Line, abstr_term(H, Line), abstr_list(T, Line)};
-abstr_list(T, Line) ->
-    abstr_term(T, Line).
+abstr_list([H | T], Anno) ->
+    {cons, Anno, abstr_term(H, Anno), abstr_list(T, Anno)};
+abstr_list(T, Anno) ->
+    abstr_term(T, Anno).
 
 %% Since generator pattern variables cannot be used in list
 %% expressions, it is OK to flatten out QLCs using temporary
 %% variables.
-flatten_abstr(?QLC_Q(L1, L2, L3, L4, LC0, Os), VN0, Vars, Body0) ->
-    {lc,L,E,Qs0} = LC0,
-    F = fun({generate,Ln,P,LE0}, {VN1,Body1}) ->
+flatten_abstr(?QLC_Q(A1, A2, A3, A4, LC0, Os), VN0, Vars, Body0) ->
+    {lc,Anno,E,Qs0} = LC0,
+    F = fun({generate,AnnoG,P,LE0}, {VN1,Body1}) ->
                 {VN2,Body2,LE} = flatten_abstr(LE0, VN1, Vars, Body1),
-                {{generate,Ln,P,LE}, {VN2,Body2}};
+                {{generate,AnnoG,P,LE}, {VN2,Body2}};
            (Fil, VN_Body) ->
                 {Fil, VN_Body}
         end,
     {Qs, {VN3,Body}} = lists:mapfoldl(F, {VN0,Body0}, Qs0),
-    LC = {lc,L,E,Qs},
+    LC = {lc,Anno,E,Qs},
     {V, VN} = aux_name1('V', VN3, Vars),
-    Var = {var, L1, V},
-    QLC = ?QLC_Q(L1, L2, L3, L4, LC, Os),
-    {VN + 1, [{match, L1, Var, QLC} | Body], Var};
+    Var = {var, A1, V},
+    QLC = ?QLC_Q(A1, A2, A3, A4, LC, Os),
+    {VN + 1, [{match, A1, Var, QLC} | Body], Var};
 flatten_abstr(T0, VN0, Vars, Body0) when is_tuple(T0) ->
     {VN, Body, L} = flatten_abstr(tuple_to_list(T0), VN0, Vars, Body0),
     {VN, Body, list_to_tuple(L)};
@@ -1325,7 +1923,7 @@ flatten_abstr(E, VN, _Vars, Body) ->
     {VN, Body, E}.
 
 abstract_vars(Abstract) ->
-    sets:from_list(ordsets:to_list(vars(Abstract))).
+    gb_sets:from_list(ordsets:to_list(vars(Abstract))).
 
 collect([]=L) ->
     L;
@@ -1360,8 +1958,9 @@ next_loop(Pid, L, N) when N =/= 0 ->
         {caught, throw, Error, [?THROWN_ERROR | _]} ->
             Error;
         {caught, Class, Reason, Stacktrace} ->
-            _ = (catch erlang:error(foo)),
-            erlang:raise(Class, Reason, Stacktrace ++ erlang:get_stacktrace());
+            {current_stacktrace, CurrentStacktrace} =
+                erlang:process_info(self(), current_stacktrace),
+            erlang:raise(Class, Reason, Stacktrace ++ CurrentStacktrace);
         error ->
             erlang:error({qlc_cursor_pid_no_longer_exists, Pid})
     end;
@@ -1433,9 +2032,9 @@ monitor_request(Pid, Req) ->
 %%          | {unique, boolean()} | unique
 %% FilterDesc = PatternDesc = TemplateDesc = binary()
 
-le_info(#prepared{qh = #simple_qlc{le = LE, p = P, line = L, optz = Optz}},
+le_info(#prepared{qh = #simple_qlc{le = LE, p = P, anno = Anno, optz = Optz}},
         InfOpt) ->
-    QVar = term_to_binary({var, L, P}),
+    QVar = term_to_binary({var, Anno, P}),
     {qlc, QVar, [{generate, QVar, le_info(LE, InfOpt)}], opt_info(Optz)};
 le_info(#prepared{qh = #qlc{codef = CodeF, qdata = Qdata, optz = Optz}},
         InfOpt) ->
@@ -1524,8 +2123,8 @@ join_info(Join, QInfo, Qdata, Code) ->
                          %% Only compared constants (==).
                          [Cs1_0, Cs2_0]
                  end,
-    L = anno0(),
-    G1_0 = {var,L,'G1'}, G2_0 = {var,L,'G2'},
+    Anno = anno0(),
+    G1_0 = {var,Anno,'G1'}, G2_0 = {var,Anno,'G2'},
     JP = element(JQNum + 1, Code),
     %% Create code for wh1 and wh2 in #join{}:
     {{I1,G1}, {I2,G2}, QInfoL} = 
@@ -1545,10 +2144,12 @@ join_info(Join, QInfo, Qdata, Code) ->
         end,
     {JOptVal, JOp} = kind2op(Kind),
     JOpt = [{join, JOptVal}] ++ opt_info(join_unique_cache(Opt)),
-    JFil = term_to_binary({op,L,JOp,
-                           {call,L,{atom,L,element},[{integer,L,C1},G1]},
-                           {call,L,{atom,L,element},[{integer,L,C2},G2]}}),
-    P = term_to_binary({cons, L, G1, G2}),
+    JFil = term_to_binary({op,Anno,JOp,
+                           {call,Anno,{atom,Anno,element},
+                            [{integer,Anno,C1},G1]},
+                           {call,Anno,{atom,Anno,element},
+                            [{integer,Anno,C2},G2]}}),
+    P = term_to_binary({cons, Anno, G1, G2}),
     JInfo = {generate, JP, {qlc, P, QInfoL ++ [JFil], JOpt}},
     {Before, [I1 | After]} = lists:split(QNum1 - 1, QInfo),
     Before ++ [JInfo] ++ lists:delete(I2, After).
@@ -1576,9 +2177,9 @@ join_merge_info(QNum, QInfo, Code, G, ExtraConstants) ->
                         {P, P};
                     _ -> 
                         {PV, _} = aux_name1('P', 0, abstract_vars(P)),
-                        L = erl_anno:new(0),
-                        V = {var, L, PV},
-                        {V, {match, L, V, P}}
+                        Anno = anno0(),
+                        V = {var, Anno, PV},
+                        {V, {match, Anno, V, P}}
                  end,
             DQP = term_to_binary(EPV),
             LEI = {generate, term_to_binary(M), LEInfo},
@@ -1640,7 +2241,7 @@ prep_le(#qlc_lc{lc = LC_fun, opt = #qlc_opt{} = Opt0}=H, GOpt) ->
     #qlc_opt{unique = GUnique, cache = GCache, 
              tmpdir = TmpDir, max_list = MaxList, 
              tmpdir_usage = TmpUsage} = GOpt,
-    Unique = Opt0#qlc_opt.unique or GUnique,
+    Unique = Opt0#qlc_opt.unique orelse GUnique,
     Cache = if
                 not GCache -> Opt0#qlc_opt.cache;
                 true -> GCache
@@ -1655,7 +2256,7 @@ prep_le(#qlc_table{info_fun = IF}=T, GOpt) ->
     Prep = #prepared{qh = T, sort_info = SortInfo, sorted = Sorted,
                      is_unique_objects = IsUnique},
     Opt = if 
-              IsUnique or not GOpt#qlc_opt.unique,
+              IsUnique orelse not GOpt#qlc_opt.unique,
               T#qlc_table.ms =:= no_match_spec -> 
                   GOpt#qlc_opt{cache = false};
               true ->
@@ -1825,14 +2426,14 @@ may_create_simple(#qlc_opt{unique = Unique, cache = Cache} = Opt,
                   #prepared{is_cached = IsCached, 
                             is_unique_objects = IsUnique} = Prep) ->
     if 
-        Unique and not IsUnique; 
-        (Cache =/= false) and not IsCached ->
+        Unique andalso not IsUnique; 
+        Cache =/= false andalso not IsCached ->
             prep_simple_qlc(?SIMPLE_QVAR, anno(1), Prep, Opt);
         true ->
             Prep
     end.
 
-prep_simple_qlc(PVar, Line, LE, Opt) ->
+prep_simple_qlc(PVar, Anno, LE, Opt) ->
     check_join_option(Opt),
     #prepared{is_cached = IsCached, 
               sort_info = SortInfo, sorted = Sorted,
@@ -1843,14 +2444,14 @@ prep_simple_qlc(PVar, Line, LE, Opt) ->
                  not IsCached -> Cache;
                  true -> false
              end,
-    Optz = #optz{unique = Unique and not IsUnique, 
+    Optz = #optz{unique = Unique andalso not IsUnique, 
                  cache = Cachez, opt = Opt},
-    QLC = #simple_qlc{p = PVar, le = LE, line = Line, 
+    QLC = #simple_qlc{p = PVar, le = LE, anno = Anno,
                       init_value = not_a_list, optz = Optz},
     %% LE#prepared.join is not copied
-    #prepared{qh = QLC, is_unique_objects = IsUnique or Unique, 
+    #prepared{qh = QLC, is_unique_objects = IsUnique orelse Unique, 
               sort_info = SortInfo, sorted = Sorted,
-              is_cached = IsCached or (Cachez =/= false)}.
+              is_cached = IsCached orelse Cachez =/= false}.
 
 prep_sort(#qlc_sort{h = #prepared{sorted = yes}=Prep}, _GOpt) ->
     Prep;
@@ -1862,7 +2463,7 @@ prep_sort(#qlc_sort{h = #prepared{is_unique_objects = IsUniqueObjs}}=Q,
     {SortInfo, Sorted} = sort_sort_info(S),
     #prepared{qh = S, is_cached = true, sort_info = SortInfo,
               sorted = Sorted,
-              is_unique_objects = S#qlc_sort.unique or IsUniqueObjs}.
+              is_unique_objects = S#qlc_sort.unique orelse IsUniqueObjs}.
 
 prep_qlc(QFun, CodeF, Qdata0, QOpt, Opt) ->
     #qlc_opt{unique = Unique, cache = Cache, join = Join} = Opt,
@@ -1910,10 +2511,12 @@ qlc_sort_info(Qdata0, QOpt) ->
 
 sort_info(#prepared{sort_info = SI, sorted = S} = Prep, QNum, QOpt) ->
     SI1 = [{{C,Ord},[]} || 
-              S =/= no, 
-              is_integer(Sz = size_of_qualifier(QOpt, QNum)), 
+              S =/= no,
+              Sz <- [size_of_qualifier(QOpt, QNum)],
+              is_integer(Sz), 
               Sz > 0, % the size of the pattern
-              (NConstCols = size_of_constant_prefix(QOpt, QNum)) < Sz, 
+              NConstCols <- [size_of_constant_prefix(QOpt, QNum)],
+              NConstCols < Sz, 
               C <- [NConstCols+1],
               Ord <- orders(S)]
        ++ [{{Pos,Ord},[]} || Pos <- constant_columns(QOpt, QNum),
@@ -1995,7 +2598,8 @@ pos_vals(_Pos, _KeyEquality, _T, _Max) ->
 nub([]) ->
     [];
 nub([E | L]) ->
-    case lists:member(E, Es=nub(L)) of
+    Es=nub(L),
+    case lists:member(E, Es) of
         true ->
             Es;
         false ->
@@ -2205,7 +2809,7 @@ opt_le(#prepared{qh = #simple_qlc{le = LE0, optz = Optz0}=QLC}=Prep0,
                          Cache2 -> Cache2
                      end,
             Optz = Optz0#optz{cache = Cachez,
-                              unique = Optz0#optz.unique or Optz2#optz.unique},
+                              unique = Optz0#optz.unique orelse Optz2#optz.unique},
             PVar = if 
                        LE_Pvar =:= ?SIMPLE_QVAR -> QLC#simple_qlc.p;
                        true -> LE_Pvar
@@ -2593,9 +3197,9 @@ table_handle(#qlc_table{trav_fun = TraverseFun, trav_MS = TravMS,
             Parent =:= self() ->
                 try
                     ParentFun() 
-                catch Class:Reason ->
+                catch Class:Reason:Stacktrace ->
                     post_funs(Post),
-                    erlang:raise(Class, Reason, erlang:get_stacktrace())
+                    erlang:raise(Class, Reason, Stacktrace)
                 end;
             true ->
                 case monitor_request(Parent, {parent_fun, ParentFun}) of
@@ -2999,9 +3603,9 @@ file_sort_handle(H, Kp, SortOptions, TmpDir, Compressed, Post, LocalPost) ->
         {terms, BTerms} ->
             try 
                 {[binary_to_term(B) || B <- BTerms], Post, LocalPost}
-            catch Class:Reason ->
+            catch Class:Reason:Stacktrace ->
                 post_funs(Post),
-                erlang:raise(Class, Reason, erlang:get_stacktrace())
+                erlang:raise(Class, Reason, Stacktrace)
             end
     end.
 
@@ -3011,9 +3615,9 @@ do_sort(In, Out, Sort, SortOptions, Post) ->
             {error, Reason} -> throw_reason(Reason);
             Reply -> Reply
         end
-    catch Class:Term ->
+    catch Class:Term:Stacktrace ->
         post_funs(Post),
-        erlang:raise(Class, Term, erlang:get_stacktrace())
+        erlang:raise(Class, Term, Stacktrace)
     end.
 
 do_sort(In, Out, sort, SortOptions) ->
@@ -3716,7 +4320,7 @@ maybe_error_logger(Name, Why) ->
 	expand_stacktrace(),
     Trimmer = fun(M, _F, _A) -> M =:= erl_eval end,
     Formater = fun(Term, I) -> io_lib:print(Term, I, 80, -1) end,
-    X = lib:format_stacktrace(1, Stacktrace, Trimmer, Formater),
+    X = erl_error:format_stacktrace(1, Stacktrace, Trimmer, Formater),
     error_logger:Name("qlc: temporary file was needed for ~w\n~ts\n",
                       [Why, lists:flatten(X)]).
 
@@ -3763,9 +4367,9 @@ call(undefined, _Arg, Default, _Post) ->
 call(Fun, Arg, _Default, Post) ->
     try
         Fun(Arg) 
-    catch Class:Reason ->
+    catch Class:Reason:Stacktrace ->
         post_funs(Post),
-        erlang:raise(Class, Reason, erlang:get_stacktrace())
+        erlang:raise(Class, Reason, Stacktrace)
     end.
 
 grd(undefined, _Arg) ->

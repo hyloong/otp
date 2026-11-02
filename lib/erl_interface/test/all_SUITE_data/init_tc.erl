@@ -1,8 +1,10 @@
 %%
 %% %CopyrightBegin%
-%% 
-%% Copyright Ericsson AB 1997-2013. All Rights Reserved.
-%% 
+%%
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 1997-2025. All Rights Reserved.
+%%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
 %% You may obtain a copy of the License at
@@ -14,7 +16,7 @@
 %% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 %% See the License for the specific language governing permissions and
 %% limitations under the License.
-%% 
+%%
 %% %CopyrightEnd%
 %%
 
@@ -77,11 +79,7 @@ generate_c(Cases, File, TcName) ->
     lists:foreach(fun(Case) -> io:format(File, "  ~s,~n", [Case]) end, Cases),
     io:format(File, "~s",
 	      [["};\n\n",
-		"#ifdef VXWORKS\n",
-		"int ",	TcName,	"(int argc, char* argv[])\n",
-		"#else\n",
 		"int main(int argc, char* argv[])\n",
-		"#endif\n",
 		"{\n",
 		"    run_tests(argv[0], test_cases, ",
 		"sizeof(test_cases)/sizeof(test_cases[0]));\n",

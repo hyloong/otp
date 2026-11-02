@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2009-2012. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2009-2025. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -161,6 +163,7 @@ test_events(ts_if_1) ->
      {?eh,tc_start,{ts_if_1_SUITE,tc4}},
      {?eh,tc_done,{ts_if_1_SUITE,tc4,{failed,{error,failed_on_purpose}}}},
      {?eh,test_stats,{1,2,{0,1}}},
+     {?eh,tc_start,{ts_if_1_SUITE,tc5}},
      {?eh,tc_done,{ts_if_1_SUITE,tc5,{auto_skipped,{sequence_failed,seq1,tc4}}}},
      {?eh,test_stats,{1,2,{0,2}}},
 

@@ -1,8 +1,10 @@
 #! /bin/sh
 # 
 # %CopyrightBegin%
+#
+# SPDX-License-Identifier: Apache-2.0
 # 
-# Copyright Ericsson AB 2002-2011. All Rights Reserved.
+# Copyright Ericsson AB 2002-2025. All Rights Reserved.
 # 
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -39,7 +41,7 @@ ERR_FILE=/tmp/cl.exe.$$.2
 MD_FORCED=false
 # If we're preprocession (only) i.e. -E
 PREPROCESSING=false
-# If we're generating dependencies (implies preprocesing)
+# If we're generating dependencies (implies preprocessing)
 DEPENDENCIES=false
 # If this is supposed to be a debug build
 DEBUG_BUILD=false
@@ -95,6 +97,8 @@ while test -n "$1" ; do
 		MD=-MD;
 	    fi
 	    OPTIMIZED_BUILD=true;;
+        -O0|-Og)
+            ;;
 	-O*)
 	    # Optimization hardcoded, needs to disable debugging too
 	    OPTIMIZE_FLAGS="-Ox -Zi";
@@ -195,7 +199,6 @@ mkdir $TMPOBJDIR
 
 # Compile
 for x in $SOURCES; do
-    start_time=`date '+%s'` 
     # Compile each source
     if [ $LINKING = false ]; then
 	# We should have an output defined, which is a directory 
@@ -242,7 +245,7 @@ for x in $SOURCES; do
     if [ $PREPROCESSING = true ]; then
 	output_flag="-E"
     else
-	output_flag="-c -Fo`cmd //C echo ${output_filename}`"
+	output_flag="-FS -c -Fo`cmd //C echo ${output_filename}`"
     fi
     params="$COMMON_CFLAGS $MD $DEBUG_FLAGS $OPTIMIZE_FLAGS \
 	    $CMD ${output_flag} $MPATH"
@@ -250,6 +253,8 @@ for x in $SOURCES; do
 	echo cc.sh "$SAVE" >>$CC_SH_DEBUG_LOG
 	echo cl.exe $params >>$CC_SH_DEBUG_LOG
     fi
+    # MSYS2 (currently) converts the paths wrong, avoid it
+    export MSYS2_ARG_CONV_EXCL=-FoC
     eval cl.exe $params >$MSG_FILE 2>$ERR_FILE
     RES=$?
     if test $PREPROCESSING = false; then
@@ -258,22 +263,35 @@ for x in $SOURCES; do
     else
 	tail -n +2 $ERR_FILE >&2
 	if test $DEPENDENCIES = true; then
-	    if test `grep -v $x $MSG_FILE | grep -c '#line'` != "0"; then
-		o=`echo $x | sed 's,.*/,,' | sed 's,\.cp*$,.o,'`
-		echo -n $o':'
-#		cat $MSG_FILE | grep '#line' | grep -v $x | awk -F\" '{printf("%s\n",$2)}' | sort -u | grep -v " " | xargs -n 1 win2msys_path.sh | awk '{printf("\\\n %s ",$0)}' 
-		cat $MSG_FILE | grep '#line' | grep -v $x | awk -F\" '{printf("%s\n",$2)}' | sort -u | grep -v " " | sed 's,^\([A-Za-z]\):[\\/]*,/\1/,;s,\\\\*,/,g'| awk '{printf("\\\n %s ",$0)}' 
-		echo
-		echo 
-		after_sed=`date '+%s'`
-		echo Made dependencises for $x':' `expr $after_sed '-' $start_time` 's' >&2
-	    fi 
+	    perl -e '
+my $file = "'$x'";
+while (<>) {
+      next unless /^#line/;
+      next if /$file/o;
+      (undef,$_) = split(/\"/);
+      next if / /;
+      $all{$_} = 1;
+}
+foreach (sort keys %all) {
+      s@^([A-Za-z]):@/$1@;
+      s@\\\\@/@g;
+      push @f, "\\\n $_ ";
+}
+if (@f) {
+     my $oname = $file;
+     $oname =~ s@.*/@@;
+     $oname =~ s@[.]cp*@.o@;
+     print $oname, ":", @f;
+     print "\n\n";
+     print STDERR "Made dependencies for $file\n";
+}' $MSG_FILE
 	else
 	    cat $MSG_FILE
 	fi
     fi
     rm -f $ERR_FILE $MSG_FILE
     if [ $RES != 0 ]; then
+	echo Failed: cl.exe $params
 	rm -rf $TMPOBJDIR
 	exit $RES
     fi
@@ -296,7 +314,7 @@ if [ $LINKING = true ]; then
 	*)
 	    out_spec="-o $OUTFILE";;
     esac
-    # Descide which standard library to link against
+    # Decide which standard library to link against
     case $MD in
 	-ML)
 	    stdlib="-lLIBC";;
@@ -312,7 +330,10 @@ if [ $LINKING = true ]; then
 	    stdlib="-lLIBMTD";;
     esac
     # And finally call the next script to do the linking...
-    params="$out_spec $LINKCMD $stdlib" 
+    params="$out_spec $LINKCMD $stdlib"
+    if [ "X$CC_SH_DEBUG_LOG" != "X" ]; then
+	echo ld.sh $ACCUM_OBJECTS $params
+    fi
     eval ld.sh $ACCUM_OBJECTS $params
     RES=$?
 fi

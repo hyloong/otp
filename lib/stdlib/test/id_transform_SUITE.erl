@@ -1,8 +1,10 @@
 %%
 %% %CopyrightBegin%
-%% 
-%% Copyright Ericsson AB 2003-2012. All Rights Reserved.
-%% 
+%%
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2003-2026. All Rights Reserved.
+%%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
 %% You may obtain a copy of the License at
@@ -14,14 +16,14 @@
 %% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 %% See the License for the specific language governing permissions and
 %% limitations under the License.
-%% 
+%%
 %% %CopyrightEnd%
 %%
 -module(id_transform_SUITE).
 -author('pan@erix.ericsson.se').
 
 -include_lib("kernel/include/file.hrl").
-          
+
 -export([all/0, suite/0,groups/0,init_per_suite/1, end_per_suite/1, 
 	 init_per_group/2,end_per_group/2,
 	 id_transform/1]).
@@ -29,11 +31,12 @@
 -export([check/2,check2/1,g/0,f/1,t/1,t1/1,t2/1,t3/1,t4/1,
 	 t5/1,apa/1,new_fun/0]).
 
-						% Serves as test...
+%% Serves as test...
 -hej(hopp).
--include_lib("test_server/include/test_server.hrl").
+-include_lib("common_test/include/ct.hrl").
 
-suite() -> [{ct_hooks,[ts_install_cth]}].
+suite() ->
+    [{ct_hooks,[ts_install_cth]}].
 
 all() -> 
     [id_transform].
@@ -54,49 +57,26 @@ end_per_group(_GroupName, Config) ->
     Config.
 
 
-id_transform(doc) -> "Test erl_id_trans.";
+%% Test erl_id_trans.
 id_transform(Config) when is_list(Config) ->
-    ?line File=filename:join([code:lib_dir(stdlib),"examples",
-			      "erl_id_trans.erl"]),
-    ?line {ok,erl_id_trans,Bin}=compile:file(File,[binary]),
-    ?line {module,erl_id_trans}=code:load_binary(erl_id_trans,File,Bin),
-    ?line case test_server:purify_is_running() of
-	      false ->
-		  Dog = ct:timetrap(?t:hours(1)),
-		  ?line Res = run_in_test_suite(),
-		  ?t:timetrap_cancel(Dog),
-		  Res;
-	      true ->
-		  {skip,"Purify (too slow)"}
-	  end.
-
-run_in_test_suite() ->
-    LibDir = code:lib_dir(),
-    SuperDir = filename:dirname(filename:dirname(code:which(?MODULE))),
-    TestDirs = filelib:wildcard(filename:join([SuperDir,"*_test"])),
-    {All,Res} = case LibDir of
-		    "/clearcase/otp/erts/lib" ->
-			%% Only test_suites 'cause clearcase is too slow...
-			{false,run_list(TestDirs)};
-		    _ ->
-			{true,run_codepath_and(TestDirs)}
-		end,
-    Comment0 = case All of
-		   true -> [];
-		   false -> "Only testsuite directories traversed"
-	       end,
-    case Res of
-	{error,Reason} when Comment0 =/= [] ->
-	    {failed,Comment0++"; "++Reason};
-	{error,Reason} ->
-	    {failed,Reason};
-	ok ->
-	    {comment,Comment0}
+    ModulePath = code:which(?MODULE),
+    File = filename:join([filename:dirname(ModulePath), examples, "erl_id_trans.erl"]),
+    {ok,erl_id_trans,Bin} = compile:file(File, [binary,report]),
+    {module,erl_id_trans} = code:load_binary(erl_id_trans, File, Bin),
+    case test_server:is_valgrind() of
+	false ->
+	    ct:timetrap({hours,1}),
+	    run_in_test_suite();
+	true ->
+	    {skip,"Valgrind (too slow)"}
     end.
 
-run_codepath_and(DirList) ->
+run_in_test_suite() ->
+    SuperDir = filename:dirname(filename:dirname(code:which(?MODULE))),
+    TestDirs = filelib:wildcard(filename:join([SuperDir,"*_test"])),
     AbsDirs = [filename:absname(X) || X <- code:get_path()],
-    run_list(ordsets:from_list([X || X <- AbsDirs] ++ DirList)).
+    Dirs = ordsets:from_list(AbsDirs ++ TestDirs),
+    run_list(Dirs).
 
 run_list(PathL) ->
     io:format("Where to search for beam files:\n~p\n", [PathL]),
@@ -123,7 +103,7 @@ run_list(PathL) ->
     end,
     case length(SevereFailures) of
 	0 -> ok;
-	Len -> {error,integer_to_list(Len)++" failures"}
+	Len -> {failed,integer_to_list(Len)++" failures"}
     end.
     
 
@@ -160,13 +140,13 @@ do_trans_1(File, Tree0) ->
 	    {failed,{File,{transform,{unknown,Else}}}}
     end.
 
-% From here on there's only fake code to serve as test cases 
-% for the id_transform.
-% They need to be exported.
+%% From here on there's only fake code to serve as test cases
+%% for the id_transform.
+%% They need to be exported.
 
 check(X,_Y) when X ->   
     true;
-check(A,_) when atom(A) ->
+check(A,_) when is_atom(A) ->
     atom;
 check(A,_) when erlang:is_list(A) ->
     list;
@@ -213,18 +193,18 @@ f(X) ->
 	    nok
     end.
 
-% Stolen from erl_lint_SUITE.erl
+%% Stolen from erl_lint_SUITE.erl
 -record(apa, {}).
 
-t(A) when atom(A) ->
+t(A) when is_atom(A) ->
     atom;
-t(A) when binary(A) ->
+t(A) when is_binary(A) ->
     binary;
-t(A) when float(A) ->
+t(A) when is_float(A) ->
     float;
-t(A) when function(A) ->
+t(A) when is_function(A) ->
     function;
-t(A) when integer(A) ->
+t(A) when is_integer(A) ->
     integer;
 t(A) when is_atom(A) ->
     is_atom;
@@ -250,30 +230,30 @@ t(A) when is_reference(A) ->
     is_reference;
 t(A) when is_tuple(A) ->
     is_tuple;
-t(A) when list(A) ->
+t(A) when is_list(A) ->
     list;
-t(A) when number(A) ->
+t(A) when is_number(A) ->
     number;
-t(A) when pid(A) ->
+t(A) when is_pid(A) ->
     pid;
-t(A) when port(A) ->
+t(A) when is_port(A) ->
     port;
-t(A) when record(A, apa) ->
+t(A) when is_record(A, apa) ->
     record;
-t(A) when reference(A) ->
+t(A) when is_reference(A) ->
     reference;
-t(A) when tuple(A) ->
+t(A) when is_tuple(A) ->
     tuple.
 
-t1(A) when atom(A), atom(A) ->
+t1(A) when is_atom(A), is_atom(A) ->
     atom;
-t1(A) when binary(A), binary(A) ->
+t1(A) when is_binary(A), is_binary(A) ->
     binary;
-t1(A) when float(A), float(A) ->
+t1(A) when is_float(A), is_float(A) ->
     float;
-t1(A) when function(A), function(A) ->
+t1(A) when is_function(A), is_function(A) ->
     function;
-t1(A) when integer(A), integer(A) ->
+t1(A) when is_integer(A), is_integer(A) ->
     integer;
 t1(A) when is_atom(A), is_atom(A) ->
     is_atom;
@@ -299,30 +279,30 @@ t1(A) when is_reference(A), is_reference(A) ->
     is_reference;
 t1(A) when is_tuple(A), is_tuple(A) ->
     is_tuple;
-t1(A) when list(A), list(A) ->
+t1(A) when is_list(A), is_list(A) ->
     list;
-t1(A) when number(A), number(A) ->
+t1(A) when is_number(A), is_number(A) ->
     number;
-t1(A) when pid(A), pid(A) ->
+t1(A) when is_pid(A), is_pid(A) ->
     pid;
-t1(A) when port(A), port(A) ->
+t1(A) when is_port(A), is_port(A) ->
     port;
-t1(A) when record(A, apa), record(A, apa) ->
+t1(A) when is_record(A, apa), is_record(A, apa) ->
     record;
-t1(A) when reference(A), reference(A) ->
+t1(A) when is_reference(A), is_reference(A) ->
     reference;
-t1(A) when tuple(A), tuple(A) ->
+t1(A) when is_tuple(A), is_tuple(A) ->
     tuple.
 
-t2(A) when atom(A); atom(A) ->
+t2(A) when is_atom(A); is_atom(A) ->
     atom;
-t2(A) when binary(A); binary(A) ->
+t2(A) when is_binary(A); is_binary(A) ->
     binary;
-t2(A) when float(A); float(A) ->
+t2(A) when is_float(A); is_float(A) ->
     float;
-t2(A) when function(A); function(A) ->
+t2(A) when is_function(A); is_function(A) ->
     function;
-t2(A) when integer(A); integer(A) ->
+t2(A) when is_integer(A); is_integer(A) ->
     integer;
 t2(A) when is_atom(A); is_atom(A) ->
     is_atom;
@@ -348,52 +328,52 @@ t2(A) when is_reference(A); is_reference(A) ->
     is_reference;
 t2(A) when is_tuple(A); is_tuple(A) ->
     is_tuple;
-t2(A) when list(A); list(A) ->
+t2(A) when is_list(A); is_list(A) ->
     list;
-t2(A) when number(A); number(A) ->
+t2(A) when is_number(A); is_number(A) ->
     number;
-t2(A) when pid(A); pid(A) ->
+t2(A) when is_pid(A); is_pid(A) ->
     pid;
-t2(A) when port(A); port(A) ->
+t2(A) when is_port(A); is_port(A) ->
     port;
-t2(A) when record(A, apa); record(A, apa) ->
+t2(A) when is_record(A, apa); is_record(A, apa) ->
     record;
-t2(A) when reference(A); reference(A) ->
+t2(A) when is_reference(A); is_reference(A) ->
     reference;
-t2(A) when tuple(A); tuple(A) ->
+t2(A) when is_tuple(A); is_tuple(A) ->
     tuple.
 
-t3(A) when is_atom(A) or is_atom(A) ->
+t3(A) when is_atom(A) orelse is_atom(A) ->
     is_atom;
-t3(A) when is_binary(A) or is_binary(A) ->
+t3(A) when is_binary(A) orelse is_binary(A) ->
     is_binary;
-t3(A) when is_float(A) or is_float(A) ->
+t3(A) when is_float(A) orelse is_float(A) ->
     is_float;
-t3(A) when is_function(A) or is_function(A) ->
+t3(A) when is_function(A) orelse is_function(A) ->
     is_function;
-t3(A) when is_integer(A) or is_integer(A) ->
+t3(A) when is_integer(A) orelse is_integer(A) ->
     is_integer;
-t3(A) when is_list(A) or is_list(A) ->
+t3(A) when is_list(A) orelse is_list(A) ->
     is_list;
-t3(A) when is_number(A) or is_number(A) ->
+t3(A) when is_number(A) orelse is_number(A) ->
     is_number;
-t3(A) when is_pid(A) or is_pid(A) ->
+t3(A) when is_pid(A) orelse is_pid(A) ->
     is_pid;
-t3(A) when is_port(A) or is_port(A) ->
+t3(A) when is_port(A) orelse is_port(A) ->
     is_port;
-t3(A) when is_record(A, apa) or is_record(A, apa) ->
+t3(A) when is_record(A, apa) orelse is_record(A, apa) ->
    is_record;
-t3(A) when is_reference(A) or is_reference(A) ->
+t3(A) when is_reference(A) orelse is_reference(A) ->
    is_reference;
-t3(A) when is_tuple(A) or is_tuple(A) ->
+t3(A) when is_tuple(A) orelse is_tuple(A) ->
    is_tuple; 
-t3(A) when record(A, apa) ->
+t3(A) when is_record(A, apa) ->
    foo;
 t3(A) when erlang:is_record(A, apa) ->
    foo;
 t3(A) when is_record(A, apa) ->
    foo;
-t3(A) when record({apa}, apa) ->
+t3(A) when is_record({apa}, apa) ->
    {A,foo}.
 
 t4(A) when erlang:is_record({apa}, apa) ->

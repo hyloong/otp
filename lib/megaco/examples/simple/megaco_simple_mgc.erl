@@ -1,8 +1,10 @@
 %%
 %% %CopyrightBegin%
-%% 
-%% Copyright Ericsson AB 2001-2009. All Rights Reserved.
-%% 
+%%
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2001-2026. All Rights Reserved.
+%%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
 %% You may obtain a copy of the License at
@@ -14,7 +16,7 @@
 %% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 %% See the License for the specific language governing permissions and
 %% limitations under the License.
-%% 
+%%
 %% %CopyrightEnd%
 %%
 
@@ -30,6 +32,8 @@
 %%----------------------------------------------------------------------
 
 -module(megaco_simple_mgc).
+
+-compile([{nowarn_possibly_unsafe_function, {erlang, list_to_atom, 1}}]).
 
 -behaviour(megaco_user).
 
@@ -193,22 +197,24 @@ stop(Mid) ->
     d("stop -> entry with~n   Mid: ~p", [Mid]),
     Disco = fun(CH) ->
 		    d("stop -> CH: ~p", [CH]),
-		    Reason = stopped_by_user, 
-		    Pid = megaco:conn_info(CH, control_pid),
-		    SendMod = megaco:conn_info(CH, send_mod),
+		    Reason     = stopped_by_user, 
+		    Pid        = megaco:conn_info(CH, control_pid),
+		    SendMod    = megaco:conn_info(CH, send_mod),
 		    SendHandle = megaco:conn_info(CH, send_handle),
 
 		    d("stop -> disconnect", []),
 		    megaco:disconnect(CH, Reason),
+
 		    d("stop -> cancel", []),
-		    megaco:cancel(CH, Reason),
+		    megaco:cancel(CH, Reason), % see handle_disconnect
+
 		    d("stop -> close transport"
 		      "~n   SendMod:    ~p"
 		      "~n   SendHandle: ~p", [SendMod, SendHandle]),
 		    case SendMod of
 			megaco_tcp -> megaco_tcp:close(SendHandle);
 			megaco_udp -> megaco_udp:close(SendHandle);
-			SendMod    -> exit(Pid, Reason)
+                        SendMod    -> erlang:exit_signal(Pid, Reason)
 		    end
 	    end,
     Conns = megaco:user_info(Mid, connections),
@@ -222,7 +228,7 @@ stop(Mid) ->
 	Pid ->
 	    d("stop -> Pid: ~p", [Pid]),
 	    unlink(Pid),
-	    exit(Pid, shutdown)
+            erlang:exit_signal(Pid, shutdown)
     end,
     ok.
 
@@ -247,6 +253,7 @@ handle_disconnect(ConnHandle, ProtocolVersion, Reason) ->
       "~n   ProtocolVersion: ~p"
       "~n   Reason:          ~p"
       "", [ConnHandle, ProtocolVersion, Reason]),
+    info_msg("handle_disconnect - cancel outstanding messages~n"),
     megaco:cancel(ConnHandle, Reason), % Cancel the outstanding messages
     ok.
 
@@ -403,7 +410,13 @@ start_batch(Args0) ->
 	    io:format("~p(~p): ~p~n", [?MODULE, ?LINE, Res]),
 	    Res
     end.
+
 	    
+-spec init_batch(ReplyTo :: pid(),
+                 Trace   :: term(),
+                 Debug   :: term()) ->
+           no_return().
+
 init_batch(ReplyTo, Trace, Debug) ->
     register(?MODULE, self()),
     Res = start(Trace, Debug),
@@ -443,6 +456,12 @@ get_arg(Key, Args) ->
 %% DEBUGGING
 %%----------------------------------------------------------------------
 
+info_msg(F) ->
+    info_msg(F, []).
+info_msg(F, A) ->
+    io:format("~p MGC: " ++ F ++ "~n", [self()|A]).
+
+     
 d(F) ->
     d(F, []).
 

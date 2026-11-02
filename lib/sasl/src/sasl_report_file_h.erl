@@ -1,8 +1,10 @@
 %%
 %% %CopyrightBegin%
-%% 
-%% Copyright Ericsson AB 1996-2013. All Rights Reserved.
-%% 
+%%
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 1996-2025. All Rights Reserved.
+%%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
 %% You may obtain a copy of the License at
@@ -14,10 +16,11 @@
 %% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 %% See the License for the specific language governing permissions and
 %% limitations under the License.
-%% 
+%%
 %% %CopyrightEnd%
 %%
 -module(sasl_report_file_h).
+-moduledoc false.
 
 %%%
 %%% A handler that can be connected to the error_logger
@@ -29,15 +32,27 @@
 	 handle_event/2, handle_call/2, handle_info/2,
 	 terminate/2]).
 
-init({File, Modes, Type}) when is_list(Modes) ->
+init({File, Modes0, Type}) when is_list(Modes0) ->
     process_flag(trap_exit, true),
+    Modes1 =
+        case lists:keymember(encoding,1,Modes0) of
+            true -> Modes0;
+            false -> [{encoding,utf8}|Modes0]
+        end,
+    Modes =
+        case [M || M <- Modes1, lists:member(M,[write,append,exclusive])] of
+            [] ->
+                [write|Modes1];
+            _ ->
+                Modes1
+        end,
     case file:open(File, Modes) of
 	{ok,Fd} ->
 	    {ok, {Fd, File, Type}};
 	What ->
 	    What
     end.
-    
+
 handle_event({_Type, GL, _Msg}, State) when node(GL) /= node() ->
     {ok, State};
 handle_event(Event, {Fd, File, Type}) ->

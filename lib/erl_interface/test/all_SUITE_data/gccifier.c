@@ -1,8 +1,10 @@
 /*
  * %CopyrightBegin%
- * 
- * Copyright Ericsson AB 2004-2012. All Rights Reserved.
- * 
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Copyright Ericsson AB 2004-2025. All Rights Reserved.
+ *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
@@ -14,7 +16,7 @@
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  * See the License for the specific language governing permissions and
  * limitations under the License.
- * 
+ *
  * %CopyrightEnd%
  *
  */
@@ -138,9 +140,6 @@ main(int argc, char *argv[])
     char *cc = NULL;
     args_t args = {0};
     int is_debug = 0;
-    int is_purify = 0;
-    int is_quantify = 0;
-    int is_purecov = 0;
 #ifdef __WIN32__
     int is_shared = 0;
     stdlib_t stdlib = STDLIB_NONE;
@@ -191,18 +190,6 @@ main(int argc, char *argv[])
 		}
 	    }
 	}
-	else if (strcmp("-DPURIFY", arg) == 0) {
-	    save_arg(&args, arg, NULL);
-	    is_purify = 1;
-	}
-	else if (strcmp("-DQUANTIFY", arg) == 0) {
-	    save_arg(&args, arg, NULL);
-	    is_quantify = 1;
-	}
-	else if (strcmp("-DPURECOV", arg) == 0) {
-	    save_arg(&args, arg, NULL);
-	    is_purecov = 1;
-	}
 #ifdef __WIN32__
 	else if (strcmp("-g", arg) == 0) {
 	    goto set_debug;
@@ -246,12 +233,6 @@ main(int argc, char *argv[])
 	    CHECK_FIRST_LINK_ARG;
 	    if (is_debug && strcmp("ethread", arg) == 0)
 		arg = "ethread.debug";
-	    else if (is_purify && strcmp("ethread", arg) == 0)
-		arg = "ethread.purify";
-	    else if (is_quantify && strcmp("ethread", arg) == 0)
-		arg = "ethread.quantify";
-	    else if (is_purecov && strcmp("ethread", arg) == 0)
-		arg = "ethread.purecov";
 #ifdef __WIN32__
 	    else if (strcmp("socket", arg) == 0)
 		arg = "ws2_32";

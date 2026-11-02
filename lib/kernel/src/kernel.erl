@@ -1,8 +1,10 @@
 %%
 %% %CopyrightBegin%
-%% 
-%% Copyright Ericsson AB 1996-2013. All Rights Reserved.
-%% 
+%%
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 1996-2025. All Rights Reserved.
+%%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
 %% You may obtain a copy of the License at
@@ -14,10 +16,11 @@
 %% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 %% See the License for the specific language governing permissions and
 %% limitations under the License.
-%% 
+%%
 %% %CopyrightEnd%
 %%
 -module(kernel).
+-moduledoc false.
 
 -behaviour(supervisor).
 
@@ -30,16 +33,24 @@
 %%% Callback functions for the kernel application.
 %%%-----------------------------------------------------------------
 start(_, []) ->
-    case supervisor:start_link({local, kernel_sup}, kernel, []) of
+    %% Setup the logger and configure the kernel logger environment
+    ok = logger:internal_init_logger(),
+    ok = os:internal_init_cmd_shell(),
+
+    Mode = case init:get_argument(mode) of
+               {ok, [["minimal"]|_]} ->
+                   minimal;
+               {ok, [["test"]|_]} ->
+                   test;
+               _ ->
+                   default
+           end,
+
+    case supervisor:start_link({local, kernel_sup}, kernel, [Mode]) of
 	{ok, Pid} ->
-	    Type = get_error_logger_type(),
-            case error_logger:swap_handler(Type) of
-                ok -> {ok, Pid, []};
-                Error ->
-                    %% Not necessary since the node will crash anyway:
-                    exit(Pid, shutdown),
-                    Error
-            end;
+            ok = erl_signal_handler:start(),
+            ok = logger:add_handlers(kernel),
+            {ok, Pid, []};
 	Error -> Error
     end.
 
@@ -50,19 +61,10 @@ stop(_State) ->
 %% Some configuration parameters for kernel are changed
 %%-------------------------------------------------------------------
 config_change(Changed, New, Removed) ->
+    ok = os:internal_init_cmd_shell(),
     do_distribution_change(Changed, New, Removed),
     do_global_groups_change(Changed, New, Removed),
     ok.
-
-get_error_logger_type() ->
-    case application:get_env(kernel, error_logger) of
-	{ok, tty} -> tty;
-	{ok, {file, File}} when is_list(File) -> {logfile, File};
-	{ok, false} -> false;
-	{ok, silent} -> silent;
-	undefined -> tty; % default value
-	{ok, Bad} -> exit({bad_config, {kernel, {error_logger, Bad}}})
-    end.
 
 %%%-----------------------------------------------------------------
 %%% The process structure in kernel is as shown in the figure.
@@ -71,17 +73,22 @@ get_error_logger_type() ->
 %%%              | kernel_sup (A)|
 %%%	          ---------------
 %%%                      |
-%%%        -------------------------------
-%%%       |              |                |
-%%%  <std services> -------------   -------------
-%%%   (file,code,  | erl_dist (A)| | safe_sup (1)|
-%%%    rpc, ...)    -------------   -------------
-%%%		          |               |
-%%%                  (net_kernel,  (disk_log, pg2,
-%%%          	      auth, ...)     ...)
+%%%        ------------------------------------------
+%%%       |             |          |        |        |
+%%%  <std services>     |    -------------  |  -------------
+%%%   (code, [stderr],  |   | erl_dist (A)| | | safe_sup (1)|
+%%%    ...)             |    -------------  |  -------------
+%%%		        |          |        |        |
+%%%                <on_load>  ([net_sup],   | (disk_log, pg,
+%%%               (transient)  rpc, global, |  ...)
+%%%                            ...)         |
+%%%                                         |
+%%%                                   <more services>
+%%%                                    (file, peer, [user],
+%%%                                     [logger], ...)
 %%%
 %%% The rectangular boxes are supervisors.  All supervisors except
-%%% for kernel_safe_sup terminates the enitre erlang node if any of
+%%% for kernel_safe_sup terminates the entire erlang node if any of
 %%% their children dies.  Any child that can't be restarted in case
 %%% of failure must be placed under one of these supervisors.  Any
 %%% other child must be placed under safe_sup.  These children may
@@ -91,134 +98,368 @@ get_error_logger_type() ->
 %%% Callback functions for the kernel_sup supervisor.
 %%%-----------------------------------------------------------------
 
-init([]) ->
-    SupFlags = {one_for_all, 0, 1},
+%% The modules below are loaded depending on the mode of the kernel application.
+%% The minimal mode is used for the compiler and other tools that need a
+%% small set of modules. The default mode is used for normal operation of the Erlang
+%% runtime system.
+%%
+%% Keep the modules sorted in the list below, and add notes on what functionality uses
+%% the modules so that we can keep the list minimal.
 
-    Config = {kernel_config,
-	      {kernel_config, start_link, []},
-	      permanent, 2000, worker, [kernel_config]},
-    Code = {code_server,
-	    {code, start_link, get_code_args()},
-	    permanent, 2000, worker, [code]},
-    File = {file_server_2,
-	    {file_server, start_link, []},
-	    permanent, 2000, worker, 
-	    [file, file_server, file_io_server, prim_file]},
-    StdError = {standard_error,
-		{standard_error, start_link, []},
-		temporary, 2000, supervisor, [user_sup]},
-    User = {user,
-	    {user_sup, start, []},
-	    temporary, 2000, supervisor, [user_sup]},
-    
-    case init:get_argument(mode) of
-	{ok, [["minimal"]]} ->
-	    SafeSupervisor = {kernel_safe_sup,
-			      {supervisor, start_link,
-			       [{local, kernel_safe_sup}, ?MODULE, safe]},
-			      permanent, infinity, supervisor, [?MODULE]},
-	    {ok, {SupFlags,
-		  [Code, File, StdError, User,
-		   Config, SafeSupervisor]}};
-	_ ->
-	    Rpc = {rex, {rpc, start_link, []}, 
-		   permanent, 2000, worker, [rpc]},
-	    Global = {global_name_server, {global, start_link, []}, 
-		      permanent, 2000, worker, [global]},
-	    Glo_grp = {global_group, {global_group,start_link,[]},
-		       permanent, 2000, worker, [global_group]},
-	    InetDb = {inet_db, {inet_db, start_link, []},
-		      permanent, 2000, worker, [inet_db]},
-	    NetSup = {net_sup, {erl_distribution, start_link, []}, 
-		      permanent, infinity, supervisor,[erl_distribution]},
-	    DistAC = start_dist_ac(),
+%% These modules are used by the code server and are always loaded.
+%% Some of these are not (always) run during startup but are used by
+%% code server so they need to be loaded by init before the code server is started.
+-define(CODE_MODULES,
+        [beam_lib, %% used by code_server
+         binary, %% used by code_server
+         code, %% used by kernel_sup
+         code_server,  %% used by code
+         ets, %% used by code_server
+         io, %% used by code
+         io_lib, %% used by code
+         io_lib_format, %% used by code
+         unicode %% used by code
+        ]).
 
-	    Timer = start_timer(),
+-define(MINIMAL_MODULES,
+        [edlin, %% used by group
+         edlin_key, %% used by edlin
+         erl_features, %% used by code:do_start
+         erl_signal_handler, %% used by kernel_sup
+         file_server, %% used by kernel_sup
+         filename, %% used by code + code_server
+         gen_event, %% used by erl_signal_handler
+         gen_statem, %% used by user_drv
+         group, %% used by user_drv
+         kernel_config, %% used by kernel_sup
+         kernel_refc, %% used by kernel_sup
+         logger_formatter, %% used by logger_sup
+         logger_h_common, %% used by logger_sup
+         logger_handler_watcher, %% used by logger_sup
+         logger_std_h, %% used by logger_sup
+         logger_sup, %% used by kernel_sup
+         maps, %% used by lots of modules
+         peer, %% used by kernel_sup
+         prim_tty, %% used by user_drv
+         prim_tty_sighandler, %% used by prim_tty
+         standard_error, %% used by kernel_sup
+         supervisor_bridge, %% used by user_sup
+         user_drv, %% used by user_sup
+         user_sup %% used by kernel_sup
+        ]).
+-define(DEFAULT_MODULES,
+        [ %% All of these are used to start dist + inet_db
+         erl_distribution,
+         erpc,
+         global,
+         global_group,
+         inet,
+         inet_config,
+         inet_db,
+         inet_parse,
+         inet_udp,
+         net_kernel,
+         rand,
+         rpc]).
 
-	    SafeSupervisor = {kernel_safe_sup,
-			      {supervisor, start_link,
-			       [{local, kernel_safe_sup}, ?MODULE, safe]},
-			      permanent, infinity, supervisor, [?MODULE]},
-	    {ok, {SupFlags,
-		  [Code, Rpc, Global, InetDb | DistAC] ++
-		  [NetSup, Glo_grp, File,
-		   StdError, User, Config, SafeSupervisor] ++ Timer}}
+preload(minimal) ->
+    ok = init:ensure_modules_loaded(?MINIMAL_MODULES ++ ?CODE_MODULES),
+    minimal;
+preload(default) ->
+    ok = init:ensure_modules_loaded(?MINIMAL_MODULES ++ ?DEFAULT_MODULES ++ ?CODE_MODULES),
+    default;
+preload(test) ->
+    %% Doing apply/3 keeps the list_to_atom away from generating compiler warnings
+    TestModule = apply(erlang, list_to_atom, [os:getenv("KERNEL_BOOT_TEST_MODULE")]),
+    {module, TestModule} = init:ensure_loaded(TestModule),
+    TestModule:preload(#{code => ?CODE_MODULES,
+                         minimal => ?MINIMAL_MODULES,
+                         default => ?DEFAULT_MODULES}),
+    preload(default).
+
+init([PreloadMode]) ->
+    StartMode = preload(PreloadMode),
+
+    SupFlags = #{strategy => one_for_all,
+                 intensity => 0,
+                 period => 1},
+
+    Config = #{id => kernel_config,
+               start => {kernel_config, start_link, []},
+               restart => permanent,
+               shutdown => 2000,
+               type => worker,
+               modules => [kernel_config]},
+
+    RefC = #{id => kernel_refc,
+             start => {kernel_refc, start_link, []},
+             restart => permanent,
+             shutdown => 2000,
+             type => worker,
+             modules => [kernel_refc]},
+
+    Code = #{id => code_server,
+             start => {code, start_link, []},
+             restart => permanent,
+             shutdown => 2000,
+             type => worker,
+             modules => [code]},
+
+    File = #{id => file_server_2,
+             start => {file_server, start_link, []},
+             restart => permanent,
+             shutdown => 2000,
+             type => worker,
+             modules => [file, file_server, file_io_server, prim_file]},
+
+    StdError = #{id => standard_error,
+                 start => {standard_error, start_link, []},
+                 restart => temporary,
+                 shutdown => 2000,
+                 type => supervisor,
+                 modules => [standard_error]},
+
+    OnLoad = #{id => on_load,
+               start =>
+                   {proc_lib, start_link,
+                    [?MODULE, ?FUNCTION_NAME, [on_load]]},
+               restart => transient,
+               shutdown => 2000,
+               type => worker,
+               modules => [?MODULE]},
+
+    %% Must be started before user
+    SigSrv = #{id => erl_signal_server,
+               start => {gen_event, start_link, [{local, erl_signal_server}]},
+               restart => permanent,
+               shutdown => 2000,
+               type => worker,
+               modules => dynamic},
+
+    User = #{id => user,
+             start => {user_sup, start, []},
+             restart => temporary,
+             shutdown => 2000,
+             type => supervisor,
+             modules => [user_sup]},
+
+    SafeSup = #{id => kernel_safe_sup,
+                start =>{supervisor, start_link, [{local, kernel_safe_sup}, ?MODULE, safe]},
+                restart => permanent,
+                shutdown => infinity,
+                type => supervisor,
+                modules => [?MODULE]},
+
+
+    LoggerSup = #{id => logger_sup,
+                  start => {logger_sup, start_link, []},
+                  restart => permanent,
+                  shutdown => infinity,
+                  type => supervisor,
+                  modules => [logger_sup]},
+
+    Peer = case peer:supervision_child_spec() of
+               {ok, PeerSpec} -> [PeerSpec];
+               none -> []
+           end,
+
+    %% Start the file server early, if possible, so on_load functions
+    %% can do file server operations.
+    %%
+    %% This is a workaround.  The combination of having a remote
+    %% file server i.e the file server on a master node, with on_load
+    %% functions that uses file operations over the file server,
+    %% will not, and cannot work.
+    %%
+    %% A "proper" solution will have to sort out how code loading
+    %% over all code server backends should interact with all
+    %% file server backends and nif on_load functions
+    %% that need to find a shared object file.
+    %%
+    case init:get_argument(master) of
+        {ok, [[_MasterNode]]} ->
+            EarlyFile = [],
+            LateFile = [File];
+        _ ->
+            EarlyFile = [File],
+            LateFile = []
+    end,
+
+    case StartMode of
+        minimal ->
+            {ok, {SupFlags,
+                  [Code, StdError | EarlyFile] ++
+                      [OnLoad | LateFile] ++
+                      [SigSrv | Peer] ++
+                      [User, LoggerSup, Config, RefC, SafeSup]}};
+        default ->
+            DistChildren =
+		case application:get_env(kernel, start_distribution) of
+		    {ok, false} -> [];
+		    _ -> start_distribution()
+		end,
+
+            InetDb = #{id => inet_db,
+                       start => {inet_db, start_link, []},
+                       restart => permanent,
+                       shutdown => 2000,
+                       type => worker,
+                       modules => [inet_db]},
+
+            Timer = start_timer(),
+            CompileServer = start_compile_server(),
+
+            {ok, {SupFlags,
+                  [Code, StdError | EarlyFile] ++
+                      [OnLoad, InetDb | DistChildren] ++ LateFile ++
+                      [SigSrv | Peer] ++
+                      [User, LoggerSup, Config, RefC, SafeSup] ++
+                      Timer ++ CompileServer}}
     end;
-init(safe) ->
-    SupFlags = {one_for_one, 4, 3600},
-    Boot = start_boot_server(),
-    DiskLog = start_disk_log(),
-    Pg2 = start_pg2(),
-
+init(on_load) ->
     %% Run the on_load handlers for all modules that have been
     %% loaded so far. Running them at this point means that
-    %% on_load handlers can safely call kernel processes
-    %% (and in particular call code:priv_dir/1 or code:lib_dir/1).
+    %% on_load handlers can safely call some essential kernel processes,
+    %% in particular call code:priv_dir/1 or code:lib_dir/1.
     init:run_on_load_handlers(),
+    proc_lib:init_ack({ok, self()});
+init(safe) ->
+    SupFlags = #{strategy => one_for_one,
+                 intensity => 4,
+                 period => 3600},
 
-    {ok, {SupFlags, Boot ++ DiskLog ++ Pg2}}.
+    Boot = start_boot_server(),
+    DiskLog = start_disk_log(),
+    Pg = start_pg(),
 
-get_code_args() ->
-    case init:get_argument(nostick) of
-	{ok, [[]]} -> [[nostick]];
-	_ -> []
-    end.
+    {ok, {SupFlags, Boot ++ DiskLog ++ Pg}}.
+
+start_distribution() ->
+    Rpc = #{id => rex,
+            start => {rpc, start_link, []},
+            restart => permanent,
+            shutdown => 2000,
+            type => worker,
+            modules => [rpc]},
+
+    Global = #{id => global_name_server,
+               start => {global, start_link, []},
+               restart => permanent,
+               shutdown => 2000,
+               type => worker,
+               modules => [global]},
+
+    DistAC = start_dist_ac(),
+
+    NetSup = #{id => net_sup,
+               start => {erl_distribution, start_link, []},
+               restart => permanent,
+               shutdown => infinity,
+               type => supervisor,
+               modules => [erl_distribution]},
+
+    GlGroup = #{id => global_group,
+                start => {global_group,start_link,[]},
+                restart => permanent,
+                shutdown => 2000,
+                type => worker,
+                modules => [global_group]},
+
+    [Rpc, Global | DistAC] ++ [NetSup, GlGroup].
 
 start_dist_ac() ->
-    Spec = [{dist_ac,{dist_ac,start_link,[]},permanent,2000,worker,[dist_ac]}],
+    Spec = [#{id => dist_ac,
+              start => {dist_ac,start_link,[]},
+              restart => permanent,
+              shutdown => 2000,
+              type => worker,
+              modules => [dist_ac]}],
     case application:get_env(kernel, start_dist_ac) of
-	{ok, true} -> Spec;
-	{ok, false} -> [];
-	undefined ->
-	    case application:get_env(kernel, distributed) of
-		{ok, _} -> Spec;
-		_ -> []
-	    end
+        {ok, true} -> Spec;
+        {ok, false} -> [];
+        undefined ->
+            case application:get_env(kernel, distributed) of
+                {ok, _} -> Spec;
+                _ -> []
+            end
     end.
 
 start_boot_server() ->
     case application:get_env(kernel, start_boot_server) of
-	{ok, true} ->
-	    Args = get_boot_args(),
-	    [{boot_server, {erl_boot_server, start_link, [Args]}, permanent,
-	      1000, worker, [erl_boot_server]}];
-	_ ->
-	    []
+        {ok, true} ->
+            Args = get_boot_args(),
+            [#{id => boot_server,
+               start => {erl_boot_server, start_link, [Args]},
+               restart => permanent,
+               shutdown => 1000,
+               type => worker,
+               modules => [erl_boot_server]}];
+        _ ->
+            []
     end.
 
 get_boot_args() ->
     case application:get_env(kernel, boot_server_slaves) of
-	{ok, Slaves} -> Slaves;
-	_            -> []
+        {ok, Slaves} -> Slaves;
+        _            -> []
     end.
 
 start_disk_log() ->
     case application:get_env(kernel, start_disk_log) of
-	{ok, true} ->
-	    [{disk_log_server,
-	      {disk_log_server, start_link, []},
-	      permanent, 2000, worker, [disk_log_server]},
-	     {disk_log_sup, {disk_log_sup, start_link, []}, permanent,
-	      1000, supervisor, [disk_log_sup]}];
-	_ ->
-	    []
+        {ok, true} ->
+            [#{id => disk_log_server,
+               start => {disk_log_server, start_link, []},
+               restart => permanent,
+               shutdown => 2000,
+               type => worker,
+               modules => [disk_log_server]},
+             #{id => disk_log_sup,
+               start => {disk_log_sup, start_link, []},
+               restart => permanent,
+               shutdown => 1000,
+               type => supervisor,
+               modules => [disk_log_sup]}];
+        _ ->
+            []
     end.
 
-start_pg2() ->
-    case application:get_env(kernel, start_pg2) of
-	{ok, true} ->
-	    [{pg2, {pg2, start_link, []}, permanent, 1000, worker, [pg2]}];
-	_ ->
-	    []
+start_pg() ->
+    case application:get_env(kernel, start_pg) of
+        {ok, true} ->
+            [#{id => pg,
+                start => {pg, start_link, []},
+                restart => permanent,
+                shutdown => 1000,
+                type => worker,
+                modules => [pg]}];
+        _ ->
+            []
     end.
 
 start_timer() ->
     case application:get_env(kernel, start_timer) of
-	{ok, true} -> 
-	    [{timer_server, {timer, start_link, []}, permanent, 1000, worker, 
-	      [timer]}];
-	_ ->
-	    []
+        {ok, true} ->
+            [#{id => timer_server,
+               start => {timer, start_link, []},
+               restart => permanent,
+               shutdown => 1000,
+               type => worker,
+               modules => [timer]}];
+        _ ->
+            []
+    end.
+
+start_compile_server() ->
+    case application:get_env(kernel, start_compile_server) of
+        {ok, true} ->
+            [#{id => erl_compile_server,
+               start => {erl_compile_server, start_link, []},
+               restart => permanent,
+               shutdown => 2000,
+               type => worker,
+               modules => [erl_compile_server]}];
+        _ ->
+            []
     end.
 
 %%-----------------------------------------------------------------

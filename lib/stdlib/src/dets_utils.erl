@@ -1,8 +1,10 @@
 %%
 %% %CopyrightBegin%
-%% 
-%% Copyright Ericsson AB 2001-2013. All Rights Reserved.
-%% 
+%%
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2001-2026. All Rights Reserved.
+%%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
 %% You may obtain a copy of the License at
@@ -14,19 +16,25 @@
 %% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 %% See the License for the specific language governing permissions and
 %% limitations under the License.
-%% 
+%%
 %% %CopyrightEnd%
 %%
 -module(dets_utils).
+-moduledoc false.
+
+-include_lib("kernel/include/logger.hrl").
+
+-compile([{nowarn_possibly_unsafe_function, {erlang, binary_to_term, 1}},
+          nowarn_deprecated_catch]).
 
 %% Utility functions common to several dets file formats.
-%% To be used from dets, dets_v8 and dets_v9 only.
+%% To be used from modules dets and dets_v9 only.
 
 -export([cmp/2, msort/1, mkeysort/2, mkeysearch/3, family/1]).
 
 -export([rename/2, pread/2, pread/4, ipread/3, pwrite/2, write/2,
          truncate/2, position/2, sync/1, open/2, truncate/3, fwrite/3,
-         write_file/2, position/3, position_close/3, pwrite/4,
+         write_file/2, position/3, position_close/3,
          pwrite/3, pread_close/4, read_n/2, pread_n/3, read_4/2]).
 
 -export([code_to_type/1, type_to_code/1]).
@@ -43,8 +51,6 @@
          free/3, get_freelists/1, all_free/1, all_allocated/1,
          all_allocated_as_list/1, find_allocated/4, find_next_allocated/3,
          log2/1, make_zeros/1]).
-
--export([init_slots_from_old_file/2]).
 
 -export([list_to_tree/1, tree_to_bin/5]).
 
@@ -308,12 +314,6 @@ position_close(Fd, FileName, Pos) ->
 	OK -> OK
     end.
 	    
-pwrite(Fd, FileName, Position, B) ->
-    case file:pwrite(Fd, Position, B) of
-	ok -> ok;
-	Error -> file_error(FileName, {error, Error})
-    end.
-
 pwrite(Fd, FileName, Bins) ->
     case file:pwrite(Fd, Bins) of
 	ok ->
@@ -385,7 +385,8 @@ corrupt_reason(Head, Reason0) ->
                  no_disk_map -> 
                      Reason0;
                  DM ->
-                    ST = erlang:get_stacktrace(),
+                    {current_stacktrace, ST} =
+                         erlang:process_info(self(), current_stacktrace),
                     PD = get(),
                     {Reason0, ST, PD, DM}
              end,
@@ -395,7 +396,7 @@ corrupt_reason(Head, Reason0) ->
 corrupt(Head, Error) ->
     case get(verbose) of
 	yes -> 
-	    error_logger:format("** dets: Corrupt table ~p: ~tp\n", 
+	    ?LOG_ERROR("** dets: Corrupt table ~tp: ~tp\n",
 				[Head#head.name, Error]);
 	_ -> ok
     end,
@@ -408,7 +409,7 @@ corrupt(Head, Error) ->
 
 vformat(F, As) ->
     case get(verbose) of
-	yes -> error_logger:format(F, As);
+	yes -> ?LOG_DEBUG(F, As);
 	_ -> ok
     end.
 
@@ -477,20 +478,6 @@ new_cache({Delay, Size}) ->
 %%%             Data structures and algorithms by Aho, Hopcroft and
 %%%             Ullman. I think buddy systems were invented by Knuth, a long
 %%%             time ago.
-
-init_slots_from_old_file([{Slot,Addr} | T], Ftab) ->
-    init_slot(Slot+1,[{Slot,Addr} | T], Ftab);
-init_slots_from_old_file([], Ftab) ->
-    Ftab.
-
-init_slot(_Slot,[], Ftab) ->
-    Ftab; % should never happen
-init_slot(_Slot,[{_Addr,0}|T], Ftab) ->
-    init_slots_from_old_file(T, Ftab);
-init_slot(Slot,[{_Slot1,Addr}|T], Ftab) ->
-    Stree = element(Slot, Ftab),
-    %%    io:format("init_slot ~p:~p~n",[Slot, Addr]),
-    init_slot(Slot,T,setelement(Slot, Ftab, bplus_insert(Stree, Addr))).
 
 %%% The free lists are kept in RAM, and written to the end of the file
 %%% from time to time. It is possible that a considerable amount of
@@ -747,6 +734,8 @@ all_allocated([{X,Y} | L], _X0, Y0, A) when Y0 < X ->
 all_allocated_as_list(Head) ->
     all_allocated_as_list(all(get_freelists(Head)), 0, Head#head.base, []).
 
+-dialyzer({no_improper_lists, all_allocated_as_list/4}).
+
 all_allocated_as_list([], _X0, _Y0, []) ->
     [];
 all_allocated_as_list([], _X0, _Y0, A) ->
@@ -869,7 +858,7 @@ get_disk_map() ->
     end.
 
 init_disk_map(Name) ->
-    error_logger:info_msg("** dets: (debug) using disk map for ~p~n", [Name]),
+    ?LOG_INFO("** dets: (debug) using disk map for ~p~n", [Name]),
     put(?DM, ets:new(any,[ordered_set])).
 
 stop_disk_map() ->

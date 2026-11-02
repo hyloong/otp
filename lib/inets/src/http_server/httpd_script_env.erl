@@ -1,8 +1,10 @@
 %%
 %% %CopyrightBegin%
-%% 
-%% Copyright Ericsson AB 2005-2012. All Rights Reserved.
-%% 
+%%
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2005-2026. All Rights Reserved.
+%%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
 %% You may obtain a copy of the License at
@@ -14,12 +16,15 @@
 %% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 %% See the License for the specific language governing permissions and
 %% limitations under the License.
-%% 
+%%
 %% %CopyrightEnd%
 %%
 %%
 
 -module(httpd_script_env).
+-moduledoc false.
+
+-compile([{nowarn_possibly_unsafe_function, {erlang, list_to_atom, 1}}]).
 
 -export([create_env/3]).
 
@@ -41,6 +46,8 @@
 %%
 %% Description: Creates a list of cgi/esi environment variables and
 %% there values.
+%%
+%% Note: "PROXY" header/variable is skipped because of CVE-2016-1000107
 %%--------------------------------------------------------------------------
 create_env(ScriptType, ModData, ScriptElements) ->
     create_basic_elements(ScriptType, ModData) 
@@ -61,8 +68,24 @@ which_port(#mod{config_db = ConfigDb}) ->
 which_peername(#mod{init_data = #init_data{peername = {_, RemoteAddr}}}) ->
     RemoteAddr.
 
+which_peercert(#mod{socket_type = {ssl, _}, socket = Socket}) ->
+    case ssl:peercert(Socket) of
+	{ok, Cert} ->
+	    Cert;
+	{error, no_peercert} ->
+	    no_peercert;
+	_  ->
+	    undefined
+    end;
+which_peercert(_) -> %% Not an ssl connection
+    undefined.
+
+
 which_resolve(#mod{init_data = #init_data{resolve = Resolve}}) ->
     Resolve.
+
+which_name(#mod{config_db = ConfigDB}) ->
+    httpd_util:lookup(ConfigDB, server_name).
 
 which_method(#mod{method = Method}) ->
     Method.
@@ -70,48 +93,94 @@ which_method(#mod{method = Method}) ->
 which_request_uri(#mod{request_uri = RUri}) ->
     RUri.
 
+which_connect_addr(#mod{socket = Socket, socket_type = SocketType}) when
+      SocketType == ip_comm;
+      element(1, SocketType) == ip_comm ->
+    maybe
+        {ok, {Addr, _Port}} ?= inet:sockname(Socket),
+        inet:ntoa(Addr)
+    end;
+which_connect_addr(#mod{socket = Socket, socket_type = SocketType}) when
+      SocketType == ssl;
+      element(1, SocketType) == ssl ->
+    maybe
+        {ok, {Addr, _Port}} ?= ssl:sockname(Socket),
+        inet:ntoa(Addr)
+    end.
+
 create_basic_elements(esi, ModData) ->
     [{server_software,   which_server(ModData)},
-     {server_name,       which_resolve(ModData)},
+     {server_name,       which_name(ModData)},
+     {host_name,         which_resolve(ModData)},
      {gateway_interface, ?GATEWAY_INTERFACE},
      {server_protocol,   ?SERVER_PROTOCOL},
      {server_port,       which_port(ModData)},
      {request_method,    which_method(ModData)},
      {remote_addr,       which_peername(ModData)},
+     {connect_addr,      which_connect_addr(ModData)},
+     {peer_cert,         which_peercert(ModData)},
      {script_name,       which_request_uri(ModData)}];
 
 create_basic_elements(cgi, ModData) ->
     [{"SERVER_SOFTWARE",   which_server(ModData)},
-     {"SERVER_NAME",       which_resolve(ModData)},
+     {"SERVER_NAME",       which_name(ModData)},
+     {"HOST_NAME",         which_resolve(ModData)},
      {"GATEWAY_INTERFACE", ?GATEWAY_INTERFACE},
      {"SERVER_PROTOCOL",   ?SERVER_PROTOCOL},
      {"SERVER_PORT",       integer_to_list(which_port(ModData))},
      {"REQUEST_METHOD",    which_method(ModData)},
      {"REMOTE_ADDR",       which_peername(ModData)},
+     {"CONNECT_ADDR",      which_connect_addr(ModData)},
      {"SCRIPT_NAME",       which_request_uri(ModData)}].
 
 create_http_header_elements(ScriptType, Headers) ->
-    create_http_header_elements(ScriptType, Headers, []).
+    create_http_header_elements(ScriptType, Headers, [], []).
 
-create_http_header_elements(_, [], Acc) ->
+create_http_header_elements(esi, [], Acc, OtherAcc) ->
+    [{http_other, OtherAcc} | Acc];
+create_http_header_elements(_, [], Acc, _OtherAcc) ->
     Acc;
 create_http_header_elements(ScriptType, [{Name, [Value | _] = Values } | 
-					 Headers], Acc) 
+					 Headers], Acc, OtherAcc) 
   when is_list(Value) ->
-    NewName = lists:map(fun(X) -> if X == $- -> $_; true -> X end end, Name),
-    Element = http_env_element(ScriptType, NewName, multi_value(Values)),
-    create_http_header_elements(ScriptType, Headers, [Element | Acc]);
-
-create_http_header_elements(ScriptType, [{Name, Value} | Headers], Acc) 
+    try http_env_element(ScriptType, Name, multi_value(Values)) of
+        Element ->
+            create_http_header_elements(ScriptType, Headers, [Element | Acc],
+                                        OtherAcc)
+    catch
+        _:_ ->
+            create_http_header_elements(ScriptType, Headers, Acc,
+                                        [{Name, Values} | OtherAcc])
+    end;
+create_http_header_elements(ScriptType, [{Name, Value} | Headers], Acc, OtherAcc) 
   when is_list(Value) ->
-    {ok, NewName, _} = inets_regexp:gsub(Name,"-","_"),
-    Element = http_env_element(ScriptType, NewName, Value),
-    create_http_header_elements(ScriptType, Headers, [Element | Acc]).
+    try http_env_element(ScriptType, Name, Value) of
+        skipped ->
+            create_http_header_elements(ScriptType, Headers, Acc, OtherAcc);
+        Element ->
+            create_http_header_elements(ScriptType, Headers, [Element | Acc],
+                                       OtherAcc)
+    catch
+        _:_ ->
+            create_http_header_elements(ScriptType, Headers, Acc,
+                                       [{Name, Value} | OtherAcc])
+    end.
 
-http_env_element(cgi, VarName, Value)  ->
-    {"HTTP_"++ http_util:to_upper(VarName), Value};
-http_env_element(esi, VarName, Value)  ->
-    {list_to_atom("http_"++ http_util:to_lower(VarName)), Value}.
+http_env_element(cgi, VarName0, Value) ->
+  case http_util:to_upper(VarName0) of
+    "PROXY" ->
+      %% CVE-2016-1000107 – https://github.com/erlang/otp/issues/3392
+      skipped;
+    VarName1 ->
+      VarNameUpper = re:replace(VarName1, "-", "_", [{return, list}, global]),
+      {"HTTP_" ++ VarNameUpper, Value}
+  end;
+
+http_env_element(esi, VarName0, Value)  ->
+    list_to_existing_atom(VarName0),
+    VarName = re:replace(VarName0,"-","_", [{return,list}, global]),
+    HeaderName = http_util:to_lower(VarName),
+    {list_to_atom("http_"++ HeaderName), Value}.
 
 multi_value([]) ->
   [];
@@ -146,9 +215,9 @@ create_script_elements(cgi, path_info, PathInfo, ModData) ->
     [{"PATH_INFO", PathInfo},
      {"PATH_TRANSLATED", PathTranslated}];
 create_script_elements(esi, entity_body, Body, _) ->
-    [{content_length, httpd_util:flatlength(Body)}]; 
+    [{content_length, integer_to_list(erlang:iolist_size(Body))}];
 create_script_elements(cgi, entity_body, Body, _) ->
-    [{"CONTENT_LENGTH", httpd_util:flatlength(Body)}]; 
+    [{"CONTENT_LENGTH", integer_to_list(erlang:iolist_size(Body))}];
 create_script_elements(_, _, _, _) ->
     [].
 

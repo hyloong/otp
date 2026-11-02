@@ -1,4 +1,26 @@
-Non-Blocking Code Loading
+<!--
+%% %CopyrightBegin%
+%%
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2014-2025. All Rights Reserved.
+%%
+%% Licensed under the Apache License, Version 2.0 (the "License");
+%% you may not use this file except in compliance with the License.
+%% You may obtain a copy of the License at
+%%
+%%     http://www.apache.org/licenses/LICENSE-2.0
+%%
+%% Unless required by applicable law or agreed to in writing, software
+%% distributed under the License is distributed on an "AS IS" BASIS,
+%% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+%% See the License for the specific language governing permissions and
+%% limitations under the License.
+%%
+%% %CopyrightEnd%
+-->
+
+Non-blocking code loading
 =========================
 
 Introduction
@@ -41,11 +63,11 @@ only be done by one loader process at a time. A second loader process
 trying to enter finishing phase will be suspended until the first
 loader is done. This will only block the process, the scheduler is
 free to schedule other work while the second loader is waiting. (See
-`erts_try_seize_code_write_permission` and
-`erts_release_code_write_permission`).
+`erts_try_seize_code_load_permission` and
+`erts_release_code_load_permission`).
 
 The ability to prepare several modules in parallel is not currently
-used as almost all code loading is serialized by the code_server
+used as almost all code loading is serialized by the code\_server
 process. The BIF interface is however prepared for this.
 
       erlang:prepare_loading(Module, Code) -> LoaderState
@@ -56,7 +78,7 @@ different modules and returns a "magic binary" containing the internal
 state of each prepared module. Function `finish_loading` could take a
 list of such states and do the finishing of all of them in one go.
 
-Currenlty we use the legacy BIF `erlang:load_module` which is now
+Currently we use the legacy BIF `erlang:load_module` which is now
 implemented in Erlang by calling the above two functions in
 sequence. Function `finish_loading` is limited to only accepts a list
 with one module state as we do not yet use the multi module loading
@@ -71,8 +93,8 @@ structures. These *code access structures* are
 
 * Export table. One entry for every exported function.
 * Module table. One entry for each loaded module.
-* "beam_catches". Identifies jump destinations for catch instructions.
-* "beam_ranges". Map code address to function and line in source file.
+* "beam\_catches". Identifies jump destinations for catch instructions.
+* "beam\_ranges". Map code address to function and line in source file.
 
 The most frequently used of these structures is the export table that
 is accessed in run time for every executed external function call to
@@ -101,7 +123,7 @@ result of a half loaded module.
 The finishing phase is carried out in the following sequence by the
 BIF `erlang:finish_loading`:
 
-1. Seize exclusive code write permission (suspend process if needed
+1. Seize exclusive code load permission (suspend process if needed
    until we get it).
 
 2. Make a full copy of all the active access structures. This copy is
@@ -119,7 +141,7 @@ BIF `erlang:finish_loading`:
 6. After thread progress, commit the staging area by assigning
    `the_staging_code_index` to `the_active_code_index`.
 
-7. Release the code write permission allowing other processes to stage
+7. Release the code load permission allowing other processes to stage
    new code.
 
 8. Resume the loader process allowing it to return from

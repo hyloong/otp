@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2015-2015. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2015-2026. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -22,60 +24,105 @@
 %%----------------------------------------------------------------------
 
 -module(ssl_crl).
+-moduledoc false.
 
 -include("ssl_alert.hrl").
 -include("ssl_internal.hrl").
 -include_lib("public_key/include/public_key.hrl"). 
 
--export([trusted_cert_and_path/3]).
+-export([trusted_cert_and_path/4]).
 
-trusted_cert_and_path(CRL, {SerialNumber, Issuer},{Db, DbRef} = DbHandle) -> 
+trusted_cert_and_path(CRL, {SerialNumber, Issuer}, CertPath, {Db, DbRef}) ->
+    %% CRL issuer cert ID is known
     case ssl_pkix_db:lookup_trusted_cert(Db, DbRef, SerialNumber, Issuer) of
 	undefined ->
-	    trusted_cert_and_path(CRL, issuer_not_found, DbHandle);
-	{ok, {_, OtpCert}}  ->
+            %% But not found in our database
+	    search_certpath(CRL, CertPath, Db, DbRef);
+	{ok, #cert{otp=OtpCert}}  ->
 	    {ok, Root, Chain} = ssl_certificate:certificate_chain(OtpCert, Db, DbRef),
 	    {ok, Root,  lists:reverse(Chain)}
     end;
-
-trusted_cert_and_path(CRL, issuer_not_found, {Db, DbRef} = DbHandle) -> 
-    try find_issuer(CRL, DbHandle) of
-	OtpCert ->
-	    {ok, Root, Chain} = ssl_certificate:certificate_chain(OtpCert, Db, DbRef),
-	    {ok, Root, lists:reverse(Chain)}
-    catch
-	throw:_ ->
-	    {error, issuer_not_found}
+trusted_cert_and_path(CRL, issuer_not_found, CertPath, {Db, DbRef}) ->
+    case search_certpath(CRL, CertPath, Db, DbRef) of
+	{error, unknown_ca} ->
+            Issuer = public_key:pkix_normalize_name(public_key:pkix_crl_issuer(CRL)),
+            IsIssuerFun =
+                fun({_Key, CertCandidate}, Acc) ->
+                        verify_crl_issuer(CRL, CertCandidate, Issuer, Acc);
+                   (_, Acc) ->
+                        Acc
+                end,
+            case search_db(IsIssuerFun, Db, DbRef) of
+                {ok, OtpCert} ->
+                    {ok, Root, Chain} = ssl_certificate:certificate_chain(OtpCert, Db, DbRef),
+                    {ok, Root, lists:reverse(Chain)};
+                {error, issuer_not_found} ->
+                    {error, unknown_ca}
+            end;
+        Result ->
+            Result
     end.
 
-find_issuer(CRL, {Db,_}) ->
+search_certpath(CRL, CertPath, Db, DbRef) ->
     Issuer = public_key:pkix_normalize_name(public_key:pkix_crl_issuer(CRL)),
     IsIssuerFun =
-	fun({_Key, {_Der,ErlCertCandidate}}, Acc) ->
-		verify_crl_issuer(CRL, ErlCertCandidate, Issuer, Acc);
-	   (_, Acc) ->
-		Acc
+	fun(CertCandidate, Acc) ->
+		verify_crl_issuer(CRL, CertCandidate, Issuer, Acc)
 	end,
-    
-    try ssl_pkix_db:foldl(IsIssuerFun, issuer_not_found, Db) of
-	issuer_not_found ->
-	    {error, issuer_not_found}
-    catch 
-	{ok, IssuerCert}  ->
-	    IssuerCert
+    case find_issuer(IsIssuerFun, certpath, CertPath) of
+	{ok, OtpCert} ->
+	    {ok, Root, Chain} = ssl_certificate:certificate_chain(OtpCert, Db, DbRef),
+	    {ok, Root, lists:reverse(Chain)};
+	{error, issuer_not_found} ->
+            {error, unknown_ca}
     end.
 
+search_db(IsIssuerFun, _, {extracted, ExtractedCerts})->
+    find_issuer(IsIssuerFun, extracted, ExtractedCerts);
+search_db(IsIssuerFun, Db, DbRef) ->
+    find_issuer(IsIssuerFun, Db, DbRef).
 
-verify_crl_issuer(CRL, ErlCertCandidate, Issuer, NotIssuer) ->
-    TBSCert =  ErlCertCandidate#'OTPCertificate'.tbsCertificate,
+find_issuer(IsIssuerFun, certpath, Certs) ->
+    try lists:foldl(IsIssuerFun, issuer_not_found, Certs) of
+        issuer_not_found ->
+            {error, issuer_not_found}
+    catch
+        {ok, _} = Result ->
+            Result
+    end;
+find_issuer(IsIssuerFun, extracted, CertsData) ->
+    Certs = [Entry || {decoded, Entry} <- CertsData],
+    try lists:foldl(IsIssuerFun, issuer_not_found, Certs) of
+        issuer_not_found ->
+            {error, issuer_not_found}
+    catch
+        {ok, _} = Result ->
+            Result
+    end;
+find_issuer(IsIssuerFun, Db, _) ->  
+    try ssl_pkix_db:foldl(IsIssuerFun, issuer_not_found, Db) of
+        issuer_not_found ->
+            {error, issuer_not_found}
+    catch
+        {ok, _} = Result ->
+            Result
+    end.
+
+verify_crl_issuer(CRL, #cert{otp = OTPCertCandidate}, Issuer, NotIssuer) ->
+    TBSCert = OTPCertCandidate#'OTPCertificate'.tbsCertificate,
     case public_key:pkix_normalize_name(TBSCert#'OTPTBSCertificate'.subject) of
-	Issuer ->
-	    case public_key:pkix_crl_verify(CRL, ErlCertCandidate) of
-		true ->
-		    throw({ok, ErlCertCandidate});
-		false ->
-		    NotIssuer
-	    end;
-	_ ->
-	    NotIssuer
+        Issuer ->
+            try public_key:pkix_crl_verify(CRL, OTPCertCandidate) of
+                true ->
+                    throw({ok, OTPCertCandidate});
+                false ->
+                    NotIssuer
+            catch _:_ ->
+                    %% Fail gracefully unlikely to happen in valid use cases
+                    ?LOG_WARNING("SSL WARNING: Ignoring CRL "
+                                 "unexpected signature algorithm", [CRL]),
+                    NotIssuer
+            end;
+        _ ->
+            NotIssuer
     end.

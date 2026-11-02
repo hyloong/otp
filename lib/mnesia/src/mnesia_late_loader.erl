@@ -1,8 +1,10 @@
 %%
 %% %CopyrightBegin%
-%% 
-%% Copyright Ericsson AB 1998-2009. All Rights Reserved.
-%% 
+%%
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 1998-2025. All Rights Reserved.
+%%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
 %% You may obtain a copy of the License at
@@ -14,12 +16,13 @@
 %% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 %% See the License for the specific language governing permissions and
 %% limitations under the License.
-%% 
+%%
 %% %CopyrightEnd%
 %%
 
 %%
 -module(mnesia_late_loader).
+-moduledoc false.
 
 -export([
 	 async_late_disc_load/3,
@@ -87,13 +90,13 @@ loop(State) ->
 	    loop(State);
 
 	{system, From, Msg} ->
-	    mnesia_lib:dbg_out("~p got {system, ~p, ~p}~n",
+	    mnesia_lib:dbg_out("~p got {system, ~p, ~tp}~n",
 			       [?SERVER_NAME, From, Msg]),
 	    Parent = State#state.supervisor,
 	    sys:handle_system_msg(Msg, From, Parent, ?MODULE, [], State);
 	    
 	Msg ->
-	    mnesia_lib:error("~p got unexpected message: ~p~n",
+	    mnesia_lib:error("~p got unexpected message: ~tp~n",
 			     [?SERVER_NAME, Msg]),
 	    loop(State)
     end.

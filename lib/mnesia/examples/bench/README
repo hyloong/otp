@@ -1,3 +1,23 @@
+> %CopyrightBegin%
+>
+> SPDX-License-Identifier: Apache-2.0
+>
+> Copyright Ericsson AB 2001-2025. All Rights Reserved.
+>
+> Licensed under the Apache License, Version 2.0 (the "License");
+> you may not use this file except in compliance with the License.
+> You may obtain a copy of the License at
+>
+>     http://www.apache.org/licenses/LICENSE-2.0
+>
+> Unless required by applicable law or agreed to in writing, software
+> distributed under the License is distributed on an "AS IS" BASIS,
+> WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+> See the License for the specific language governing permissions and
+> limitations under the License.
+>
+> %CopyrightEnd%
+
 Author  : Hakan Mattsson <hakan@cslab.ericsson.se>
 Created : 21 Jun 2001 by Hakan Mattsson <hakan@cslab.ericsson.se>
 
@@ -45,8 +65,8 @@ In order to be able to automatically start remote Erlang nodes,
 you need to:
 
  - put the $ERL_TOP/bin directory in your path on all nodes
- - bind IP adresses to hostnames (e.g via DNS or /etc/hosts)
- - enable usage of rsh so it does not prompt for password
+ - bind IP addresses to hostnames (e.g via DNS or /etc/hosts)
+ - enable usage of ssh so it does not prompt for password
 
 If you cannot achieve this, it is possible to run the benchmark
 anyway, but it requires more manual work to be done for each
@@ -79,16 +99,16 @@ Given some arguments such as
 
    Args = ['YourConfigFile', {statistics_detail, debug}].
 
-the invokation of
+the invocation of
 
    bench:run(Args).
 
-is equivivalent with:
+is equivalent with:
 
-   SlaveNodes = bench:start_all(Args).
+   Peers = bench:start_all(Args).
    bench:populate(Args).
    bench:generate(Args).
-   bench:stop_slave_nodes(SlaveNodes).
+   bench:stop_peer_nodes(Peers).
 
 In case you cannot get the automatic start of remote Erlang nodes to
 work (implied by bench:start_all/1) , you may need to manually start
@@ -141,7 +161,7 @@ statistics_detail
   following atoms: normal, debug and debug2. debug enables a
   finer grain of statistics to be reported, but since it requires
   more counters, to be updated by the generator processes it may
-  cause slightly worse benchmark performace figures than the brief
+  cause slightly worse benchmark performance figures than the brief
   default case, that is normal. debug2 prints out the debug info
   and formats it according to LMC's benchmark program.
 
@@ -160,7 +180,7 @@ n_fragments
 
   Defines how many fragments each table should be divided in.
   Default is 100. The fragments are evenly distributed over
-  all table nodes. The group table not devided in fragments.
+  all table nodes. The group table not divided in fragments.
 
 n_replicas
 
@@ -202,7 +222,7 @@ always_try_nearest_node
   (fragmented) tables were distributed over all nodes. In
   such a system the transactions should be evenly distributed
   over all nodes. When this option is set to true it is possible
-  to make fair measurements of master/slave configurations, when
+  to make fair measurements of master/peer configurations, when
   all transactions are performed on on one node. Default is false.
 
 cookie

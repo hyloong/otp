@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2014. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2014-2025. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -84,6 +86,7 @@ main() ->
     {'OctetStringSeq',<<16#40,16#41,16#42>>} = M:octetStringSeq1(),
     <<16#40,16#41,16#42>> = M:otherOctetString(),
     <<16#40,16#41,16#42>> = M:someOctetString(),
+    <<16#40,16#41,16#42>> = M:someOctetStringWhiteSpace(),
     {'OctetStringSeq',<<16#40,16#41,16#42>>} = M:octetStringSeq2(),
     {'OctetStringSeq',<<16#40,16#41,16#FF>>} = M:octetStringSeq3(),
     <<16#40,16#41,16#FF>> = M:'os-1'(),
@@ -94,6 +97,7 @@ main() ->
     {'BsSeq',<<2#101101:6>>,[c]} = M:bsSeq2(),
     {'BsSeq',<<2#101:3>>,[a,c]} = M:bsSeq3(),
     <<2#101101:6>> = M:someBitString(),
+    <<2#101101:6>> = M:someBitStringWhiteSpace(),
     <<2#101101:6>> = M:otherBitString(),
     <<2#101:3>> = M:bsFromObject(),
     <<2#101:3>> = M:bsFromObjectInd(),
@@ -109,7 +113,7 @@ roundtrip(T, V) ->
 roundtrip_error(T, V) ->
     try asn1_test_lib:roundtrip('ValueTest', T, V) of
 	ok ->
-	    test_server:fail()
+	    ct:fail(expected_exception)
     catch _:_ ->
 	    ok
     end.

@@ -170,14 +170,14 @@ loop(State) ->
 	    end;
 
 	%% If test_set_sticky fails, we send this to all nodes
-	%% after aquiring a real write lock on Oid
+	%% after acquiring a real write lock on Oid
 
 	{stick, {Tab, _}, N} ->
 	    ?ets_insert(mnesia_sticky_locks, {Tab, N}),
 	    loop(State);
 
 	%% The caller which sends this message, must have first
-	%% aquired a write lock on the entire table
+	%% acquired a write lock on the entire table
 	{unstick, Tab} ->
 	    ?ets_delete(mnesia_sticky_locks, Tab),
 	    loop(State);
@@ -421,7 +421,7 @@ set_read_lock_on_all_keys(Tid, From, Tab, [RealKey | Tail], Orig, Ack) ->
 	yes ->
 	    {granted, Val} = grant_lock(Tid, read, read, Oid),
 	    case opt_lookup_in_client(Val, Oid, read) of  % Ought to be invoked
-		C when record(C, cyclic) ->               % in the client
+                C when is_record(C, cyclic) ->               % in the client
 		    reply(From, {not_granted, C});
 		Val2 ->
 		    Ack2 = lists:append(Val2, Ack),
@@ -691,7 +691,7 @@ do_sticky_lock(Tid, Store, {Tab, Key} = Oid, Lock) ->
 	    granted;
 	{?MODULE, _N, {granted, Val}} -> %% for rwlocks
 	    case opt_lookup_in_client(Val, Oid, write) of
-		C when record(C, cyclic) ->
+                C when is_record(C, cyclic) ->
 		    exit({aborted, C});
 		Val2 ->
 		    ?ets_insert(Store, {{locks, Tab, Key}, write}),
@@ -738,11 +738,11 @@ dirty_sticky_lock(Tab, Key, Nodes, Lock) ->
 sticky_wlock_table(Tid, Store, Tab) ->
     sticky_lock(Tid, Store, {Tab, ?ALL}, write).
 
-%% aquire a wlock on Oid
+%% acquire a wlock on Oid
 %% We store a {Tabname, write, Tid} in all locktables
 %% on all nodes containing a copy of Tabname
 %% We also store an item {{locks, Tab, Key}, write} in the
-%% local store when we have aquired the lock.
+%% local store when we have acquired the lock.
 %%
 wlock(Tid, Store, Oid) ->
     {Tab, Key} = Oid,
@@ -820,7 +820,7 @@ receive_wlocks([Node | Tail], Res, Store, Oid) ->
 	{?MODULE, Node, {granted, Val}} -> %% for rwlocks
 	    del_debug(Node),
 	    case opt_lookup_in_client(Val, Oid, write) of
-		C when record(C, cyclic) ->
+                C when is_record(C, cyclic) ->
 		    flush_remaining(Tail, Node, {aborted, C});
 		Val2 ->
 		    receive_wlocks(Tail, Val2, Store, Oid)
@@ -934,7 +934,7 @@ rlock_get_reply(Node, Store, Oid, {granted, V}) ->
     ?ets_insert(Store, {{locks, Tab, Key}, read}),
     ?ets_insert(Store, {nodes, Node}),
     case opt_lookup_in_client(V, Oid, read) of
-	C when record(C, cyclic) ->
+        C when is_record(C, cyclic) ->
 	    mnesia:abort(C);
 	Val ->
 	    Val
@@ -1019,3 +1019,27 @@ system_terminate(_Reason, _Parent, _Debug, _State) ->
 
 system_code_change(State, _Module, _OldVsn, _Extra) ->
     {ok, State}.
+
+
+%%
+%% %CopyrightBegin%
+%%
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2008-2026. All Rights Reserved.
+%% Copyright Richard Carlsson 2026. All Rights Reserved.
+%%
+%% Licensed under the Apache License, Version 2.0 (the "License");
+%% you may not use this file except in compliance with the License.
+%% You may obtain a copy of the License at
+%%
+%%     http://www.apache.org/licenses/LICENSE-2.0
+%%
+%% Unless required by applicable law or agreed to in writing, software
+%% distributed under the License is distributed on an "AS IS" BASIS,
+%% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+%% See the License for the specific language governing permissions and
+%% limitations under the License.
+%%
+%% %CopyrightEnd%
+%%

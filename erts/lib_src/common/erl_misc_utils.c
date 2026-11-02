@@ -1,7 +1,9 @@
 /*
  * %CopyrightBegin%
  *
- * Copyright Ericsson AB 2006-2013. All Rights Reserved.
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Copyright Ericsson AB 2006-2026. All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -29,10 +31,8 @@
 #include "ethread_inline.h"
 #include "erl_misc_utils.h"
 
-#if defined(__WIN32__)
-#elif defined(VXWORKS)
-#  include <selectLib.h>
-#else /* UNIX */
+#if !defined(__WIN32__) /* UNIX */
+#  include <stdarg.h>
 #  include <stdio.h>
 #  include <sys/types.h>
 #  include <sys/param.h>
@@ -43,17 +43,12 @@
 #  ifdef SYS_SELECT_H
 #    include <sys/select.h>
 #  endif
-#  if TIME_WITH_SYS_TIME
-#     include <sys/time.h>
-#     include <time.h>
-#  else
-#     if HAVE_SYS_TIME_H
-#         include <sys/time.h>
-#     else
-#         include <time.h>
-#     endif
+#  include <time.h>
+#  ifdef HAVE_SYS_TIME_H
+#    include <sys/time.h>
 #  endif
 #  include <string.h>
+#  include <stdio.h>
 #  ifdef HAVE_UNISTD_H
 #    include <unistd.h>
 #  endif
@@ -126,6 +121,13 @@
 #include <sys/sysctl.h>
 #endif
 
+#ifdef DEBUG
+#include <assert.h>
+#define ASSERT(X) assert(X)
+#else
+#define ASSERT(X) do {} while(0)
+#endif
+
 /* Simplify include for static functions */
 
 #if defined(__linux__) || defined(HAVE_KSTAT) || defined(__WIN32__) || defined(__FreeBSD__)
@@ -133,6 +135,7 @@
 #endif
 
 static int read_topology(erts_cpu_info_t *cpuinfo);
+static int read_cpu_quota(int limit);
 
 #if defined(ERTS_HAVE_MISC_UTIL_AFFINITY_MASK__)
 static int
@@ -176,6 +179,7 @@ struct erts_cpu_info_t_ {
     int online;
     int available;
     int topology_size;
+    int quota;
     erts_cpu_topology_t *topology;
 #if defined(ERTS_HAVE_MISC_UTIL_AFFINITY_MASK__)
     char *affinity_str;
@@ -238,7 +242,8 @@ erts_cpu_info_create(void)
     cpuinfo->configured = -1;
     cpuinfo->online = -1;
     cpuinfo->available = -1;
-    erts_cpu_info_update(cpuinfo);
+    cpuinfo->quota = -1;
+    erts_cpu_info_update(cpuinfo, 1);
     return cpuinfo;
 }
 
@@ -263,12 +268,14 @@ erts_cpu_info_destroy(erts_cpu_info_t *cpuinfo)
 }
 
 int
-erts_cpu_info_update(erts_cpu_info_t *cpuinfo)
+erts_cpu_info_update(erts_cpu_info_t *cpuinfo,
+                     int skip_read_topology)
 {
     int changed = 0;
     int configured = 0;
     int online = 0;
     int available = 0;
+    int quota = 0;
     erts_cpu_topology_t *old_topology;
     int old_topology_size;
 #if defined(ERTS_HAVE_MISC_UTIL_AFFINITY_MASK__)
@@ -408,19 +415,28 @@ erts_cpu_info_update(erts_cpu_info_t *cpuinfo)
 
     if (available > online)
 	available = online;
+    else if (available == 0) /* shouldn't happen */
+        available = online;
 
     if (cpuinfo->available != available)
+	changed = 1;
+
+    quota = read_cpu_quota(online);
+    if (cpuinfo->quota != quota)
 	changed = 1;
 
     cpuinfo->configured = configured;
     cpuinfo->online = online;
     cpuinfo->available = available;
+    cpuinfo->quota = quota;
 
     old_topology = cpuinfo->topology;
     old_topology_size = cpuinfo->topology_size;
     cpuinfo->topology = NULL;
 
-    read_topology(cpuinfo);
+    if (!skip_read_topology) {
+        read_topology(cpuinfo);
+    }
 
     if (cpuinfo->topology_size != old_topology_size
 	|| (old_topology_size != 0
@@ -469,6 +485,16 @@ erts_get_cpu_available(erts_cpu_info_t *cpuinfo)
     if (cpuinfo->available <= 0)
 	return -ENOTSUP;
     return cpuinfo->available;
+}
+
+int
+erts_get_cpu_quota(erts_cpu_info_t *cpuinfo)
+{
+    if (!cpuinfo)
+	return -EINVAL;
+    if (cpuinfo->quota <= 0)
+	return -ENOTSUP;
+    return cpuinfo->quota;
 }
 
 char *
@@ -775,7 +801,7 @@ adjust_processor_nodes(erts_cpu_info_t *cpuinfo, int no_nodes)
 #ifdef __linux__
 
 static int
-read_file(char *path, char *buf, int size)
+read_file(const char *path, char *buf, int size)
 {
     int ix = 0;
     ssize_t sz = size-1;
@@ -808,12 +834,17 @@ read_file(char *path, char *buf, int size)
     }
 }
 
+/* Macro to convert in int to a string */
+#define STR_INDIR(x) #x
+#define STR(x) STR_INDIR(x)
+
 static int
 read_topology(erts_cpu_info_t *cpuinfo)
 {
+    /* Need to fit all of the path in these buffers... */
     char npath[MAXPATHLEN];
     char cpath[MAXPATHLEN];
-    char tpath[MAXPATHLEN];
+    char tpath[MAXPATHLEN+5+30];
     char fpath[MAXPATHLEN];
     DIR *ndir = NULL;
     DIR *cdir = NULL;
@@ -842,7 +873,7 @@ read_topology(erts_cpu_info_t *cpuinfo)
 	cpuinfo->topology[ix].logical = -1;
     }
 
-    ix = -1;
+    ix = 0;
 
     if (realpath(ERTS_SYS_NODE_PATH, npath)) {
 	ndir = opendir(npath);
@@ -868,7 +899,7 @@ read_topology(erts_cpu_info_t *cpuinfo)
 
 	    no_nodes++;
 
-	    sprintf(tpath, "%s/node%d", npath, node_id);
+	    sprintf(tpath, "%." STR(MAXPATHLEN) "s/node%d", npath, node_id);
 
 	    if (!realpath(tpath, cpath))
 		goto error;
@@ -886,10 +917,11 @@ read_topology(erts_cpu_info_t *cpuinfo)
 		cdir = NULL;
 		break;
 	    }
+
 	    if (sscanf(cde->d_name, "cpu%d", &cpu_id) == 1) {
 		char buf[50]; /* Much more than enough for an integer */
 		int processor_id, core_id;
-		sprintf(tpath, "%s/cpu%d/topology/physical_package_id",
+		sprintf(tpath, "%." STR(MAXPATHLEN) "s/cpu%d/topology/physical_package_id",
 			cpath, cpu_id);
 		if (!realpath(tpath, fpath))
 		    continue;
@@ -897,7 +929,7 @@ read_topology(erts_cpu_info_t *cpuinfo)
 		    continue;
 		if (sscanf(buf, "%d", &processor_id) != 1)
 		    continue;
-		sprintf(tpath, "%s/cpu%d/topology/core_id",
+		sprintf(tpath, "%." STR(MAXPATHLEN) "s/cpu%d/topology/core_id",
 			cpath, cpu_id);
 		if (!realpath(tpath, fpath))
 		    continue;
@@ -906,23 +938,33 @@ read_topology(erts_cpu_info_t *cpuinfo)
 		if (sscanf(buf, "%d", &core_id) != 1)
 		    continue;
 
+                /*
+                 * The number of CPUs that proc fs presents is greater
+                 * then the number of CPUs configured in sysconf.
+                 * This has been known to happen in docker. When this
+                 * happens we refuse to give a CPU topology.
+                 */
+                if (ix >= cpuinfo->configured)
+                    goto error;
+
 		/*
 		 * We now know node id, processor id, and
 		 * core id of the logical processor with
 		 * the cpu id 'cpu_id'.
 		 */
-		ix++;
 		cpuinfo->topology[ix].node	= node_id;
 		cpuinfo->topology[ix].processor	= processor_id;
 		cpuinfo->topology[ix].processor_node = -1; /* Fixed later */
 		cpuinfo->topology[ix].core	= core_id;
 		cpuinfo->topology[ix].thread	= 0; /* we'll numerate later */
 		cpuinfo->topology[ix].logical	= cpu_id;
+		ix++;
+
 	    }
 	}
     } while (got_nodes);
 
-    res = ix+1;
+    res = ix;
 
     if (!res || res < cpuinfo->online)
 	res = 0;
@@ -986,6 +1028,298 @@ read_topology(erts_cpu_info_t *cpuinfo)
 	closedir(cdir);
 
     return res;
+}
+
+static int
+csv_contains(const char *haystack,
+             const char *element,
+             char separator) {
+    size_t element_len;
+    const char *ptr;
+
+    element_len = strlen(element);
+    ptr = strstr(haystack, element);
+
+    while (ptr) {
+        if (!ptr[element_len] || ptr[element_len] == separator) {
+            if (ptr == haystack || ptr[-1] == separator) {
+                return 1;
+            }
+        }
+
+        ptr = strstr(&ptr[1], element);
+    }
+
+    return 0;
+}
+
+static const char*
+str_combine(const char *a, const char *b) {
+    size_t a_len, b_len;
+    char *result;
+
+    a_len = strlen(a);
+    b_len = strlen(b);
+
+    result = malloc(a_len + b_len + 1);
+
+    memcpy(&result[0], a, a_len);
+    memcpy(&result[a_len], b, b_len + 1);
+
+    return result;
+}
+
+enum cgroup_version_t {
+    ERTS_CGROUP_NONE,
+    ERTS_CGROUP_V1,
+    ERTS_CGROUP_V2
+};
+
+static enum cgroup_version_t
+get_cgroup_child_path(const char *controller, const char **out) {
+    FILE *cgroup_file = fopen("/proc/self/cgroup", "r");
+    enum cgroup_version_t version = ERTS_CGROUP_NONE;
+
+    if (cgroup_file != NULL) {
+        char line_buf[5 << 10];
+
+        while (fgets(line_buf, sizeof(line_buf), cgroup_file)) {
+            /* sscanf_s requires C11, so we use hardcoded sizes (rather than
+             * rely on macros like MAXPATHLEN) so we can specify them directly
+             * in the format string. */
+            char child_dir[4 << 10];
+            char controllers[256];
+
+            if (sscanf(line_buf, "%*d:%255[^:]:%4095s\n",
+                       controllers, child_dir) == 2) {
+                if (csv_contains(controllers, controller, ',')) {
+                    if (version == ERTS_CGROUP_V2) {
+                        free((void*)*out);
+                    }
+
+                    /* A controller can only exist in one hierarchy, so we can
+                     * safely exit once found. */
+                    *out = strdup(child_dir);
+                    version = ERTS_CGROUP_V1;
+                    break;
+                }
+            } else if (sscanf(line_buf, "%*d::%4095s\n", child_dir) == 1) {
+                ASSERT(version == ERTS_CGROUP_NONE); /* Silence codechecker */
+                /* An empty controller list means that this is the unified v2
+                 * hierarchy, under which all associated controllers can be
+                 * found. We don't know if the given controller is one of them,
+                 * though, so we need to keep looking in case it's under a v1
+                 * hierarchy. */
+                *out = strdup(child_dir);
+                version = ERTS_CGROUP_V2;
+            }
+        }
+
+        fclose(cgroup_file);
+    }
+
+    return version;
+}
+
+static enum cgroup_version_t
+get_cgroup_path(const char *controller,
+                const char **out) {
+    enum cgroup_version_t version;
+    char mount_line[10 << 10];
+    const char *child_path;
+    FILE *mount_file;
+
+    mount_file = fopen("/proc/self/mountinfo", "r");
+    if (mount_file == NULL) {
+        return ERTS_CGROUP_NONE;
+    }
+
+#ifndef VALGRIND
+    child_path = NULL; // ERTS_UNDEF
+#endif
+
+    version = get_cgroup_child_path(controller, &child_path);
+
+    if (version == ERTS_CGROUP_NONE) {
+        fclose(mount_file);
+        return ERTS_CGROUP_NONE;
+    }
+
+    /* As a controller can only belong to one hierarchy, regardless of
+     * version, we'll go through all mounted filesystems one by one until
+     * the controller is found. */
+    *out = NULL;
+    while (fgets(mount_line, sizeof(mount_line), mount_file)) {
+        char mount_path[4 << 10];
+        char root_path[4 << 10];
+        char fs_flags[512];
+
+        switch (version) {
+
+            case ERTS_CGROUP_V1:
+            /* Format:
+            *    [Mount id] [Parent id] [Major] [Minor] [Root] [Mounted at]    \
+            *    [Mount flags] ... (options terminated by a single hyphen) ... \
+            *    [FS type] [Mount source] [Flags]
+            *
+            * (See proc(5) for a more complete description.)
+            *
+            * This fails if any of the fs options contain a hyphen, but this is
+            * not likely to happen on a cgroup, so we just skip such lines. */
+            if (sscanf(mount_line,
+                       "%*d %*d %*d:%*d %4095s %4095s %*s%*[^-]- "
+                         "cgroup %*s %511[^\n]\n",
+                       root_path,
+                       mount_path,
+                       fs_flags) != 3) {
+                continue;
+            }
+            break;
+            case ERTS_CGROUP_V2:
+            if (sscanf(mount_line,
+                       "%*d %*d %*d:%*d %4095s %4095s %*s%*[^-]- "
+                        "cgroup2 %*s %511[^\n]\n",
+                       root_path,
+                       mount_path,
+                       fs_flags) != 3) {
+                continue;
+            }
+            break;
+            default:
+                ASSERT(0 && "Only V1 and V2 should come here");
+        }
+
+        if (version == ERTS_CGROUP_V2) {
+            char controllers[256];
+            const char *group_dir;
+            const char *cgc_path;
+
+            group_dir = str_combine(mount_path, child_path);
+            cgc_path = str_combine(group_dir, "/cgroup.controllers");
+
+            if (read_file(cgc_path, controllers, sizeof(controllers)) > 0) {
+                if (csv_contains(controllers, controller, ' ')) {
+                    free((void*)cgc_path);
+                    *out = group_dir;
+                    break;
+                }
+            }
+
+            free((void*)group_dir);
+            free((void*)cgc_path);
+        } else if (version == ERTS_CGROUP_V1) {
+            if (csv_contains(fs_flags, controller, ',')) {
+                if (strcmp(root_path, child_path)) {
+                    *out = str_combine(mount_path, child_path);
+                } else {
+                    *out = strdup(mount_path);
+                }
+
+                break;
+            }
+        }
+    }
+
+    free((void*)child_path);
+    fclose(mount_file);
+
+    if (*out != NULL) {
+        return version;
+    }
+
+    return ERTS_CGROUP_NONE;
+}
+
+static int read_cgroup_interface(const char *group_path, const char *if_name,
+                                 int arg_count, const char *format, ...) {
+    const char *var_path;
+    FILE *var_file;
+
+    var_path = str_combine(group_path, if_name);
+    var_file = fopen(var_path, "r");
+    free((void*)var_path);
+
+    if (var_file != NULL) {
+        va_list va_args;
+        int res;
+
+        va_start(va_args, format);
+
+        res = (vfscanf(var_file, format, va_args) == arg_count);
+        fclose(var_file);
+
+        va_end(va_args);
+
+        return res;
+    }
+
+    return 0;
+}
+
+static int calculate_cpu_quota(int limit,
+                               ssize_t cfs_quota_us,
+                               ssize_t cfs_period_us) {
+    if (cfs_period_us > 0 && cfs_quota_us > 0) {
+        size_t quota = cfs_quota_us / cfs_period_us;
+
+        if (quota == 0) {
+            quota = 1;
+        }
+
+        if (quota <= (size_t)limit) {
+            return quota;
+        }
+    }
+
+    return limit;
+}
+
+/* CPU quotas are read from the cgroup configuration, which can be pretty hairy
+ * as we need to support both v1 and v2, and it's possible for both versions to
+ * be active at the same time. */
+static int
+read_cpu_quota(int limit)
+{
+    ssize_t cfs_period_us, cfs_quota_us;
+    const char *cgroup_path;
+
+    switch (get_cgroup_path("cpu", &cgroup_path)) {
+    case ERTS_CGROUP_V1:
+        {
+            int succeeded = read_cgroup_interface(cgroup_path,
+                                                  "/cpu.cfs_quota_us",
+                                                  1, "%zi", &cfs_quota_us) &&
+                            read_cgroup_interface(cgroup_path,
+                                                  "/cpu.cfs_period_us",
+                                                  1, "%zi", &cfs_period_us);
+            free((void*)cgroup_path);
+
+            if (succeeded) {
+                return calculate_cpu_quota(limit, cfs_quota_us, cfs_period_us);
+            }
+        }
+        break;
+    case ERTS_CGROUP_V2:
+        if (read_cgroup_interface(cgroup_path, "/cpu.max",
+                                  1, "max %zi", &cfs_period_us)) {
+            /* No quota, just return our upper limit. */
+            free((void*)cgroup_path);
+            return limit;
+        } else if (read_cgroup_interface(cgroup_path, "/cpu.max",
+                                         2, "%zi %zi",
+                                         &cfs_quota_us,
+                                         &cfs_period_us)) {
+            free((void*)cgroup_path);
+            return calculate_cpu_quota(limit, cfs_quota_us, cfs_period_us);
+        }
+
+        free((void*)cgroup_path);
+        break;
+    default:
+        break;
+    }
+
+    return 0;
 }
 
 #elif defined(HAVE_KSTAT) /* SunOS kstat */
@@ -1139,6 +1473,13 @@ read_topology(erts_cpu_info_t *cpuinfo)
 
     return res;
 
+}
+
+static int
+read_cpu_quota(int limit)
+{
+    (void)limit;
+    return 0;
 }
 
 #elif defined(__WIN32__)
@@ -1415,6 +1756,13 @@ read_topology(erts_cpu_info_t *cpuinfo)
     return res;
 }
 
+static int
+read_cpu_quota(int limit)
+{
+    (void)limit;
+    return 0;
+}
+
 #elif defined(__FreeBSD__)
 
 /**
@@ -1654,7 +2002,21 @@ error:
     return res;
 }
 
+static int
+read_cpu_quota(int limit)
+{
+    (void)limit;
+    return 0;
+}
+
 #else
+
+static int
+read_cpu_quota(int limit)
+{
+    (void)limit;
+    return 0;
+}
 
 static int
 read_topology(erts_cpu_info_t *cpuinfo)

@@ -1,8 +1,10 @@
 #
 # %CopyrightBegin%
-# 
-# Copyright Ericsson AB 1996-2013. All Rights Reserved.
-# 
+#
+# SPDX-License-Identifier: Apache-2.0
+#
+# Copyright Ericsson AB 1996-2025. All Rights Reserved.
+#
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
 # You may obtain a copy of the License at
@@ -14,7 +16,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-# 
+#
 # %CopyrightEnd%
 #
 
@@ -43,6 +45,8 @@ RELSYSDIR = $(RELEASE_PATH)/lib/mnesia-$(VSN)
 # ----------------------------------------------------
 MODULES= \
 	mnesia \
+	mnesia_app \
+	mnesia_backend_type \
 	mnesia_backup \
 	mnesia_bup \
 	mnesia_checkpoint \
@@ -50,9 +54,9 @@ MODULES= \
 	mnesia_controller \
 	mnesia_dumper\
 	mnesia_event \
+	mnesia_ext_sup \
 	mnesia_frag \
 	mnesia_frag_hash \
-	mnesia_frag_old_hash \
 	mnesia_index \
 	mnesia_kernel_sup \
 	mnesia_late_loader \
@@ -63,9 +67,9 @@ MODULES= \
 	mnesia_monitor \
 	mnesia_recover \
 	mnesia_registry \
+	mnesia_rpc \
 	mnesia_schema\
 	mnesia_snmp_hook \
-	mnesia_snmp_sup \
 	mnesia_subscr \
 	mnesia_sup \
 	mnesia_sp  \
@@ -94,7 +98,7 @@ APPUP_TARGET= $(EBIN)/$(APPUP_FILE)
 # FLAGS
 # ----------------------------------------------------
 ERL_COMPILE_FLAGS += \
-	-Werror \
+	-Werror +warn_obsolete_bool_op +nowarn_deprecated_catch \
 	+'{parse_transform,sys_pre_attributes}' \
 	+'{attribute,insert,vsn,"mnesia_$(MNESIA_VSN)"}'
 
@@ -104,8 +108,8 @@ ERL_COMPILE_FLAGS += \
 
 opt: $(TARGET_FILES)
 
-debug:
-	@${MAKE} TYPE=debug
+$(filter-out opt, $(TYPES)):
+	@${MAKE} TYPE=$@ opt
 
 clean:
 	rm -f $(TARGET_FILES)
@@ -139,3 +143,7 @@ release_spec: opt
 
 release_docs_spec:
 
+# ----------------------------------------------------
+# Dependencies
+# ----------------------------------------------------
+include $(ERL_TOP)/make/dep.mk

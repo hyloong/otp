@@ -1,7 +1,9 @@
 /*
  * %CopyrightBegin%
+ *
+ * SPDX-License-Identifier: Apache-2.0
  * 
- * Copyright Ericsson AB 1996-2015. All Rights Reserved.
+ * Copyright Ericsson AB 1996-2025. All Rights Reserved.
  * 
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -42,9 +44,14 @@
 #  include "config.h"
 #endif
 #ifdef HAVE_WORKING_POSIX_OPENPT
-#ifndef _XOPEN_SOURCE
-#define _XOPEN_SOURCE 600 
-#endif
+#  ifndef _XOPEN_SOURCE
+     /* On OS X, BSD and Solaris, we must leave _XOPEN_SOURCE undefined in order
+      * for the prototype of vsyslog() to be included.
+      */
+#    if !(defined(__APPLE__) || defined(__NetBSD__) || defined(__FreeBSD__) || defined(__DragonFly__) || defined(__sun))
+#      define _XOPEN_SOURCE 600
+#    endif
+#  endif
 #endif
 #include <sys/types.h>
 #include <sys/wait.h>
@@ -64,10 +71,6 @@
 #include <termios.h>
 #include <time.h>
 
-#ifdef __ANDROID__
-#  include <termios.h>
-#endif
-
 #ifdef HAVE_SYSLOG_H
 #  include <syslog.h>
 #endif
@@ -77,6 +80,9 @@
 #ifdef HAVE_UTMP_H
 #  include <utmp.h>
 #endif
+#ifdef HAVE_LIBUTIL_H
+#  include <libutil.h>
+#endif
 #ifdef HAVE_UTIL_H
 #  include <util.h>
 #endif
@@ -85,6 +91,12 @@
 #endif
 #if defined(__sun) && defined(__SVR4)
 #  include <stropts.h>
+#endif
+
+#ifdef __clang_analyzer__
+   /* CodeChecker does not seem to understand inline asm in FD_ZERO */
+#  undef FD_ZERO
+#  define FD_ZERO(FD_SET_PTR) memset(FD_SET_PTR, 0, sizeof(fd_set))
 #endif
 
 #include "run_erl.h"
@@ -236,6 +248,7 @@ int main(int argc, char **argv)
   int off_argv;
   int calculated_pipename = 0;
   int highest_pipe_num = 0;
+  int sleepy_child = 0;
 
   program_name = argv[0];
 
@@ -245,6 +258,11 @@ int main(int argc, char **argv)
   }
 
   init_outbuf();
+
+  if (!strcmp(argv[1],"-sleepy-child")) {  /* For test purpose only */
+      sleepy_child = 1;
+      ++i;
+  }
 
   if (!strcmp(argv[1],"-daemon")) {
       daemon_init();
@@ -388,6 +406,9 @@ int main(int argc, char **argv)
     exit(1);
   }
   if (childpid == 0) {
+      if (sleepy_child)
+	  sleep(1);
+
     /* Child */
     sf_close(mfd);
     /* disassociate from control terminal */
@@ -469,6 +490,21 @@ int main(int argc, char **argv)
   return 0;
 } /* main() */
 
+/* Broken out in order to do GCC diagnostic ignore here */
+#ifdef HAVE_GCC_DIAG_IGNORE_WFORMAT_NONLITERAL
+_Pragma("GCC diagnostic push");
+_Pragma("GCC diagnostic ignored \"-Wformat-nonliteral\"");
+#endif
+static int dynamic_strftime(
+    char *__restrict__ log_alive_buffer,
+    const char *__restrict__ log_alive_format,
+    const struct tm *__restrict__ tmptr) {
+    return strftime(log_alive_buffer, ALIVE_BUFFSIZ, log_alive_format, tmptr);
+}
+#ifdef HAVE_GCC_DIAG_IGNORE_WFORMAT_NONLITERAL
+_Pragma("GCC diagnostic pop");
+#endif
+
 /* pass_on()
  * Is the work loop of the logger. Selects on the pipe to the to_erl
  * program erlang. If input arrives from to_erl it is passed on to
@@ -540,7 +576,7 @@ static void pass_on(pid_t childpid)
 		FD_ZERO(&readfds);
 		FD_ZERO(&writefds);
 	    } else {
-		/* Some error occured */
+		/* Some error occurred */
 		ERRNO_ERR0(LOG_ERR,"Error in select.");
 		exit(1);
 	    }
@@ -565,8 +601,7 @@ static void pass_on(pid_t childpid)
 		} else {
 		    tmptr = localtime(&now);
 		}
-		if (!strftime(log_alive_buffer, ALIVE_BUFFSIZ, log_alive_format,
-			      tmptr)) {
+		if (!dynamic_strftime(log_alive_buffer, log_alive_format, tmptr)) {
 		    strn_cpy(log_alive_buffer, sizeof(log_alive_buffer),
 			     "(could not format time in 256 positions "
 			     "with current format string.)");
@@ -614,12 +649,14 @@ static void pass_on(pid_t childpid)
 	    status("Pty master read; ");
 #endif
 	    if ((len = sf_read(mfd, buf, BUFSIZ)) <= 0) {
+		int saved_errno = errno;
 		sf_close(rfd);
 		if(wfd) sf_close(wfd);
 		sf_close(mfd);
 		unlink(fifo1);
 		unlink(fifo2);
 		if (len < 0) {
+		    errno = saved_errno;
 		    if(errno == EIO)
 			ERROR0(LOG_ERR,"Erlang closed the connection.");
 		    else
@@ -690,8 +727,8 @@ static void pass_on(pid_t childpid)
 #endif
 		    }
 		}
-
-		if (!got_some && wfd && buf[0] == '\014') {
+    if (!got_some && wfd && buf[0] == '\033' &&
+         buf[1] == 'l') {
 		    char wbuf[30];
 		    int wlen = sn_printf(wbuf,sizeof(wbuf),"[run_erl v%u-%u]\n",
 					 RUN_ERL_HI_VER, RUN_ERL_LO_VER);
@@ -807,7 +844,7 @@ static int find_next_log_num(void) {
 
 /* open_log()
  * Opens a log file (with given index) for writing. Writing may be
- * at the end or a trucnating write, according to flags.
+ * at the end or a truncating write, according to flags.
  * A LOGGING STARTED and time stamp message is inserted into the log file
  */
 static int open_log(int log_num, int flags)
@@ -837,8 +874,7 @@ static int open_log(int log_num, int flags)
   } else {
       tmptr = localtime(&now);
   }
-  if (!strftime(log_buffer, ALIVE_BUFFSIZ, log_alive_format,
-		tmptr)) {
+  if (!dynamic_strftime(log_buffer, log_alive_format, tmptr)) {
       strn_cpy(log_buffer, sizeof(log_buffer),
 	      "(could not format time in 256 positions "
 	      "with current format string.)");
@@ -850,7 +886,7 @@ static int open_log(int log_num, int flags)
   if (write_all(lfd, buf, strlen(buf)) < 0)
       status("Error in writing to log.\n");
 
-#if USE_FSYNC
+#ifdef USE_FSYNC
   fsync(lfd);
 #endif
 
@@ -880,7 +916,7 @@ static void write_to_log(int* lfd, int* log_num, char* buf, int len)
     status("Error in writing to log.\n");
   }
 
-#if USE_FSYNC
+#ifdef USE_FSYNC
   fsync(*lfd);
 #endif
 }
@@ -900,20 +936,32 @@ static int create_fifo(char *name, int perm)
  * Find a master device, open and return fd and slave device name.
  */
 
+#ifdef HAVE_WORKING_POSIX_OPENPT
+   /*
+    * Use openpty() on OpenBSD even if we have posix_openpt()
+    * as there is a race when read from master pty returns 0
+    * if child has not yet opened slave pty.
+    * (maybe other BSD's have the same problem?)
+    */
+#  if !(defined(__OpenBSD__) && defined(HAVE_OPENPTY))
+#    define TRY_POSIX_OPENPT
+#  endif
+#endif
+
 static int open_pty_master(char **ptyslave, int *sfdp)
 {
   int mfd;
 
 /* Use the posix_openpt if working, as this guarantees creation of the 
    slave device properly. */
-#if defined(HAVE_WORKING_POSIX_OPENPT) || (defined(__sun) && defined(__SVR4))
-#  ifdef HAVE_WORKING_POSIX_OPENPT
-  if ((mfd = posix_openpt(O_RDWR)) >= 0) {
+#if defined(TRY_POSIX_OPENPT) || (defined(__sun) && defined(__SVR4))
+#  ifdef TRY_POSIX_OPENPT
+  mfd = posix_openpt(O_RDWR);
 #  elif defined(__sun) && defined(__SVR4)
   mfd = sf_open("/dev/ptmx", O_RDWR, 0);
+#  endif
 
   if (mfd >= 0) {
-#  endif
       if ((*ptyslave = ptsname(mfd)) != NULL &&
 	  grantpt(mfd) == 0 && 
 	  unlockpt(mfd) == 0) {
@@ -955,7 +1003,7 @@ static int open_pty_master(char **ptyslave, int *sfdp)
   /* X is in "pqrs" and Y in "0123456789abcdef" but FreeBSD */
   /* and some Linux version has extended this. */
 
-  /* This code could probebly be improved alot. For example look at */
+  /* This code could probebly be improved a lot. For example look at */
   /* http://www.xcf.berkeley.edu/~ali/K0D/UNIX/PTY/code/pty.c.html */
   /* http://www.xcf.berkeley.edu/~ali/K0D/UNIX/PTY/code/upty.h.html */
 
@@ -1174,7 +1222,19 @@ static void error_logf(int priority, int line, const char *format, ...)
 
 #ifdef HAVE_SYSLOG_H
     if (run_daemon) {
+#ifdef HAVE_VSYSLOG
 	vsyslog(priority,format,args);
+#else
+	/* Some OSes like AIX lack vsyslog. */
+	va_list ap;
+	char message[900]; /* AIX man page says truncation past this */
+
+	va_start (ap, format);
+	vsnprintf(message, 900, format, ap);
+	va_end(ap);
+
+	syslog(priority, message);
+#endif
     }
     else
 #endif
@@ -1317,14 +1377,13 @@ static int sf_open(const char *path, int type, mode_t mode) {
 
     return fd;
 }
+
 static int sf_close(int fd) {
-    int res = 0;
-
-    do { res = close(fd); } while(fd < 0 && errno == EINTR);
-
-    return res;
+    /* "close() should not be retried after an EINTR" */
+    return close(fd);
 }
-/* Extract any control sequences that are ment only for run_erl
+
+/* Extract any control sequences that are meant only for run_erl
  * and should not be forwarded to the pty.
  */
 static int extract_ctrl_seq(char* buf, int len)

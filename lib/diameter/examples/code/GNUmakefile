@@ -1,7 +1,9 @@
 #
 # %CopyrightBegin%
 #
-# Copyright Ericsson AB 2010-2015. All Rights Reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Copyright Ericsson AB 2010-2025. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -18,10 +20,10 @@
 # %CopyrightEnd%
 #
 
-EXAMPLES  = client server relay # redirect proxy
+EXAMPLES  = client server relay redirect # proxy
 
 CALLBACKS = $(EXAMPLES:%=%_cb)
-MODULES   = node $(EXAMPLES) $(EXAMPLES:%=%_cb)
+MODULES   = $(EXAMPLES) $(EXAMPLES:%=%_cb)
 
 BEAM = $(MODULES:%=%.beam)
 

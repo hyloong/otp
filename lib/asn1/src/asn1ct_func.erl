@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2012-2013. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2012-2026. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -20,6 +22,10 @@
 %%
 
 -module(asn1ct_func).
+-moduledoc false.
+
+-compile([{nowarn_possibly_unsafe_function, {erlang, list_to_atom, 1}}]).
+
 -export([start_link/0,need/1,call/3,call_gen/3,call_gen/4,
 	 generate/1,is_used/1]).
 -export([init/1,handle_call/3,handle_cast/2,terminate/2]).
@@ -65,7 +71,7 @@ generate(Fd) ->
     Funcs = sofs:to_external(Funcs0),
     ok = file:write(Fd, Funcs).
 
-is_used({_,_,_}=MFA) ->
+is_used({M,F,A}=MFA) when is_atom(M), is_atom(F), is_integer(A) ->
     req({is_used,MFA}).
 
 

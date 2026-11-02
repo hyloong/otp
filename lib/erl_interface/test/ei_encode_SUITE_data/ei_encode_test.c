@@ -1,7 +1,9 @@
 /*
  * %CopyrightBegin%
  *
- * Copyright Ericsson AB 2004-2013. All Rights Reserved.
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Copyright Ericsson AB 2004-2025. All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,10 +19,6 @@
  *
  * %CopyrightEnd%
  */
-
-#ifdef VXWORKS
-#include "reclaim.h"
-#endif
 
 #include "ei_runner.h"
 
@@ -403,6 +401,8 @@
 
 TESTCASE(test_ei_encode_long)
 {
+    ei_init();
+
     EI_ENCODE_1(encode_long, 0);
 
     EI_ENCODE_1(encode_long, 255);
@@ -430,6 +430,8 @@ TESTCASE(test_ei_encode_long)
 
 TESTCASE(test_ei_encode_ulong)
 {
+    ei_init();
+
     EI_ENCODE_1(encode_ulong, 0);
 
     EI_ENCODE_1(encode_ulong, 255);
@@ -454,8 +456,7 @@ TESTCASE(test_ei_encode_ulong)
 
 TESTCASE(test_ei_encode_longlong)
 {
-
-#ifndef VXWORKS
+    ei_init();
 
     EI_ENCODE_1(encode_longlong, 0);
 
@@ -485,8 +486,6 @@ TESTCASE(test_ei_encode_longlong)
 
     EI_ENCODE_1(encode_longlong, -ll(0x8000000000000000));
 
-#endif /* !VXWORKS */
-
     report(1);
 }
 
@@ -494,8 +493,7 @@ TESTCASE(test_ei_encode_longlong)
 
 TESTCASE(test_ei_encode_ulonglong)
 {
-
-#ifndef VXWORKS
+    ei_init();
 
     EI_ENCODE_1(encode_ulonglong, 0);
 
@@ -517,8 +515,6 @@ TESTCASE(test_ei_encode_ulonglong)
 
     EI_ENCODE_1(encode_ulonglong,  ll(0xffffffffffffffff));
 
-#endif /* !VXWORKS */
-
     report(1);
 }
 
@@ -527,6 +523,8 @@ TESTCASE(test_ei_encode_ulonglong)
 
 TESTCASE(test_ei_encode_char)
 {
+    ei_init();
+
     EI_ENCODE_1(encode_char, 0);
 
     EI_ENCODE_1(encode_char, 0x7f);
@@ -540,6 +538,8 @@ TESTCASE(test_ei_encode_char)
 
 TESTCASE(test_ei_encode_misc)
 {
+    ei_init();
+
     EI_ENCODE_0(encode_version);
 
     EI_ENCODE_1(encode_double, 0.0);
@@ -593,6 +593,8 @@ TESTCASE(test_ei_encode_fails)
 {
     char buf[1024];
     int index;
+
+    ei_init();
 
     /* FIXME the ei_x versions are not tested */
 
@@ -660,6 +662,7 @@ TESTCASE(test_ei_encode_fails)
 
 TESTCASE(test_ei_encode_utf8_atom)
 {
+    ei_init();
 
   EI_ENCODE_3(encode_atom_as, "Å", ERLANG_LATIN1, ERLANG_UTF8);
   EI_ENCODE_3(encode_atom_as, "Å", ERLANG_LATIN1, ERLANG_LATIN1);
@@ -686,6 +689,7 @@ TESTCASE(test_ei_encode_utf8_atom)
 
 TESTCASE(test_ei_encode_utf8_atom_len)
 {
+    ei_init();
 
   EI_ENCODE_4(encode_atom_len_as, "ÅÄÖ", 1, ERLANG_LATIN1, ERLANG_UTF8);
   EI_ENCODE_4(encode_atom_len_as, "ÅÄÖ", 2, ERLANG_LATIN1, ERLANG_LATIN1);

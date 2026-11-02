@@ -1,19 +1,38 @@
-%% This library is free software; you can redistribute it and/or modify
-%% it under the terms of the GNU Lesser General Public License as
-%% published by the Free Software Foundation; either version 2 of the
-%% License, or (at your option) any later version.
+%% %CopyrightBegin%
 %%
-%% This library is distributed in the hope that it will be useful, but
-%% WITHOUT ANY WARRANTY; without even the implied warranty of
-%% MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
-%% Lesser General Public License for more details.
+%% SPDX-License-Identifier: Apache-2.0 OR LGPL-2.1-or-later
 %%
-%% You should have received a copy of the GNU Lesser General Public
-%% License along with this library; if not, write to the Free Software
-%% Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307
-%% USA
+%% Copyright Ericsson AB 2009-2026. All Rights Reserved.
+%% Copyright 2004-2006 Mickaël Rémond, Richard Carlsson
 %%
-%% Copyright (C) 2004-2006 Mickaël Rémond, Richard Carlsson
+%% Licensed under the Apache License, Version 2.0 (the "License");
+%% you may not use this file except in compliance with the License.
+%% You may obtain a copy of the License at
+%%
+%%     http://www.apache.org/licenses/LICENSE-2.0
+%%
+%% Unless required by applicable law or agreed to in writing, software
+%% distributed under the License is distributed on an "AS IS" BASIS,
+%% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+%% See the License for the specific language governing permissions and
+%% limitations under the License.
+%%
+%% Alternatively, you may use this file under the terms of the GNU Lesser
+%% General Public License (the "LGPL") as published by the Free Software
+%% Foundation; either version 2.1, or (at your option) any later version.
+%% If you wish to allow use of your version of this file only under the
+%% terms of the LGPL, you should delete the provisions above and replace
+%% them with the notice and other provisions required by the LGPL; see
+%% <http://www.gnu.org/licenses/>. If you do not delete the provisions
+%% above, a recipient may use your version of this file under the terms of
+%% either the Apache License or the LGPL.
+%%
+%% %CopyrightEnd%
+%%
+%% NOTE: An object file that uses the macros in this header file shall
+%% never be considered a derived work under the the LGPL; these macros
+%% shall be regarded as "small" regardless of the exact line count.
+%%
 
 -ifndef(EUNIT_HRL).
 -define(EUNIT_HRL, true).
@@ -51,7 +70,9 @@
 %% note that the main switch used within this file is NOTEST; however,
 %% both TEST and EUNIT may be used to check whether testing is enabled
 -ifndef(NOTEST).
--undef(NOASSERT).    % testing requires that assertions are enabled
+-ifndef(ASSERT).
+-define(ASSERT, true).  % testing requires that assertions are enabled
+-endif.
 -ifndef(TEST).
 -define(TEST, true).
 -endif.
@@ -135,7 +156,16 @@
 -define(_assertThrow(Term, Expr), ?_assertException(throw, Term, Expr)).
 -define(_assertNotException(Class, Term, Expr),
 	?_test(?assertNotException(Class, Term, Expr))).
--define(_assertReceive(Guard, Expr), ?_test(?assertReceive(Guard, Expr))).
+
+%% Macros for retrieving the output of a test case
+
+-ifndef(capturedOutput).
+-define(capturedOutput,
+    case ?UNDER_EUNIT of
+        true  -> eunit_proc:get_output();
+        false -> ""
+    end).
+-endif.
 
 %% Macros for running operating system commands. (Note that these
 %% require EUnit to be present at runtime, or at least eunit_lib.)
@@ -205,6 +235,25 @@
 -define(_assertCmd(Cmd), ?_test(?assertCmd(Cmd))).
 -define(_assertCmdOutput(T, Cmd), ?_test(?assertCmdOutput(T, Cmd))).
 
+%% Macros to assist in finding race / time dependant bugs
+%% in exercised code.
+
+-ifdef(NODEBUG).
+-define(randomDelay(Prob, MinSec, MaxSec),  ok).
+-else.
+-define(randomDelay(Prob, MinSec, MaxSec),
+        (fun() ->
+            case rand:uniform() < (Prob) of
+                true ->
+                    %% Convert seconds to milliseconds for timer:sleep
+                    Delay = (MinSec) + rand:uniform() * ((MaxSec) - (MinSec)),
+                    timer:sleep(round(Delay * 1000));
+                false ->
+                    ok
+            end
+        end)()).
+-endif.
+
 %% Macros to simplify debugging (in particular, they work even when the
 %% standard output is being redirected by EUnit while running tests)
 
@@ -213,6 +262,7 @@
 -define(debugHere, ok).
 -define(debugFmt(S, As), ok).
 -define(debugVal(E), (E)).
+-define(debugValAll(E), (E)).
 -define(debugTime(S, E), (E)).
 -else.
 -define(debugMsg(S),
@@ -223,13 +273,18 @@
 	end).
 -define(debugHere, (?debugMsg("<-"))).
 -define(debugFmt(S, As), (?debugMsg(io_lib:format((S), (As))))).
--define(debugVal(E),
+-define(debugVal(E, D),
 	begin
 	((fun (__V) ->
-		  ?debugFmt(<<"~ts = ~tP">>, [(??E), __V, 15]),
+		  ?debugFmt(<<"~ts = ~tP">>,
+                            [(??E), __V, D]),
 		  __V
 	  end)(E))
 	end).
+-ifndef(EUNIT_DEBUG_VAL_DEPTH).
+-define(EUNIT_DEBUG_VAL_DEPTH, 15).
+-endif.
+-define(debugVal(E), ?debugVal(E, ?EUNIT_DEBUG_VAL_DEPTH)).
 -define(debugTime(S, E),
 	begin
 	((fun () ->

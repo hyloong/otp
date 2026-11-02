@@ -1,8 +1,10 @@
 /*
  * %CopyrightBegin%
- * 
- * Copyright Ericsson AB 2002-2011. All Rights Reserved.
- * 
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Copyright Ericsson AB 2002-2025. All Rights Reserved.
+ *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
@@ -14,11 +16,12 @@
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  * See the License for the specific language governing permissions and
  * limitations under the License.
- * 
+ *
  * %CopyrightEnd%
  */
 #include <string.h>
 #include <stdlib.h>
+#include <math.h>
 
 #include "eidef.h"
 #include "eiext.h"
@@ -144,57 +147,6 @@ int ei_big_comp(erlang_big *x, erlang_big *y)
  * Handling of floating point exceptions.
  */
 
-#if defined(VXWORKS) && CPU == PPC860
-#undef NO_FPE_SIGNALS
-#define NO_FPE_SIGNALS 1
-#undef INLINED_FP_CONVERSION
-#define INLINED_FP_CONVERSION 1
-#endif
-
-#ifdef NO_FPE_SIGNALS
-#  define ERTS_FP_CHECK_INIT() do {} while (0)
-#  define ERTS_FP_ERROR(f, Action) if (!isfinite(f)) { Action; } else {}
-#  define ERTS_SAVE_FP_EXCEPTION()
-#  define ERTS_RESTORE_FP_EXCEPTION()
-#else
-/* extern volatile int erl_fp_exception; */
-static volatile int erl_fp_exception;
-#  define ERTS_FP_CHECK_INIT() do {erl_fp_exception = 0;} while (0)
-#  if defined(__i386__) && defined(__GNUC__)
-/* extern void erts_restore_x87(void); */
-
-static void unmask_fpe(void)
-{
-    unsigned short cw;
-    __asm__ __volatile__("fstcw %0" : "=m"(cw));
-    cw &= ~(0x01|0x04|0x08);   /* unmask IM, ZM, OM */
-    __asm__ __volatile__("fldcw %0" : : "m"(cw));
-}
-
-static void erts_restore_x87(void)
-{
-    __asm__ __volatile__("fninit");
-    unmask_fpe();
-}
-
-static int erts_check_x87(double f)
-{
-    __asm__ __volatile__("fwait" : "=m"(erl_fp_exception) : "m"(f));
-    if( !erl_fp_exception )
-       return 0;
-    erts_restore_x87();
-    return 1;
-}
-#  define ERTS_FP_ERROR(f, Action) do { if( erts_check_x87((f)) ) { Action; } } while (0)
-#  else
-#  define ERTS_FP_ERROR(f, Action) if (erl_fp_exception) { Action; } else {}
-#  endif
-#  define ERTS_SAVE_FP_EXCEPTION() int old_erl_fp_exception = erl_fp_exception
-#  define ERTS_RESTORE_FP_EXCEPTION() \
-              do {erl_fp_exception = old_erl_fp_exception;} while (0)
-#endif
-
-
 #ifdef INLINED_FP_CONVERSION
 static void join(unsigned d_split[4], unsigned *d)
 {
@@ -286,14 +238,16 @@ int ei_big_to_double(erlang_big *b, double *resp)
     digit_t* s = (digit_t *)b->digits;
     dsize_t xl = (b->arity + 1)/2;
     short xsgn = b->is_neg;
-    ERTS_SAVE_FP_EXCEPTION();
 
-    ERTS_FP_CHECK_INIT();
     while(xl--) {
 	digit_t ds = *s;
 	double d_next = ds * d_base + d;
 
-	ERTS_FP_ERROR(d_next, ERTS_RESTORE_FP_EXCEPTION(); {fprintf(stderr,"\r\n### fp exception ###\r\n"); return -1;});
+        if (isinf(d_next) || isnan(d_next)) {
+            fprintf(stderr,"\r\n### fp exception ###\r\n");
+            return -1;
+        }
+
 	s++;
 	d = d_next;
 	d_base *= D_BASE;
@@ -305,8 +259,6 @@ int ei_big_to_double(erlang_big *b, double *resp)
      */
 
     *resp = xsgn ? -d : d;
-    ERTS_FP_ERROR(*resp,;);
-    ERTS_RESTORE_FP_EXCEPTION();
     return 0;
 #endif
 }

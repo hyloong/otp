@@ -1,8 +1,10 @@
 /*
  * %CopyrightBegin%
- * 
- * Copyright Ericsson AB 1998-2010. All Rights Reserved.
- * 
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Copyright Ericsson AB 1998-2025. All Rights Reserved.
+ *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
@@ -14,7 +16,7 @@
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  * See the License for the specific language governing permissions and
  * limitations under the License.
- * 
+ *
  * %CopyrightEnd%
  */
 #ifndef _EI_EPMD_H
@@ -24,9 +26,12 @@
 #define INADDR_LOOPBACK ((u_long) 0x7F000001)
 #endif
 
+#define EI_DIST_5 5 /* OTP R4 - 22 */
+#define EI_DIST_6 6 /* OTP 23 and later */
+
 #ifndef EI_DIST_HIGH
-#define EI_DIST_HIGH 5 /* R4 and later */
-#define EI_DIST_LOW  1 /* R3 and earlier */
+#define EI_DIST_HIGH EI_DIST_6
+#define EI_DIST_LOW  EI_DIST_6
 #endif
 
 #ifndef EPMD_PORT
@@ -45,6 +50,7 @@
 #ifndef EI_EPMD_ALIVE2_REQ
 #define EI_EPMD_ALIVE2_REQ  120
 #define EI_EPMD_ALIVE2_RESP 121
+#define EI_EPMD_ALIVE2_X_RESP 118
 #define EI_EPMD_PORT2_REQ   122
 #define EI_EPMD_PORT2_RESP  119
 #define EI_EPMD_STOP_REQ      's'

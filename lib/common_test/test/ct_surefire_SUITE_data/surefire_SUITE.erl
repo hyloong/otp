@@ -1,7 +1,9 @@
 %%--------------------------------------------------------------------
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2012. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2012-2025. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -23,9 +25,7 @@
 %% Description:
 %%    This file contains the test cases for cth_surefire.
 %%
-%% @author Support
-%% @doc Test  of surefire support in common_test
-%% @end
+%% Test  of surefire support in common_test
 %%----------------------------------------------------------------------
 %%----------------------------------------------------------------------
 -module(surefire_SUITE).
@@ -34,7 +34,7 @@
 -compile(export_all).
 
 %% Default timetrap timeout (set in init_per_testcase).
--define(default_timeout, ?t:minutes(1)).
+-define(default_timeout, test_server:minutes(1)).
 
 all() ->
     testcases() ++ [{group,g},{group,g_fail}].
@@ -46,6 +46,7 @@ groups() ->
 testcases() ->
     [tc_ok,
      tc_fail,
+     tc_badmatch,
      tc_skip,
      tc_autoskip_require].
 
@@ -78,11 +79,16 @@ break(_Config) ->
     test_server:break(""),
     ok.
 
-tc_ok(_Config) ->
-    ok.
+tc_ok(Config) when is_list(Config) ->
+    ok;
+tc_ok(_) ->
+    ct:fail("This should never fail").
 
 tc_fail(_Config) ->
     ct:fail("this test should fail").
+
+tc_badmatch(_Config) ->
+    ok = nok.
 
 tc_skip(_Config) ->
     {skip,"this test is skipped"}.

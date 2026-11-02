@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2008-2014. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2008-2026. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -20,6 +22,9 @@
 
 %%
 -module(dbg_wx_mon_win).
+-moduledoc false.
+
+-compile([{nowarn_possibly_unsafe_function, {erlang, list_to_atom, 1}}]).
 
 %% External exports
 -export([init/0]).
@@ -85,7 +90,6 @@ init() ->
 -define(W, 800).
 -define(H, 390).
 
-%% FIXME
 -define(autoId, 314).
 -define(stringsId, 271).
 
@@ -107,31 +111,31 @@ create_win_batch(Title, Menus) ->
     Hlb = 200,
     Listbox = wxListBox:new(Panel, ?wxID_ANY, [{size,{?Wf,Hlb}},
 					       {style,?wxLB_SINGLE}]),
-    wxSizer:add(LeftSz,Listbox,[{proportion,1},{border,3},{flag,?wxEXPAND}]),
+    _ = wxSizer:add(LeftSz,Listbox,[{proportion,1},{border,3},{flag,?wxEXPAND}]),
     wxListBox:connect(Listbox, command_listbox_doubleclicked),
     wxListBox:connect(Listbox, right_down),
 
     SBox = wxStaticBox:new(Panel, ?wxID_ANY, "Auto Attach:"),
     SBS  = wxStaticBoxSizer:new(SBox, ?wxVERTICAL),
     Fbtn = wxCheckBox:new(Panel, ?autoId, "First Call"),
-    wxSizer:add(SBS,Fbtn),
+    _ = wxSizer:add(SBS,Fbtn),
     Bbtn = wxCheckBox:new(Panel, ?autoId, "On Break"),
-    wxSizer:add(SBS,Bbtn),
+    _ = wxSizer:add(SBS,Bbtn),
     Ebtn = wxCheckBox:new(Panel, ?autoId, "On Exit"),
-    wxSizer:add(SBS,Ebtn),
+    _ = wxSizer:add(SBS,Ebtn),
     wxFrame:connect(Panel, command_checkbox_clicked),
-    wxSizer:add(LeftSz,SBS, [{flag,?wxEXPAND}]),
+    _ = wxSizer:add(LeftSz,SBS, [{flag,?wxEXPAND}]),
 
     SLabel = wxStaticText:new(Panel, ?wxID_ANY, "Stack Trace:\n On (with tail)"), 
-    wxSizer:add(LeftSz,SLabel),
+    _ = wxSizer:add(LeftSz,SLabel),
     BLabel = wxStaticText:new(Panel, ?wxID_ANY, "Back Trace Size:\n 50000"), 
-    wxSizer:add(LeftSz,BLabel),
+    _ = wxSizer:add(LeftSz,BLabel),
     
     StringsBox = wxStaticBox:new(Panel, ?wxID_ANY, "Strings:"),
     StringsBS  = wxStaticBoxSizer:new(StringsBox, ?wxVERTICAL),
     Stringsbtn = wxCheckBox:new(Panel, ?stringsId, ?STRTEXT),
-    wxSizer:add(StringsBS,Stringsbtn),
-    wxSizer:add(LeftSz,StringsBS, [{flag,?wxEXPAND}]),
+    _ = wxSizer:add(StringsBS,Stringsbtn),
+    _ = wxSizer:add(LeftSz,StringsBS, [{flag,?wxEXPAND}]),
 
     %% Create list_crtl / grid
     Grid = wxListCtrl:new(Panel, [{winid, ?GRID},
@@ -169,12 +173,12 @@ create_win_batch(Title, Menus) ->
     wxWindow:setFocus(Grid),
 
     %% Put it in the window
-    wxSizer:add(MainSz, LeftSz, [{border, 3}, {flag,?wxALL bor ?wxEXPAND}]),
-    wxSizer:add(MainSz, Grid,   [{border, 3}, {flag,?wxALL bor ?wxEXPAND}, 
+    _ = wxSizer:add(MainSz, LeftSz, [{border, 3}, {flag,?wxALL bor ?wxEXPAND}]),
+    _ = wxSizer:add(MainSz, Grid,   [{border, 3}, {flag,?wxALL bor ?wxEXPAND}, 
 				 {proportion, 1}]),
 
     wxWindow:setSizer(Panel,MainSz),
-    wxSizer:fit(MainSz, Win),
+    _ = wxSizer:fit(MainSz, Win),
     wxSizer:setSizeHints(MainSz,Win),
     
     IconFile = dbg_wx_win:find_icon("erlang_bug.png"),
@@ -342,7 +346,7 @@ add_process(WinInfo, Pid, Name, {Mod,Func,Args}, Status, Info) ->
     Row = (WinInfo#winInfo.row),
     
     Name2 = case Name of undefined -> ""; _ -> to_string(Name) end,
-    FuncS = to_string("~w:~w/~w", [Mod, Func, length(Args)]),
+    FuncS = to_string("~w:~tw/~w", [Mod, Func, length(Args)]),
     Info2 = case Info of {} -> ""; _ -> to_string(Info) end,
     Pid2  = to_string("~p",[Pid]),
     
@@ -558,7 +562,7 @@ handle_event(#wx{obj=ListBox, event=#wxMouse{type=right_down, x=X,y=Y}},
 	Row ->	    
 	    ModS = wxListBox:getString(ListBox,Row),
 	    io:format("Re-loading/interpreting: ~s~n", [ModS]),
-	    int:i(list_to_atom(ModS)),
+	    _ = int:i(list_to_atom(ModS)),
 	    ignore
     end;
 

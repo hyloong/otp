@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2000-2011. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2000-2025. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -23,8 +25,15 @@
 
 -export([interpret/1]).
 
+%% Used by test case that override BIFs.
+-export([binary/1]).
+
 interpret(Mod) when is_atom(Mod) ->
     case lists:member(Mod, int:interpreted()) of
 	true -> ok;
 	false -> {module,Mod} = i:ii(Mod)
     end.
+
+%% This is for overridden_bif_SUITE.
+binary(N) ->
+    N rem 10 =:= 0.

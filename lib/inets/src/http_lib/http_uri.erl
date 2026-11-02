@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2006-2012. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2006-2026. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -17,206 +19,72 @@
 %%
 %% %CopyrightEnd%
 %%
-%% 
-%% This is from chapter 3, Syntax Components, of RFC 3986: 
-%% 
-%% The generic URI syntax consists of a hierarchical sequence of
-%% components referred to as the scheme, authority, path, query, and
-%% fragment.
-%% 
-%%    URI         = scheme ":" hier-part [ "?" query ] [ "#" fragment ]
-%% 
-%%    hier-part   = "//" authority path-abempty
-%%                   / path-absolute
-%%                   / path-rootless
-%%                   / path-empty
-%% 
-%%    The scheme and path components are required, though the path may be
-%%    empty (no characters).  When authority is present, the path must
-%%    either be empty or begin with a slash ("/") character.  When
-%%    authority is not present, the path cannot begin with two slash
-%%    characters ("//").  These restrictions result in five different ABNF
-%%    rules for a path (Section 3.3), only one of which will match any
-%%    given URI reference.
-%% 
-%%    The following are two example URIs and their component parts:
-%% 
-%%          foo://example.com:8042/over/there?name=ferret#nose
-%%          \_/   \______________/\_________/ \_________/ \__/
-%%           |           |            |            |        |
-%%        scheme     authority       path        query   fragment
-%%           |   _____________________|__
-%%          / \ /                        \
-%%          urn:example:animal:ferret:nose
-%% 
-%%    scheme      = ALPHA *( ALPHA / DIGIT / "+" / "-" / "." )
-%%    authority   = [ userinfo "@" ] host [ ":" port ]
-%%    userinfo    = *( unreserved / pct-encoded / sub-delims / ":" )
-%%    
-%% 
-
 -module(http_uri).
+-moduledoc """
+Old URI utility module, use uri_string instead
 
--export([parse/1, parse/2, 
-	 scheme_defaults/0, 
-	 encode/1, decode/1]).
+This module is deprecated since OTP 23. Use the module `m:uri_string` to
+properly handle URIs, this is the recommended module since OTP 21.
 
--export_type([scheme/0, default_scheme_port_number/0]).
+### Data types
 
+Type definitions that are related to URI:
+
+- **`uri_part() = [byte()] | binary()`** - Syntax according to the URI
+  definition in RFC 3986, for example, "http://www.erlang.org/"
+
+For more information about URI, see
+[RFC 3986](http://www.ietf.org/rfc/rfc3986.txt).
+""".
+-moduledoc(#{since => "OTP R15B01"}).
+
+-export([encode/1, decode/1]).
+
+-unsafe([{'_', '_', "use uri_string instead"}]).
+
+-deprecated({encode, 1, "use uri_string:quote function instead"}).
+-deprecated({decode, 1, "use uri_string:unquote function instead"}).
+-removed({parse, 1, "use uri_string functions instead"}).
+-removed({parse, 2, "use uri_string functions instead"}).
+-removed({scheme_defaults, 0, "use uri_string functions instead"}).
+
+-removed_type({uri, 0, "use uri_string instead"}).
+-removed_type({user_info, 0, "use uri_string instead"}).
+-removed_type({scheme, 0, "use uri_string instead"}).
+-removed_type({host, 0, "use uri_string instead"}).
+-removed_type({path, 0, "use uri_string instead"}).
+-removed_type({query, 0, "use uri_string instead"}).
+-removed_type({fragment, 0, "use uri_string instead"}).
+-removed_type({default_scheme_port_number, 0, "use uri_string instead"}).
 
 %%%=========================================================================
 %%%  API
 %%%=========================================================================
 
--type scheme() :: atom().
--type default_scheme_port_number() :: pos_integer().
+-doc """
+Performs percent encoding.
 
--spec scheme_defaults() ->
-    [{scheme(), default_scheme_port_number()}].
+> #### Warning {: .warning }
+>
+> Use `uri_string:quote/1` instead
+""".
+-doc(#{since => <<"OTP R15B01">>}).
+-spec encode(Data) -> QuotedData when
+      Data :: unicode:chardata(),
+      QuotedData :: unicode:chardata().
+encode(Data) ->
+    uri_string:quote(Data).
 
-scheme_defaults() ->
-    [{http,  80}, 
-     {https, 443}, 
-     {ftp,   21}, 
-     {ssh,   22}, 
-     {sftp,  22}, 
-     {tftp,  69}].
+-doc """
+Decodes a possibly percent encoded URI part
 
-parse(AbsURI) ->
-    parse(AbsURI, []).
-
-parse(AbsURI, Opts) ->
-    case parse_scheme(AbsURI, Opts) of
-	{error, Reason} ->
-	    {error, Reason};
-	{Scheme, DefaultPort, Rest} ->
-	    case (catch parse_uri_rest(Scheme, DefaultPort, Rest, Opts)) of
-                {ok, Result} ->
-                    {ok, Result};
-		{error, Reason} ->
-		    {error, {Reason, Scheme, AbsURI}};
-		_  ->
-		    {error, {malformed_url, Scheme, AbsURI}}
-	    end
-    end.
-
-reserved() ->
-    sets:from_list([$;, $:, $@, $&, $=, $+, $,, $/, $?,
-		    $#, $[, $], $<, $>, $\", ${, $}, $|,
-			       $\\, $', $^, $%, $ ]).
-
-encode(URI) ->
-    Reserved = reserved(), 
-    lists:append([uri_encode(Char, Reserved) || Char <- URI]).
-
-decode(String) ->
-    do_decode(String).
-
-do_decode([$%,Hex1,Hex2|Rest]) ->
-    [hex2dec(Hex1)*16+hex2dec(Hex2)|do_decode(Rest)];
-do_decode([First|Rest]) ->
-    [First|do_decode(Rest)];
-do_decode([]) ->
-    [].
-
-
-%%%========================================================================
-%%% Internal functions
-%%%========================================================================
-
-which_scheme_defaults(Opts) ->
-    Key = scheme_defaults, 
-    case lists:keysearch(Key, 1, Opts) of
-	{value, {Key, SchemeDefaults}} ->
-	    SchemeDefaults;
-	false ->
-	    scheme_defaults()
-    end.
-
-parse_scheme(AbsURI, Opts) ->
-    case split_uri(AbsURI, ":", {error, no_scheme}, 1, 1) of
-	{error, no_scheme} ->
-	    {error, no_scheme};
-	{SchemeStr, Rest} ->
-	    Scheme = list_to_atom(http_util:to_lower(SchemeStr)),
-	    SchemeDefaults = which_scheme_defaults(Opts), 
-	    case lists:keysearch(Scheme, 1, SchemeDefaults) of
-		{value, {Scheme, DefaultPort}} ->
-		    {Scheme, DefaultPort, Rest};
-		false ->
-		    {Scheme, no_default_port, Rest}
-	    end
-    end.
-
-parse_uri_rest(Scheme, DefaultPort, "//" ++ URIPart, Opts) ->
-    {Authority, PathQueryFragment} =
-        split_uri(URIPart, "[/?#]", {URIPart, ""}, 1, 0),
-    {RawPath, QueryFragment} =
-        split_uri(PathQueryFragment, "[?#]", {PathQueryFragment, ""}, 1, 0),
-    {Query, Fragment} =
-        split_uri(QueryFragment, "#", {QueryFragment, ""}, 1, 0),
-    {UserInfo, HostPort} = split_uri(Authority, "@", {"", Authority}, 1, 1),
-    {Host, Port}         = parse_host_port(Scheme, DefaultPort, HostPort, Opts),
-    Path                 = path(RawPath),
-    case lists:keyfind(fragment, 1, Opts) of
-        {fragment, true} ->
-            {ok, {Scheme, UserInfo, Host, Port, Path, Query, Fragment}};
-        _ ->
-            {ok, {Scheme, UserInfo, Host, Port, Path, Query}}
-    end.
-
-
-%% In this version of the function, we no longer need 
-%% the Scheme argument, but just in case...
-parse_host_port(_Scheme, DefaultPort, "[" ++ HostPort, Opts) -> %ipv6
-    {Host, ColonPort} = split_uri(HostPort, "\\]", {HostPort, ""}, 1, 1),
-    Host2 = maybe_ipv6_host_with_brackets(Host, Opts),
-    {_, Port} = split_uri(ColonPort, ":", {"", DefaultPort}, 0, 1),
-    {Host2, int_port(Port)};
-
-parse_host_port(_Scheme, DefaultPort, HostPort, _Opts) ->
-    {Host, Port} = split_uri(HostPort, ":", {HostPort, DefaultPort}, 1, 1),
-    {Host, int_port(Port)}.
-
-split_uri(UriPart, SplitChar, NoMatchResult, SkipLeft, SkipRight) ->
-    case inets_regexp:first_match(UriPart, SplitChar) of
-	{match, Match, _} ->
-	    {string:substr(UriPart, 1, Match - SkipLeft),
-	     string:substr(UriPart, Match + SkipRight, length(UriPart))};
-	nomatch ->
-	    NoMatchResult
-    end.
-
-maybe_ipv6_host_with_brackets(Host, Opts) ->
-    case lists:keysearch(ipv6_host_with_brackets, 1, Opts) of
-	{value, {ipv6_host_with_brackets, true}} ->
-	    "[" ++ Host ++ "]";
-	_ ->
-	    Host
-    end.
-
-
-int_port(Port) when is_integer(Port) ->
-    Port;
-int_port(Port) when is_list(Port) ->
-    list_to_integer(Port);
-%% This is the case where no port was found and there was no default port
-int_port(no_default_port) ->
-    throw({error, no_default_port}).
-
-path("") ->
-    "/";
-path(Path) ->
-    Path.
-
-uri_encode(Char, Reserved) ->
-    case sets:is_element(Char, Reserved) of
-	true ->
-	    [ $% | http_util:integer_to_hexlist(Char)];
-	false ->
-	    [Char]
-    end.
-
-hex2dec(X) when (X>=$0) andalso (X=<$9) -> X-$0;
-hex2dec(X) when (X>=$A) andalso (X=<$F) -> X-$A+10;
-hex2dec(X) when (X>=$a) andalso (X=<$f) -> X-$a+10.
+> #### Warning {: .warning }
+>
+> Use `uri_string:unquote/1` instead
+""".
+-doc(#{since => <<"OTP R15B01">>}).
+-spec decode(QuotedData) -> Data when
+      QuotedData :: unicode:chardata(),
+      Data :: unicode:chardata().
+decode(QuotedData) ->
+    uri_string:unquote(QuotedData).

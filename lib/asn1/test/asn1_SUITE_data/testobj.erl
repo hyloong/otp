@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2001-2013. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2001-2025. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -427,7 +429,7 @@ run_sm_cmd() ->
 	  {_ProtIEField2,11,_Crit2,DecEI},
 	  {_ProtIEField3,75,_Crit3,DecKS}],
 	 _ASN1novalue} ->
-	    io:format("Integrity Protection Algoritm: ~w~n~n", [DecIPI]),
+	    io:format("Integrity Protection Algorithm: ~w~n~n", [DecIPI]),
 	    io:format("Encryption Information: ~w~n~n", [DecEI]),
 	    io:format("Key Status: ~w~n~n", [DecKS])
     end,
@@ -452,7 +454,7 @@ run_sm_cmp() ->
 	 [{_ProtIEField1,6,_Crit1,DecIPA},
 	  {_ProtIEField2,5,_Crit2,DecEI}],
 	 _ASN1novalue} ->
-	    io:format("Integrity Protection Algoritm: ~w~n~n", [DecIPA]),
+	    io:format("Integrity Protection Algorithm: ~w~n~n", [DecIPA]),
 	    io:format("Encryption Information: ~w~n~n", [DecEI])
     end,
     ok.
@@ -480,7 +482,7 @@ run_sm_rej() ->
 % 	    io:format("Value2: ~w~n~n", [Value2]),
 % 	    {ok,DecIPA} = wrapper_decode(?ranap, 'IntegrityProtectionAlgorithm', Value1),
 % 	    {ok,DecEI} = wrapper_decode(?ranap, 'EncryptionAlgorithm', Value2),
-% 	    io:format("Integrity Protection Algoritm: ~w~n~n", [DecIPA]),
+% 	    io:format("Integrity Protection Algorithm: ~w~n~n", [DecIPA]),
 % 	    io:format("Encryption Information: ~w~n~n", [DecEI])
 %     end,
     ok.
@@ -563,7 +565,7 @@ run_reset() ->
 
 run_reset_res() ->
     IUP = reset_res([12,13,14,15,16,17,18,19,20]),
-    io:format("Reset Rsource: ~w~n~n", [IUP]),
+    io:format("Reset Resource: ~w~n~n", [IUP]),
     RanapIUP = ranap_pdu_contents(IUP, 27),            % 27 = Reset Res
     {ok, Tmp2} = wrapper_encode(?ranap, 'RANAP-PDU', RanapIUP),
     EncRanapIUP = lists:flatten(Tmp2),
@@ -967,7 +969,7 @@ pdu_pdp() ->
      116,101,115,116,  % lable1 = test
      4,                % length lable2
      116,101,115,116,  % lable2 = test
-     4,                % lenght lable3
+     4,                % length lable3
      116,101,115,116,  % lable3 = test
      4,                % length lable3
      116,101,115,116,  % lable4 = test
@@ -1306,7 +1308,7 @@ cause_radio() ->
     {radioNetwork, 'release-due-to-utran-generated-reason'}.
 
 
-cn_domain_ind(IEs) when atom(IEs)->
+cn_domain_ind(IEs) when is_atom(IEs)->
     setelement(1,cn_domain_ind(),IEs).
 
 cn_domain_ind() ->
@@ -1390,7 +1392,7 @@ reset_res_ack(IuSCId) ->
 reset_res_ack_ies(IuSCId) ->
     [
      cn_domain_ind()       % Se initial Ue
-     ,reset_res_list(IuSCId)     % Se Reset Ressource
+     ,reset_res_list(IuSCId)     % Se Reset Resource
     ].
 
 
@@ -1410,16 +1412,14 @@ int2bin(Int) ->
 %%%%%%%%%%%%%%%%% wrappers %%%%%%%%%%%%%%%%%%%%%%%%
 
 wrapper_encode(Module,Type,Value) ->
-    case asn1rt:encode(Module,Type,Value) of
-	{ok,X} when binary(X) ->
+    case Module:encode(Type, Value) of
+	{ok,X} when is_binary(X) ->
 	    {ok, binary_to_list(X)};
-	{ok,X} ->
-	    {ok, binary_to_list(list_to_binary(X))};
 	Error ->
 	    Error
     end.
 
 wrapper_decode(Module, Type, Bytes) when is_binary(Bytes) ->
-    asn1rt:decode(Module, Type, Bytes);
+    Module:decode(Type, Bytes);
 wrapper_decode(Module, Type, Bytes) when is_list(Bytes) ->
-    asn1rt:decode(Module, Type, list_to_binary(Bytes)).
+    Module:decode(Type, list_to_binary(Bytes)).

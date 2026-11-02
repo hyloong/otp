@@ -1,7 +1,9 @@
 /*
  * %CopyrightBegin%
+ *
+ * SPDX-License-Identifier: Apache-2.0
  * 
- * Copyright Ericsson AB 1998-2014. All Rights Reserved.
+ * Copyright Ericsson AB 1998-2025. All Rights Reserved.
  * 
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -24,13 +26,25 @@
 #include "erl_db_util.h" /* DbTerm & DbTableCommon */
 
 typedef struct fixed_deletion {
-    int slot;
+    UWord slot : sizeof(UWord)*8 - 2;
+
+    /* Used by delete_all_objects: */
+    bool all : 1;  /* marks [0 -> slot] */
+    bool trap : 1;
+
     struct fixed_deletion *next;
 } FixedDeletion;
 
+
+typedef Uint32 HashVal;
+
 typedef struct hash_db_term {
     struct  hash_db_term* next;  /* next bucket */
-    HashValue  hvalue;        /* stored hash value */
+    UWord hvalue : sizeof(UWord)*8 - 1;     /* stored hash value */
+    UWord pseudo_deleted : 1;               /* delete marked in fixed table */
+    /* Note: 'pseudo_deleted' could be bool if Windows compiler would
+     * pack it into same word as 'hvalue'. */
+
     DbTerm dbterm;         /* The actual term */
 } HashDbTerm;
 
@@ -40,64 +54,74 @@ typedef struct hash_db_term {
 #define DB_HASH_LOCK_CNT 64
 #endif
 
-typedef struct db_table_hash_fine_locks {
+typedef struct DbTableHashLockAndCounter {
+    erts_atomic_t nitems;
+    Sint lck_stat;
+    erts_rwmtx_t lck;
+} DbTableHashLockAndCounter;
+
+typedef struct db_table_hash_fine_lock_slot {
     union {
-	erts_smp_rwmtx_t lck;
-	byte _cache_line_alignment[ERTS_ALC_CACHE_LINE_ALIGN_SIZE(sizeof(erts_smp_rwmtx_t))];
-    }lck_vec[DB_HASH_LOCK_CNT];
-} DbTableHashFineLocks;
+	DbTableHashLockAndCounter lck_ctr;
+	byte _cache_line_alignment[ERTS_ALC_CACHE_LINE_ALIGN_SIZE(sizeof(DbTableHashLockAndCounter))];
+    } u;
+} DbTableHashFineLockSlot;
 
 typedef struct db_table_hash {
     DbTableCommon common;
+    erts_atomic_t lock_array_resize_state;
+    /* szm, nactive, shrink_limit are write-protected by is_resizing or table write lock */
+    erts_atomic_t szm;     /* current size mask. */
+    erts_atomic_t nactive; /* Number of "active" slots */
+    erts_atomic_t shrink_limit; /* Shrink table when fewer objects than this */
 
-    erts_smp_atomic_t segtab;  /* The segment table (struct segment**) */
-    erts_smp_atomic_t szm;     /* current size mask. */
-    
+    erts_atomic_t segtab;  /* The segment table (struct segment**) */
+    struct segment* first_segtab[1];
+
     /* SMP: nslots and nsegs are protected by is_resizing or table write lock */
-    int nslots;       /* Total number of slots */
-    int nsegs;        /* Size of segment table */
+    UWord nlocks;       /* Needs to be smaller or equal to nactive */
+    UWord nslots;       /* Total number of slots */
+    UWord nsegs;        /* Size of segment table */
 
     /* List of slots where elements have been deleted while table was fixed */
-    erts_smp_atomic_t fixdel;  /* (FixedDeletion*) */	
-    erts_smp_atomic_t nactive; /* Number of "active" slots */
-    erts_smp_atomic_t is_resizing; /* grow/shrink in progress */
-#ifdef ERTS_SMP
-    DbTableHashFineLocks* locks;
-#endif
-#ifdef VALGRIND
-    struct ext_segment* top_ptr_to_segment_with_active_segtab;
-#endif
+    erts_atomic_t fixdel;  /* (FixedDeletion*) */
+    erts_atomic_t is_resizing; /* grow/shrink in progress */
+    DbTableHashFineLockSlot* locks;
 } DbTableHash;
 
+typedef enum {
+    DB_HASH_LOCK_ARRAY_RESIZE_STATUS_NORMAL = 0,
+    DB_HASH_LOCK_ARRAY_RESIZE_STATUS_GROW   = 1,
+    DB_HASH_LOCK_ARRAY_RESIZE_STATUS_SHRINK = 2
+} db_hash_lock_array_resize_state;
 
+/* To adapt number of locks if hash table with {write_concurrency, auto} */
+void db_hash_adapt_number_of_locks(DbTable* tb);
+#define  DB_HASH_ADAPT_NUMBER_OF_LOCKS(TB)                                   \
+    do {                                                                     \
+        if (IS_HASH_WITH_AUTO_TABLE(TB->common.type)                         \
+            && (erts_atomic_read_nob(&tb->hash.lock_array_resize_state)      \
+                != DB_HASH_LOCK_ARRAY_RESIZE_STATUS_NORMAL)) {               \
+            db_hash_adapt_number_of_locks(tb);                               \
+        }                                                                    \
+    }while(0)
 /*
 ** Function prototypes, looks the same (except the suffix) for all 
 ** table types. The process is always an [in out] parameter.
 */
 void db_initialize_hash(void);
-void db_unfix_table_hash(DbTableHash *tb /* [in out] */);
+SWord db_unfix_table_hash(DbTableHash *tb);
 Uint db_kept_items_hash(DbTableHash *tb);
 
 /* Interface for meta pid table */
 int db_create_hash(Process *p, 
 		   DbTable *tbl /* [in out] */);
 
-int db_put_hash(DbTable *tbl, Eterm obj, int key_clash_fail);
+int db_put_hash(DbTable *tbl, Eterm obj, bool key_clash_fail, SWord* consumed_reds_p);
 
 int db_get_hash(Process *p, DbTable *tbl, Eterm key, Eterm *ret);
 
 int db_erase_hash(DbTable *tbl, Eterm key, Eterm *ret);
-
-int db_get_element_array(DbTable *tbl, 
-			 Eterm key,
-			 int ndex, 
-			 Eterm *ret,
-			 int *num_ret); 
-
-int db_erase_bag_exact2(DbTable *tbl, Eterm key, Eterm value);
-
-/* not yet in method table */
-int db_mark_all_deleted_hash(DbTable *tbl);
 
 typedef struct {
     float avg_chain_len;
@@ -105,9 +129,17 @@ typedef struct {
     float std_dev_expected;
     int max_chain_len;
     int min_chain_len;
-    int kept_items;
+    UWord kept_items;
 }DbHashStats;
 
 void db_calc_stats_hash(DbTableHash* tb, DbHashStats*);
+Eterm erts_ets_hash_sizeof_ext_segtab(void);
+void
+erts_db_foreach_thr_prgr_offheap_hash(void (*func)(ErlOffHeap *, void *),
+                                      void *arg);
+
+#ifdef ERTS_ENABLE_LOCK_COUNT
+void erts_lcnt_enable_db_hash_lock_count(DbTableHash *tb, int enable);
+#endif
 
 #endif /* _DB_HASH_H */

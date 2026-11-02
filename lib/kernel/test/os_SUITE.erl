@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 1997-2013. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 1997-2026. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -20,17 +22,35 @@
 -module(os_SUITE).
 
 -export([all/0, suite/0,groups/0,init_per_suite/1, end_per_suite/1,
-	 init_per_group/2,end_per_group/2]).
--export([space_in_cwd/1, quoting/1, cmd_unicode/1, space_in_name/1, bad_command/1,
-	 find_executable/1, unix_comment_in_command/1, deep_list_command/1, evil/1]).
+	 init_per_group/2,end_per_group/2,
+	 init_per_testcase/2,end_per_testcase/2]).
+-export([space_in_cwd/1, quoting/1, cmd_unicode/1, 
+         env/1,
+         null_in_command/1, space_in_name/1, bad_command/1,
+	 find_executable/1, unix_comment_in_command/1, deep_list_command/1,
+         large_output_command/1, background_command/0, background_command/1,
+         message_leak/1, close_stdin/0, close_stdin/1, max_size_command/1,
+         cmd_exception/1, os_cmd_shell/1, os_cmd_shell_peer/1,
+         perf_counter_api/1, error_info/1,
+         os_version/1]).
 
--include_lib("test_server/include/test_server.hrl").
+-include_lib("common_test/include/ct.hrl").
+-include_lib("stdlib/include/assert.hrl").
 
-suite() -> [{ct_hooks,[ts_install_cth]}].
+suite() ->
+    [{ct_hooks,[ts_install_cth]},
+     {timetrap,{minutes,1}}].
 
 all() ->
-    [space_in_cwd, quoting, cmd_unicode, space_in_name, bad_command,
-     find_executable, unix_comment_in_command, deep_list_command, evil].
+    [space_in_cwd, quoting, cmd_unicode, null_in_command,
+     space_in_name, bad_command,
+     env,
+     find_executable, unix_comment_in_command, deep_list_command,
+     large_output_command, background_command, message_leak,
+     close_stdin, max_size_command, perf_counter_api,
+     error_info, os_cmd_shell, os_cmd_shell_peer,
+     cmd_exception,
+     os_version].
 
 groups() ->
     [].
@@ -47,16 +67,40 @@ init_per_group(_GroupName, Config) ->
 end_per_group(_GroupName, Config) ->
     Config.
 
+init_per_testcase(TC, Config)
+  when TC =:= background_command; TC =:= close_stdin ->
+    case os:type() of
+        {win32, _} ->
+            {skip,"Should not work on windows"};
+        _ ->
+            Config
+    end;
+init_per_testcase(_TC,Config) ->
+    Config.
 
-space_in_cwd(doc) ->
-    "Test that executing a command in a current working directory "
-	"with space in its name works.";
-space_in_cwd(suite) -> [];
+end_per_testcase(_,_Config) ->
+    ok.
+
+env(Config) when is_list(Config) ->
+    Env0 = os:env(),
+    GetEnv0 = os:getenv(),
+    lists:foldl(fun({K,V}, [KV | T]) ->
+                        KV = K ++ "=" ++ V,
+                        V = os:getenv(K),
+                        V = os:getenv(K, default),
+                        T
+                end,
+                GetEnv0,
+                Env0),
+    ok.
+
+%% Test that executing a command in a current working directory
+%% with space in its name works.
 space_in_cwd(Config) when is_list(Config) ->
-    ?line PrivDir = ?config(priv_dir, Config),
-    ?line Dirname = filename:join(PrivDir, "cwd with space"),
-    ?line ok = file:make_dir(Dirname),
-    ?line ok = file:set_cwd(Dirname),
+    PrivDir = proplists:get_value(priv_dir, Config),
+    Dirname = filename:join(PrivDir, "cwd with space"),
+    ok = file:make_dir(Dirname),
+    ok = file:set_cwd(Dirname),
 
     %% Using `more' gives the almost the same result on both Unix and Windows.
 
@@ -67,70 +111,74 @@ space_in_cwd(Config) when is_list(Config) ->
 		  "more </dev/null"
 	  end,
 
-    ?line case os:cmd(Cmd) of
-	      [] -> ok;				% Unix.
-	      "\r\n" -> ok;			% Windows.
-	      Other ->
-		  ?line test_server:fail({unexpected, Other})
-	  end,
+    case os:cmd(Cmd) of
+	[] -> ok;				% Unix.
+	"\r\n" -> ok;			% Windows.
+	Other ->
+	    ct:fail({unexpected, Other})
+    end,
 
-    ?t:sleep(5),
-    ?line [] = receive_all(),
+    ct:sleep(5),
+    [] = receive_all(),
     ok.
 
-quoting(doc) -> "Test that various ways of quoting arguments work.";
-quoting(suite) -> [];
+%% Test that various ways of quoting arguments work.
 quoting(Config) when is_list(Config) ->
-    ?line DataDir = ?config(data_dir, Config),
-    ?line Echo = filename:join(DataDir, "my_echo"),
+    DataDir = proplists:get_value(data_dir, Config),
+    Echo = filename:join(DataDir, "my_echo"),
 
-    ?line comp("one", os:cmd(Echo ++ " one")),
-    ?line comp("one::two", os:cmd(Echo ++ " one two")),
-    ?line comp("one two", os:cmd(Echo ++ " \"one two\"")),
-    ?line comp("x::one two::y", os:cmd(Echo ++ " x \"one two\" y")),
-    ?line comp("x::one two", os:cmd(Echo ++ " x \"one two\"")),
-    ?line comp("one two::y", os:cmd(Echo ++ " \"one two\" y")),
-    ?line comp("x::::y", os:cmd(Echo ++ " x \"\" y")),
-    ?t:sleep(5),
-    ?line [] = receive_all(),
+    comp("one", os:cmd(Echo ++ " one")),
+    comp("one::two", os:cmd(Echo ++ " one two")),
+    comp("one two", os:cmd(Echo ++ " \"one two\"")),
+    comp("x::one two::y", os:cmd(Echo ++ " x \"one two\" y")),
+    comp("x::one two", os:cmd(Echo ++ " x \"one two\"")),
+    comp("one two::y", os:cmd(Echo ++ " \"one two\" y")),
+    comp("x::::y", os:cmd(Echo ++ " x \"\" y")),
+    ct:sleep(5),
+    [] = receive_all(),
     ok.
 
 
-cmd_unicode(doc) -> "Test that unicode arguments work.";
-cmd_unicode(suite) -> [];
+%% Test that unicode arguments work.
 cmd_unicode(Config) when is_list(Config) ->
-    ?line DataDir = ?config(data_dir, Config),
-    ?line Echo = filename:join(DataDir, "my_echo"),
+    DataDir = proplists:get_value(data_dir, Config),
+    Echo = filename:join(DataDir, "my_echo"),
 
-    ?line comp("one", os:cmd(Echo ++ " one")),
-    ?line comp("one::two", os:cmd(Echo ++ " one two")),
-    ?line comp("åäö::ϼΩ", os:cmd(Echo ++ " åäö " ++ [1020, 937])),
-    ?t:sleep(5),
-    ?line [] = receive_all(),
+    comp("one", os:cmd(Echo ++ " one")),
+    comp("one::two", os:cmd(Echo ++ " one two")),
+    comp("åäö::ϼΩ", os:cmd(Echo ++ " åäö " ++ [1020, 937])),
+    ct:sleep(5),
+    [] = receive_all(),
     ok.
 
+null_in_command(_Config) ->
+    {Ok, Error} = case os:type() of
+                      {win32,_} -> {"dir", "di\0r"};
+                      _ -> {"ls", "l\0s"}
+                  end,
+    true = is_list(try os:cmd(Ok) catch Class0:_ -> Class0 end),
+    error = try os:cmd(Error) catch Class1:_ -> Class1 end,
+    ok.
 
-space_in_name(doc) ->
-    "Test that program with a space in its name can be executed.";
-space_in_name(suite) -> [];
+%% Test that program with a space in its name can be executed.
 space_in_name(Config) when is_list(Config) ->
-    ?line PrivDir = ?config(priv_dir, Config),
-    ?line DataDir = ?config(data_dir, Config),
-    ?line Spacedir = filename:join(PrivDir, "program files"),
+    PrivDir = proplists:get_value(priv_dir, Config),
+    DataDir = proplists:get_value(data_dir, Config),
+    Spacedir = filename:join(PrivDir, "program files"),
     Ext = case os:type() of
 	      {win32,_} -> ".exe";
 	      _ -> ""
 	  end,
-    ?line OrigEcho = filename:join(DataDir, "my_echo" ++ Ext),
-    ?line Echo0 = filename:join(Spacedir, "my_echo" ++ Ext),
+    OrigEcho = filename:join(DataDir, "my_echo" ++ Ext),
+    Echo0 = filename:join(Spacedir, "my_echo" ++ Ext),
 
     %% Copy the `my_echo' program to a directory whose name contains a space.
 
-    ?line ok = file:make_dir(Spacedir),
-    ?line {ok, Bin} = file:read_file(OrigEcho),
-    ?line ok = file:write_file(Echo0, Bin),
-    ?line Echo = filename:nativename(Echo0),
-    ?line ok = file:change_mode(Echo, 8#777),	% Make it executable on Unix.
+    ok = file:make_dir(Spacedir),
+    {ok, Bin} = file:read_file(OrigEcho),
+    ok = file:write_file(Echo0, Bin),
+    Echo = filename:nativename(Echo0),
+    ok = file:change_mode(Echo, 8#777),	% Make it executable on Unix.
 
     %% Run the echo program.
     %% Quoting on windows depends on if the full path of the executable
@@ -146,78 +194,103 @@ space_in_name(Config) when is_list(Config) ->
 		_ ->
 		    "\""
 	    end,
-    ?line comp("", os:cmd(Quote ++ Echo ++ Quote)),
-    ?line comp("a::b::c", os:cmd(Quote ++ Echo ++ Quote ++ " a b c")),
-    ?t:sleep(5),
-    ?line [] = receive_all(),
+    comp("", os:cmd(Quote ++ Echo ++ Quote)),
+    comp("a::b::c", os:cmd(Quote ++ Echo ++ Quote ++ " a b c")),
+    ct:sleep(5),
+    [] = receive_all(),
     ok.
 
-bad_command(doc) ->
-    "Check that a bad command doesn't crasch the server or the emulator (it used to).";
-bad_command(suite) -> [];
+%% Check that a bad command doesn't crash the server or the emulator (it used to).
 bad_command(Config) when is_list(Config) ->
-    ?line catch os:cmd([a|b]),
-    ?line catch os:cmd({bad, thing}),
+    ok = ?assertError(badarg, os:cmd([a|b])),
+    ok = ?assertError(badarg, os:cmd({bad, thing})),
 
     %% This should at least not crash (on Unix it typically returns
     %% a message from the shell).
-    ?line os:cmd("xxxxx"),
+    os:cmd("xxxxx"),
 
     ok.
 
-find_executable(suite) -> [];
-find_executable(doc) -> [];
+cmd_exception(Config) when is_list(Config) ->
+
+    {Osfamily, Ostype} = os:type(),
+
+    %% command failed
+    {Res, 3} = cmd_exception_test("echo abc && exit 3"),
+    Osfamily =:= unix andalso ?assertEqual("abc\n", Res),
+    Osfamily =:= win32 andalso ?assertEqual("abc \r\n", Res),
+
+    %% Syntax error
+    {_, ExitCode} = cmd_exception_test("{)"),
+    Osfamily =:= unix andalso Ostype =/= sunos andalso ?assertEqual(2, ExitCode),
+    Osfamily =:= unix andalso Ostype =:= sunos andalso ?assertEqual(3, ExitCode),
+    Osfamily =:= win32 andalso ?assertEqual(1, ExitCode),
+
+    ok.
+
+cmd_exception_test(Cmd) ->
+    Out = os:cmd(Cmd), %% Check that no exception is generated when the option is not given
+    try
+        os:cmd(Cmd, #{ exception_on_failure => true}),
+        ct:fail("Should not succeed")
+    catch error:{command_failed, ErrorOut, Reason} ->
+            %% Check that the output is the same
+            ?assertEqual(Out, ErrorOut),
+            {ErrorOut, Reason}
+    end.
+
+
 find_executable(Config) when is_list(Config) ->
     case os:type() of
 	{win32, _} ->
-	    ?line DataDir = filename:join(?config(data_dir, Config), "win32"),
-	    ?line ok = file:set_cwd(filename:join([DataDir, "current"])),
-	    ?line Bin = filename:join(DataDir, "bin"),
-	    ?line Abin = filename:join(DataDir, "abin"),
-	    ?line UsrBin = filename:join([DataDir, "usr", "bin"]),
-	    ?line {ok, Current} = file:get_cwd(),
+	    DataDir = filename:join(proplists:get_value(data_dir, Config), "win32"),
+	    ok = file:set_cwd(filename:join([DataDir, "current"])),
+	    Bin = filename:join(DataDir, "bin"),
+	    Abin = filename:join(DataDir, "abin"),
+	    UsrBin = filename:join([DataDir, "usr", "bin"]),
+	    {ok, Current} = file:get_cwd(),
 
-	    ?line Path = lists:concat([Bin, ";", Abin, ";", UsrBin]),
-	    ?line io:format("Path = ~s", [Path]),
+	    Path = lists:concat([Bin, ";", Abin, ";", UsrBin]),
+	    io:format("Path = ~s", [Path]),
 
 	    %% Search for programs in Bin (second element in PATH).
-	    ?line find_exe(Abin, "my_ar", ".exe", Path),
-	    ?line find_exe(Abin, "my_ascii", ".com", Path),
-	    ?line find_exe(Abin, "my_adb", ".bat", Path),
+	    find_exe(Abin, "my_ar", ".exe", Path),
+	    find_exe(Abin, "my_ascii", ".com", Path),
+	    find_exe(Abin, "my_adb", ".bat", Path),
 	    %% OTP-3626 find names of executables given with extension
-	    ?line find_exe(Abin, "my_ar.exe", "", Path),
-	    ?line find_exe(Abin, "my_ascii.com", "", Path),
-	    ?line find_exe(Abin, "my_adb.bat", "", Path),
-	    ?line find_exe(Abin, "my_ar.EXE", "", Path),
-	    ?line find_exe(Abin, "my_ascii.COM", "", Path),
-	    ?line find_exe(Abin, "MY_ADB.BAT", "", Path),
+	    find_exe(Abin, "my_ar.exe", "", Path),
+	    find_exe(Abin, "my_ascii.com", "", Path),
+	    find_exe(Abin, "my_adb.bat", "", Path),
+	    find_exe(Abin, "my_ar.EXE", "", Path),
+	    find_exe(Abin, "my_ascii.COM", "", Path),
+	    find_exe(Abin, "MY_ADB.BAT", "", Path),
 
 	    %% Search for programs in Abin (second element in PATH).
-	    ?line find_exe(Abin, "my_ar", ".exe", Path),
-	    ?line find_exe(Abin, "my_ascii", ".com", Path),
-	    ?line find_exe(Abin, "my_adb", ".bat", Path),
+	    find_exe(Abin, "my_ar", ".exe", Path),
+	    find_exe(Abin, "my_ascii", ".com", Path),
+	    find_exe(Abin, "my_adb", ".bat", Path),
 
 	    %% Search for programs in the current working directory.
-	    ?line find_exe(Current, "my_program", ".exe", Path),
-	    ?line find_exe(Current, "my_command", ".com", Path),
-	    ?line find_exe(Current, "my_batch", ".bat", Path),
+	    find_exe(Current, "my_program", ".exe", Path),
+	    find_exe(Current, "my_command", ".com", Path),
+	    find_exe(Current, "my_batch", ".bat", Path),
 	    ok;
 	{unix, _}  ->
-	    DataDir = ?config(data_dir, Config),
+	    DataDir = proplists:get_value(data_dir, Config),
 
 	    %% Smoke test.
-	    case lib:progname() of
-		erl ->
-		    ?line ErlPath = os:find_executable("erl"),
-		    ?line true = is_list(ErlPath),
-		    ?line true = filelib:is_regular(ErlPath);
+	    case ct:get_progname() of
+		"erl" ->
+		    ErlPath = os:find_executable("erl"),
+		    true = is_list(ErlPath),
+		    true = filelib:is_regular(ErlPath);
 		_ ->
 		    %% Don't bother -- the progname could include options.
 		    ok
 	    end,
 
 	    %% Never return a directory name.
-	    ?line false = os:find_executable("unix", [DataDir]),
+	    false = os:find_executable("unix", [DataDir]),
 	    ok
     end.
 
@@ -233,29 +306,23 @@ find_exe(Where, Name, Ext, Path) ->
 		Other ->
 		    io:format("Expected ~p; got (converted to absolute) ~p",
 			      [Expected, Other]),
-		    test_server:fail()
+		    ct:fail(failed)
 	    end;
 	Other ->
 	    io:format("Expected ~p; got ~p", [Expected, Other]),
-	    test_server:fail()
+	    ct:fail(failed)
     end.
 
-unix_comment_in_command(doc) ->
-    "OTP-1805: Test that os:cmd(\"ls #\") works correctly (used to hang).";
-unix_comment_in_command(suite) -> [];
+%% OTP-1805: Test that os:cmd(\ls #\) works correctly (used to hang).
 unix_comment_in_command(Config) when is_list(Config) ->
-    ?line Dog = test_server:timetrap(test_server:seconds(20)),
-    ?line Priv = ?config(priv_dir, Config),
-    ?line ok = file:set_cwd(Priv),
-    ?line _ = os:cmd("ls #"),			% Any result is ok.
-    ?t:sleep(5),
-    ?line [] = receive_all(),
-    ?line test_server:timetrap_cancel(Dog),
+    Priv = proplists:get_value(priv_dir, Config),
+    ok = file:set_cwd(Priv),
+    _ = os:cmd("ls #"),			% Any result is ok.
+    ct:sleep(5),
+    [] = receive_all(),
     ok.
 
-deep_list_command(doc) ->
-    "Check that a deep list in command works equally on unix and on windows.";
-deep_list_command(suite) -> [];
+%% Check that a deep list in command works equally on unix and on windows.
 deep_list_command(Config) when is_list(Config) ->
     %% As a 'io_lib' module description says: "There is no guarantee that the
     %% character lists returned from some of the functions are flat, they can
@@ -267,50 +334,215 @@ deep_list_command(Config) when is_list(Config) ->
     %% FYI: [$e, $c, "ho"] =:= io_lib:format("ec~s", ["ho"])
     ok.
 
+%% Test to make sure that the correct data is
+%% received when doing large commands.
+large_output_command(Config) when is_list(Config) ->
+    %% Maximum allowed on windows is 8192, so we test well below that
+    AAA = lists:duplicate(7000, $a),
+    comp(AAA,os:cmd("echo " ++ AAA)).
 
--define(EVIL_PROCS, 100).
--define(EVIL_LOOPS, 100).
--define(PORT_CREATOR, os_cmd_port_creator).
-evil(Config) when is_list(Config) ->
-    Dog = test_server:timetrap(test_server:minutes(5)),
-    Parent = self(),
-    Ps = lists:map(fun (N) ->
-			   spawn_link(fun () ->
-					      evil_loop(Parent, ?EVIL_LOOPS,N)
-				      end)
-		   end, lists:seq(1, ?EVIL_PROCS)),
-    Devil = spawn_link(fun () -> devil(hd(Ps), hd(lists:reverse(Ps))) end),
-    lists:foreach(fun (P) -> receive {P, done} -> ok end end, Ps),
-    unlink(Devil),
-    exit(Devil, kill),
-    test_server:timetrap_cancel(Dog),
-    ok.
+%% Test that it is possible on unix to start a background task using os:cmd.
+background_command() ->
+    [{timetrap, {seconds, 5}}].
+background_command(_Config) ->
+    %% This testcase fails when the os:cmd takes
+    %% longer then the 5 second timeout
+    os:cmd("sleep 10&").
 
-devil(P1, P2) ->
-    erlang:display({?PORT_CREATOR, whereis(?PORT_CREATOR)}),
-    (catch ?PORT_CREATOR ! lists:seq(1,1000000)),
-    (catch ?PORT_CREATOR ! lists:seq(1,666)),
-    (catch ?PORT_CREATOR ! grrrrrrrrrrrrrrrr),
-    (catch ?PORT_CREATOR ! {'EXIT', P1, buhuuu}),
-    (catch ?PORT_CREATOR ! {'EXIT', hd(erlang:ports()), buhuuu}),
-    (catch ?PORT_CREATOR ! {'EXIT', P2, arggggggg}),
-    receive after 500 -> ok end,
-    (catch exit(whereis(?PORT_CREATOR), kill)),
-    (catch ?PORT_CREATOR ! ">8|"),
-    receive after 500 -> ok end,
-    (catch exit(whereis(?PORT_CREATOR), diiiiiiiiiiiiiiiiiiiie)),
-    receive after 100 -> ok end,
-    devil(P1, P2).
+%% Test that message does not leak to the calling process
+message_leak(_Config) ->
+    process_flag(trap_exit, true),
 
-evil_loop(Parent, Loops, N) ->
-    Res = integer_to_list(N),
-    evil_loop(Parent, Loops, Res, "echo " ++ Res).
+    os:cmd("echo hello"),
+    [] = receive_all(),
 
-evil_loop(Parent, 0, _Res, _Cmd) ->
-    Parent ! {self(), done};
-evil_loop(Parent, Loops, Res, Cmd) ->
-    comp(Res, os:cmd(Cmd)),
-    evil_loop(Parent, Loops-1, Res, Cmd).
+    case os:type() of
+        {unix, _} ->
+            os:cmd("for i in $(seq 1 100); do echo hello; done&"),
+            [] = receive_all();
+        _ ->
+            ok % Cannot background on non-unix
+    end,
+
+    process_flag(trap_exit, false).
+
+%% Test that os:cmd closes stdin of the program that is executed
+close_stdin() ->
+    [{timetrap, {seconds, 5}}].
+close_stdin(Config) ->
+    DataDir = proplists:get_value(data_dir, Config),
+    Fds = filename:join(DataDir, "my_fds"),
+
+    "0" = os:cmd(Fds).
+
+max_size_command(_Config) ->
+    WSL = case os:getenv("WSLENV") of
+              false -> "";
+              _ -> "wsl "
+          end,
+
+    Res20 = os:cmd(WSL ++ "cat /dev/zero", #{ max_size => 20 }),
+    20 = length(Res20),
+
+    Res0 = os:cmd(WSL ++ "cat /dev/zero", #{ max_size => 0 }),
+    0 = length(Res0),
+
+    Res32768 = os:cmd(WSL ++ "cat /dev/zero", #{ max_size => 32768 }),
+    32768 = length(Res32768),
+
+    ResHello = string:trim(os:cmd("echo hello", #{ max_size => 20 })),
+    5 = length(ResHello).
+
+%% Test that the os:perf_counter api works as expected
+perf_counter_api(_Config) ->
+
+    true = is_integer(os:perf_counter()),
+    true = os:perf_counter() > 0,
+
+    Conv = fun(T1, T2) ->
+                   erlang:convert_time_unit(T2 - T1, perf_counter, nanosecond)
+           end,
+
+    do_perf_counter_test([], Conv, 120000000, 80000000),
+    do_perf_counter_test([1000], fun(T1, T2) -> T2 - T1 end, 120, 80).
+
+do_perf_counter_test(CntArgs, Conv, Upper, Lower) ->
+    %% We run the test multiple times to try to get a somewhat
+    %% stable value... what does this test? That the
+    %% calculate_perf_counter_unit in sys_time.c works somewhat ok.
+    do_perf_counter_test(CntArgs, Conv, Upper, Lower, 10).
+
+do_perf_counter_test(CntArgs, _Conv, Upper, Lower, 0) ->
+    ct:fail("perf_counter_test ~p ~p ~p",[CntArgs, Upper, Lower]);
+do_perf_counter_test(CntArgs, Conv, Upper, Lower, Iters) ->
+
+    T1 = apply(os, perf_counter, CntArgs),
+    timer:sleep(100),
+    T2 = apply(os, perf_counter, CntArgs),
+    TsDiff = Conv(T1, T2),
+    ct:log("T1: ~p~n"
+           "T2: ~p~n"
+           "TsDiff: ~p~n",
+           [T1,T2,TsDiff]),
+
+    if
+        TsDiff < Upper, TsDiff > Lower ->
+            ok;
+        true ->
+            do_perf_counter_test(CntArgs, Conv, Upper, Lower, Iters-1)
+    end.
+
+error_info(Config) ->
+
+
+    ExhaustFDs =
+        fun(M,F,A) ->
+                case no_limit_for_opened_files() of
+                    false ->
+                        {ok, Peer, Node} = ?CT_PEER(),
+                        FN = filename:join(
+                               proplists:get_value(priv_dir, Config),
+                               "error_info"),
+                        try
+                            erpc:call(
+                              Node,
+                              fun() ->
+                                      io:format("Starting to open files..."),
+                                      (fun FDs(N) ->
+                                               case file:open(FN, [write]) of
+                                                   {ok, _ } -> FDs(N+1);
+                                                   {error, _} ->
+                                                       io:format("Opened ~p files",[N])
+                                               end
+                                       end)(0),
+                                      apply(M,F,A)
+                              end)
+                        catch error:{exception, ErrorReason, StackTrace} ->
+                                erlang:raise(error, ErrorReason, StackTrace)
+                        after
+                            peer:stop(Peer)
+                        end;
+                    true ->
+                        apply(M,F,A)
+                end
+        end,
+
+    L = [{cmd, [{no, string}]},
+         {cmd, [["echo 1",0,0,0,1]]},
+         {cmd, [{no, string}, #{}]},
+         {cmd, [{no, string}, no_map]},
+         {cmd, ["echo 1"], [{general, "too many open files \\(emfile\\)"},
+                            {wrapper, ExhaustFDs}] ++
+              [no_fail || no_limit_for_opened_files()]},
+
+         {find_executable, 1},                  %Not a BIF.
+         {find_executable, 2},                  %Not a BIF.
+
+         {getenv, [a]},
+         {getenv, [[<<"bin">>]]},
+         {getenv, [[-1]]},
+         {getenv, [[999999999999999]]},
+         {getenv, [["abc"|improper_tail]]},
+         {getenv, ["abc="]},
+         {getenv, ["abc\0xyz"]},
+
+         {getenv,[a, default]},
+
+         {perf_counter,[bad_time_unit]},
+
+         {putenv, [<<"bad_key">>, <<"bad_value">>],[{1,".*"},{2,".*"}]},
+         {putenv, ["key", <<"bad_value">>]},
+         {putenv, [<<"bad_key">>, "value"]},
+         {putenv, ["abc=", "xyz"]},
+
+         {set_signal, [{bad,signal}, ignore]},
+         {set_signal, [{bad,signal}, ignore]},
+         {set_signal, [bad_signal, bad_handling]},
+         {set_signal, [{bad,signal}, bad_handling],[{1,".*"},{2,".*"}]},
+
+         {system_time, [bad_time_unit]},
+         {unsetenv, [{bad,key}]}
+        ],
+    error_info_lib:test_error_info(os, L).
+
+%% Check that is *not* possible to change shell after startup
+os_cmd_shell(_Config) ->
+
+    application:set_env(kernel, os_cmd_shell, "broken shell"),
+
+    %% os:cmd should continue to work as normal
+    comp("hello", os:cmd("echo hello")).
+
+%% When started with os_cmd_shell set, we make sure that it is used.
+os_cmd_shell_peer(Config) ->
+    DataDir = proplists:get_value(data_dir, Config),
+    SysShell = "\"" ++ filename:join(DataDir, "sys_shell") ++ "\"",
+    {ok, Peer, Node} = ?CT_PEER(["-kernel","os_cmd_shell", SysShell]),
+    try erpc:call(Node, os, cmd, ["ls"], rtnode:timeout(normal)) of
+        "sys_shell" -> ok;
+        Other -> ct:fail({unexpected, Other})
+    catch
+        C:R:Stk ->
+            io:format("~p\n~p\n~p\n", [C,R,Stk]),
+            ct:fail(failed)
+    after
+        peer:stop(Peer)
+    end.
+
+no_limit_for_opened_files() ->
+    case os:type() of
+        {unix, freebsd} ->
+            %% At least some FreeBSD systems support about one million open
+            %% files, which means that we run out of Erlang processes before we
+            %% reach the open file limit.
+            true;
+        {unix, _} ->
+            false;
+        _ ->
+            true
+    end.
+
+%% Util functions
 
 comp(Expected, Got) ->
     case strip_nl(Got) of
@@ -319,10 +551,10 @@ comp(Expected, Got) ->
 	Other ->
 	    ok = io:format("Expected: ~ts\n", [Expected]),
 	    ok = io:format("Got:      ~ts\n", [Other]),
-	    test_server:fail()
+	    ct:fail(failed)
     end.
 
-%% Like lib:nonl/1, but strips \r as well as \n.
+%% strips \n and \r\n from end of string
 
 strip_nl([$\r, $\n]) -> [];
 strip_nl([$\n])      -> [];
@@ -333,4 +565,38 @@ receive_all() ->
     receive
 	X -> [X|receive_all()]
     after 0 -> []
+    end.
+
+
+get_windows_version_from_cmd() ->
+    VerOutput = os:cmd("ver"),
+    %% Expected format: "Microsoft Windows [Version 10.0.19045.1234]" or similar
+    case re:run(VerOutput, "(\\d+)\\.(\\d+)\\.(\\d+)",
+        [{capture, all_but_first, list}]) of
+        {match, [Major, Minor, Build]} ->
+            {list_to_integer(Major), list_to_integer(Minor), list_to_integer(Build)};
+        nomatch ->
+            {0, 0, 0}
+    end.
+
+%% On Windows, make sure that appropriate Windows version is returned
+%% Example versions:
+%%   {5,0,_}=Windows 2000, {6,0,_}=Vista, {6,1,_}=Windows 7, {6,2,_}=Windows 8 and Server 2012,
+%%   {10,0,_}=Windows 10 and 11, Server 2016, 2019, 2022
+os_version_win32() ->
+    V = os:version(),
+    CmdV = get_windows_version_from_cmd(),
+
+    %% Verify that command line version matches os:version()
+    ct:log("os:version() returned: ~p~n", [V]),
+    ct:log("Command line version: ~p~n", [CmdV]),
+
+    %% This test will fail if Windows manifest.xml does not include the Windows OS where the test is run.
+    %% If a new version has been released, please update erts/etc/win32/manifest.xml
+    ?assertEqual(V, CmdV, "Windows versions from os:version and from 'ver' command are expected to match").
+
+os_version(_Config) ->
+    case os:type() of
+        {win32, nt} -> os_version_win32();
+        _ -> ok
     end.

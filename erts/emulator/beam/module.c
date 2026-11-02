@@ -1,7 +1,9 @@
 /*
  * %CopyrightBegin%
  *
- * Copyright Ericsson AB 1996-2013. All Rights Reserved.
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Copyright Ericsson AB 1996-2025. All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -26,6 +28,11 @@
 #include "erl_vm.h"
 #include "global.h"
 #include "module.h"
+#include "beam_catches.h"
+
+#ifdef BEAMASM
+#  include "beam_asm.h"
+#endif
 
 #ifdef DEBUG
 #  define IF_DEBUG(x) x
@@ -36,11 +43,13 @@
 #define MODULE_SIZE   50
 #define MODULE_LIMIT  (64*1024)
 
+static int module_limit = MODULE_LIMIT;
+
 static IndexTable module_tables[ERTS_NUM_CODE_IX];
 
-erts_smp_rwmtx_t the_old_code_rwlocks[ERTS_NUM_CODE_IX];
+erts_rwmtx_t the_old_code_rwlocks[ERTS_NUM_CODE_IX];
 
-static erts_smp_atomic_t tot_module_bytes;
+static erts_atomic_t tot_module_bytes;
 
 /* SMP note: Active module table lookup and current module instance can be
  *           read without any locks. Old module instances are protected by
@@ -48,9 +57,7 @@ static erts_smp_atomic_t tot_module_bytes;
  *           Staging table is protected by the "code_ix lock". 
  */
 
-#include "erl_smp.h"
-
-void module_info(int to, void *to_arg)
+void module_info(fmtfn_t to, void *to_arg)
 {
     index_info(to, to_arg, &module_tables[erts_active_code_ix()]);
 }
@@ -67,53 +74,66 @@ static int module_cmp(Module* tmpl, Module* obj)
     return tmpl->module != obj->module;
 }
 
+void erts_module_instance_init(struct erl_module_instance* modi)
+{
+    modi->code_hdr = 0;
+    modi->code_length = 0;
+    modi->catches = BEAM_CATCHES_NIL;
+    modi->nif = NULL;
+    modi->num_breakpoints = 0;
+    modi->num_traced_exports = 0;
+    modi->unsealed = 0;
+}
 
 static Module* module_alloc(Module* tmpl)
 {
     Module* obj = (Module*) erts_alloc(ERTS_ALC_T_MODULE, sizeof(Module));
-    erts_smp_atomic_add_nob(&tot_module_bytes, sizeof(Module));
+    erts_atomic_add_nob(&tot_module_bytes, sizeof(Module));
 
     obj->module = tmpl->module;
-    obj->curr.code = 0;
-    obj->old.code = 0;
-    obj->curr.code_length = 0;
-    obj->old.code_length = 0;
     obj->slot.index = -1;
-    obj->curr.nif = NULL;
-    obj->old.nif = NULL;
-    obj->curr.num_breakpoints = 0;
-    obj->old.num_breakpoints  = 0;
-    obj->curr.num_traced_exports = 0;
-    obj->old.num_traced_exports = 0;
+    erts_module_instance_init(&obj->curr);
+    erts_module_instance_init(&obj->old);
+    obj->on_load = 0;
+    DBG_TRACE_MFA(make_atom(obj->module), 0, 0, "module_alloc");
     return obj;
 }
 
 static void module_free(Module* mod)
 {
     erts_free(ERTS_ALC_T_MODULE, mod);
-    erts_smp_atomic_add_nob(&tot_module_bytes, -sizeof(Module));
+    erts_atomic_add_nob(&tot_module_bytes, -sizeof(Module));
 }
 
-void init_module_table(void)
+void init_module_table(int limit)
 {
     HashFunctions f;
     int i;
+
+    if (limit > 0) {
+        module_limit = limit;
+    }
 
     f.hash = (H_FUN) module_hash;
     f.cmp  = (HCMP_FUN) module_cmp;
     f.alloc = (HALLOC_FUN) module_alloc;
     f.free = (HFREE_FUN) module_free;
+    f.meta_alloc = (HMALLOC_FUN) erts_alloc;
+    f.meta_free = (HMFREE_FUN) erts_free;
+    f.meta_print = (HMPRINT_FUN) erts_print;
 
     for (i = 0; i < ERTS_NUM_CODE_IX; i++) {
-	erts_index_init(ERTS_ALC_T_MODULE_TABLE, &module_tables[i], "module_code",
-			MODULE_SIZE, MODULE_LIMIT, f);
+        erts_index_init(ERTS_ALC_T_MODULE_TABLE, &module_tables[i], "module_code",
+            MODULE_SIZE, module_limit, f);
     }
 
     for (i=0; i<ERTS_NUM_CODE_IX; i++) {
-	erts_smp_rwmtx_init_x(&the_old_code_rwlocks[i], "old_code", make_small(i));
+        erts_rwmtx_init(&the_old_code_rwlocks[i], "old_code", make_small(i),
+            ERTS_LOCK_FLAGS_PROPERTY_STATIC | ERTS_LOCK_FLAGS_CATEGORY_GENERIC);
     }
-    erts_smp_atomic_init_nob(&tot_module_bytes, 0);
+    erts_atomic_init_nob(&tot_module_bytes, 0);
 }
+
 
 Module*
 erts_get_module(Eterm mod, ErtsCodeIndex code_ix)
@@ -123,6 +143,7 @@ erts_get_module(Eterm mod, ErtsCodeIndex code_ix)
     IndexTable* mod_tab;
 
     ASSERT(is_atom(mod));
+    ERTS_LC_ASSERT(erts_get_scheduler_id() > 0 || erts_thr_progress_lc_is_delaying());
 
     mod_tab = &module_tables[code_ix];
 
@@ -135,25 +156,100 @@ erts_get_module(Eterm mod, ErtsCodeIndex code_ix)
     }
 }
 
-Module*
-erts_put_module(Eterm mod)
+
+static Module* put_module(Eterm mod, IndexTable* mod_tab)
 {
     Module e;
-    IndexTable* mod_tab;
     int oldsz, newsz;
     Module* res;
 
     ASSERT(is_atom(mod));
-    ERTS_SMP_LC_ASSERT(erts_initialized == 0
-		       || erts_has_code_write_permission());
-
-    mod_tab = &module_tables[erts_staging_code_ix()];
     e.module = atom_val(mod);
     oldsz = index_table_sz(mod_tab);
     res = (Module*) index_put_entry(mod_tab, (void*) &e);
     newsz = index_table_sz(mod_tab);
-    erts_smp_atomic_add_nob(&tot_module_bytes, (newsz - oldsz));
+    erts_atomic_add_nob(&tot_module_bytes, (newsz - oldsz));
     return res;
+}
+
+Module*
+erts_put_module(Eterm mod)
+{
+    ERTS_LC_ASSERT(erts_initialized == 0 || erts_has_code_load_permission());
+
+    return put_module(mod, &module_tables[erts_staging_code_ix()]);
+}
+
+void *erts_writable_code_ptr(struct erl_module_instance *modi,
+                             const void *ptr)
+{
+    const char *code_start, *code_end, *ptr_raw;
+
+    ASSERT(modi->unsealed);
+
+    code_start = (char*)modi->code_hdr;
+    code_end = code_start + modi->code_length;
+    ptr_raw = (const char*)ptr;
+
+    (void)code_end;
+    (void)ptr_raw;
+
+    ASSERT(ptr_raw >= code_start && ptr_raw < code_end);
+
+    {
+        const char *exec_mod_start;
+        char *rw_mod_start;
+
+        exec_mod_start = (const char*)modi->executable_region;
+        rw_mod_start = (char*)modi->writable_region;
+
+        ASSERT(code_start >= exec_mod_start);
+
+        return (void*)(rw_mod_start + (ptr_raw - exec_mod_start));
+    }
+}
+
+#ifdef DEBUG
+/* Protected by code mod permission. */
+static struct erl_module_instance *unsealed_module = NULL;
+#endif
+
+void erts_unseal_module(struct erl_module_instance *modi) {
+    ERTS_LC_ASSERT(erts_initialized == 0 ||
+                   erts_thr_progress_is_blocking() ||
+                   erts_has_code_mod_permission());
+    ASSERT(unsealed_module == NULL && !modi->unsealed);
+
+#ifdef BEAMASM
+    beamasm_unseal_module(modi->executable_region,
+                          modi->writable_region,
+                          modi->code_length);
+#endif
+
+#ifdef DEBUG
+    unsealed_module = modi;
+#endif
+    modi->unsealed = 1;
+}
+
+void erts_seal_module(struct erl_module_instance *modi)
+{
+    ERTS_LC_ASSERT(erts_initialized == 0 ||
+                   erts_thr_progress_is_blocking() ||
+                   erts_has_code_mod_permission());
+    ASSERT(unsealed_module == modi && modi->unsealed == 1);
+
+#ifdef BEAMASM
+    beamasm_flush_icache(modi->executable_region, modi->code_length);
+    beamasm_seal_module(modi->executable_region,
+                        modi->writable_region,
+                        modi->code_length);
+#endif
+
+#ifdef DEBUG
+    unsealed_module = NULL;
+#endif
+    modi->unsealed = 0;
 }
 
 Module *module_code(int i, ErtsCodeIndex code_ix)
@@ -166,9 +262,14 @@ int module_code_size(ErtsCodeIndex code_ix)
     return module_tables[code_ix].entries;
 }
 
+int erts_module_table_limit(void)
+{
+    return module_tables[erts_active_code_ix()].limit;
+}
+
 int module_table_sz(void)
 {
-    return erts_smp_atomic_read_nob(&tot_module_bytes);
+    return erts_atomic_read_nob(&tot_module_bytes);
 }
 
 #ifdef DEBUG
@@ -176,6 +277,13 @@ static ErtsCodeIndex dbg_load_code_ix = 0;
 #endif
 
 static int entries_at_start_staging = 0;
+
+static ERTS_INLINE void copy_module(Module* dst_mod, Module* src_mod)
+{
+    dst_mod->curr = src_mod->curr;
+    dst_mod->old = src_mod->old;
+    dst_mod->on_load = src_mod->on_load;
+}
 
 void module_start_staging(void)
 {
@@ -195,9 +303,7 @@ void module_start_staging(void)
 	src_mod = (Module*) erts_index_lookup(src, i);
 	dst_mod = (Module*) erts_index_lookup(dst, i);
 	ASSERT(src_mod->module == dst_mod->module);
-
-	dst_mod->curr = src_mod->curr;
-	dst_mod->old = src_mod->old;
+        copy_module(dst_mod, src_mod);
     }
 
     /*
@@ -209,11 +315,10 @@ void module_start_staging(void)
 	dst_mod = (Module*) index_put_entry(dst, src_mod);
 	ASSERT(dst_mod != src_mod);
 
-	dst_mod->curr = src_mod->curr;
-	dst_mod->old = src_mod->old;
+        copy_module(dst_mod, src_mod);
     }
     newsz = index_table_sz(dst);
-    erts_smp_atomic_add_nob(&tot_module_bytes, (newsz - oldsz));
+    erts_atomic_add_nob(&tot_module_bytes, (newsz - oldsz));
 
     entries_at_start_staging = dst->entries;
     IF_DEBUG(dbg_load_code_ix = erts_staging_code_ix());
@@ -231,9 +336,8 @@ void module_end_staging(int commit)
 	oldsz = index_table_sz(tab);
 	index_erase_latest_from(tab, entries_at_start_staging);
 	newsz = index_table_sz(tab);
-	erts_smp_atomic_add_nob(&tot_module_bytes, (newsz - oldsz));
+	erts_atomic_add_nob(&tot_module_bytes, (newsz - oldsz));
     }
 
     IF_DEBUG(dbg_load_code_ix = -1);
 }
-

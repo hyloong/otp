@@ -1,8 +1,10 @@
 %%
 %% %CopyrightBegin%
-%% 
-%% Copyright Ericsson AB 2002-2009. All Rights Reserved.
-%% 
+%%
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2002-2025. All Rights Reserved.
+%%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
 %% You may obtain a copy of the License at
@@ -14,7 +16,7 @@
 %% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 %% See the License for the specific language governing permissions and
 %% limitations under the License.
-%% 
+%%
 %% %CopyrightEnd%
 %%
 -module(multitrace).
@@ -103,16 +105,16 @@ print_func(Out,{trace_ts,P,call,{M,F,A},C,Ts},N) ->
     io:format(Out,
 	      "~w: ~s~n"
 	      "Process   : ~w~n"
-	      "Call      : ~w:~w/~w~n"
-	      "Arguments : ~p~n"
-	      "Caller    : ~w~n~n",
+	      "Call      : ~w:~tw/~w~n"
+	      "Arguments : ~tp~n"
+	      "Caller    : ~tw~n~n",
 	      [N,ts(Ts),P,M,F,length(A),A,C]);
 print_func(Out,{trace_ts,P,return_from,{M,F,A},R,Ts},N) ->
     io:format(Out,
 	      "~w: ~s~n"
 	      "Process      : ~w~n"
-	      "Return from  : ~w:~w/~w~n"
-	      "Return value : ~p~n~n",
+	      "Return from  : ~w:~tw/~w~n"
+	      "Return value : ~tp~n~n",
 	      [N,ts(Ts),P,M,F,A,R]).
 
 
@@ -181,7 +183,7 @@ handle_schedule(Out,{trace_ts,P,out,Info,Ts},_TI,S) ->
 	      "out:~n"
 	      "Process  : ~w~n"
 	      "Time     : ~s~n"
-	      "Function : ~w~n~n",[P,ts(Ts),Info]),
+	      "Function : ~tw~n~n",[P,ts(Ts),Info]),
     case lists:keysearch(P,1,S) of
 	{value,{P,List}} ->
 	    lists:keyreplace(P,1,S,{P,[{out,Ts}|List]});
@@ -193,7 +195,7 @@ handle_schedule(Out,{trace_ts,P,in,Info,Ts},_TI,S) ->
 	      "in:~n"
 	      "Process  : ~w~n"
 	      "Time     : ~s~n"
-	      "Function : ~w~n~n",[P,ts(Ts),Info]),
+	      "Function : ~tw~n~n",[P,ts(Ts),Info]),
     case lists:keysearch(P,1,S) of
 	{value,{P,List}} ->
 	    lists:keyreplace(P,1,S,{P,[{in,Ts}|List]});

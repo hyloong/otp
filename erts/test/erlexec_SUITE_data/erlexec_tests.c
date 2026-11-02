@@ -1,7 +1,9 @@
 /*
  * %CopyrightBegin%
  *
- * Copyright Ericsson AB 2008-2010. All Rights Reserved.
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Copyright Ericsson AB 2008-2025. All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -23,7 +25,7 @@
  * Author: Sverker Eriksson
  */
 
-#if defined (__WIN32__) || defined(VXWORKS)
+#if defined (__WIN32__)
 int main() {return 0;}
 
 #else /* UNIX only */

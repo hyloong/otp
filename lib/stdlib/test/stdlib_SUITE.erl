@@ -1,8 +1,10 @@
 %%
 %% %CopyrightBegin%
-%% 
-%% Copyright Ericsson AB 1997-2015. All Rights Reserved.
-%% 
+%%
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 1997-2025. All Rights Reserved.
+%%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
 %% You may obtain a copy of the License at
@@ -14,27 +16,26 @@
 %% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 %% See the License for the specific language governing permissions and
 %% limitations under the License.
-%% 
+%%
 %% %CopyrightEnd%
 %%
 %%%----------------------------------------------------------------
 %%% Purpose:Stdlib application test suite.
 %%%-----------------------------------------------------------------
 -module(stdlib_SUITE).
--include_lib("test_server/include/test_server.hrl").
 
--compile(export_all).
+-compile(r27).
 
-%%
-%% all/1
-%%
+-include_lib("common_test/include/ct.hrl").
+-export([all/0, suite/0, init_per_suite/1, end_per_suite/1,
+	 init_per_group/2, end_per_group/2,
+         init_per_testcase/2, end_per_testcase/2,
+         app_test/1, appup_test/1, assert_test/1]).
+
 suite() -> [{ct_hooks,[ts_install_cth]}].
 
 all() -> 
-    [app_test, appup_test, assert_test, {group,upgrade}].
-
-groups() -> 
-    [{upgrade,[minor_upgrade,major_upgrade]}].
+    [app_test, appup_test, assert_test].
 
 init_per_suite(Config) ->
     Config.
@@ -42,31 +43,36 @@ init_per_suite(Config) ->
 end_per_suite(_Config) ->
     ok.
 
-init_per_group(upgrade, Config) ->
-    ct_release_test:init(Config);
 init_per_group(_GroupName, Config) ->
     Config.
 
-end_per_group(upgrade, Config) ->
-    ct_release_test:cleanup(Config);
 end_per_group(_GroupName, Config) ->
     Config.
 
-
+init_per_testcase(appup_test, Config) ->
+    %% We check if the test results were released using a version
+    %% of Erlang/OTP that was a tagged version or not. On a non-tagged
+    %% version this testcase most likely will fail.
+    case file:read_file(
+           filename:join(
+             proplists:get_value(data_dir,Config), "otp_version_tickets")) of
+        {ok,<<"DEVELOPMENT",_/binary>>} ->
+            {skip, "This is a development version, test might fail "
+             "because of incorrect version numbers"};
+        {ok,S} ->
+            Config
+    end;
 init_per_testcase(_Case, Config) ->
     Config.
 end_per_testcase(_Case, _Config) ->
     ok.
 
-%
-% Test cases starts here.
-%
-app_test(suite) ->
-    [];
-app_test(doc) ->
-    ["Application consistency test."];
+%%
+%% Test cases starts here.
+%%
+%% Application consistency test.
 app_test(Config) when is_list(Config) ->
-    ?t:app_test(stdlib),
+    test_server:app_test(stdlib),
     ok.
 
 %% Test that appup allows upgrade from/downgrade to a maximum of one
@@ -74,8 +80,6 @@ app_test(Config) when is_list(Config) ->
 appup_test(_Config) ->
     appup_tests(stdlib,create_test_vsns(stdlib)).
 
-appup_tests(_App,{[],[]}) ->
-    {skip,"no previous releases available"};
 appup_tests(App,{OkVsns0,NokVsns}) ->
     application:load(App),
     {_,_,Vsn} = lists:keyfind(App,1,application:loaded_applications()),
@@ -88,8 +92,7 @@ appup_tests(App,{OkVsns0,NokVsns}) ->
 	    OkVsns0 ->
 		OkVsns0;
 	    Ok ->
-		ct:log("Current version, ~p, is same as in previous release.~n"
-		       "Removing this from the list of ok versions.",
+		ct:log("Removed current version ~p from the list of ok versions to test.",
 		      [Vsn]),
 		Ok
 	end,
@@ -104,57 +107,46 @@ appup_tests(App,{OkVsns0,NokVsns}) ->
     ok.
 
 create_test_vsns(App) ->
-    ThisMajor = erlang:system_info(otp_release),
-    FirstMajor = previous_major(ThisMajor),
-    SecondMajor = previous_major(FirstMajor),
-    Ok = app_vsn(App,[ThisMajor,FirstMajor]),
-    Nok0 = app_vsn(App,[SecondMajor]),
+    S = otp_vsns:read_state(),
+    Rel = list_to_integer(erlang:system_info(otp_release)),
+    AppStr = atom_to_list(App),
+    Ok = ok_app_vsns(S, Rel, AppStr),
+    Nok0 = nok_app_vsns(S, Rel, AppStr, hd(Ok)),
     Nok = case Ok of
-	       [Ok1|_] ->
-		   [Ok1 ++ ",1" | Nok0]; % illegal
-	       _ ->
-		   Nok0
-	   end,
-    {Ok,Nok}.
+              [Ok1|_] ->
+                  [Ok1 ++ ",1" | Nok0]; % illegal
+              _ ->
+                  Nok0
+          end,
+    {Ok, Nok}.
 
-previous_major("17") ->
-    "r16b";
-previous_major("r16b") ->
-    "r15b";
-previous_major(Rel) ->
-    integer_to_list(list_to_integer(Rel)-1).
+ok_app_vsns(S, Rel, AppStr) ->
+    AppVsns0 = get_rel_app_vsns(S, Rel-2, AppStr),
+    AppVsns1 = get_rel_app_vsns(S, Rel-1, AppStr),
+    AppVsns2 = try
+                   get_rel_app_vsns(S, Rel, AppStr)
+               catch
+                   _:_ -> []
+               end,
+    lists:usort(AppVsns2 ++ AppVsns1 ++ AppVsns0).
 
-app_vsn(App,[R|Rs]) ->
-    OldRel =
-	case test_server:is_release_available(R) of
-	    true ->
-		{release,R};
-	    false ->
-		case ct:get_config({otp_releases,list_to_atom(R)}) of
-		    undefined ->
-			false;
-		    Prog0 ->
-			case os:find_executable(Prog0) of
-			    false ->
-				false;
-			    Prog ->
-				{prog,Prog}
-			end
-		end
-	end,
-    case OldRel of
-	false ->
-	    app_vsn(App,Rs);
-	_ ->
-	    {ok,N} = test_server:start_node(prevrel,peer,[{erl,[OldRel]}]),
-	    _ = rpc:call(N,application,load,[App]),
-	    As = rpc:call(N,application,loaded_applications,[]),
-	    {_,_,V} = lists:keyfind(App,1,As),
-	    test_server:stop_node(N),
-	    [V|app_vsn(App,Rs)]
-    end;
-app_vsn(_App,[]) ->
-    [].
+nok_app_vsns(S, Rel, AppStr, EarliestOkVsn) ->
+    AppVsns0 = get_rel_app_vsns(S, Rel-4, AppStr),
+    AppVsns1 = get_rel_app_vsns(S, Rel-3, AppStr),
+    %% Earliest OK version may exist in not OK versions
+    %% as well if there were no application version bump
+    %% between two releases, so we need to remove it
+    %% if that is the case...
+    lists:usort(AppVsns1 ++ AppVsns0) -- EarliestOkVsn.
+
+get_rel_app_vsns(S, Rel, App) ->
+    RelStr = integer_to_list(Rel),
+    OtpVsns = otp_vsns:branch_vsns(S, "maint-"++RelStr),
+    lists:map(fun (OtpVsn) ->
+                      AppVsn = otp_vsns:app_vsn(S, OtpVsn, App),
+                      [_, Vsn] = string:lexemes(AppVsn, "-"),
+                      Vsn
+              end, OtpVsns).
 
 check_appup([Vsn|Vsns],Instrs,Expected) ->
     case systools_relup:appup_search_for_version(Vsn, Instrs) of
@@ -165,35 +157,10 @@ check_appup([],_,_) ->
     ok.
 
 
-minor_upgrade(Config) ->
-    ct_release_test:upgrade(stdlib,minor,{?MODULE,[]},Config).
-
-major_upgrade(Config) ->
-    ct_release_test:upgrade(stdlib,major,{?MODULE,[]},Config).
-
-%% Version numbers are checked by ct_release_test, so there is nothing
-%% more to check here...
-upgrade_init(CtData,State) ->
-    {ok,{FromVsn,ToVsn}} = ct_release_test:get_app_vsns(CtData,stdlib),
-    case ct_release_test:get_appup(CtData,stdlib) of
-	{ok,{FromVsn,ToVsn,[restart_new_emulator],[restart_new_emulator]}} ->
-	    io:format("Upgrade/downgrade ~p <--> ~p",[FromVsn,ToVsn]);
-	{error,{vsn_not_found,_}} when FromVsn==ToVsn ->
-	    io:format("No upgrade test for stdlib, same version")
-    end,
-    State.
-upgrade_upgraded(_CtData,State) ->
-    State.
-upgrade_downgraded(_CtData,State) ->
-    State.
-
-
 -include_lib("stdlib/include/assert.hrl").
 -include_lib("stdlib/include/assert.hrl"). % test repeated inclusion
-assert_test(suite) ->
-    [];
-assert_test(doc) ->
-    ["Assert macros test."];
+
+%% Assert macros test.
 assert_test(_Config) ->
     ok = ?assert(true),
     {'EXIT',{{assert, _},_}} = (catch ?assert(false)),

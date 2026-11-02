@@ -1,23 +1,35 @@
-%% This library is free software; you can redistribute it and/or modify
-%% it under the terms of the GNU Lesser General Public License as
-%% published by the Free Software Foundation; either version 2 of the
-%% License, or (at your option) any later version.
+%% %CopyrightBegin%
 %%
-%% This library is distributed in the hope that it will be useful, but
-%% WITHOUT ANY WARRANTY; without even the implied warranty of
-%% MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
-%% Lesser General Public License for more details.
+%% SPDX-License-Identifier: Apache-2.0 OR LGPL-2.1-or-later
 %%
-%% You should have received a copy of the GNU Lesser General Public
-%% License along with this library; if not, write to the Free Software
-%% Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307
-%% USA
+%% Copyright 2006 Richard Carlsson
+%% Copyright Ericsson AB 2009-2025. All Rights Reserved.
 %%
-%% @author Richard Carlsson <carlsson.richard@gmail.com>
-%% @copyright 2006 Richard Carlsson
-%% @private
-%% @see eunit
-%% @doc Event serializing and multiplexing process, to be used as the
+%% Licensed under the Apache License, Version 2.0 (the "License");
+%% you may not use this file except in compliance with the License.
+%% You may obtain a copy of the License at
+%%
+%%     http://www.apache.org/licenses/LICENSE-2.0
+%%
+%% Unless required by applicable law or agreed to in writing, software
+%% distributed under the License is distributed on an "AS IS" BASIS,
+%% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+%% See the License for the specific language governing permissions and
+%% limitations under the License.
+%%
+%% Alternatively, you may use this file under the terms of the GNU Lesser
+%% General Public License (the "LGPL") as published by the Free Software
+%% Foundation; either version 2.1, or (at your option) any later version.
+%% If you wish to allow use of your version of this file only under the
+%% terms of the LGPL, you should delete the provisions above and replace
+%% them with the notice and other provisions required by the LGPL; see
+%% <http://www.gnu.org/licenses/>. If you do not delete the provisions
+%% above, a recipient may use your version of this file under the terms of
+%% either the Apache License or the LGPL.
+%%
+%% %CopyrightEnd%
+%%
+%% Event serializing and multiplexing process, to be used as the
 %% main "supervisor" process for en EUnit test runner. See eunit_proc
 %% for details about the events that will be sent to the listeners
 %% (provided to this process at startup). This process guarantees that
@@ -27,6 +39,7 @@
 %% no further events will arrive whose identifiers have Id as prefix.
 
 -module(eunit_serial).
+-moduledoc false.
 
 -include("eunit.hrl").
 -include("eunit_internal.hrl").
@@ -61,14 +74,16 @@
 		messages  = dict:new()		 :: dict:dict()}).
 
 start(Pids) ->
-    spawn(fun () -> serializer(Pids) end).
+    spawn(serializer_fun(Pids)).
 
-serializer(Pids) ->
-    St = #state{listeners = sets:from_list(Pids),
-		cancelled = eunit_lib:trie_new(),
-		messages = dict:new()},
-    expect([], undefined, 0, St),
-    exit(normal).
+serializer_fun(Pids) ->
+    fun () ->
+            St = #state{listeners = sets:from_list(Pids),
+                        cancelled = eunit_lib:trie_new(),
+                        messages = dict:new()},
+            expect([], undefined, 0, St),
+            exit(normal)
+    end.
 
 %% collect beginning and end of an expected item; return {Done, NewSt}
 %% where Done is true if there are no more items of this group
@@ -81,6 +96,17 @@ expect(Id, ParentId, GroupMinSize, St0) ->
 	    %% cast no cancel event (since the item might not exist)
 	    {true, St1};
 	{cancel, exact, Msg, St1} ->
+            %% We got a cancel before begin. If we're running in
+            %% parallel we might still have a begin message in the
+            %% message queue since the cancel message might have been
+            %% picked up by wait_1/5 for an different test case. So
+            %% flush the queue to avoid silently ignoring the cancel.
+            receive
+                {status, Id, {progress, 'begin', _}} = M ->
+                    cast(M, St1)
+            after 0 ->
+                ok
+            end,
 	    cast_cancel(Id, Msg, St1),
 	    {false, St1};
 	{ok, Msg, St1} ->

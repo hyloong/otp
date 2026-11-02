@@ -1,8 +1,10 @@
 %%
 %% %CopyrightBegin%
-%% 
-%% Copyright Ericsson AB 1997-2014. All Rights Reserved.
-%% 
+%%
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 1997-2025. All Rights Reserved.
+%%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
 %% You may obtain a copy of the License at
@@ -14,12 +16,15 @@
 %% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 %% See the License for the specific language governing permissions and
 %% limitations under the License.
-%% 
+%%
 %% %CopyrightEnd%
 %%
 
 %%
 -module(mnesia_event).
+-moduledoc false.
+
+-compile([{nowarn_deprecated_function, [{erlang,exit,2}]}]).
 
 -behaviour(gen_event).
 %-behaviour(mnesia_event).
@@ -35,6 +40,8 @@
 -record(state, {nodes = [], 
 		dumped_core = false,  %% only dump fatal core once
 		args}).
+
+-include("mnesia.hrl").
 
 %%%----------------------------------------------------------------
 %%% Callback functions from gen_server
@@ -103,18 +110,19 @@ handle_any_event({mnesia_system_event, Event}, State) ->
 handle_any_event({mnesia_table_event, Event}, State) ->
     handle_table_event(Event, State);
 handle_any_event(Msg, State) ->
-    report_error("~p got unexpected event: ~p~n", [?MODULE, Msg]),
+    report_error("~p got unexpected event: ~tp~n", [?MODULE, Msg]),
     {ok, State}.
 
 handle_table_event({Oper, Record, TransId}, State) ->
-    report_info("~p performed by ~p on record:~n\t~p~n",
+    report_info("~p performed by ~p on record:~n\t~0tp~n",
 		[Oper, TransId, Record]),
     {ok, State}.  
 
 handle_system_event({mnesia_checkpoint_activated, _Checkpoint}, State) ->
     {ok, State};
 
-handle_system_event({mnesia_checkpoint_deactivated, _Checkpoint}, State) ->
+handle_system_event({mnesia_checkpoint_deactivated, Checkpoint}, State) ->
+    report_error("Checkpoint '~p' has been deactivated, last table copy deleted.\n",[Checkpoint]),
     {ok, State};
 
 handle_system_event({mnesia_up, Node}, State) ->
@@ -130,14 +138,14 @@ handle_system_event({mnesia_down, Node}, State) ->
 			"must be restarted. Forcing shutdown "
 			"after mnesia_down from ~p...~n",
 		    report_fatal(Msg, [Node], nocore, State#state.dumped_core),
-		    catch exit(whereis(mnesia_monitor), fatal),
+		    ?SAFE(exit(whereis(mnesia_monitor), fatal)),
 		    {ok, State};
 		{UserMod, UserFunc} ->
 		    Msg = "Warning: A fallback is installed and Mnesia got mnesia_down "
 			"from ~p. ~n",
 		    report_info(Msg, [Node]),
-		    case catch apply(UserMod, UserFunc, [Node]) of
-			{'EXIT', {undef, _Reason}} ->
+		    case ?CATCH(apply(UserMod, UserFunc, [Node])) of
+			{'EXIT', {undef, _R}} ->
 			    %% Backward compatibility
 			    apply(UserMod, UserFunc, []);
 			{'EXIT', Reason} ->
@@ -154,12 +162,15 @@ handle_system_event({mnesia_down, Node}, State) ->
     end;
 
 handle_system_event({mnesia_overload, Details}, State) ->
-    report_warning("Mnesia is overloaded: ~w~n", [Details]),
+    report_warning("Mnesia is overloaded: ~tw~n", [Details]),
     {ok, State}; 
 
-handle_system_event({mnesia_info, Format, Args}, State) ->
-    report_info(Format, Args),
-    {ok, State}; 
+handle_system_event({mnesia_info, Format, Args} = Event, State) ->
+    case put(last, Event) of
+        Event -> ok;
+        _ -> report_info(Format, Args)
+    end,
+    {ok, State};
 
 handle_system_event({mnesia_warning, Format, Args}, State) ->
     report_warning(Format, Args),
@@ -174,16 +185,16 @@ handle_system_event({mnesia_fatal, Format, Args, BinaryCore}, State) ->
     {ok, State#state{dumped_core = true}};
 
 handle_system_event({inconsistent_database, Reason, Node}, State) ->
-    report_error("mnesia_event got {inconsistent_database, ~w, ~w}~n",
+    report_error("mnesia_event got {inconsistent_database, ~tw, ~w}~n",
 		 [Reason, Node]),
     {ok, State}; 
 
 handle_system_event({mnesia_user, Event}, State) ->
-    report_info("User event: ~p~n", [Event]),
+    report_info("User event: ~tp~n", [Event]),
     {ok, State}; 
 
 handle_system_event(Msg, State) ->
-    report_error("mnesia_event got unexpected system event: ~p~n", [Msg]),
+    report_error("mnesia_event got unexpected system event: ~tp~n", [Msg]),
     {ok, State}.
 
 report_info(Format0, Args0) ->

@@ -1,8 +1,10 @@
 %%
 %% %CopyrightBegin%
-%% 
-%% Copyright Ericsson AB 2003-2010. All Rights Reserved.
-%% 
+%%
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2003-2025. All Rights Reserved.
+%%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
 %% You may obtain a copy of the License at
@@ -14,7 +16,7 @@
 %% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 %% See the License for the specific language governing permissions and
 %% limitations under the License.
-%% 
+%%
 %% %CopyrightEnd%
 %%
 
@@ -2089,8 +2091,7 @@ enc_EventBufferDescriptor([], _State) ->
     [
      ?EventBufferToken
     ];
-enc_EventBufferDescriptor(EventSpecs, State) 
-  when is_list(EventSpecs) and (length(EventSpecs) >= 1) ->
+enc_EventBufferDescriptor([_|_] = EventSpecs, State) -> 
     [
      ?EventBufferToken,
      ?LBRKT_INDENT(State),
@@ -2689,6 +2690,7 @@ enc_integer(Val, _State, Min, Max) ->
 enc_list(List, State) ->
     enc_list(List, State, fun(_S) -> ?COMMA_INDENT(_S) end, false).
 
+-dialyzer({nowarn_function, enc_list/4}). % Future compat
 enc_list([], _State, _SepEncoder, _NeedsSep) ->
     [];
 enc_list([{Elems, ElemEncoder} | Tail], State, SepEncoder, NeedsSep) ->

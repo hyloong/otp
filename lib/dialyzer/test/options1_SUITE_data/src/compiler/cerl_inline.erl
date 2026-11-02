@@ -1,4 +1,11 @@
-%% ``Licensed under the Apache License, Version 2.0 (the "License");
+%% %CopyrightBegin%
+%%
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2008-2026. All Rights Reserved.
+%% Copyright Richard Carlsson 2026. All Rights Reserved.
+%%
+%% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
 %% You may obtain a copy of the License at
 %%
@@ -10,13 +17,7 @@
 %% See the License for the specific language governing permissions and
 %% limitations under the License.
 %%
-%% The Initial Developer of the Original Code is Richard Carlsson.
-%% Copyright (C) 1999-2002 Richard Carlsson.
-%% Portions created by Ericsson are Copyright 2001, Ericsson Utvecklings
-%% AB. All Rights Reserved.''
-%%
-%%     $Id: cerl_inline.erl,v 1.1 2008/12/17 09:53:41 mikpe Exp $
-%%
+%% %CopyrightEnd%
 %% Core Erlang inliner.
 %% =====================================================================
 %%
@@ -29,7 +30,6 @@
 %% Marlow ("Secrets of the Glasgow Haskell Compiler Inliner", 1999).
 %%
 %% =====================================================================
-
 %% TODO: inline single-source-reference operands without size limit.
 
 -module(cerl_inline).
@@ -951,7 +951,7 @@ i_letrec(Es, B, Xs, Ctxt, Ren, Env, S) ->
 
     %% Finally, we create new letrec-bindings for any and all
     %% residualised definitions. All referenced functions should have
-    %% been visited; the call to `visit' below is expected to retreive a
+    %% been visited; the call to `visit' below is expected to retrieve a
     %% cached expression.
     Rs1 = keep_referenced(Rs, S4),
     {Es1, S5} = mapfoldl(fun (R, S) ->
@@ -997,7 +997,7 @@ i_apply(E, Ctxt, Ren, Env, S) ->
     %% location could be recycled after the flag has been tested, but
     %% there is no real advantage to that, because in practice, only
     %% 4-5% of all created store locations will ever be reused, while
-    %% there will be a noticable overhead for managing the free list.)
+    %% there will be a noticeable overhead for managing the free list.)
     case st__get_app_inlined(L, S3) of
         true ->
             %% The application was inlined, so we have the final
@@ -2007,7 +2007,7 @@ residualize_operand(Opnd, E, S) ->
     case st__get_opnd_effect(Opnd#opnd.loc, S) of
         true ->
             %% The operand has not been visited, so we do that now, but
-            %% in `effect' context. (Waddell's algoritm does some stuff
+            %% in `effect' context. (Waddell's algorithm does some stuff
             %% here to account specially for the operand size, which
             %% appears unnecessary.)
             {E1, S1} = i(Opnd#opnd.expr, effect, Opnd#opnd.ren,
@@ -2211,7 +2211,7 @@ reduce_bif_call_1(erlang, element, 2, [X, Y], _Env) ->
 	    %% the elements, so lifting out a particular element is OK.
 	    T = list_to_tuple(tuple_es(Y)),
 	    N = int_val(X),
-	    if integer(N), N > 0, N =< size(T) ->
+            if is_integer(N), N > 0, N =< tuple_size(T) ->
 		    E = element(N, T),
 		    Es = tuple_to_list(setelement(N, T, void())),
 		    {true, make_seq(c_tuple(Es), E)};
@@ -2255,7 +2255,7 @@ reduce_bif_call_1(erlang, setelement, 3, [X, Y, Z], Env) ->
 	    %% evaluated before any part of `Y'.
 	    T = list_to_tuple(tuple_es(Y)),
 	    N = int_val(X),
-	    if integer(N), N > 0, N =< size(T) ->
+            if is_integer(N), N > 0, N =< tuple_size(T) ->
 		    E = element(N, T),
 		    case is_simple(Z) of
 			true ->
@@ -2433,13 +2433,13 @@ set_clause_bodies([C | Cs], B) ->
 set_clause_bodies([], _) ->
     [].
 
-filename([C | T]) when integer(C), C > 0, C =< 255 ->
+filename([C | T]) when is_integer(C), C > 0, C =< 255 ->
     [C | filename(T)];
 filename([H|T]) ->
     filename(H) ++ filename(T);
 filename([]) ->
     [];
-filename(N) when atom(N) ->
+filename(N) when is_atom(N) ->
     atom_to_list(N);
 filename(N) ->
     report_error("bad filename: `~P'.", [N, 25]),
@@ -2747,15 +2747,15 @@ format({error, D}, Vs) ->
     ["error: ", format(D, Vs)];
 format({warning, D}, Vs) ->
     ["warning: ", format(D, Vs)];
-format({"", L, D}, Vs) when integer(L), L > 0 ->
+format({"", L, D}, Vs) when is_integer(L), L > 0 ->
     [io_lib:fwrite("~w: ", [L]), format(D, Vs)];
 format({"", _L, D}, Vs) ->
     format(D, Vs);
-format({F, L, D}, Vs) when integer(L), L > 0 ->
+format({F, L, D}, Vs) when is_integer(L), L > 0 ->
     [io_lib:fwrite("~s:~w: ", [filename(F), L]), format(D, Vs)];
 format({F, _L, D}, Vs) ->
     [io_lib:fwrite("~s: ", [filename(F)]), format(D, Vs)];
-format(S, Vs) when list(S) ->
+format(S, Vs) when is_list(S) ->
     [io_lib:fwrite(S, Vs), $\n].
 
 

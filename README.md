@@ -1,72 +1,110 @@
-Erlang/OTP
-==========
+# [Erlang/OTP](https://www.erlang.org)
 
-**Erlang** is a programming language used to build massively scalable soft
-real-time systems with requirements on high availability. Some of its
-uses are in telecom, banking, e-commerce, computer telephony and
-instant messaging. Erlang's runtime system has built-in support for
-concurrency, distribution and fault tolerance.
+**Erlang** is a programming language and runtime system for building massively scalable soft real-time systems with requirements on high availability. 
 
-**OTP** is set of Erlang libraries and design principles providing
-middle-ware to develop these systems. It includes its own distributed
-database, applications to interface towards other languages, debugging
-and release handling tools.
+**OTP** is a set of Erlang libraries, which consists of the Erlang runtime system, a number of ready-to-use components mainly written in Erlang, and a set of design principles for Erlang programs. [Learn more about Erlang and OTP](https://www.erlang.org/doc/system/getting_started.html).
 
-ERTS and BEAM
--------------
-**BEAM** is the name of the virtual machine where all Erlang code is executed.
-Every compiled Erlang file has the suffix .beam. The virtual machine
-is sometimes referred to as the emulator.
+[Learn how to program in Erlang](http://learnyousomeerlang.com/).
 
-**ERTS** is the Erlang Runtime System where the BEAM, kernel and
-standard libraries amongst others are included.
+## Examples
 
-More information can be found at [erlang.org] [1].
+There are several examples [on the website](http://erlang.org/faq/getting_started.html) to help you get started. The below example defines a function `world/0` that prints "Hello, world" in the Erlang shell:
 
-Building and Installing
------------------------
+```erlang
+-module(hello).
+-export([world/0]).
 
-Information on building and installing Erlang/OTP can be found
-in the [$ERL_TOP/HOWTO/INSTALL.md] [5] document.
+world() -> io:format("Hello, world\n").
+```
 
-Contributing to Erlang/OTP
---------------------------
+Save the file as `hello.erl` and run `erl` to enter the Erlang shell to compile the module.
 
-Here are the [instructions for submitting patches] [2].
+```sh
+Erlang/OTP 24 [erts-12.2] [source] [64-bit] [smp:8:8] [ds:8:8:10] [async-threads:1] [jit]
 
-In short:
+Eshell V12.2  (abort with ^G)
+1> c(hello).
+{ok,hello}
+2> hello:world().
+Hello, world
+ok
+```
 
-*   We prefer to receive proposed updates via email on the
-    [`erlang-patches`] [3] mailing list or through a pull request.
+Learn more about the Erlang syntax of [modules](http://erlang.org/doc/reference_manual/modules.html), [functions](http://erlang.org/doc/reference_manual/functions.html) and [expressions](http://erlang.org/doc/reference_manual/expressions.html) on [Erlang.org](https://www.erlang.org).
 
-*   Pull requests will be handled once everyday and there will be 
-    essential testing before we will take a decision on the outcome
-    of the request. If the essential testings fails, the pull request
-    will be closed and you will have to fix the problem and submit another
-    pull request when this is done.
+## Installation
 
-*   We merge all proposed updates to the `pu` (*proposed updates*) branch,
-    typically within one working day.
+### Binary Distributions
 
-*   At least once a day, the contents of the `pu` branch will be built on
-    several platforms (Linux, Solaris, Mac OS X, Windows, and so on) and
-    automatic test suites will be run. We will email you if any problems are
-    found.
+Erlang/OTP is available as pre-built binary packages by most OS package managers.
 
-*   If a proposed change builds and passes the tests, it will be reviewed
-    by one or more members of the Erlang/OTP team at Ericsson. The reviewer
-    may suggest improvements that are needed before the change can be accepted
-    and merged.
+```sh
+apt-get install erlang
+```
 
-*   Once or twice a week, a status email called ["What's cooking in Erlang/OTP"] [4]
-    will be sent to the [`erlang-patches`] [3] mailing list.
+### Compiling from source
 
-Copyright and License
----------------------
+To compile Erlang from source, run the following commands. The complete building and installation instructions [can be found here](HOWTO/INSTALL.md).
+
+```sh
+git clone https://github.com/erlang/otp.git
+cd otp
+```
+
+Checkout the branch or tag of your choice
+
+```sh
+git checkout maint-27    # current latest stable version
+```
+
+Configure, build and install
+
+```sh
+./configure
+make
+make install
+```
+
+Alternatively, you can use [Kerl](https://github.com/kerl/kerl), a script that lets you easily build Erlang with a few commands.
+
+## Bug Reports
+
+Please visit our [GitHub Issues](https://github.com/erlang/otp/issues) page for reporting bugs. The instructions for submitting bugs reports [can be found here](https://github.com/erlang/otp/wiki/Bug-reports).
+
+### Security Disclosure
+
+Please do not report security vulnerabilities through public channels, like
+GitHub issues, discussions, or pull requests.
+
+Please disclose the security issues following our [SECURITY](SECURITY.md) guidelines.
+
+## Contributing
+
+We are grateful to the community for contributing bug fixes and improvements. Read below to learn how you can take part in improving Erlang/OTP. We appreciate your help!
+
+### Contribution Guide
+
+Read our [contribution guide](CONTRIBUTING.md) to learn about our development process, how to propose fixes and improvements, and how to test your changes to Erlang/OTP before submitting a pull request.
+
+### Help Wanted
+
+We have a list of [Help Wanted](https://github.com/erlang/otp/issues?q=is%3Aissue+is%3Aopen+label%3A%22help+wanted%22) bugs that we would appreciate external help from the community. This is a great place to get involved.
+
+## Awesome-Erlang
+
+You can find more projects, tools and articles related to Erlang/OTP on the [awesome-erlang list](https://github.com/erlang-punch/awesome-erlang). Add your project there.
+
+## License
+
+Erlang/OTP is released under the [Apache License 2.0](http://www.apache.org/licenses/LICENSE-2.0).
+
+For any license inquiry, please send an email to opensource@ericsson.com
 
 > %CopyrightBegin%
 >
-> Copyright Ericsson AB 2010-2014. All Rights Reserved.
+> SPDX-License-Identifier: Apache-2.0
+>
+> Copyright Ericsson AB 2010-2025. All Rights Reserved.
 >
 > Licensed under the Apache License, Version 2.0 (the "License");
 > you may not use this file except in compliance with the License.
@@ -81,11 +119,3 @@ Copyright and License
 > limitations under the License.
 >
 > %CopyrightEnd%
-
-
-
-   [1]: http://www.erlang.org
-   [2]: http://wiki.github.com/erlang/otp/submitting-patches
-   [3]: http://www.erlang.org/static/doc/mailinglist.html
-   [4]: http://erlang.github.com/otp/
-   [5]: HOWTO/INSTALL.md

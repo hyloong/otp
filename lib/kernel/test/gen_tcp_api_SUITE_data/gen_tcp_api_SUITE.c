@@ -1,7 +1,9 @@
 /*
  * %CopyrightBegin%
  *
- * Copyright Ericsson AB 2009-2013. All Rights Reserved.
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Copyright Ericsson AB 2009-2025. All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,7 +19,7 @@
  *
  * %CopyrightEnd%
  */
-#include "erl_nif.h"
+#include <erl_nif.h>
 
 #include <stdio.h>
 #include <string.h>
@@ -30,6 +32,7 @@
 #define sock_close(s) closesocket(s)
 #else
 #include <sys/socket.h>
+#include <unistd.h>
 #define sock_close(s) close(s)
 #endif
 

@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 1998-2013. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 1998-2026. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -23,18 +25,24 @@
 -export([all/0, suite/0,groups/0,init_per_suite/1, end_per_suite/1, 
 	 init_per_group/2,end_per_group/2, 
 	 packed_registers/1, apply_last/1, apply_last_bif/1,
-	 buildo_mucho/1, heap_sizes/1, big_lists/1, fconv/1,
-	 select_val/1]).
+	 heap_sizes/1, big_lists/1, fconv/1,
+         select_val/1, select_tuple_arity/1,
+         swap_temp_apply/1, beam_init_yregs/1,
+         beam_register_cache/1, put_list_dealloc/1]).
 
--export([applied/2]).
+-export([applied/2,swap_temp_applied/1]).
 
--include_lib("test_server/include/test_server.hrl").
+-include_lib("common_test/include/ct.hrl").
+-include_lib("syntax_tools/include/merl.hrl").
 
 suite() -> [{ct_hooks,[ts_install_cth]}].
 
 all() -> 
     [packed_registers, apply_last, apply_last_bif,
-     buildo_mucho, heap_sizes, big_lists, select_val].
+     heap_sizes, big_lists, fconv,
+     select_val, select_tuple_arity,
+     swap_temp_apply, beam_init_yregs,
+     beam_register_cache, put_list_dealloc].
 
 groups() -> 
     [].
@@ -61,15 +69,15 @@ apply_last(Config) when is_list(Config) ->
 	    {Pid, finished} ->
 		stack_size(Pid)
 	after 30000 ->
-		?t:fail("applied/2 timed out.")
+		ct:fail("applied/2 timed out.")
 	end,
     Pid ! die,
-    ?t:format("Size: ~p~n", [Size]),
+    io:format("Size: ~p~n", [Size]),
     if
 	Size < 700 ->
 	    ok;
 	true ->
-	    ?t:fail("10000 apply() grew stack too much.")
+	    ct:fail("10000 apply() grew stack too much.")
     end,
     ok.
 
@@ -92,119 +100,69 @@ applied(Starter, N) ->
 apply_last_bif(Config) when is_list(Config) ->
     apply(erlang, abs, [1]).
 
-%% Test three high register numbers in a put_list instruction
-%% (to test whether packing works properly).
+%% Test whether packing works properly.
 packed_registers(Config) when is_list(Config) ->
-    PrivDir = ?config(priv_dir, Config),
-    Mod = packed_regs,
-    Name = filename:join(PrivDir, atom_to_list(Mod) ++ ".erl"),
+    Mod = ?FUNCTION_NAME,
 
-    %% Generate a module which generates a list of tuples.
-    %% put_list(A) -> [{A, 600}, {A, 999}, ... {A, 0}].
-    Code = gen_packed_regs(600, ["-module("++atom_to_list(Mod)++").\n",
-				       "-export([put_list/1]).\n",
-				       "put_list(A) ->\n["]),
-    ok = file:write_file(Name, Code),
+    %% Generate scrambled sequence.
+    Seq0 = [{erlang:phash2(I),I} || I <- lists:seq(0, 260)],
+    Seq = [I || {_,I} <- lists:sort(Seq0)],
 
-    %% Compile the module.
-    io:format("Compiling: ~s\n", [Name]),
-    CompRc = compile:file(Name, [{outdir, PrivDir}, report]),
-    io:format("Result: ~p\n",[CompRc]),
-    {ok, Mod} = CompRc,
+    %% Generate a test modules that uses get_list/3 instructions
+    %% with high register numbers.
+    S0 = [begin
+	      VarName = list_to_atom("V"++integer_to_list(V)),
+	      {merl:var(VarName),V}
+	  end || V <- Seq],
+    Vars = [V || {V,_} <- S0],
+    NewVars = [begin
+		   VarName = list_to_atom("M"++integer_to_list(V)),
+		   merl:var(VarName)
+	       end || V <- Seq],
+    MoreNewVars = [begin
+                       VarName = list_to_atom("MM"++integer_to_list(V)),
+                       merl:var(VarName)
+                   end || V <- Seq],
+    TupleEls = [?Q("id(_@Value@)") || {_,Value} <- S0],
+    S = [?Q("_@Var = id(_@Value@)") || {Var,Value} <- S0],
+    Code = ?Q(["-module('@Mod@').\n"
+	       "-export([f/0]).\n"
+	       "f() ->\n"
+               "Tuple = id({_@TupleEls}),\n"
+               "{_@MoreNewVars} = Tuple,\n"
+	       "_@S,\n"
+	       "_ = id(0),\n"
+	       "L = [_@Vars],\n"
+	       "_ = id(1),\n"
+	       "[_@NewVars] = L,\n"		%Test get_list/3.
+	       "_ = id(2),\n"
+	       "id([_@Vars,_@NewVars,_@MoreNewVars]).\n"
+	       "id(I) -> I.\n"]),
 
-    %% Load it.
-    io:format("Loading...\n",[]),
-    LoadRc = code:load_abs(filename:join(PrivDir, atom_to_list(Mod))),
-    {module,_Module} = LoadRc,
+    merl:compile_and_load(Code, []),
 
-    %% Call it and verify result.
-    Term = {a, b},
-    L = Mod:put_list(Term),
-    verify_packed_regs(L, Term, 600),
+    %% Optionally print the generated code.
+    PrintCode = false,                          %Change to true to print code.
+
+    case PrintCode of
+        false ->
+            ok;
+        true ->
+            merl:print(Code),
+            erts_debug:df(Mod),
+            {ok,Dis} = file:read_file(atom_to_list(Mod)++".dis"),
+            io:put_chars(Dis)
+    end,
+
+    %% Executing the generated code in freshly spawned process makes it much
+    %% more likely to crash if there is a bug in init_yregs.
+    CombinedSeq = Seq ++ Seq ++ Seq,
+    CombinedSeq = spawn_exec(fun Mod:f/0),
+
+    %% Clean up.
+    true = code:delete(Mod),
+    false = code:purge(Mod),
     ok.
-
-gen_packed_regs(0, Acc) ->
-    [Acc|"{A,0}].\n"];
-gen_packed_regs(N, Acc) ->
-    gen_packed_regs(N-1, [Acc,"{A,",integer_to_list(N)|"},\n"]).
-
-verify_packed_regs([], _, -1) -> ok;
-verify_packed_regs([{Term, N}| T], Term, N) ->
-    verify_packed_regs(T, Term, N-1);
-verify_packed_regs(L, Term, N) ->
-    ok = io:format("Expected [{~p, ~p}|T]; got\n~p\n", [Term, N, L]),
-    test_server:fail().
-
-buildo_mucho(Config) when is_list(Config) ->
-    buildo_mucho_1(),
-    ok.
-
-buildo_mucho_1() ->
-    %% Thanks to Per Gustafsson, HiPE.
-    [{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},
-     {<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},
-     {<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},
-     {<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},
-     {<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},
-     {<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},
-     {<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},
-     {<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},
-     {<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},
-     {<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},
-     {<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},
-     {<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},
-     {<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},
-     {<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},
-     {<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},
-     {<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},
-     {<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},
-     {<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},
-     {<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},
-     {<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},
-     {<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},
-     {<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},
-     {<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},
-     {<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},
-     {<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},
-     {<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},
-     {<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},
-     {<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},
-     {<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},
-     {<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},
-     {<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},
-     {<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},
-     {<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},
-     {<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},
-     {<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},
-     {<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},
-     {<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},
-     {<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},
-     {<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},
-     {<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},
-     {<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},
-     {<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},
-     {<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},
-     {<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},
-     {<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},
-     {<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},
-     {<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},
-     {<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},
-     {<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},
-     {<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},
-     {<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},
-     {<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},
-     {<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},
-     {<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},
-     {<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},
-     {<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},
-     {<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},
-     {<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},
-     {<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},
-     {<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},
-     {<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},
-     {<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},
-     {<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},
-     {<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1},{<<>>,1}].
 
 heap_sizes(Config) when is_list(Config) ->
     Sizes = erlang:system_info(heap_sizes),
@@ -218,7 +176,7 @@ heap_sizes(Config) when is_list(Config) ->
 
     %% Verify that the largest heap size consists of
     %%  - 31 bits of bytes on 32 bits arch
-    %%  - atleast 52 bits of bytes (48 is the maximum virtual address)
+    %%  - at least 52 bits of bytes (48 is the maximum virtual address)
     %%    and at the most 63 bits on 64 bit archs
     %% heap sizes are in words
     case erlang:system_info(wordsize) of
@@ -319,7 +277,7 @@ fconv(Config) when is_list(Config) ->
 do_fconv(Type) ->
     try
 	do_fconv(Type, 1.0),
-	test_server:fail()
+	ct:fail(no_badarith)
     catch
 	error:badarith ->
 	    ok
@@ -330,20 +288,278 @@ do_fconv(atom, Float) when is_float(Float) ->
 do_fconv(nil, Float) when is_float(Float) ->
     Float + [];
 do_fconv(tuple_literal, Float) when is_float(Float) ->
-    Float + {a,b}.
+    Float + {a,b};
+do_fconv(A, B) when is_float(A), is_float(B) ->
+    A + B.
+
 
 select_val(Config) when is_list(Config) ->
-    zero = do_select_val(0),
-    big = do_select_val(1 bsl 64),
-    integer = do_select_val(42),
+    Mod = ?FUNCTION_NAME,
+
+    %% Test select_val instructions around interesting powers of 2.
+    Powers = lists:seq(0, 33) ++
+        lists:seq(47, 49) ++
+        lists:seq(58, 65) ++
+        lists:seq(8192 - 5, 8192 + 5),
+    L = make_tests(Powers, 0, []),
+    Code = make_module(Mod, L),
+    merl:compile_and_load(Code, []),
+
+    %% Uncomment the following line to print the generated code.
+    %%merl:print(Code),
+
+    verify(L, Mod),
+
+    %% Clean up.
+    true = code:delete(Mod),
+    false = code:purge(Mod),
+
     ok.
 
-do_select_val(X) ->
-    case X of
-	0 ->
-	    zero;
-	1 bsl 64 ->
-	    big;
-	Int when is_integer(Int) ->
-	    integer
+verify([{F,L}|T], Mod) ->
+    verify_1(L, F, Mod),
+
+    Sum = lists:sum([abs(V) || {V,_} <- L]),
+    expect_error(Mod, F, -Sum),
+    expect_error(Mod, F, Sum),
+    expect_error(Mod, F, not_an_integer),
+
+    verify(T, Mod);
+verify([], _Mod) -> ok.
+
+verify_1([{V,Exp}|T], F, Mod) ->
+    case Mod:F(V) of
+        Exp ->
+            verify_1(T, F, Mod);
+        Other ->
+            io:format("~p:~p(~p) evaluates to ~p; expected ~p",
+                      [Mod,F,V,Other,Exp]),
+            ct:fail(unexpected_value)
+    end;
+verify_1([], _, _) -> ok.
+
+expect_error(M, F, V) ->
+    try M:F(V) of
+        UnexpectedSuccess ->
+            io:format("~p:~p(~p) evaluates to ~p; expected it to fail",
+                      [M,F,V,UnexpectedSuccess]),
+            ct:fail(unexpected_success)
+    catch error:function_clause:Stk ->
+            [{M,F,[V],_}|_] = Stk
+    end.
+
+make_tests([P|Ps], N0, Acc0) ->
+    {Acc,N} = make_tests_1(1 bsl P, N0, Acc0),
+    make_tests(Ps, N, Acc);
+make_tests([], N0, Acc0) ->
+    %% Finally, generate some functions with a huge number of clauses.
+
+    {Acc1, N1} = make_huge_bsearch(N0, Acc0),
+    {Acc, _N} = make_huge_jump_tab(N1, Acc1),
+
+    lists:reverse(Acc).
+
+make_tests_1(V, N0, Acc0) ->
+    {Acc,N} = make_tests_2(V, N0, Acc0),
+    make_tests_2(-V, N, Acc).
+
+make_tests_2(V, N0, Acc0) ->
+    %% Because the values are not consecutive, a binary search will be
+    %% generated.
+    NumClauses = 14,
+    {Acc1,N1} = make_tests_3(V - NumClauses*5, V, NumClauses, 5, N0, Acc0),
+
+    %% Test a binary search with 107 values.
+    {Acc,N} = make_test("bsearch", V - 5*50, V + 5*56, 5, N1, Acc1),
+
+    %% Use consecutive values to allow a jump table to be used.
+    make_test("jump_tab", V - 10, V + 10, 1, N, Acc).
+
+make_tests_3(_First, _Last, 0, _Step, N, Acc) ->
+    {Acc,N};
+make_tests_3(First, Last, NumClauses, Step, N0, Acc0) ->
+    {Acc,N} = make_test("f", First, Last, Step, N0, Acc0),
+    make_tests_3(First+Step, Last+Step, NumClauses-1, Step, N, Acc).
+
+make_huge_jump_tab(N, Acc) ->
+    NC = 16384 + 1,
+    make_test("huge_jump_tab", 0, NC, 1, N, Acc).
+
+make_huge_bsearch(N0, Acc) ->
+    NC = 2000,
+
+    %% Let the last number be a bignum.
+    Last = 1 bsl (erlang:system_info(wordsize)*8 - 5),
+    Step = 5,
+
+    make_test("huge_bsearch", Last - NC*Step, Last, Step, N0, Acc).
+
+make_test(Prefix, First, Last, Step, N, Acc) ->
+    Name = list_to_atom(Prefix ++ integer_to_list(N)),
+    Seq = lists:seq(First, Last, Step),
+    L = [{I,erlang:phash2({I,N})} || I <- Seq],
+    {[{Name,L}|Acc],N+1}.
+
+make_module(Mod, L) ->
+    ModDef = ?Q(["-module('@Mod@')."]),
+    Fs = make_funcs(L),
+    Xs = [{F,1} || {F,_} <- L],
+    Exported = [erl_syntax:arity_qualifier(merl:term(N), merl:term(A)) ||
+                   {N,A} <- Xs],
+    Export = ?Q("-export(['@_Exported'/1])."),
+    [ModDef, Export | Fs].
+
+make_funcs([{Name,List}|T]) ->
+    [make_func(Name, List) | make_funcs(T)];
+make_funcs([]) -> [].
+
+make_func(Name, List) ->
+    Cs = [?Q(["(_@I@) -> _@Body@"]) || {I,Body} <- List],
+    erl_syntax:function(erl_syntax:atom(Name), Cs).
+
+select_tuple_arity(_Config) ->
+    Mod = ?FUNCTION_NAME,
+
+    {Vs,Cs} = make_tuple_tests(300, [], []),
+    Name = erl_syntax:atom(match_tuple),
+    F = erl_syntax:function(Name, Cs),
+    Code = ?Q(["-module('@Mod@').\n"
+               "-export([match_tuple/1]).\n"]) ++ [F],
+
+    merl:compile_and_load(Code, []),
+
+    %% %% Uncomment the following line to print the generated code.
+    %% merl:print(Code),
+
+    verify_tuple_match(Vs, Mod),
+
+    %% Clean up.
+    true = code:delete(Mod),
+    false = code:purge(Mod),
+
+    ok.
+
+make_tuple_tests(0, Clauses, Acc) ->
+    {Acc,Clauses};
+make_tuple_tests(Size, Clauses, Acc) ->
+    V = erlang:phash2(Size),
+    Es = lists:duplicate(Size, erl_syntax:underscore()),
+    Tuple = erl_syntax:tuple(Es),
+    Value = erl_syntax:integer(V),
+    Clause = erl_syntax:clause([Tuple], [], [Value]),
+    make_tuple_tests(Size-1, [Clause|Clauses], [{Size,V}|Acc]).
+
+verify_tuple_match([{Size,Result}|T], Mod) ->
+    Tuple = erlang:make_tuple(Size, a),
+    Result = Mod:match_tuple(Tuple),
+    verify_tuple_match(T, Mod);
+verify_tuple_match([], _) ->
+    ok.
+
+swap_temp_apply(_Config) ->
+    {swap_temp_applied,42} = do_swap_temp_apply(41),
+    not_an_integer = do_swap_temp_apply(not_an_integer),
+    ok.
+
+do_swap_temp_apply(Msg) ->
+    case swap_temp_apply_function(Msg) of
+	undefined -> Msg;
+	Type ->
+	    %% The following sequence:
+	    %%   move {x,0} {x,2}
+	    %%   move {y,0} {x,0}
+	    %%   move {x,2} {y,0}
+	    %%   apply 1
+	    %%
+	    %% Would be incorrectly transformed to:
+	    %%   swap {x,0} {y,0}
+	    %%   apply 1
+	    %%
+	    %% ({x,1} is the module, {x,2} the function to be applied).
+	    %%
+	    %% If the instructions are to be transformed, the correct
+	    %% transformation is:
+	    %%
+	    %%   swap_temp {x,0} {y,0} {x,2}
+	    %%   apply 1
+	    Fields = ?MODULE:Type(Msg),
+	    {Type,Fields}
+    end.
+
+swap_temp_apply_function(Int) when is_integer(Int) ->
+    swap_temp_applied;
+swap_temp_apply_function(_) ->
+    undefined.
+
+swap_temp_applied(Int) ->
+    Int+1.
+
+beam_init_yregs(Config) ->
+    DataDir = proplists:get_value(data_dir, Config),
+    Mod = ?FUNCTION_NAME,
+    File = filename:join(DataDir, Mod),
+    {ok,Mod,Code} = compile:file(File, [from_asm,no_postopt,binary]),
+    {module,Mod} = code:load_binary(Mod, Mod, Code),
+
+    _ = [ok = spawn_exec(fun Mod:Mod/0) || _ <- lists:seq(1, 10)],
+
+    %% Clean up.
+    true = code:delete(Mod),
+    false = code:purge(Mod),
+
+    ok.
+
+%% GH-8433: The register cache wasn't properly maintained for certain helper
+%% functions in the ARM JIT.
+beam_register_cache(Config) ->
+    DataDir = proplists:get_value(data_dir, Config),
+    Mod = ?FUNCTION_NAME,
+
+    File = filename:join(DataDir, Mod),
+    {ok,Mod,Code} = compile:file(File, [from_asm,no_postopt,binary]),
+    {module,Mod} = code:load_binary(Mod, Mod, Code),
+
+    try
+        ok = Mod:Mod()
+    after
+        %% Clean up.
+        true = code:delete(Mod),
+        false = code:purge(Mod)
+    end,
+
+    ok.
+
+put_list_dealloc(_Config) ->
+    Seq = lists:seq(1, 32),
+    RevSeq = lists:reverse(Seq),
+    RevSeq = do_put_list_dealloc(head, Seq),
+
+    HdRevSeq = hd(RevSeq),
+    TlRevSeq = tl(RevSeq),
+    [TlRevSeq|HdRevSeq] = do_put_list_dealloc(tail, Seq),
+
+    ok.
+
+do_put_list_dealloc(Where, List0) ->
+    [A,B,C,D,E,F,G,H,I,J,K,L,M,N,O,P,Q,R,S,T,U,V,W,X,Y,Z,
+     Å,Ä,Ö,AA,AE,OE] = List0,
+    put(force_vars_to_stack, true),
+    List = [AE,AA,Ö,Ä,Å,Z,Y,X,W,V,U,T,S,R,Q,P,O,N,M,L,K,J,
+            I,H,G,F,E,D,C,B,A],
+    %% put_list and dealloc would be combined into put_list_dealloc
+    %% with deallocation being done as post-increment in the ldr
+    %% instruction loading y0. With 32 or more Y registers, the
+    %% post-increment offset would exceed its upper limit.
+    case Where of
+        head -> [OE|List];
+        tail -> [List|OE]
+    end.
+
+%%% Common utilities.
+spawn_exec(F) ->
+    {Pid,Ref} = spawn_monitor(fun() ->
+                                      exit(F())
+                              end),
+    receive
+        {'DOWN',Ref,process,Pid,Result} -> Result
     end.

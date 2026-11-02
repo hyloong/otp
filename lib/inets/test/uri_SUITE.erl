@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2004-2013. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2004-2025. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -25,6 +27,7 @@
 
 -module(uri_SUITE).
 
+-include_lib("eunit/include/eunit.hrl").
 -include_lib("common_test/include/ct.hrl").
 -include("inets_test_lib.hrl").
 
@@ -40,17 +43,7 @@ suite() ->
     [{ct_hooks,[ts_install_cth]}].
 
 all() ->
-    [
-     ipv4,
-     ipv6,
-     host,
-     userinfo,
-     scheme,
-     queries,
-     fragments,
-     escaped,
-     hexed_query
-    ].
+    [encode_decode].
 
 %%--------------------------------------------------------------------
 
@@ -70,128 +63,14 @@ end_per_testcase(_Case, _Config) ->
 %% Test cases starts here.
 %%-------------------------------------------------------------------------
 
-ipv4(Config) when is_list(Config) ->
-    {ok, {http,[],"127.0.0.1",80,"/foobar.html",[]}} =
-	http_uri:parse("http://127.0.0.1/foobar.html").
 
-ipv6(Config) when is_list(Config) ->
-    {ok, {http,[],"2010:836B:4179::836B:4179",80,"/foobar.html",[]}} =
-	http_uri:parse("http://[2010:836B:4179::836B:4179]/foobar.html"),
-    {ok, {http,[],"[2010:836B:4179::836B:4179]",80,"/foobar.html",[]}} =
-	http_uri:parse("http://[2010:836B:4179::836B:4179]/foobar.html",
-		       [{ipv6_host_with_brackets, true}]),
-    {ok, {http,[],"2010:836B:4179::836B:4179",80,"/foobar.html",[]}} =
-	http_uri:parse("http://[2010:836B:4179::836B:4179]/foobar.html",
-		       [{ipv6_host_with_brackets, false}]),
-    {ok, {http,[],"2010:836B:4179::836B:4179",80,"/foobar.html",[]}} =
-	http_uri:parse("http://[2010:836B:4179::836B:4179]/foobar.html",
-		       [{foo, false}]),
-    {error,
-     {malformed_url, _, "http://2010:836B:4179::836B:4179/foobar.html"}} =
-	http_uri:parse("http://2010:836B:4179::836B:4179/foobar.html").
+encode_decode(Config) when is_list(Config) ->
+    ?assertEqual("foo%20bar", http_uri:encode("foo bar")),
+    ?assertEqual(<<"foo%20bar">>, http_uri:encode(<<"foo bar">>)),
 
-host(Config) when is_list(Config) ->
-    {ok, {http,[],"localhost",8888,"/foobar.html",[]}} =
-	http_uri:parse("http://localhost:8888/foobar.html").
-
-userinfo(Config) when is_list(Config) ->
-    {ok, {http,"nisse:foobar","localhost",8888,"/foobar.html",[]}} =
-	http_uri:parse("http://nisse:foobar@localhost:8888/foobar.html").
-
-scheme(Config) when is_list(Config) ->
-    {error, no_scheme} = http_uri:parse("localhost/foobar.html"),
-    {error, {malformed_url, _, _}} =
-	http_uri:parse("localhost:8888/foobar.html").
-
-queries(Config) when is_list(Config) ->
-    {ok, {http,[],"localhost",8888,"/foobar.html","?foo=bar&foobar=42"}} =
-	http_uri:parse("http://localhost:8888/foobar.html?foo=bar&foobar=42").
-
-fragments(Config) when is_list(Config) ->
-    {ok, {http,[],"localhost",80,"/",""}} =
-        http_uri:parse("http://localhost#fragment"),
-    {ok, {http,[],"localhost",80,"/path",""}} =
-        http_uri:parse("http://localhost/path#fragment"),
-    {ok, {http,[],"localhost",80,"/","?query"}} =
-        http_uri:parse("http://localhost?query#fragment"),
-    {ok, {http,[],"localhost",80,"/path","?query"}} =
-        http_uri:parse("http://localhost/path?query#fragment"),
-    {ok, {http,[],"localhost",80,"/","","#fragment"}} =
-        http_uri:parse("http://localhost#fragment", [{fragment,true}]),
-    {ok, {http,[],"localhost",80,"/path","","#fragment"}} =
-        http_uri:parse("http://localhost/path#fragment", [{fragment,true}]),
-    {ok, {http,[],"localhost",80,"/","?query","#fragment"}} =
-        http_uri:parse("http://localhost?query#fragment", [{fragment,true}]),
-    {ok, {http,[],"localhost",80,"/path","?query","#fragment"}} =
-        http_uri:parse("http://localhost/path?query#fragment",
-                       [{fragment,true}]),
-    {ok, {http,[],"localhost",80,"/","",""}} =
-        http_uri:parse("http://localhost", [{fragment,true}]),
-    {ok, {http,[],"localhost",80,"/path","",""}} =
-        http_uri:parse("http://localhost/path", [{fragment,true}]),
-    {ok, {http,[],"localhost",80,"/","?query",""}} =
-        http_uri:parse("http://localhost?query", [{fragment,true}]),
-    {ok, {http,[],"localhost",80,"/path","?query",""}} =
-        http_uri:parse("http://localhost/path?query", [{fragment,true}]),
-    {ok, {http,[],"localhost",80,"/","","#"}} =
-        http_uri:parse("http://localhost#", [{fragment,true}]),
-    {ok, {http,[],"localhost",80,"/path","","#"}} =
-        http_uri:parse("http://localhost/path#", [{fragment,true}]),
-    {ok, {http,[],"localhost",80,"/","?query","#"}} =
-        http_uri:parse("http://localhost?query#", [{fragment,true}]),
-    {ok, {http,[],"localhost",80,"/path","?query","#"}} =
-        http_uri:parse("http://localhost/path?query#", [{fragment,true}]),
-    ok.
-
-escaped(Config) when is_list(Config) ->
-       {ok, {http,[],"www.somedomain.com",80,"/%2Eabc",[]}} =
-	http_uri:parse("http://www.somedomain.com/%2Eabc"),
-    {ok, {http,[],"www.somedomain.com",80,"/%252Eabc",[]}} =
-	http_uri:parse("http://www.somedomain.com/%252Eabc"),
-    {ok, {http,[],"www.somedomain.com",80,"/%25abc",[]}} =
-	http_uri:parse("http://www.somedomain.com/%25abc"),
-    {ok, {http,[],"www.somedomain.com",80,"/%25abc", "?foo=bar"}} =
-	http_uri:parse("http://www.somedomain.com/%25abc?foo=bar").
-
-hexed_query(doc) ->
-    [{doc, "Solves OTP-6191"}];
-hexed_query(Config) when is_list(Config) ->
-    Google = ?GOOGLE,
-    GoogleSearch = "http://" ++ Google ++ "/search",
-    Search1 = "?hl=en&q=a%D1%85%D1%83%D0%B9&btnG=Google+Search",
-    URI1    = GoogleSearch ++ Search1,
-    Search2 = "?hl=en&q=%25%25",
-    URI2    = GoogleSearch ++ Search2,
-    Search3 = "?hl=en&q=%foo",
-    URI3    = GoogleSearch ++ Search3,
-
-    Verify1 =
-	fun({http, [], ?GOOGLE, 80, "/search", _}) -> ok;
-	   (_) -> error
-	end,
-    Verify2 = Verify1,
-    Verify3 = Verify1,
-    verify_uri(URI1, Verify1),
-    verify_uri(URI2, Verify2),
-    verify_uri(URI3, Verify3).
-
-
-%%--------------------------------------------------------------------
-%% Internal Functions ------------------------------------------------
-%%--------------------------------------------------------------------
-
-
-verify_uri(URI, Verify) ->
-    case http_uri:parse(URI) of
-	{ok, ParsedURI} ->
-	    case Verify(ParsedURI) of
-		ok ->
-		    ok;
-		error ->
-		    Reason = {unexpected_parse_result, URI, ParsedURI},
-		    ERROR  = {error, Reason},
-		    throw(ERROR)
-	    end;
-	{error, _} = ERROR ->
-	    throw(ERROR)
-    end.
+    ?assertEqual("foo+bar", http_uri:decode("foo+bar")),
+    ?assertEqual(<<"foo+bar">>, http_uri:decode(<<"foo+bar">>)),
+    ?assertEqual("foo bar", http_uri:decode("foo%20bar")),
+    ?assertEqual(<<"foo bar">>, http_uri:decode(<<"foo%20bar">>)),
+    ?assertEqual("foo\r\n", http_uri:decode("foo%0D%0A")),
+    ?assertEqual(<<"foo\r\n">>, http_uri:decode(<<"foo%0D%0A">>)).

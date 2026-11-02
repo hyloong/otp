@@ -1,8 +1,10 @@
 %%
 %% %CopyrightBegin%
-%% 
-%% Copyright Ericsson AB 2007-2011. All Rights Reserved.
-%% 
+%%
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2007-2026. All Rights Reserved.
+%%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
 %% You may obtain a copy of the License at
@@ -14,12 +16,17 @@
 %% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 %% See the License for the specific language governing permissions and
 %% limitations under the License.
-%% 
+%%
 %% %CopyrightEnd%
 %%
 
 -module(literals).
--export([a/0,b/0,huge_bignum/0,binary/0,unused_binaries/0,bits/0]).
+-export([a/0,b/0,huge_bignum/0,funs/0,
+         binary/0,unused_binaries/0,bits/0,
+         records/0]).
+-export([msg1/0,msg2/0,msg3/0,msg4/0,msg5/0]).
+
+-record #frotz{a=[1,2,3],b={a,b,c},c=42.0}.
 
 a() ->
     {a,42.0,[7,38877938333399637266518333334747]}.
@@ -101,3 +108,17 @@ unused_binaries() ->
 
 bits() ->
     {bits,<<42:13,?MB_1>>}.
+
+records() ->
+    [#frotz{}].
+
+msg1() -> "halloj".
+msg2() -> {"hello","world"}.
+msg3() -> <<"halloj">>.
+msg4() -> #{ 1=> "hello", b => "world"}.
+msg5() -> {1,2,3,4,5,6}.
+
+funs() ->
+    %% Literal funs (in a non-literal list).
+    [fun ?MODULE:a/0,
+     fun() -> ok end].                          %No environment.

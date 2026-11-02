@@ -1,7 +1,9 @@
 #
 # %CopyrightBegin%
 #
-# Copyright Ericsson AB 2008-2012. All Rights Reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Copyright Ericsson AB 2008-2025. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -19,21 +21,18 @@
 #
 
 include ../vsn.mk
-ifdef TERTIARY_BOOTSTRAP
- VSN = $(WX_VSN)
- include $(ERL_TOP)/make/target.mk
- include $(ERL_TOP)/make/$(TARGET)/otp.mk
- RELSYSDIR = $(RELEASE_PATH)/lib/wx-$(VSN)
-else # Normal build
- include ../config.mk
-endif
+include ../config.mk
 
 ESRC = .
 EGEN = gen
 EBIN = ../ebin
 ERLC = erlc
 ERLINC = ../include
-ERL_COMPILE_FLAGS += -I$(ERLINC) +warn_unused_vars
+ERL_COMPILE_FLAGS += -I$(ERLINC) -I${ERL_TOP}/lib +warn_unused_vars +nowarn_missing_doc +warn_obsolete_bool_op +nowarn_deprecated_catch
+
+ifeq ($(CAN_BUILD_DRIVER), true)
+ERL_COMPILE_FLAGS += -DCAN_BUILD_DRIVER
+endif
 
 ARCHIVE         = wx-$(VSN).ez
 
@@ -54,7 +53,6 @@ GEN_FILES       = $(wildcard gen/wx*.erl) \
 GEN_MODS        = $(GEN_FILES:gen/%.erl=%,)
 
 GEN_HRL		= \
-		$(EGEN)/wxe_debug.hrl \
 		$(EGEN)/wxe_funcs.hrl
 
 EXT_HRL		= $(ERLINC)/wx.hrl \
@@ -76,7 +74,7 @@ APPUP_TARGET = $(EBIN)/$(APPUP_FILE)
 ifdef TERTIARY_BOOTSTRAP
  opt: $(EBIN)/wx_object.beam
 else
- debug opt: $(TARGET_FILES) $(APP_TARGET) $(APPUP_TARGET)
+ $(TYPES): $(TARGET_FILES) $(APP_TARGET) $(APPUP_TARGET)
 endif
 
 clean:  
@@ -111,10 +109,10 @@ $(APPUP_TARGET): $(APPUP_SRC) ../vsn.mk Makefile
 
 # Rules
 $(EBIN)/%.beam: $(ESRC)/%.erl $(HEADER_FILES)
-	$(V_ERLC) -W -bbeam $(ERL_FLAGS) $(ERL_COMPILE_FLAGS) -o$(EBIN) $<
+	$(V_ERLC) -W -bbeam $(ERL_COMPILE_FLAGS) -o$(EBIN) $<
 
 $(EBIN)/%.beam: $(EGEN)/%.erl $(HEADER_FILES)
-	$(V_ERLC) -W -bbeam $(ERL_FLAGS) $(ERL_COMPILE_FLAGS) -o$(EBIN) $<
+	$(V_ERLC) -W -bbeam $(ERL_COMPILE_FLAGS) -o$(EBIN) $<
 
 # ----------------------------------------------------
 # Release Target
@@ -133,3 +131,8 @@ release_spec: opt
 #	$(INSTALL_DATA) ../$(ARCHIVE) $(RELEASE_PATH)/lib
 
 release_docs_spec:
+
+# ----------------------------------------------------
+# Dependencies
+# ----------------------------------------------------
+include $(ERL_TOP)/make/dep.mk

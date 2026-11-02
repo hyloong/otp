@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2014. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2014-2025. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -33,7 +35,7 @@
 	 types/1,
 	 values/1]).
 
--include_lib("test_server/include/test_server.hrl").
+-include_lib("common_test/include/ct.hrl").
 
 suite() -> [{ct_hooks, [ts_install_cth]}].
 
@@ -187,7 +189,7 @@ objects(Config) ->
 	  {"{&min 1, Max 10}",3,{syntax_error,'Max'}},
 	  {"{min 1, &max 10}",3,{syntax_error,'&max'}},
 	  {"{min 1, &Max 10}",3,{syntax_error,'&Max'}},
-	  {"{RESERVERD WORD BIT}",3,{syntax_error,'BIT'}},
+	  {"{RESERVED WORD BIT}",3,{syntax_error,'BIT'}},
 	  {"{&min 1",4,{syntax_error,'END'}}
 	 ],
     L = [{Head++S++End,Line,E} || {S,Line,E} <- L0],
@@ -305,10 +307,10 @@ run(List, File, Config) ->
 
 run(List, File0, Config, Module) ->
     Base = File0 ++ ".asn1",
-    File = filename:join(?config(priv_dir, Config), Base),
+    File = filename:join(proplists:get_value(priv_dir, Config), Base),
     case run_1(List, Base, File, Module, 0) of
 	0 -> ok;
-	Errors -> ?t:fail(Errors)
+	Errors -> ct:fail(Errors)
     end.
 
 run_1([{Source,Line,Error}=Exp|T], Base, File, Module, N) ->

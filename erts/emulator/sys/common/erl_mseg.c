@@ -1,7 +1,9 @@
 /*
  * %CopyrightBegin%
  *
- * Copyright Ericsson AB 2002-2013. All Rights Reserved.
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Copyright Ericsson AB 2002-2025. All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -31,11 +33,11 @@
 #  include "config.h"
 #endif
 
+#define ERTS_WANT_MEM_MAPPERS
 #include "sys.h"
 #include "erl_mseg.h"
 #include "global.h"
 #include "erl_threads.h"
-#include "erl_mtrace.h"
 #include "erl_time.h"
 #include "erl_alloc.h"
 #include "big.h"
@@ -43,21 +45,6 @@
 #include "erl_util_queue.h"
 
 #if HAVE_ERTS_MSEG
-
-#define SEGTYPE ERTS_MTRACE_SEGMENT_ID
-
-#ifndef HAVE_GETPAGESIZE
-#define HAVE_GETPAGESIZE 0
-#endif
-
-#ifdef _SC_PAGESIZE
-#  define GET_PAGE_SIZE sysconf(_SC_PAGESIZE)
-#elif HAVE_GETPAGESIZE
-#  define GET_PAGE_SIZE getpagesize()
-#else
-#  error "Page size unknown"
-     /* Implement some other way to get the real page size if needed! */
-#endif
 
 #undef MIN
 #define MIN(X, Y) ((X) < (Y) ? (X) : (Y))
@@ -82,11 +69,13 @@ static const int debruijn[32] = {
     31, 27, 13, 23, 21, 19, 16,  7, 26, 12, 18,  6, 11,  5, 10,  9
 };
 
-#define LOG2(X) (debruijn[((Uint32)(((X) & -(X)) * 0x077CB531U)) >> 27])
+#define LSB(X) (debruijn[((Uint32)(((X) & -(X)) * 0x077CB531U)) >> 27])
 
 #define CACHE_AREAS      (32 - MSEG_ALIGN_BITS)
 
-#define SIZE_TO_CACHE_AREA_IDX(S)   (LOG2((S)) - MSEG_ALIGN_BITS)
+/* FIXME: segment sizes > 2 GB result in bogus negative indices */
+/* NOTE: using LSB instead of proper log2 only works if S is a power of 2 */
+#define SIZE_TO_CACHE_AREA_IDX(S)   (LSB((S)) - MSEG_ALIGN_BITS)
 #define MAX_CACHE_SIZE   (30)
 
 #define MSEG_FLG_IS_2POW(X)    ((X) & ERTS_MSEG_FLG_2POW)
@@ -185,29 +174,16 @@ typedef union {
 static int no_mseg_allocators;
 static ErtsAlgndMsegAllctr_t *aligned_mseg_allctr;
 
-#ifdef ERTS_SMP
 
 #define ERTS_MSEG_ALLCTR_IX(IX) \
   (&aligned_mseg_allctr[(IX)].mseg_alloc)
 
 #define ERTS_MSEG_ALLCTR_SS() \
-  ERTS_MSEG_ALLCTR_IX((int) erts_get_scheduler_id())
+  ERTS_MSEG_ALLCTR_IX((int) erts_get_thr_alloc_ix())
 
 #define ERTS_MSEG_ALLCTR_OPT(OPT) \
   ((OPT)->sched_spec ? ERTS_MSEG_ALLCTR_SS() : ERTS_MSEG_ALLCTR_IX(0))
 
-#else
-
-#define ERTS_MSEG_ALLCTR_IX(IX) \
-  (&aligned_mseg_allctr[0].mseg_alloc)
-
-#define ERTS_MSEG_ALLCTR_SS() \
-  (&aligned_mseg_allctr[0].mseg_alloc)
-
-#define ERTS_MSEG_ALLCTR_OPT(OPT) \
-  (&aligned_mseg_allctr[0].mseg_alloc)
-
-#endif
 
 #define ERTS_MSEG_LOCK(MA)		\
 do {					\
@@ -291,7 +267,7 @@ mseg_create(ErtsMsegAllctr_t *ma, Uint flags, UWord *sizep)
     if (MSEG_FLG_IS_2POW(flags))
 	mmap_flags |= ERTS_MMAPFLG_SUPERALIGNED;
 
-    seg = erts_mmap(mmap_flags, sizep);
+    seg = erts_mmap(&erts_dflt_mmapper, mmap_flags, sizep);
 
 #ifdef ERTS_PRINT_ERTS_MMAP
     erts_fprintf(stderr, "%p = erts_mmap(%s, {%bpu, %bpu});\n", seg,
@@ -311,7 +287,7 @@ mseg_destroy(ErtsMsegAllctr_t *ma, Uint flags, void *seg_p, UWord size) {
     if (MSEG_FLG_IS_2POW(flags))
 	 mmap_flags |= ERTS_MMAPFLG_SUPERALIGNED;
 
-    erts_munmap(mmap_flags, seg_p, size);
+    erts_munmap(&erts_dflt_mmapper, mmap_flags, seg_p, size);
 #ifdef ERTS_PRINT_ERTS_MMAP
     erts_fprintf(stderr, "erts_munmap(%s, %p, %bpu);\n",
 		 (mmap_flags & ERTS_MMAPFLG_SUPERALIGNED) ? "sa" : "sua",
@@ -332,7 +308,7 @@ mseg_recreate(ErtsMsegAllctr_t *ma, Uint flags, void *old_seg, UWord old_size, U
     if (MSEG_FLG_IS_2POW(flags))
 	mmap_flags |= ERTS_MMAPFLG_SUPERALIGNED;
 
-    new_seg = erts_mremap(mmap_flags, old_seg, old_size, sizep);
+    new_seg = erts_mremap(&erts_dflt_mmapper, mmap_flags, old_seg, old_size, sizep);
 
 #ifdef ERTS_PRINT_ERTS_MMAP
     erts_fprintf(stderr, "%p = erts_mremap(%s, %p, %bpu, {%bpu, %bpu});\n",
@@ -349,11 +325,11 @@ mseg_recreate(ErtsMsegAllctr_t *ma, Uint flags, void *old_seg, UWord old_size, U
 do {									\
     if ((MA)->is_thread_safe)						\
 	ERTS_LC_ASSERT(erts_lc_mtx_is_locked(&(MA)->mtx)		\
-		       || erts_smp_thr_progress_is_blocking()		\
+		       || erts_thr_progress_is_blocking()		\
 		       || ERTS_IS_CRASH_DUMPING);			\
     else								\
 	ERTS_LC_ASSERT((MA)->ix == (int) erts_get_scheduler_id()	\
-		       || erts_smp_thr_progress_is_blocking()		\
+		       || erts_thr_progress_is_blocking()		\
 		       || ERTS_IS_CRASH_DUMPING);			\
 } while (0)
 #else
@@ -377,7 +353,7 @@ static ERTS_INLINE int cache_bless_segment(ErtsMsegAllctr_t *ma, void *seg, UWor
 
     ASSERT(!MSEG_FLG_IS_2POW(flags) || (MSEG_FLG_IS_2POW(flags) && MAP_IS_ALIGNED(seg) && IS_2POW(size)));
 
-    /* The idea is that sbc caching is prefered over mbc caching.
+    /* The idea is that sbc caching is preferred over mbc caching.
      * Blocks are normally allocated in mb carriers and thus cached there.
      * Large blocks has no such cache and it is up to mseg to cache them to speed things up.
      */
@@ -394,6 +370,9 @@ static ERTS_INLINE int cache_bless_segment(ErtsMsegAllctr_t *ma, void *seg, UWor
 
 	if (MSEG_FLG_IS_2POW(flags)) {
 	    int ix = SIZE_TO_CACHE_AREA_IDX(size);
+
+            if (ix < 0)
+                return 0;
 
 	    ASSERT(ix < CACHE_AREAS);
 	    ASSERT((1 << (ix + MSEG_ALIGN_BITS)) == size);
@@ -469,6 +448,9 @@ static ERTS_INLINE void *cache_get_segment(ErtsMsegAllctr_t *ma, UWord *size_p, 
 	UWord csize;
 
 	ASSERT(IS_2POW(size));
+
+        if (ix < 0)
+            return NULL;
 
 	for( i = ix; i < CACHE_AREAS; i++) {
 
@@ -551,8 +533,8 @@ static ERTS_INLINE void *cache_get_segment(ErtsMsegAllctr_t *ma, UWord *size_p, 
 	    best->seg  = ((char *)seg) + size;
 	    best->size = csize - size;
 
-	    ASSERT((size % GET_PAGE_SIZE) == 0);
-	    ASSERT((best->size % GET_PAGE_SIZE) == 0);
+	    ASSERT((size % sys_page_size) == 0);
+	    ASSERT((best->size % sys_page_size) == 0);
 
 	    *size_p = size;
 
@@ -574,9 +556,6 @@ static ERTS_INLINE Uint mseg_drop_one_cache_size(ErtsMsegAllctr_t *ma, Uint flag
     c = erts_circleq_tail(head);
     erts_circleq_remove(c);
 
-    if (erts_mtrace_enabled)
-	erts_mtrace_crr_free(SEGTYPE, SEGTYPE, c->seg);
-
     mseg_destroy(ma, flags, c->seg, c->size);
     mseg_cache_clear_node(c);
     erts_circleq_push_head(&(ma->cache_free), c);
@@ -596,9 +575,6 @@ static ERTS_INLINE Uint mseg_drop_cache_size(ErtsMsegAllctr_t *ma, Uint flags, c
 
 	c = erts_circleq_tail(head);
 	erts_circleq_remove(c);
-
-	if (erts_mtrace_enabled)
-	    erts_mtrace_crr_free(SEGTYPE, SEGTYPE, c->seg);
 
 	mseg_destroy(ma, flags, c->seg, c->size);
 
@@ -736,9 +712,6 @@ mseg_alloc(ErtsMsegAllctr_t *ma, ErtsAlcType_t atype, UWord *size_p,
     else {
 done:
 	*size_p = size;
-	if (erts_mtrace_enabled)
-	    erts_mtrace_crr_alloc(seg, atype, ERTS_MTRACE_SEGMENT_ID, size);
-
 	ERTS_MSEG_ALLOC_STAT(ma,size);
     }
 
@@ -756,9 +729,6 @@ mseg_dealloc(ErtsMsegAllctr_t *ma, ErtsAlcType_t atype, void *seg, UWord size,
 	schedule_cache_check(ma);
 	goto done;
     }
-
-    if (erts_mtrace_enabled)
-	erts_mtrace_crr_free(atype, SEGTYPE, seg);
 
     mseg_destroy(ma, flags, seg, size);
 
@@ -828,9 +798,6 @@ mseg_realloc(ErtsMsegAllctr_t *ma, ErtsAlcType_t atype, void *seg,
 		new_size = old_size;
 	}
     }
-
-    if (erts_mtrace_enabled)
-	erts_mtrace_crr_realloc(new_seg, atype, SEGTYPE, seg, new_size);
 
     INC_CC(ma, realloc);
 
@@ -990,17 +957,15 @@ add_4tup(Uint **hpp, Uint *szp, Eterm *lp,
 static Eterm
 info_options(ErtsMsegAllctr_t *ma,
 	     char *prefix,
-	     int *print_to_p,
+	     fmtfn_t *print_to_p,
 	     void *print_to_arg,
 	     Uint **hpp,
 	     Uint *szp)
 {
-    Eterm res;
-
-    res = erts_mmap_info_options(prefix, print_to_p, print_to_arg, hpp, szp);
+    Eterm res = NIL;
 
     if (print_to_p) {
-	int to = *print_to_p;
+	fmtfn_t to = *print_to_p;
 	void *arg = print_to_arg;
 	erts_print(to, arg, "%samcbf: %beu\n", prefix, ma->abs_max_cache_bad_fit);
 	erts_print(to, arg, "%srmcbf: %beu\n", prefix, ma->rel_max_cache_bad_fit);
@@ -1028,7 +993,7 @@ info_options(ErtsMsegAllctr_t *ma,
 }
 
 static Eterm
-info_calls(ErtsMsegAllctr_t *ma, int *print_to_p, void *print_to_arg, Uint **hpp, Uint *szp)
+info_calls(ErtsMsegAllctr_t *ma, fmtfn_t *print_to_p, void *print_to_arg, Uint **hpp, Uint *szp)
 {
     Eterm res = THE_NON_VALUE;
 
@@ -1041,7 +1006,7 @@ info_calls(ErtsMsegAllctr_t *ma, int *print_to_p, void *print_to_arg, Uint **hpp
 	erts_print(TO, TOA, "mseg_%s calls: %b32u%09b32u\n", #CC,		\
 		   ma->calls.CC.giga_no, ma->calls.CC.no)
 
-	int to = *print_to_p;
+	fmtfn_t to = *print_to_p;
 	void *arg = print_to_arg;
 
 	PRINT_CC(to, arg, alloc);
@@ -1107,8 +1072,8 @@ info_calls(ErtsMsegAllctr_t *ma, int *print_to_p, void *print_to_arg, Uint **hpp
 }
 
 static Eterm
-info_status(ErtsMsegAllctr_t *ma, int *print_to_p, void *print_to_arg,
-	    int begin_new_max_period, Uint **hpp, Uint *szp)
+info_status(ErtsMsegAllctr_t *ma, fmtfn_t *print_to_p, void *print_to_arg,
+	    int begin_new_max_period, int only_sz, Uint **hpp, Uint *szp)
 {
     Eterm res = THE_NON_VALUE;
     
@@ -1118,41 +1083,44 @@ info_status(ErtsMsegAllctr_t *ma, int *print_to_p, void *print_to_arg,
 	ma->segments.max_ever.sz = ma->segments.max.sz;
 
     if (print_to_p) {
-	int to = *print_to_p;
+	fmtfn_t to = *print_to_p;
 	void *arg = print_to_arg;
 
-	erts_print(to, arg, "cached_segments: %beu\n", ma->cache_size);
-	erts_print(to, arg, "cache_hits: %beu\n", ma->cache_hits);
-	erts_print(to, arg, "segments: %beu %beu %beu\n",
-		   ma->segments.current.no, ma->segments.max.no, ma->segments.max_ever.no);
-	erts_print(to, arg, "segments_size: %beu %beu %beu\n",
+        if (!only_sz) {
+            erts_print(to, arg, "cached_segments: %beu\n", ma->cache_size);
+            erts_print(to, arg, "cache_hits: %beu\n", ma->cache_hits);
+            erts_print(to, arg, "segments: %beu %beu %beu\n",
+                       ma->segments.current.no, ma->segments.max.no, ma->segments.max_ever.no);
+            erts_print(to, arg, "segments_watermark: %beu\n",
+                       ma->segments.current.watermark);
+        }
+        erts_print(to, arg, "segments_size: %beu %beu %beu\n",
 		   ma->segments.current.sz, ma->segments.max.sz, ma->segments.max_ever.sz);
-	erts_print(to, arg, "segments_watermark: %beu\n",
-		   ma->segments.current.watermark);
     }
 
     if (hpp || szp) {
 	res = NIL;
-	add_2tup(hpp, szp, &res,
-		 am.segments_watermark,
-		 bld_unstable_uint(hpp, szp, ma->segments.current.watermark));
-	add_4tup(hpp, szp, &res,
-		 am.segments_size,
-		 bld_unstable_uint(hpp, szp, ma->segments.current.sz),
-		 bld_unstable_uint(hpp, szp, ma->segments.max.sz),
-		 bld_unstable_uint(hpp, szp, ma->segments.max_ever.sz));
-	add_4tup(hpp, szp, &res,
-		 am.segments,
-		 bld_unstable_uint(hpp, szp, ma->segments.current.no),
-		 bld_unstable_uint(hpp, szp, ma->segments.max.no),
-		 bld_unstable_uint(hpp, szp, ma->segments.max_ever.no));
-	add_2tup(hpp, szp, &res,
-		 am.cache_hits,
-		 bld_unstable_uint(hpp, szp, ma->cache_hits));
-	add_2tup(hpp, szp, &res,
-		 am.cached_segments,
-		 bld_unstable_uint(hpp, szp, ma->cache_size));
-
+        add_4tup(hpp, szp, &res,
+                 am.segments_size,
+                 bld_unstable_uint(hpp, szp, ma->segments.current.sz),
+                 bld_unstable_uint(hpp, szp, ma->segments.max.sz),
+                 bld_unstable_uint(hpp, szp, ma->segments.max_ever.sz));
+        if (!only_sz) {
+            add_2tup(hpp, szp, &res,
+                     am.segments_watermark,
+                     bld_unstable_uint(hpp, szp, ma->segments.current.watermark));
+            add_4tup(hpp, szp, &res,
+                     am.segments,
+                     bld_unstable_uint(hpp, szp, ma->segments.current.no),
+                     bld_unstable_uint(hpp, szp, ma->segments.max.no),
+                     bld_unstable_uint(hpp, szp, ma->segments.max_ever.no));
+            add_2tup(hpp, szp, &res,
+                     am.cache_hits,
+                     bld_unstable_uint(hpp, szp, ma->cache_hits));
+            add_2tup(hpp, szp, &res,
+                     am.cached_segments,
+                     bld_unstable_uint(hpp, szp, ma->cache_size));
+        }
     }
 
     if (begin_new_max_period) {
@@ -1163,33 +1131,38 @@ info_status(ErtsMsegAllctr_t *ma, int *print_to_p, void *print_to_arg,
     return res;
 }
 
-static Eterm info_memkind(ErtsMsegAllctr_t *ma, int *print_to_p, void *print_to_arg,
-			  int begin_max_per, Uint **hpp, Uint *szp)
+static Eterm info_memkind(ErtsMsegAllctr_t *ma, fmtfn_t *print_to_p, void *print_to_arg,
+			  int begin_max_per, int only_sz, Uint **hpp, Uint *szp)
 {
     Eterm res = THE_NON_VALUE;
     Eterm atoms[3];
     Eterm values[3];
 
-    if (print_to_p) {
-	erts_print(*print_to_p, print_to_arg, "memory kind: %s\n", "all memory");
+    if (!only_sz) {
+        if (print_to_p) {
+            erts_print(*print_to_p, print_to_arg, "memory kind: %s\n", "all memory");
+        }
+        if (hpp || szp) {
+            atoms[0] = am.name;
+            atoms[1] = am.status;
+            atoms[2] = am.calls;
+            values[0] = erts_bld_string(hpp, szp, "all memory");
+        }
     }
-    if (hpp || szp) {
-	atoms[0] = am.name;
-	atoms[1] = am.status;
-	atoms[2] = am.calls;
-	values[0] = erts_bld_string(hpp, szp, "all memory");
-    }
-    values[1] = info_status(ma, print_to_p, print_to_arg, begin_max_per, hpp, szp);
-    values[2] = info_calls(ma, print_to_p, print_to_arg, hpp, szp);
+    res = info_status(ma, print_to_p, print_to_arg, begin_max_per, only_sz, hpp, szp);
+    if (!only_sz) {
+        values[1] = res;
+        values[2] = info_calls(ma, print_to_p, print_to_arg, hpp, szp);
 
-    if (hpp || szp)
-	res = bld_2tup_list(hpp, szp, 3, atoms, values);
+        if (hpp || szp)
+            res = bld_2tup_list(hpp, szp, 3, atoms, values);
+    }
 
     return res;
 }
 
 static Eterm
-info_version(ErtsMsegAllctr_t *ma, int *print_to_p, void *print_to_arg, Uint **hpp, Uint *szp)
+info_version(ErtsMsegAllctr_t *ma, fmtfn_t *print_to_p, void *print_to_arg, Uint **hpp, Uint *szp)
 {
     Eterm res = THE_NON_VALUE;
 
@@ -1211,7 +1184,7 @@ info_version(ErtsMsegAllctr_t *ma, int *print_to_p, void *print_to_arg, Uint **h
 
 Eterm
 erts_mseg_info_options(int ix,
-		       int *print_to_p, void *print_to_arg,
+		       fmtfn_t *print_to_p, void *print_to_arg,
 		       Uint **hpp, Uint *szp)
 {
     ErtsMsegAllctr_t *ma = ERTS_MSEG_ALLCTR_IX(ix);
@@ -1224,9 +1197,10 @@ erts_mseg_info_options(int ix,
 
 Eterm
 erts_mseg_info(int ix,
-	       int *print_to_p,
+	       fmtfn_t *print_to_p,
 	       void *print_to_arg,
 	       int begin_max_per,
+               int only_sz,
 	       Uint **hpp,
 	       Uint *szp)
 {
@@ -1237,24 +1211,29 @@ erts_mseg_info(int ix,
     Uint n = 0;
 
     if (hpp || szp) {
-	
-	if (!atoms_initialized)
-	    init_atoms(ma);
-
-	atoms[0] = am.version;
-	atoms[1] = am.options;
-	atoms[2] = am.memkind;
-	atoms[3] = am.memkind;
+        if (!atoms_initialized)
+            init_atoms(ma);
     }
-    values[n++] = info_version(ma, print_to_p, print_to_arg, hpp, szp);
-    values[n++] = info_options(ma, "option ", print_to_p, print_to_arg, hpp, szp);
+    if (!only_sz) {
+        if (hpp || szp) {
+            atoms[0] = am.version;
+            atoms[1] = am.options;
+            atoms[2] = am.memkind;
+        }
+        values[n++] = info_version(ma, print_to_p, print_to_arg, hpp, szp);
+        values[n++] = info_options(ma, "option ", print_to_p, print_to_arg, hpp, szp);
+    }
 
     ERTS_MSEG_LOCK(ma);
     ERTS_DBG_MA_CHK_THR_ACCESS(ma);
 
-    values[n++] = info_memkind(ma, print_to_p, print_to_arg, begin_max_per, hpp, szp);
-    if (hpp || szp)
-	res = bld_2tup_list(hpp, szp, n, atoms, values);
+    res = info_memkind(ma, print_to_p, print_to_arg, begin_max_per, only_sz, hpp, szp);
+
+    if (!only_sz) {
+        values[n++] = res;
+        if (hpp || szp)
+            res = bld_2tup_list(hpp, szp, n, atoms, values);
+    }
 
     ERTS_MSEG_UNLOCK(ma);
 
@@ -1383,12 +1362,10 @@ erts_mseg_init(ErtsMsegInit_t *init)
     int i;
     UWord x;
 
-#ifdef ERTS_SMP
-    no_mseg_allocators = init->nos + 1;
-#else
-    no_mseg_allocators = 1;
-#endif
-
+    no_mseg_allocators = 1; /* Global instance */
+    no_mseg_allocators += init->nos; /* Scheduler specific instances */
+    no_mseg_allocators += init->ndai; /* Dirty alloc instances */
+    
     x = (UWord) malloc(sizeof(ErtsAlgndMsegAllctr_t)
 		       *no_mseg_allocators
 		       + (ERTS_CACHE_LINE_SIZE-1));
@@ -1399,14 +1376,19 @@ erts_mseg_init(ErtsMsegInit_t *init)
 
     atoms_initialized = 0;
 
-    erts_mtx_init(&init_atoms_mutex, "mseg_init_atoms");
+    erts_mtx_init(&init_atoms_mutex, "mseg_init_atoms", NIL,
+        ERTS_LOCK_FLAGS_PROPERTY_STATIC | ERTS_LOCK_FLAGS_CATEGORY_GENERIC);
 
-    erts_mmap_init(&init->mmap);
+    erts_mmap_init(&erts_dflt_mmapper, &init->dflt_mmap);
+#if defined(ARCH_64) && defined(ERTS_HAVE_OS_PHYSICAL_MEMORY_RESERVATION)
+    erts_mmap_init(&erts_literal_mmapper, &init->literal_mmap);
+#endif
 
-    if (!IS_2POW(GET_PAGE_SIZE))
-	erl_exit(ERTS_ABORT_EXIT, "erts_mseg: Unexpected page_size %beu\n", GET_PAGE_SIZE);
+    if (!IS_2POW(sys_page_size))
+	erts_exit(ERTS_ABORT_EXIT, "erts_mseg: Unexpected sys_page_size %beu\n", sys_page_size);
 
-    ASSERT((MSEG_ALIGNED_SIZE % GET_PAGE_SIZE) == 0);
+    ASSERT((MSEG_ALIGNED_SIZE % sys_page_size) == 0
+	   || (sys_page_size % MSEG_ALIGNED_SIZE) == 0);
 
     for (i = 0; i < no_mseg_allocators; i++) {
 	ErtsMsegAllctr_t *ma = ERTS_MSEG_ALLCTR_IX(i);
@@ -1415,11 +1397,12 @@ erts_mseg_init(ErtsMsegInit_t *init)
 
 	ma->is_init_done = 0;
 
-	if (i != 0)
+	if (i != 0 && i <= init->nos)
 	    ma->is_thread_safe = 0;
 	else {
 	    ma->is_thread_safe = 1;
-	    erts_mtx_init(&ma->mtx, "mseg");
+            erts_mtx_init(&ma->mtx, "mseg", make_small(i),
+                ERTS_LOCK_FLAGS_PROPERTY_STATIC | ERTS_LOCK_FLAGS_CATEGORY_ALLOCATOR);
 	}
 
 	ma->is_cache_check_scheduled = 0;

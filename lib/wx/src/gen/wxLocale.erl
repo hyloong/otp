@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2008-2014. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0 AND LicenseRef-scancode-wxwindows-free-doc-3
+%%
+%% Copyright Ericsson AB 2008-2026. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -15,265 +17,438 @@
 %% See the License for the specific language governing permissions and
 %% limitations under the License.
 %%
+%% For documentation, wxWindow Free Documentation License, Version 3 applies.
+%% wxWindows Free Documentation Licence, Version 3, as follows.
+%% ===============================================
+%%
+%% Everyone is permitted to copy and distribute verbatim copies
+%% of this licence document, but changing it is not allowed.
+%%
+%%                  WXWINDOWS FREE DOCUMENTATION LICENCE
+%%    TERMS AND CONDITIONS FOR COPYING, DISTRIBUTION AND MODIFICATION
+%%
+%% 1. Permission is granted to make and distribute verbatim copies of this
+%% manual or piece of documentation provided any copyright notice and this
+%% permission notice are preserved on all copies.
+%%
+%% 2. Permission is granted to process this file or document through a
+%% document processing system and, at your option and the option of any third
+%% party, print the results, provided a printed document carries a copying
+%% permission notice identical to this one.
+%%
+%% 3. Permission is granted to copy and distribute modified versions of this
+%% manual or piece of documentation under the conditions for verbatim copying,
+%% provided also that any sections describing licensing conditions for this
+%% manual, such as, in particular, the GNU General Public Licence, the GNU
+%% Library General Public Licence, and any wxWindows Licence are included
+%% exactly as in the original, and provided that the entire resulting derived
+%% work is distributed under the terms of a permission notice identical to
+%% this one.
+%%
+%% 4. Permission is granted to copy and distribute translations of this manual
+%% or piece of documentation into another language, under the above conditions
+%% for modified versions, except that sections related to licensing, including
+%% this paragraph, may also be included in translations approved by the
+%% copyright holders of the respective licence documents in addition to the
+%% original English.
+%%
 %% %CopyrightEnd%
 %% This file is generated DO NOT EDIT
 
-%% @doc See external documentation: <a href="http://www.wxwidgets.org/manuals/2.8.12/wx_wxlocale.html">wxLocale</a>.
-%% @type wxLocale().  An object reference, The representation is internal
-%% and can be changed without notice. It can't be used for comparsion
-%% stored on disc or distributed for use on other nodes.
-
 -module(wxLocale).
+-moduledoc """
+`m:wxLocale` class encapsulates all language-dependent settings and is a generalization
+of the C locale concept.
+
+In wxWidgets this class manages current locale. It also initializes and activates `wxTranslations`
+(not implemented in wx) object that manages message catalogs.
+
+For a list of the supported languages, please see ?wxLanguage enum values. These
+constants may be used to specify the language in `init/3` and are returned by `getSystemLanguage/0`.
+
+See:
+* [Overview i18n](https://docs.wxwidgets.org/3.2/overview_i18n.html#overview_i18n)
+
+* [Examples](https://docs.wxwidgets.org/3.2/page_samples.html#page_samples_internat)
+
+wxWidgets docs: [wxLocale](https://docs.wxwidgets.org/3.2/classwx_locale.html)
+""".
 -include("wxe.hrl").
--export([addCatalog/2,addCatalog/4,addCatalogLookupPathPrefix/1,destroy/1,
-  getCanonicalName/1,getHeaderValue/2,getHeaderValue/3,getLanguage/1,
+-export([addCatalog/2,addCatalog/3,addCatalog/4,addCatalogLookupPathPrefix/1,
+  destroy/1,getCanonicalName/1,getHeaderValue/2,getHeaderValue/3,getLanguage/1,
   getLanguageName/1,getLocale/1,getName/1,getString/2,getString/3,getString/4,
   getString/5,getSysName/1,getSystemEncoding/0,getSystemEncodingName/0,
-  getSystemLanguage/0,init/1,init/2,isLoaded/2,isOk/1,new/0,new/1,new/2]).
+  getSystemLanguage/0,init/1,init/2,init/3,isLoaded/2,isOk/1,new/0,new/1,
+  new/2]).
 
 %% inherited exports
 -export([parent_class/1]).
 
+-type wxLocale() :: wx:wx_object().
 -export_type([wxLocale/0]).
-%% @hidden
+-doc false.
 parent_class(_Class) -> erlang:error({badtype, ?MODULE}).
 
--type wxLocale() :: wx:wx_object().
-%% @doc See <a href="http://www.wxwidgets.org/manuals/2.8.12/wx_wxlocale.html#wxlocalewxlocale">external documentation</a>.
+-doc """
+This is the default constructor and it does nothing to initialize the object: `init/3`
+must be used to do that.
+""".
 -spec new() -> wxLocale().
 new() ->
-  wxe_util:construct(?wxLocale_new_0,
-  <<>>).
+  wxe_util:queue_cmd(?get_env(), ?wxLocale_new_0),
+  wxe_util:rec(?wxLocale_new_0).
 
-%% @equiv new(Language, [])
+-doc "Equivalent to: `new/2`".
 -spec new(Language) -> wxLocale() when
-	Language::integer().
+        Language::integer();
+      (Name) -> wxLocale() when
+        Name::unicode:chardata().
 
 new(Language)
  when is_integer(Language) ->
-  new(Language, []).
+  new(Language, []);
 
-%% @doc See <a href="http://www.wxwidgets.org/manuals/2.8.12/wx_wxlocale.html#wxlocalewxlocale">external documentation</a>.
+new(Name)
+ when ?is_chardata(Name) ->
+  new(Name, []).
+
+-doc """
+See `init/3` for parameters description.
+
+The call of this function has several global side effects which you should understand:
+first of all, the application locale is changed - note that this will affect many of
+standard C library functions such as printf() or strftime(). Second, this `m:wxLocale`
+object becomes the new current global locale for the application and so all subsequent
+calls to ?wxGetTranslation() will try to translate the messages using the message catalogs
+for this locale.
+""".
 -spec new(Language, [Option]) -> wxLocale() when
 	Language::integer(),
-	Option :: {flags, integer()}.
+	Option :: {'flags', integer()};
+      (Name, [Option]) -> wxLocale() when
+	Name::unicode:chardata(),
+	Option :: {'shortName', unicode:chardata()}
+		 | {'locale', unicode:chardata()}
+		 | {'bLoadDefault', boolean()}.
 new(Language, Options)
  when is_integer(Language),is_list(Options) ->
-  MOpts = fun({flags, Flags}, Acc) -> [<<1:32/?UI,Flags:32/?UI>>|Acc];
-          (BadOpt, _) -> erlang:error({badoption, BadOpt}) end,
-  BinOpt = list_to_binary(lists:foldl(MOpts, [<<0:32>>], Options)),
-  wxe_util:construct(?wxLocale_new_2,
-  <<Language:32/?UI, 0:32,BinOpt/binary>>).
+  MOpts = fun({flags, _flags} = Arg) -> Arg;
+          (BadOpt) -> erlang:error({badoption, BadOpt}) end,
+  Opts = lists:map(MOpts, Options),
+  wxe_util:queue_cmd(Language, Opts,?get_env(),?wxLocale_new_2_0),
+  wxe_util:rec(?wxLocale_new_2_0);
+new(Name, Options)
+ when ?is_chardata(Name),is_list(Options) ->
+  Name_UC = unicode:characters_to_binary(Name),
+  MOpts = fun({shortName, ShortName}) ->   ShortName_UC = unicode:characters_to_binary(ShortName),{shortName,ShortName_UC};
+          ({locale, Locale}) ->   Locale_UC = unicode:characters_to_binary(Locale),{locale,Locale_UC};
+          ({bLoadDefault, _bLoadDefault} = Arg) -> Arg;
+          (BadOpt) -> erlang:error({badoption, BadOpt}) end,
+  Opts = lists:map(MOpts, Options),
+  wxe_util:queue_cmd(Name_UC, Opts,?get_env(),?wxLocale_new_2_1),
+  wxe_util:rec(?wxLocale_new_2_1).
 
-%% @equiv init(This, [])
+-doc(#{equiv => init(This, [])}).
 -spec init(This) -> boolean() when
-	This::wxLocale().
+        This::wxLocale().
 
 init(This)
  when is_record(This, wx_ref) ->
   init(This, []).
 
-%% @doc See <a href="http://www.wxwidgets.org/manuals/2.8.12/wx_wxlocale.html#wxlocaleinit">external documentation</a>.
+-doc """
+Initializes the `m:wxLocale` instance.
+
+The call of this function has several global side effects which you should understand:
+first of all, the application locale is changed - note that this will affect many of
+standard C library functions such as printf() or strftime(). Second, this `m:wxLocale`
+object becomes the new current global locale for the application and so all subsequent
+calls to ?wxGetTranslation() will try to translate the messages using the message catalogs
+for this locale.
+
+Return: true on success or false if the given locale couldn't be set.
+""".
 -spec init(This, [Option]) -> boolean() when
 	This::wxLocale(),
-	Option :: {language, integer()}
-		 | {flags, integer()}.
-init(#wx_ref{type=ThisT,ref=ThisRef}, Options)
+	Option :: {'language', integer()}
+		 | {'flags', integer()}.
+init(#wx_ref{type=ThisT}=This, Options)
  when is_list(Options) ->
   ?CLASS(ThisT,wxLocale),
-  MOpts = fun({language, Language}, Acc) -> [<<1:32/?UI,Language:32/?UI>>|Acc];
-          ({flags, Flags}, Acc) -> [<<2:32/?UI,Flags:32/?UI>>|Acc];
-          (BadOpt, _) -> erlang:error({badoption, BadOpt}) end,
-  BinOpt = list_to_binary(lists:foldl(MOpts, [<<0:32>>], Options)),
-  wxe_util:call(?wxLocale_Init,
-  <<ThisRef:32/?UI, 0:32,BinOpt/binary>>).
+  MOpts = fun({language, _language} = Arg) -> Arg;
+          ({flags, _flags} = Arg) -> Arg;
+          (BadOpt) -> erlang:error({badoption, BadOpt}) end,
+  Opts = lists:map(MOpts, Options),
+  wxe_util:queue_cmd(This, Opts,?get_env(),?wxLocale_Init_1),
+  wxe_util:rec(?wxLocale_Init_1).
 
-%% @doc See <a href="http://www.wxwidgets.org/manuals/2.8.12/wx_wxlocale.html#wxlocaleaddcatalog">external documentation</a>.
--spec addCatalog(This, SzDomain) -> boolean() when
-	This::wxLocale(), SzDomain::unicode:chardata().
-addCatalog(#wx_ref{type=ThisT,ref=ThisRef},SzDomain)
- when is_list(SzDomain) ->
+-doc """
+Deprecated:
+
+This form is deprecated, use the other one unless you know what you are doing.
+""".
+-spec init(This, Name, [Option]) -> boolean() when
+	This::wxLocale(), Name::unicode:chardata(),
+	Option :: {'shortName', unicode:chardata()}
+		 | {'locale', unicode:chardata()}
+		 | {'bLoadDefault', boolean()}.
+init(#wx_ref{type=ThisT}=This,Name, Options)
+ when ?is_chardata(Name),is_list(Options) ->
   ?CLASS(ThisT,wxLocale),
-  SzDomain_UC = unicode:characters_to_binary([SzDomain,0]),
-  wxe_util:call(?wxLocale_AddCatalog_1,
-  <<ThisRef:32/?UI,(byte_size(SzDomain_UC)):32/?UI,(SzDomain_UC)/binary, 0:(((8- ((0+byte_size(SzDomain_UC)) band 16#7)) band 16#7))/unit:8>>).
+  Name_UC = unicode:characters_to_binary(Name),
+  MOpts = fun({shortName, ShortName}) ->   ShortName_UC = unicode:characters_to_binary(ShortName),{shortName,ShortName_UC};
+          ({locale, Locale}) ->   Locale_UC = unicode:characters_to_binary(Locale),{locale,Locale_UC};
+          ({bLoadDefault, _bLoadDefault} = Arg) -> Arg;
+          (BadOpt) -> erlang:error({badoption, BadOpt}) end,
+  Opts = lists:map(MOpts, Options),
+  wxe_util:queue_cmd(This,Name_UC, Opts,?get_env(),?wxLocale_Init_2),
+  wxe_util:rec(?wxLocale_Init_2).
 
-%% @doc See <a href="http://www.wxwidgets.org/manuals/2.8.12/wx_wxlocale.html#wxlocaleaddcatalog">external documentation</a>.
-%%<br /> MsgIdLanguage = ?wxLANGUAGE_DEFAULT | ?wxLANGUAGE_UNKNOWN | ?wxLANGUAGE_ABKHAZIAN | ?wxLANGUAGE_AFAR | ?wxLANGUAGE_AFRIKAANS | ?wxLANGUAGE_ALBANIAN | ?wxLANGUAGE_AMHARIC | ?wxLANGUAGE_ARABIC | ?wxLANGUAGE_ARABIC_ALGERIA | ?wxLANGUAGE_ARABIC_BAHRAIN | ?wxLANGUAGE_ARABIC_EGYPT | ?wxLANGUAGE_ARABIC_IRAQ | ?wxLANGUAGE_ARABIC_JORDAN | ?wxLANGUAGE_ARABIC_KUWAIT | ?wxLANGUAGE_ARABIC_LEBANON | ?wxLANGUAGE_ARABIC_LIBYA | ?wxLANGUAGE_ARABIC_MOROCCO | ?wxLANGUAGE_ARABIC_OMAN | ?wxLANGUAGE_ARABIC_QATAR | ?wxLANGUAGE_ARABIC_SAUDI_ARABIA | ?wxLANGUAGE_ARABIC_SUDAN | ?wxLANGUAGE_ARABIC_SYRIA | ?wxLANGUAGE_ARABIC_TUNISIA | ?wxLANGUAGE_ARABIC_UAE | ?wxLANGUAGE_ARABIC_YEMEN | ?wxLANGUAGE_ARMENIAN | ?wxLANGUAGE_ASSAMESE | ?wxLANGUAGE_AYMARA | ?wxLANGUAGE_AZERI | ?wxLANGUAGE_AZERI_CYRILLIC | ?wxLANGUAGE_AZERI_LATIN | ?wxLANGUAGE_BASHKIR | ?wxLANGUAGE_BASQUE | ?wxLANGUAGE_BELARUSIAN | ?wxLANGUAGE_BENGALI | ?wxLANGUAGE_BHUTANI | ?wxLANGUAGE_BIHARI | ?wxLANGUAGE_BISLAMA | ?wxLANGUAGE_BRETON | ?wxLANGUAGE_BULGARIAN | ?wxLANGUAGE_BURMESE | ?wxLANGUAGE_CAMBODIAN | ?wxLANGUAGE_CATALAN | ?wxLANGUAGE_CHINESE | ?wxLANGUAGE_CHINESE_SIMPLIFIED | ?wxLANGUAGE_CHINESE_TRADITIONAL | ?wxLANGUAGE_CHINESE_HONGKONG | ?wxLANGUAGE_CHINESE_MACAU | ?wxLANGUAGE_CHINESE_SINGAPORE | ?wxLANGUAGE_CHINESE_TAIWAN | ?wxLANGUAGE_CORSICAN | ?wxLANGUAGE_CROATIAN | ?wxLANGUAGE_CZECH | ?wxLANGUAGE_DANISH | ?wxLANGUAGE_DUTCH | ?wxLANGUAGE_DUTCH_BELGIAN | ?wxLANGUAGE_ENGLISH | ?wxLANGUAGE_ENGLISH_UK | ?wxLANGUAGE_ENGLISH_US | ?wxLANGUAGE_ENGLISH_AUSTRALIA | ?wxLANGUAGE_ENGLISH_BELIZE | ?wxLANGUAGE_ENGLISH_BOTSWANA | ?wxLANGUAGE_ENGLISH_CANADA | ?wxLANGUAGE_ENGLISH_CARIBBEAN | ?wxLANGUAGE_ENGLISH_DENMARK | ?wxLANGUAGE_ENGLISH_EIRE | ?wxLANGUAGE_ENGLISH_JAMAICA | ?wxLANGUAGE_ENGLISH_NEW_ZEALAND | ?wxLANGUAGE_ENGLISH_PHILIPPINES | ?wxLANGUAGE_ENGLISH_SOUTH_AFRICA | ?wxLANGUAGE_ENGLISH_TRINIDAD | ?wxLANGUAGE_ENGLISH_ZIMBABWE | ?wxLANGUAGE_ESPERANTO | ?wxLANGUAGE_ESTONIAN | ?wxLANGUAGE_FAEROESE | ?wxLANGUAGE_FARSI | ?wxLANGUAGE_FIJI | ?wxLANGUAGE_FINNISH | ?wxLANGUAGE_FRENCH | ?wxLANGUAGE_FRENCH_BELGIAN | ?wxLANGUAGE_FRENCH_CANADIAN | ?wxLANGUAGE_FRENCH_LUXEMBOURG | ?wxLANGUAGE_FRENCH_MONACO | ?wxLANGUAGE_FRENCH_SWISS | ?wxLANGUAGE_FRISIAN | ?wxLANGUAGE_GALICIAN | ?wxLANGUAGE_GEORGIAN | ?wxLANGUAGE_GERMAN | ?wxLANGUAGE_GERMAN_AUSTRIAN | ?wxLANGUAGE_GERMAN_BELGIUM | ?wxLANGUAGE_GERMAN_LIECHTENSTEIN | ?wxLANGUAGE_GERMAN_LUXEMBOURG | ?wxLANGUAGE_GERMAN_SWISS | ?wxLANGUAGE_GREEK | ?wxLANGUAGE_GREENLANDIC | ?wxLANGUAGE_GUARANI | ?wxLANGUAGE_GUJARATI | ?wxLANGUAGE_HAUSA | ?wxLANGUAGE_HEBREW | ?wxLANGUAGE_HINDI | ?wxLANGUAGE_HUNGARIAN | ?wxLANGUAGE_ICELANDIC | ?wxLANGUAGE_INDONESIAN | ?wxLANGUAGE_INTERLINGUA | ?wxLANGUAGE_INTERLINGUE | ?wxLANGUAGE_INUKTITUT | ?wxLANGUAGE_INUPIAK | ?wxLANGUAGE_IRISH | ?wxLANGUAGE_ITALIAN | ?wxLANGUAGE_ITALIAN_SWISS | ?wxLANGUAGE_JAPANESE | ?wxLANGUAGE_JAVANESE | ?wxLANGUAGE_KANNADA | ?wxLANGUAGE_KASHMIRI | ?wxLANGUAGE_KASHMIRI_INDIA | ?wxLANGUAGE_KAZAKH | ?wxLANGUAGE_KERNEWEK | ?wxLANGUAGE_KINYARWANDA | ?wxLANGUAGE_KIRGHIZ | ?wxLANGUAGE_KIRUNDI | ?wxLANGUAGE_KONKANI | ?wxLANGUAGE_KOREAN | ?wxLANGUAGE_KURDISH | ?wxLANGUAGE_LAOTHIAN | ?wxLANGUAGE_LATIN | ?wxLANGUAGE_LATVIAN | ?wxLANGUAGE_LINGALA | ?wxLANGUAGE_LITHUANIAN | ?wxLANGUAGE_MACEDONIAN | ?wxLANGUAGE_MALAGASY | ?wxLANGUAGE_MALAY | ?wxLANGUAGE_MALAYALAM | ?wxLANGUAGE_MALAY_BRUNEI_DARUSSALAM | ?wxLANGUAGE_MALAY_MALAYSIA | ?wxLANGUAGE_MALTESE | ?wxLANGUAGE_MANIPURI | ?wxLANGUAGE_MAORI | ?wxLANGUAGE_MARATHI | ?wxLANGUAGE_MOLDAVIAN | ?wxLANGUAGE_MONGOLIAN | ?wxLANGUAGE_NAURU | ?wxLANGUAGE_NEPALI | ?wxLANGUAGE_NEPALI_INDIA | ?wxLANGUAGE_NORWEGIAN_BOKMAL | ?wxLANGUAGE_NORWEGIAN_NYNORSK | ?wxLANGUAGE_OCCITAN | ?wxLANGUAGE_ORIYA | ?wxLANGUAGE_OROMO | ?wxLANGUAGE_PASHTO | ?wxLANGUAGE_POLISH | ?wxLANGUAGE_PORTUGUESE | ?wxLANGUAGE_PORTUGUESE_BRAZILIAN | ?wxLANGUAGE_PUNJABI | ?wxLANGUAGE_QUECHUA | ?wxLANGUAGE_RHAETO_ROMANCE | ?wxLANGUAGE_ROMANIAN | ?wxLANGUAGE_RUSSIAN | ?wxLANGUAGE_RUSSIAN_UKRAINE | ?wxLANGUAGE_SAMOAN | ?wxLANGUAGE_SANGHO | ?wxLANGUAGE_SANSKRIT | ?wxLANGUAGE_SCOTS_GAELIC | ?wxLANGUAGE_SERBIAN | ?wxLANGUAGE_SERBIAN_CYRILLIC | ?wxLANGUAGE_SERBIAN_LATIN | ?wxLANGUAGE_SERBO_CROATIAN | ?wxLANGUAGE_SESOTHO | ?wxLANGUAGE_SETSWANA | ?wxLANGUAGE_SHONA | ?wxLANGUAGE_SINDHI | ?wxLANGUAGE_SINHALESE | ?wxLANGUAGE_SISWATI | ?wxLANGUAGE_SLOVAK | ?wxLANGUAGE_SLOVENIAN | ?wxLANGUAGE_SOMALI | ?wxLANGUAGE_SPANISH | ?wxLANGUAGE_SPANISH_ARGENTINA | ?wxLANGUAGE_SPANISH_BOLIVIA | ?wxLANGUAGE_SPANISH_CHILE | ?wxLANGUAGE_SPANISH_COLOMBIA | ?wxLANGUAGE_SPANISH_COSTA_RICA | ?wxLANGUAGE_SPANISH_DOMINICAN_REPUBLIC | ?wxLANGUAGE_SPANISH_ECUADOR | ?wxLANGUAGE_SPANISH_EL_SALVADOR | ?wxLANGUAGE_SPANISH_GUATEMALA | ?wxLANGUAGE_SPANISH_HONDURAS | ?wxLANGUAGE_SPANISH_MEXICAN | ?wxLANGUAGE_SPANISH_MODERN | ?wxLANGUAGE_SPANISH_NICARAGUA | ?wxLANGUAGE_SPANISH_PANAMA | ?wxLANGUAGE_SPANISH_PARAGUAY | ?wxLANGUAGE_SPANISH_PERU | ?wxLANGUAGE_SPANISH_PUERTO_RICO | ?wxLANGUAGE_SPANISH_URUGUAY | ?wxLANGUAGE_SPANISH_US | ?wxLANGUAGE_SPANISH_VENEZUELA | ?wxLANGUAGE_SUNDANESE | ?wxLANGUAGE_SWAHILI | ?wxLANGUAGE_SWEDISH | ?wxLANGUAGE_SWEDISH_FINLAND | ?wxLANGUAGE_TAGALOG | ?wxLANGUAGE_TAJIK | ?wxLANGUAGE_TAMIL | ?wxLANGUAGE_TATAR | ?wxLANGUAGE_TELUGU | ?wxLANGUAGE_THAI | ?wxLANGUAGE_TIBETAN | ?wxLANGUAGE_TIGRINYA | ?wxLANGUAGE_TONGA | ?wxLANGUAGE_TSONGA | ?wxLANGUAGE_TURKISH | ?wxLANGUAGE_TURKMEN | ?wxLANGUAGE_TWI | ?wxLANGUAGE_UIGHUR | ?wxLANGUAGE_UKRAINIAN | ?wxLANGUAGE_URDU | ?wxLANGUAGE_URDU_INDIA | ?wxLANGUAGE_URDU_PAKISTAN | ?wxLANGUAGE_UZBEK | ?wxLANGUAGE_UZBEK_CYRILLIC | ?wxLANGUAGE_UZBEK_LATIN | ?wxLANGUAGE_VIETNAMESE | ?wxLANGUAGE_VOLAPUK | ?wxLANGUAGE_WELSH | ?wxLANGUAGE_WOLOF | ?wxLANGUAGE_XHOSA | ?wxLANGUAGE_YIDDISH | ?wxLANGUAGE_YORUBA | ?wxLANGUAGE_ZHUANG | ?wxLANGUAGE_ZULU | ?wxLANGUAGE_USER_DEFINED | ?wxLANGUAGE_VALENCIAN | ?wxLANGUAGE_SAMI
--spec addCatalog(This, SzDomain, MsgIdLanguage, MsgIdCharset) -> boolean() when
-	This::wxLocale(), SzDomain::unicode:chardata(), MsgIdLanguage::wx:wx_enum(), MsgIdCharset::unicode:chardata().
-addCatalog(#wx_ref{type=ThisT,ref=ThisRef},SzDomain,MsgIdLanguage,MsgIdCharset)
- when is_list(SzDomain),is_integer(MsgIdLanguage),is_list(MsgIdCharset) ->
+-doc "Calls wxTranslations::AddCatalog(const wxString&).".
+-spec addCatalog(This, Domain) -> boolean() when
+        This::wxLocale(), Domain::unicode:chardata().
+addCatalog(#wx_ref{type=ThisT}=This,Domain)
+ when ?is_chardata(Domain) ->
   ?CLASS(ThisT,wxLocale),
-  SzDomain_UC = unicode:characters_to_binary([SzDomain,0]),
-  MsgIdCharset_UC = unicode:characters_to_binary([MsgIdCharset,0]),
-  wxe_util:call(?wxLocale_AddCatalog_3,
-  <<ThisRef:32/?UI,(byte_size(SzDomain_UC)):32/?UI,(SzDomain_UC)/binary, 0:(((8- ((0+byte_size(SzDomain_UC)) band 16#7)) band 16#7))/unit:8,MsgIdLanguage:32/?UI,(byte_size(MsgIdCharset_UC)):32/?UI,(MsgIdCharset_UC)/binary, 0:(((8- ((0+byte_size(MsgIdCharset_UC)) band 16#7)) band 16#7))/unit:8>>).
+  Domain_UC = unicode:characters_to_binary(Domain),
+  wxe_util:queue_cmd(This,Domain_UC,?get_env(),?wxLocale_AddCatalog_1),
+  wxe_util:rec(?wxLocale_AddCatalog_1).
 
-%% @doc See <a href="http://www.wxwidgets.org/manuals/2.8.12/wx_wxlocale.html#wxlocaleaddcataloglookuppathprefix">external documentation</a>.
--spec addCatalogLookupPathPrefix(Prefix) -> ok when
-	Prefix::unicode:chardata().
+-doc "Calls `wxTranslations::AddCatalog(const wxString&, wxLanguage)` (not implemented in wx).".
+%%  MsgIdLanguage = integer
+-spec addCatalog(This, Domain, MsgIdLanguage) -> boolean() when
+        This::wxLocale(), Domain::unicode:chardata(), MsgIdLanguage::wx:wx_enum().
+addCatalog(#wx_ref{type=ThisT}=This,Domain,MsgIdLanguage)
+ when ?is_chardata(Domain),is_integer(MsgIdLanguage) ->
+  ?CLASS(ThisT,wxLocale),
+  Domain_UC = unicode:characters_to_binary(Domain),
+  wxe_util:queue_cmd(This,Domain_UC,MsgIdLanguage,?get_env(),?wxLocale_AddCatalog_2),
+  wxe_util:rec(?wxLocale_AddCatalog_2).
+
+-doc """
+Calls `wxTranslations::AddCatalog(const wxString&, wxLanguage, const wxString&)` (not
+implemented in wx).
+""".
+%%  MsgIdLanguage = integer
+-spec addCatalog(This, Domain, MsgIdLanguage, MsgIdCharset) -> boolean() when
+        This::wxLocale(), Domain::unicode:chardata(), MsgIdLanguage::wx:wx_enum(), MsgIdCharset::unicode:chardata().
+addCatalog(#wx_ref{type=ThisT}=This,Domain,MsgIdLanguage,MsgIdCharset)
+ when ?is_chardata(Domain),is_integer(MsgIdLanguage),?is_chardata(MsgIdCharset) ->
+  ?CLASS(ThisT,wxLocale),
+  Domain_UC = unicode:characters_to_binary(Domain),
+  MsgIdCharset_UC = unicode:characters_to_binary(MsgIdCharset),
+  wxe_util:queue_cmd(This,Domain_UC,MsgIdLanguage,MsgIdCharset_UC,?get_env(),?wxLocale_AddCatalog_3),
+  wxe_util:rec(?wxLocale_AddCatalog_3).
+
+-doc "Calls `wxFileTranslationsLoader::AddCatalogLookupPathPrefix()` (not implemented in wx).".
+-spec addCatalogLookupPathPrefix(Prefix) -> 'ok' when
+        Prefix::unicode:chardata().
 addCatalogLookupPathPrefix(Prefix)
- when is_list(Prefix) ->
-  Prefix_UC = unicode:characters_to_binary([Prefix,0]),
-  wxe_util:cast(?wxLocale_AddCatalogLookupPathPrefix,
-  <<(byte_size(Prefix_UC)):32/?UI,(Prefix_UC)/binary, 0:(((8- ((4+byte_size(Prefix_UC)) band 16#7)) band 16#7))/unit:8>>).
+ when ?is_chardata(Prefix) ->
+  Prefix_UC = unicode:characters_to_binary(Prefix),
+  wxe_util:queue_cmd(Prefix_UC,?get_env(),?wxLocale_AddCatalogLookupPathPrefix).
 
-%% @doc See <a href="http://www.wxwidgets.org/manuals/2.8.12/wx_wxlocale.html#wxlocalegetcanonicalname">external documentation</a>.
+-doc """
+Returns the canonical form of current locale name.
+
+Canonical form is the one that is used on UNIX systems: it is a two- or five-letter
+string in xx or xx_YY format, where xx is ISO 639 code of language and YY is ISO 3166 code
+of the country. Examples are "en", "en_GB", "en_US" or "fr_FR". This form is internally
+used when looking up message catalogs. Compare `getSysName/1`.
+""".
 -spec getCanonicalName(This) -> unicode:charlist() when
-	This::wxLocale().
-getCanonicalName(#wx_ref{type=ThisT,ref=ThisRef}) ->
+        This::wxLocale().
+getCanonicalName(#wx_ref{type=ThisT}=This) ->
   ?CLASS(ThisT,wxLocale),
-  wxe_util:call(?wxLocale_GetCanonicalName,
-  <<ThisRef:32/?UI>>).
+  wxe_util:queue_cmd(This,?get_env(),?wxLocale_GetCanonicalName),
+  wxe_util:rec(?wxLocale_GetCanonicalName).
 
-%% @doc See <a href="http://www.wxwidgets.org/manuals/2.8.12/wx_wxlocale.html#wxlocalegetlanguage">external documentation</a>.
+-doc """
+Returns the ?wxLanguage constant of current language.
+
+Note that you can call this function only if you used the form of `init/3` that takes ?wxLanguage
+argument.
+""".
 -spec getLanguage(This) -> integer() when
-	This::wxLocale().
-getLanguage(#wx_ref{type=ThisT,ref=ThisRef}) ->
+        This::wxLocale().
+getLanguage(#wx_ref{type=ThisT}=This) ->
   ?CLASS(ThisT,wxLocale),
-  wxe_util:call(?wxLocale_GetLanguage,
-  <<ThisRef:32/?UI>>).
+  wxe_util:queue_cmd(This,?get_env(),?wxLocale_GetLanguage),
+  wxe_util:rec(?wxLocale_GetLanguage).
 
-%% @doc See <a href="http://www.wxwidgets.org/manuals/2.8.12/wx_wxlocale.html#wxlocalegetlanguagename">external documentation</a>.
+-doc """
+Returns English name of the given language or empty string if this language is unknown.
+
+See `GetLanguageInfo()` (not implemented in wx) for a remark about special meaning of `wxLANGUAGE_DEFAULT`.
+""".
 -spec getLanguageName(Lang) -> unicode:charlist() when
-	Lang::integer().
+        Lang::integer().
 getLanguageName(Lang)
  when is_integer(Lang) ->
-  wxe_util:call(?wxLocale_GetLanguageName,
-  <<Lang:32/?UI>>).
+  wxe_util:queue_cmd(Lang,?get_env(),?wxLocale_GetLanguageName),
+  wxe_util:rec(?wxLocale_GetLanguageName).
 
-%% @doc See <a href="http://www.wxwidgets.org/manuals/2.8.12/wx_wxlocale.html#wxlocalegetlocale">external documentation</a>.
+-doc """
+Returns the locale name as passed to the constructor or `init/3`.
+
+This is a full, human-readable name, e.g. "English" or "French".
+""".
 -spec getLocale(This) -> unicode:charlist() when
-	This::wxLocale().
-getLocale(#wx_ref{type=ThisT,ref=ThisRef}) ->
+        This::wxLocale().
+getLocale(#wx_ref{type=ThisT}=This) ->
   ?CLASS(ThisT,wxLocale),
-  wxe_util:call(?wxLocale_GetLocale,
-  <<ThisRef:32/?UI>>).
+  wxe_util:queue_cmd(This,?get_env(),?wxLocale_GetLocale),
+  wxe_util:rec(?wxLocale_GetLocale).
 
-%% @doc See <a href="http://www.wxwidgets.org/manuals/2.8.12/wx_wxlocale.html#wxlocalegetname">external documentation</a>.
+-doc """
+Returns the current short name for the locale (as given to the constructor or the `init/3`
+function).
+""".
 -spec getName(This) -> unicode:charlist() when
-	This::wxLocale().
-getName(#wx_ref{type=ThisT,ref=ThisRef}) ->
+        This::wxLocale().
+getName(#wx_ref{type=ThisT}=This) ->
   ?CLASS(ThisT,wxLocale),
-  wxe_util:call(?wxLocale_GetName,
-  <<ThisRef:32/?UI>>).
+  wxe_util:queue_cmd(This,?get_env(),?wxLocale_GetName),
+  wxe_util:rec(?wxLocale_GetName).
 
-%% @equiv getString(This,SzOrigString, [])
--spec getString(This, SzOrigString) -> unicode:charlist() when
-	This::wxLocale(), SzOrigString::unicode:chardata().
+-doc(#{equiv => getString(This,OrigString, [])}).
+-spec getString(This, OrigString) -> unicode:charlist() when
+        This::wxLocale(), OrigString::unicode:chardata().
 
-getString(This,SzOrigString)
- when is_record(This, wx_ref),is_list(SzOrigString) ->
-  getString(This,SzOrigString, []).
+getString(This,OrigString)
+ when is_record(This, wx_ref),?is_chardata(OrigString) ->
+  getString(This,OrigString, []).
 
-%% @doc See <a href="http://www.wxwidgets.org/manuals/2.8.12/wx_wxlocale.html#wxlocalegetstring">external documentation</a>.
--spec getString(This, SzOrigString, [Option]) -> unicode:charlist() when
-	This::wxLocale(), SzOrigString::unicode:chardata(),
-	Option :: {szDomain, unicode:chardata()}.
-getString(#wx_ref{type=ThisT,ref=ThisRef},SzOrigString, Options)
- when is_list(SzOrigString),is_list(Options) ->
+-doc "Calls wxGetTranslation(const wxString&, const wxString&).".
+-spec getString(This, OrigString, [Option]) -> unicode:charlist() when
+	This::wxLocale(), OrigString::unicode:chardata(),
+	Option :: {'szDomain', unicode:chardata()}.
+getString(#wx_ref{type=ThisT}=This,OrigString, Options)
+ when ?is_chardata(OrigString),is_list(Options) ->
   ?CLASS(ThisT,wxLocale),
-  SzOrigString_UC = unicode:characters_to_binary([SzOrigString,0]),
-  MOpts = fun({szDomain, SzDomain}, Acc) ->   SzDomain_UC = unicode:characters_to_binary([SzDomain,0]),[<<1:32/?UI,(byte_size(SzDomain_UC)):32/?UI,(SzDomain_UC)/binary, 0:(((8- ((0+byte_size(SzDomain_UC)) band 16#7)) band 16#7))/unit:8>>|Acc];
-          (BadOpt, _) -> erlang:error({badoption, BadOpt}) end,
-  BinOpt = list_to_binary(lists:foldl(MOpts, [<<0:32>>], Options)),
-  wxe_util:call(?wxLocale_GetString_2,
-  <<ThisRef:32/?UI,(byte_size(SzOrigString_UC)):32/?UI,(SzOrigString_UC)/binary, 0:(((8- ((0+byte_size(SzOrigString_UC)) band 16#7)) band 16#7))/unit:8, BinOpt/binary>>).
+  OrigString_UC = unicode:characters_to_binary(OrigString),
+  MOpts = fun({szDomain, SzDomain}) ->   SzDomain_UC = unicode:characters_to_binary(SzDomain),{szDomain,SzDomain_UC};
+          (BadOpt) -> erlang:error({badoption, BadOpt}) end,
+  Opts = lists:map(MOpts, Options),
+  wxe_util:queue_cmd(This,OrigString_UC, Opts,?get_env(),?wxLocale_GetString_2),
+  wxe_util:rec(?wxLocale_GetString_2).
 
-%% @equiv getString(This,SzOrigString,SzOrigString2,N, [])
--spec getString(This, SzOrigString, SzOrigString2, N) -> unicode:charlist() when
-	This::wxLocale(), SzOrigString::unicode:chardata(), SzOrigString2::unicode:chardata(), N::integer().
+-doc(#{equiv => getString(This,OrigString,OrigString2,N, [])}).
+-spec getString(This, OrigString, OrigString2, N) -> unicode:charlist() when
+        This::wxLocale(), OrigString::unicode:chardata(), OrigString2::unicode:chardata(), N::integer().
 
-getString(This,SzOrigString,SzOrigString2,N)
- when is_record(This, wx_ref),is_list(SzOrigString),is_list(SzOrigString2),is_integer(N) ->
-  getString(This,SzOrigString,SzOrigString2,N, []).
+getString(This,OrigString,OrigString2,N)
+ when is_record(This, wx_ref),?is_chardata(OrigString),?is_chardata(OrigString2),is_integer(N) ->
+  getString(This,OrigString,OrigString2,N, []).
 
-%% @doc See <a href="http://www.wxwidgets.org/manuals/2.8.12/wx_wxlocale.html#wxlocalegetstring">external documentation</a>.
--spec getString(This, SzOrigString, SzOrigString2, N, [Option]) -> unicode:charlist() when
-	This::wxLocale(), SzOrigString::unicode:chardata(), SzOrigString2::unicode:chardata(), N::integer(),
-	Option :: {szDomain, unicode:chardata()}.
-getString(#wx_ref{type=ThisT,ref=ThisRef},SzOrigString,SzOrigString2,N, Options)
- when is_list(SzOrigString),is_list(SzOrigString2),is_integer(N),is_list(Options) ->
+-doc "Calls wxGetTranslation(const wxString&, const wxString&, unsigned, const wxString&).".
+-spec getString(This, OrigString, OrigString2, N, [Option]) -> unicode:charlist() when
+	This::wxLocale(), OrigString::unicode:chardata(), OrigString2::unicode:chardata(), N::integer(),
+	Option :: {'szDomain', unicode:chardata()}.
+getString(#wx_ref{type=ThisT}=This,OrigString,OrigString2,N, Options)
+ when ?is_chardata(OrigString),?is_chardata(OrigString2),is_integer(N),is_list(Options) ->
   ?CLASS(ThisT,wxLocale),
-  SzOrigString_UC = unicode:characters_to_binary([SzOrigString,0]),
-  SzOrigString2_UC = unicode:characters_to_binary([SzOrigString2,0]),
-  MOpts = fun({szDomain, SzDomain}, Acc) ->   SzDomain_UC = unicode:characters_to_binary([SzDomain,0]),[<<1:32/?UI,(byte_size(SzDomain_UC)):32/?UI,(SzDomain_UC)/binary, 0:(((8- ((0+byte_size(SzDomain_UC)) band 16#7)) band 16#7))/unit:8>>|Acc];
-          (BadOpt, _) -> erlang:error({badoption, BadOpt}) end,
-  BinOpt = list_to_binary(lists:foldl(MOpts, [<<0:32>>], Options)),
-  wxe_util:call(?wxLocale_GetString_4,
-  <<ThisRef:32/?UI,(byte_size(SzOrigString_UC)):32/?UI,(SzOrigString_UC)/binary, 0:(((8- ((0+byte_size(SzOrigString_UC)) band 16#7)) band 16#7))/unit:8,(byte_size(SzOrigString2_UC)):32/?UI,(SzOrigString2_UC)/binary, 0:(((8- ((4+byte_size(SzOrigString2_UC)) band 16#7)) band 16#7))/unit:8,N:32/?UI, 0:32,BinOpt/binary>>).
+  OrigString_UC = unicode:characters_to_binary(OrigString),
+  OrigString2_UC = unicode:characters_to_binary(OrigString2),
+  MOpts = fun({szDomain, SzDomain}) ->   SzDomain_UC = unicode:characters_to_binary(SzDomain),{szDomain,SzDomain_UC};
+          (BadOpt) -> erlang:error({badoption, BadOpt}) end,
+  Opts = lists:map(MOpts, Options),
+  wxe_util:queue_cmd(This,OrigString_UC,OrigString2_UC,N, Opts,?get_env(),?wxLocale_GetString_4),
+  wxe_util:rec(?wxLocale_GetString_4).
 
-%% @equiv getHeaderValue(This,SzHeader, [])
--spec getHeaderValue(This, SzHeader) -> unicode:charlist() when
-	This::wxLocale(), SzHeader::unicode:chardata().
+-doc(#{equiv => getHeaderValue(This,Header, [])}).
+-spec getHeaderValue(This, Header) -> unicode:charlist() when
+        This::wxLocale(), Header::unicode:chardata().
 
-getHeaderValue(This,SzHeader)
- when is_record(This, wx_ref),is_list(SzHeader) ->
-  getHeaderValue(This,SzHeader, []).
+getHeaderValue(This,Header)
+ when is_record(This, wx_ref),?is_chardata(Header) ->
+  getHeaderValue(This,Header, []).
 
-%% @doc See <a href="http://www.wxwidgets.org/manuals/2.8.12/wx_wxlocale.html#wxlocalegetheadervalue">external documentation</a>.
--spec getHeaderValue(This, SzHeader, [Option]) -> unicode:charlist() when
-	This::wxLocale(), SzHeader::unicode:chardata(),
-	Option :: {szDomain, unicode:chardata()}.
-getHeaderValue(#wx_ref{type=ThisT,ref=ThisRef},SzHeader, Options)
- when is_list(SzHeader),is_list(Options) ->
+-doc "Calls `wxTranslations::GetHeaderValue()` (not implemented in wx).".
+-spec getHeaderValue(This, Header, [Option]) -> unicode:charlist() when
+	This::wxLocale(), Header::unicode:chardata(),
+	Option :: {'szDomain', unicode:chardata()}.
+getHeaderValue(#wx_ref{type=ThisT}=This,Header, Options)
+ when ?is_chardata(Header),is_list(Options) ->
   ?CLASS(ThisT,wxLocale),
-  SzHeader_UC = unicode:characters_to_binary([SzHeader,0]),
-  MOpts = fun({szDomain, SzDomain}, Acc) ->   SzDomain_UC = unicode:characters_to_binary([SzDomain,0]),[<<1:32/?UI,(byte_size(SzDomain_UC)):32/?UI,(SzDomain_UC)/binary, 0:(((8- ((0+byte_size(SzDomain_UC)) band 16#7)) band 16#7))/unit:8>>|Acc];
-          (BadOpt, _) -> erlang:error({badoption, BadOpt}) end,
-  BinOpt = list_to_binary(lists:foldl(MOpts, [<<0:32>>], Options)),
-  wxe_util:call(?wxLocale_GetHeaderValue,
-  <<ThisRef:32/?UI,(byte_size(SzHeader_UC)):32/?UI,(SzHeader_UC)/binary, 0:(((8- ((0+byte_size(SzHeader_UC)) band 16#7)) band 16#7))/unit:8, BinOpt/binary>>).
+  Header_UC = unicode:characters_to_binary(Header),
+  MOpts = fun({szDomain, SzDomain}) ->   SzDomain_UC = unicode:characters_to_binary(SzDomain),{szDomain,SzDomain_UC};
+          (BadOpt) -> erlang:error({badoption, BadOpt}) end,
+  Opts = lists:map(MOpts, Options),
+  wxe_util:queue_cmd(This,Header_UC, Opts,?get_env(),?wxLocale_GetHeaderValue),
+  wxe_util:rec(?wxLocale_GetHeaderValue).
 
-%% @doc See <a href="http://www.wxwidgets.org/manuals/2.8.12/wx_wxlocale.html#wxlocalegetsysname">external documentation</a>.
+-doc """
+Returns current platform-specific locale name as passed to setlocale().
+
+Compare `getCanonicalName/1`.
+""".
 -spec getSysName(This) -> unicode:charlist() when
-	This::wxLocale().
-getSysName(#wx_ref{type=ThisT,ref=ThisRef}) ->
+        This::wxLocale().
+getSysName(#wx_ref{type=ThisT}=This) ->
   ?CLASS(ThisT,wxLocale),
-  wxe_util:call(?wxLocale_GetSysName,
-  <<ThisRef:32/?UI>>).
+  wxe_util:queue_cmd(This,?get_env(),?wxLocale_GetSysName),
+  wxe_util:rec(?wxLocale_GetSysName).
 
-%% @doc See <a href="http://www.wxwidgets.org/manuals/2.8.12/wx_wxlocale.html#wxlocalegetsystemencoding">external documentation</a>.
-%%<br /> Res = ?wxFONTENCODING_SYSTEM | ?wxFONTENCODING_DEFAULT | ?wxFONTENCODING_ISO8859_1 | ?wxFONTENCODING_ISO8859_2 | ?wxFONTENCODING_ISO8859_3 | ?wxFONTENCODING_ISO8859_4 | ?wxFONTENCODING_ISO8859_5 | ?wxFONTENCODING_ISO8859_6 | ?wxFONTENCODING_ISO8859_7 | ?wxFONTENCODING_ISO8859_8 | ?wxFONTENCODING_ISO8859_9 | ?wxFONTENCODING_ISO8859_10 | ?wxFONTENCODING_ISO8859_11 | ?wxFONTENCODING_ISO8859_12 | ?wxFONTENCODING_ISO8859_13 | ?wxFONTENCODING_ISO8859_14 | ?wxFONTENCODING_ISO8859_15 | ?wxFONTENCODING_ISO8859_MAX | ?wxFONTENCODING_KOI8 | ?wxFONTENCODING_KOI8_U | ?wxFONTENCODING_ALTERNATIVE | ?wxFONTENCODING_BULGARIAN | ?wxFONTENCODING_CP437 | ?wxFONTENCODING_CP850 | ?wxFONTENCODING_CP852 | ?wxFONTENCODING_CP855 | ?wxFONTENCODING_CP866 | ?wxFONTENCODING_CP874 | ?wxFONTENCODING_CP932 | ?wxFONTENCODING_CP936 | ?wxFONTENCODING_CP949 | ?wxFONTENCODING_CP950 | ?wxFONTENCODING_CP1250 | ?wxFONTENCODING_CP1251 | ?wxFONTENCODING_CP1252 | ?wxFONTENCODING_CP1253 | ?wxFONTENCODING_CP1254 | ?wxFONTENCODING_CP1255 | ?wxFONTENCODING_CP1256 | ?wxFONTENCODING_CP1257 | ?wxFONTENCODING_CP12_MAX | ?wxFONTENCODING_UTF7 | ?wxFONTENCODING_UTF8 | ?wxFONTENCODING_EUC_JP | ?wxFONTENCODING_UTF16BE | ?wxFONTENCODING_UTF16LE | ?wxFONTENCODING_UTF32BE | ?wxFONTENCODING_UTF32LE | ?wxFONTENCODING_MACROMAN | ?wxFONTENCODING_MACJAPANESE | ?wxFONTENCODING_MACCHINESETRAD | ?wxFONTENCODING_MACKOREAN | ?wxFONTENCODING_MACARABIC | ?wxFONTENCODING_MACHEBREW | ?wxFONTENCODING_MACGREEK | ?wxFONTENCODING_MACCYRILLIC | ?wxFONTENCODING_MACDEVANAGARI | ?wxFONTENCODING_MACGURMUKHI | ?wxFONTENCODING_MACGUJARATI | ?wxFONTENCODING_MACORIYA | ?wxFONTENCODING_MACBENGALI | ?wxFONTENCODING_MACTAMIL | ?wxFONTENCODING_MACTELUGU | ?wxFONTENCODING_MACKANNADA | ?wxFONTENCODING_MACMALAJALAM | ?wxFONTENCODING_MACSINHALESE | ?wxFONTENCODING_MACBURMESE | ?wxFONTENCODING_MACKHMER | ?wxFONTENCODING_MACTHAI | ?wxFONTENCODING_MACLAOTIAN | ?wxFONTENCODING_MACGEORGIAN | ?wxFONTENCODING_MACARMENIAN | ?wxFONTENCODING_MACCHINESESIMP | ?wxFONTENCODING_MACTIBETAN | ?wxFONTENCODING_MACMONGOLIAN | ?wxFONTENCODING_MACETHIOPIC | ?wxFONTENCODING_MACCENTRALEUR | ?wxFONTENCODING_MACVIATNAMESE | ?wxFONTENCODING_MACARABICEXT | ?wxFONTENCODING_MACSYMBOL | ?wxFONTENCODING_MACDINGBATS | ?wxFONTENCODING_MACTURKISH | ?wxFONTENCODING_MACCROATIAN | ?wxFONTENCODING_MACICELANDIC | ?wxFONTENCODING_MACROMANIAN | ?wxFONTENCODING_MACCELTIC | ?wxFONTENCODING_MACGAELIC | ?wxFONTENCODING_MACKEYBOARD | ?wxFONTENCODING_MAX | ?wxFONTENCODING_MACMIN | ?wxFONTENCODING_MACMAX | ?wxFONTENCODING_UTF16 | ?wxFONTENCODING_UTF32 | ?wxFONTENCODING_UNICODE | ?wxFONTENCODING_GB2312 | ?wxFONTENCODING_BIG5 | ?wxFONTENCODING_SHIFT_JIS
+-doc """
+Tries to detect the user's default font encoding.
+
+Returns ?wxFontEncoding() value or `wxFONTENCODING_SYSTEM` if it couldn't be determined.
+""".
+%%  Res = ?wxFONTENCODING_SYSTEM | ?wxFONTENCODING_DEFAULT | ?wxFONTENCODING_ISO8859_1 | ?wxFONTENCODING_ISO8859_2 | ?wxFONTENCODING_ISO8859_3 | ?wxFONTENCODING_ISO8859_4 | ?wxFONTENCODING_ISO8859_5 | ?wxFONTENCODING_ISO8859_6 | ?wxFONTENCODING_ISO8859_7 | ?wxFONTENCODING_ISO8859_8 | ?wxFONTENCODING_ISO8859_9 | ?wxFONTENCODING_ISO8859_10 | ?wxFONTENCODING_ISO8859_11 | ?wxFONTENCODING_ISO8859_12 | ?wxFONTENCODING_ISO8859_13 | ?wxFONTENCODING_ISO8859_14 | ?wxFONTENCODING_ISO8859_15 | ?wxFONTENCODING_ISO8859_MAX | ?wxFONTENCODING_KOI8 | ?wxFONTENCODING_KOI8_U | ?wxFONTENCODING_ALTERNATIVE | ?wxFONTENCODING_BULGARIAN | ?wxFONTENCODING_CP437 | ?wxFONTENCODING_CP850 | ?wxFONTENCODING_CP852 | ?wxFONTENCODING_CP855 | ?wxFONTENCODING_CP866 | ?wxFONTENCODING_CP874 | ?wxFONTENCODING_CP932 | ?wxFONTENCODING_CP936 | ?wxFONTENCODING_CP949 | ?wxFONTENCODING_CP950 | ?wxFONTENCODING_CP1250 | ?wxFONTENCODING_CP1251 | ?wxFONTENCODING_CP1252 | ?wxFONTENCODING_CP1253 | ?wxFONTENCODING_CP1254 | ?wxFONTENCODING_CP1255 | ?wxFONTENCODING_CP1256 | ?wxFONTENCODING_CP1257 | ?wxFONTENCODING_CP1258 | ?wxFONTENCODING_CP1361 | ?wxFONTENCODING_CP12_MAX | ?wxFONTENCODING_UTF7 | ?wxFONTENCODING_UTF8 | ?wxFONTENCODING_EUC_JP | ?wxFONTENCODING_UTF16BE | ?wxFONTENCODING_UTF16LE | ?wxFONTENCODING_UTF32BE | ?wxFONTENCODING_UTF32LE | ?wxFONTENCODING_MACROMAN | ?wxFONTENCODING_MACJAPANESE | ?wxFONTENCODING_MACCHINESETRAD | ?wxFONTENCODING_MACKOREAN | ?wxFONTENCODING_MACARABIC | ?wxFONTENCODING_MACHEBREW | ?wxFONTENCODING_MACGREEK | ?wxFONTENCODING_MACCYRILLIC | ?wxFONTENCODING_MACDEVANAGARI | ?wxFONTENCODING_MACGURMUKHI | ?wxFONTENCODING_MACGUJARATI | ?wxFONTENCODING_MACORIYA | ?wxFONTENCODING_MACBENGALI | ?wxFONTENCODING_MACTAMIL | ?wxFONTENCODING_MACTELUGU | ?wxFONTENCODING_MACKANNADA | ?wxFONTENCODING_MACMALAJALAM | ?wxFONTENCODING_MACSINHALESE | ?wxFONTENCODING_MACBURMESE | ?wxFONTENCODING_MACKHMER | ?wxFONTENCODING_MACTHAI | ?wxFONTENCODING_MACLAOTIAN | ?wxFONTENCODING_MACGEORGIAN | ?wxFONTENCODING_MACARMENIAN | ?wxFONTENCODING_MACCHINESESIMP | ?wxFONTENCODING_MACTIBETAN | ?wxFONTENCODING_MACMONGOLIAN | ?wxFONTENCODING_MACETHIOPIC | ?wxFONTENCODING_MACCENTRALEUR | ?wxFONTENCODING_MACVIATNAMESE | ?wxFONTENCODING_MACARABICEXT | ?wxFONTENCODING_MACSYMBOL | ?wxFONTENCODING_MACDINGBATS | ?wxFONTENCODING_MACTURKISH | ?wxFONTENCODING_MACCROATIAN | ?wxFONTENCODING_MACICELANDIC | ?wxFONTENCODING_MACROMANIAN | ?wxFONTENCODING_MACCELTIC | ?wxFONTENCODING_MACGAELIC | ?wxFONTENCODING_MACKEYBOARD | ?wxFONTENCODING_ISO2022_JP | ?wxFONTENCODING_MAX | ?wxFONTENCODING_MACMIN | ?wxFONTENCODING_MACMAX | ?wxFONTENCODING_UTF16 | ?wxFONTENCODING_UTF32 | ?wxFONTENCODING_UNICODE | ?wxFONTENCODING_GB2312 | ?wxFONTENCODING_BIG5 | ?wxFONTENCODING_SHIFT_JIS | ?wxFONTENCODING_EUC_KR | ?wxFONTENCODING_JOHAB | ?wxFONTENCODING_VIETNAMESE
 -spec getSystemEncoding() -> wx:wx_enum().
 getSystemEncoding() ->
-  wxe_util:call(?wxLocale_GetSystemEncoding,
-  <<>>).
+  wxe_util:queue_cmd(?get_env(), ?wxLocale_GetSystemEncoding),
+  wxe_util:rec(?wxLocale_GetSystemEncoding).
 
-%% @doc See <a href="http://www.wxwidgets.org/manuals/2.8.12/wx_wxlocale.html#wxlocalegetsystemencodingname">external documentation</a>.
+-doc """
+Tries to detect the name of the user's default font encoding.
+
+This string isn't particularly useful for the application as its form is
+platform-dependent and so you should probably use `getSystemEncoding/0` instead.
+
+Returns a user-readable string value or an empty string if it couldn't be determined.
+""".
 -spec getSystemEncodingName() -> unicode:charlist().
 getSystemEncodingName() ->
-  wxe_util:call(?wxLocale_GetSystemEncodingName,
-  <<>>).
+  wxe_util:queue_cmd(?get_env(), ?wxLocale_GetSystemEncodingName),
+  wxe_util:rec(?wxLocale_GetSystemEncodingName).
 
-%% @doc See <a href="http://www.wxwidgets.org/manuals/2.8.12/wx_wxlocale.html#wxlocalegetsystemlanguage">external documentation</a>.
+-doc """
+Tries to detect the user's default locale setting.
+
+Returns the ?wxLanguage value or `wxLANGUAGE_UNKNOWN` if the language-guessing algorithm failed.
+
+Note: This function works with `locales` and returns the user's default locale. This may
+be, and usually is, the same as their preferred UI language, but it's not the same thing.
+Use wxTranslation to obtain `language` information.
+""".
 -spec getSystemLanguage() -> integer().
 getSystemLanguage() ->
-  wxe_util:call(?wxLocale_GetSystemLanguage,
-  <<>>).
+  wxe_util:queue_cmd(?get_env(), ?wxLocale_GetSystemLanguage),
+  wxe_util:rec(?wxLocale_GetSystemLanguage).
 
-%% @doc See <a href="http://www.wxwidgets.org/manuals/2.8.12/wx_wxlocale.html#wxlocaleisloaded">external documentation</a>.
--spec isLoaded(This, SzDomain) -> boolean() when
-	This::wxLocale(), SzDomain::unicode:chardata().
-isLoaded(#wx_ref{type=ThisT,ref=ThisRef},SzDomain)
- when is_list(SzDomain) ->
+-doc "Calls `wxTranslations::IsLoaded()` (not implemented in wx).".
+-spec isLoaded(This, Domain) -> boolean() when
+        This::wxLocale(), Domain::unicode:chardata().
+isLoaded(#wx_ref{type=ThisT}=This,Domain)
+ when ?is_chardata(Domain) ->
   ?CLASS(ThisT,wxLocale),
-  SzDomain_UC = unicode:characters_to_binary([SzDomain,0]),
-  wxe_util:call(?wxLocale_IsLoaded,
-  <<ThisRef:32/?UI,(byte_size(SzDomain_UC)):32/?UI,(SzDomain_UC)/binary, 0:(((8- ((0+byte_size(SzDomain_UC)) band 16#7)) band 16#7))/unit:8>>).
+  Domain_UC = unicode:characters_to_binary(Domain),
+  wxe_util:queue_cmd(This,Domain_UC,?get_env(),?wxLocale_IsLoaded),
+  wxe_util:rec(?wxLocale_IsLoaded).
 
-%% @doc See <a href="http://www.wxwidgets.org/manuals/2.8.12/wx_wxlocale.html#wxlocaleisok">external documentation</a>.
+-doc "Returns true if the locale could be set successfully.".
 -spec isOk(This) -> boolean() when
-	This::wxLocale().
-isOk(#wx_ref{type=ThisT,ref=ThisRef}) ->
+        This::wxLocale().
+isOk(#wx_ref{type=ThisT}=This) ->
   ?CLASS(ThisT,wxLocale),
-  wxe_util:call(?wxLocale_IsOk,
-  <<ThisRef:32/?UI>>).
+  wxe_util:queue_cmd(This,?get_env(),?wxLocale_IsOk),
+  wxe_util:rec(?wxLocale_IsOk).
 
-%% @doc Destroys this object, do not use object again
--spec destroy(This::wxLocale()) -> ok.
+-doc "Destroys the object".
+-spec destroy(This::wxLocale()) -> 'ok'.
 destroy(Obj=#wx_ref{type=Type}) ->
   ?CLASS(Type,wxLocale),
-  wxe_util:destroy(?wxLocale_destruct,Obj),
+  wxe_util:queue_cmd(Obj, ?get_env(), ?wxLocale_destruct),
   ok.

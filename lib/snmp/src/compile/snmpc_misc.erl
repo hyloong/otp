@@ -1,8 +1,10 @@
 %% 
 %% %CopyrightBegin%
-%% 
-%% Copyright Ericsson AB 2003-2009. All Rights Reserved.
-%% 
+%%
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2003-2026. All Rights Reserved.
+%%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
 %% You may obtain a copy of the License at
@@ -14,11 +16,14 @@
 %% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 %% See the License for the specific language governing permissions and
 %% limitations under the License.
-%% 
+%%
 %% %CopyrightEnd%
 %% 
 
 -module(snmpc_misc).
+-moduledoc false.
+
+-compile([{nowarn_possibly_unsafe_function, {erlang, binary_to_term, 1}}]).
 
 %% need definition of mib record
 -include("snmp_types.hrl").
@@ -29,7 +34,7 @@
 	 bits_to_int/2,
 	 ensure_trailing_dir_delimiter/1,
 	 foreach/3,
-	 is_string/1,
+	 check_file/1,
 	 read_mib/1,
 	 read_noexit/2,
 	 strip_extension_from_filename/2,
@@ -86,20 +91,20 @@ to_upper([C|Cs]) -> [C|to_upper(Cs)];
 to_upper([]) -> [].
 
 
-is_string([]) -> true;
-is_string([Tkn | Str]) 
-  when is_integer(Tkn) andalso (Tkn >= 0) andalso (Tkn =< 255) ->
-    is_string(Str);
-is_string(_) -> false.
-
-
+check_file(FileName) ->
+    case filename:extension(FileName) of
+	".mib" ->
+	    filelib:is_regular(FileName);
+	_ ->
+	    filelib:is_regular(FileName ++ ".mib")
+    end.
+	
+    
 foreach(Function, ExtraArgs, [H | T]) ->
     apply(Function, [H | ExtraArgs]),
     foreach(Function, ExtraArgs, T);
 foreach(_Function, _ExtraArgs, []) -> 
     true.
-
-
 
 %%----------------------------------------------------------------------
 %% Returns: {ok, Mib}|{error, Reason}
@@ -156,7 +161,8 @@ loop(Fd, Res, Func, StartLine, File) ->
 %% io:read modified to give us line numbers.
 %%-----------------------------------------------------------------
 read(Io, Prompt, StartLine) ->
-    case io:request(Io, {get_until, Prompt, erl_scan, tokens, [StartLine]}) of
+    Enc = latin1,
+    case io:request(Io, {get_until, Enc, Prompt, erl_scan, tokens, [StartLine]}) of
 	{ok, Toks, EndLine} ->
 	    case erl_parse:parse_term(Toks) of
 		{ok, Term} ->

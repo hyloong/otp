@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2004-2011. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2004-2025. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -19,6 +21,7 @@
 %%
 
 -module(httpc_request).
+-moduledoc false.
 
 -include_lib("inets/src/http_lib/http_internal.hrl").
 -include("httpc_internal.hrl").
@@ -54,31 +57,33 @@ send(SendAddr, #session{socket = Socket, socket_type = SocketType},
 send(SendAddr, #session{socket = Socket, socket_type = SocketType}, Request) ->
     send(SendAddr, Socket, SocketType, Request).
     
-send(SendAddr, Socket, SocketType, 
-     #request{method        = Method, 
-	      path          = Path, 
-	      pquery        = Query, 
-	      headers       = Headers,
-	      content       = Content, 
-	      address       = Address, 
-	      abs_uri       = AbsUri, 
-	      headers_as_is = HeadersAsIs,
-	      settings      = HttpOptions, 
-	      userinfo      = UserInfo}) -> 
-    
-    ?hcrt("send", 
-	  [{send_addr,     SendAddr}, 
-	   {socket,        Socket}, 
-	   {method,        Method}, 
-	   {path,          Path}, 
-	   {pquery,        Query}, 
-	   {headers,       Headers},
-	   {content,       Content}, 
-	   {address,       Address}, 
-	   {abs_uri,       AbsUri}, 
-	   {headers_as_is, HeadersAsIs},
-	   {settings,      HttpOptions}, 
-	   {userinfo,      UserInfo}]),
+send(SendAddr, Socket, SocketType,
+     #request{method          = Method,
+              path            = Path,
+              pquery          = Query,
+              headers         = Headers,
+              content         = Content,
+              address         = Address,
+              abs_uri         = AbsUri,
+              headers_as_is   = HeadersAsIs,
+              settings        = HttpOptions,
+              userinfo        = UserInfo,
+              request_options = Options}) ->
+
+    ?hcrt("send",
+          [{send_addr,       SendAddr},
+           {socket,          Socket},
+           {method,          Method},
+           {path,            Path},
+           {pquery,          Query},
+           {headers,         Headers},
+           {content,         Content},
+           {address,         Address},
+           {abs_uri,         AbsUri},
+           {headers_as_is,   HeadersAsIs},
+           {settings,        HttpOptions},
+           {userinfo,        UserInfo},
+           {request_options, Options}]),
 
     TmpHdrs = handle_user_info(UserInfo, Headers),
 
@@ -88,22 +93,30 @@ send(SendAddr, Socket, SocketType,
 	case Address of
 	    SendAddr ->
 		{TmpHdrs2, Path ++ Query};
-	    _Proxy ->
+	    _Proxy when SocketType == ip_comm ->
 		TmpHdrs3 = handle_proxy(HttpOptions, TmpHdrs2), 
-		{TmpHdrs3, AbsUri}
+		{TmpHdrs3, AbsUri};
+	    _  ->
+		{TmpHdrs2, Path ++ Query}	
 	end,
     
-    FinalHeaders = 
-	case NewHeaders of
-	    HeaderList when is_list(HeaderList) ->
-		http_headers(HeaderList, []);
-	    _  ->
-		http_request:http_headers(NewHeaders)
-	end,
-    Version = HttpOptions#http_options.version,
-
-    do_send_body(SocketType, Socket, Method, Uri, Version, FinalHeaders, Body).
-
+    FinalHeaders = try
+                       case NewHeaders of
+                           HeaderList when is_list(HeaderList) ->
+                               http_headers(HeaderList, []);
+                           _  ->
+                               http_request:http_headers(NewHeaders)
+                       end
+                   catch throw:{invalid_header, _} = Bad ->
+                           {error, Bad}
+                   end,
+    case FinalHeaders of
+        {error,_} = InvalidHeaders ->
+            InvalidHeaders;
+        _ ->
+            Version = HttpOptions#http_options.version,
+            do_send_body(SocketType, Socket, Method, Uri, Version, FinalHeaders, Body)
+    end.
 
 do_send_body(SocketType, Socket, Method, Uri, Version, Headers, 
 	     {ProcessBody, Acc}) when is_function(ProcessBody, 1) ->
@@ -118,8 +131,7 @@ do_send_body(SocketType, Socket, Method, Uri, Version, Headers,
 do_send_body(SocketType, Socket, Method, Uri, Version, Headers, Body) ->
     ?hcrt("create message", [{body, Body}]),
     Message = [method(Method), " ", Uri, " ",
-	       version(Version), ?CRLF,
-	       headers(Headers, Version), ?CRLF, Body],
+	       Version, ?CRLF, Headers, ?CRLF, Body],
     ?hcrd("send", [{message, Message}]),
     http_transport:send(SocketType, Socket, Message).
 
@@ -177,42 +189,33 @@ is_idempotent(_) ->
 %%-------------------------------------------------------------------------
 is_client_closing(Headers) ->
     case Headers#http_request_h.connection of
-	"close" ->
-	    true;
-	 _ ->
-	    false
+	undefined ->
+	    false;
+	Connection ->
+	    lists:member("close", http_util:connection_tokens(Connection))
     end.
 
 %%%========================================================================
 %%% Internal functions
 %%%========================================================================
-post_data(Method, Headers, {ContentType, Body}, HeadersAsIs) 
-  when (Method =:= post) orelse (Method =:= put) ->
-    NewBody = case Headers#http_request_h.expect of
-		  "100-continue" ->
-		      "";
-		  _ ->
-		      Body
-	      end,
-    
-    NewHeaders = case HeadersAsIs of
-        [] ->
-            Headers#http_request_h{
-                'content-type' = ContentType,
-                'content-length' = case body_length(Body) of
-                    undefined ->
-                        % on upload streaming the caller must give a
-                        % value to the Content-Length header
-                        % (or use chunked Transfer-Encoding)
-                        Headers#http_request_h.'content-length';
-                    Len when is_list(Len) ->
-                        Len
-                    end
-            };
-        _ ->
-            HeadersAsIs
-    end,
-    
+post_data(Method, Headers, {[], []}, [])
+  when Method =:= get;
+       Method =:= head;
+       Method =:= options;
+       Method =:= trace;
+       Method =:= delete ->
+    %% RFC 9110: A user agent SHOULD NOT send a Content-Length header field
+    %% when the request message does not contain content and the method
+    %% semantics do not anticipate such data.
+    {Headers#http_request_h{'content-length' = undefined}, ""};
+
+post_data(Method, Headers, {ContentType, Body}, HeadersAsIs)
+    when (Method =:= post)
+         orelse (Method =:= put)
+         orelse (Method =:= patch)
+         orelse (Method =:= delete) ->
+    NewBody = update_body(Headers, Body),
+    NewHeaders = update_headers(Headers, ContentType, Body, HeadersAsIs),
     {NewHeaders, NewBody};
 
 post_data(_, Headers, _, []) ->
@@ -220,31 +223,59 @@ post_data(_, Headers, _, []) ->
 post_data(_, _, _, HeadersAsIs = [_|_]) ->
     {HeadersAsIs, ""}.
 
+update_body(Headers, Body) ->
+    case Headers#http_request_h.expect of
+        "100-continue" ->
+            "";
+        _ ->
+            Body
+    end.
+
+update_headers(Headers, ContentType, Body, []) ->
+    case Body of
+        [] ->
+            Headers1 = Headers#http_request_h{'content-length' = "0"},
+            handle_content_type(Headers1, ContentType);
+        <<>> ->
+            Headers1 = Headers#http_request_h{'content-length' = "0"},
+            handle_content_type(Headers1, ContentType);
+        {Fun, _Acc} when is_function(Fun, 1) ->
+            %% A client MUST NOT generate a 100-continue expectation in a request
+            %% that does not include a message body. This implies that either the
+            %% Content-Length or the Transfer-Encoding header MUST be present.
+            %% DO NOT send content-type when Body is empty.
+            Headers1 = Headers#http_request_h{'content-type' = ContentType},
+            handle_transfer_encoding(Headers1);
+        _ ->
+            Headers#http_request_h{
+              'content-length' = body_length(Body),
+              'content-type' = ContentType}
+    end;
+update_headers(_, _, _, HeadersAsIs) ->
+    HeadersAsIs.
+
+handle_transfer_encoding(Headers = #http_request_h{'transfer-encoding' = undefined}) ->
+    Headers;
+handle_transfer_encoding(Headers) ->
+    %% RFC7230 3.3.2
+    %% A sender MUST NOT send a 'Content-Length' header field in any message
+    %% that contains a 'Transfer-Encoding' header field.
+    Headers#http_request_h{'content-length' = undefined}.
+
 body_length(Body) when is_binary(Body) ->
-   integer_to_list(size(Body));
+   integer_to_list(byte_size(Body));
 
 body_length(Body) when is_list(Body) ->
-  integer_to_list(length(Body));
+  integer_to_list(iolist_size(Body)).
 
-body_length({DataFun, _Acc}) when is_function(DataFun, 1) ->
-  undefined.
+%% Set 'Content-Type' when it is explicitly set.
+handle_content_type(Headers, "") ->
+    Headers;
+handle_content_type(Headers, ContentType) ->
+    Headers#http_request_h{'content-type' = ContentType}.
 
 method(Method) ->
     http_util:to_upper(atom_to_list(Method)).
-
-version("HTTP/0.9") ->
-    "";
-version(Version) ->
-    Version.
-
-headers(_, "HTTP/0.9") ->
-    "";
-%% HTTP 1.1 headers not present in HTTP 1.0 should be
-%% consider as unknown extension headers that should be
-%% ignored. 
-headers(Headers, _) ->
-    Headers.
-
 
 http_headers([], Headers) ->
     lists:flatten(Headers);
@@ -269,10 +300,12 @@ handle_user_info([], Headers) ->
 handle_user_info(UserInfo, Headers) ->
     case string:tokens(UserInfo, ":") of
 	[User, Passwd] ->
-	    UserPasswd = base64:encode_to_string(User ++ ":" ++ Passwd),
+	    UserPasswd = base64:encode_to_string(
+	        uri_string:percent_decode(User) ++ ":" ++ uri_string:percent_decode(Passwd)
+	    ),
 	    Headers#http_request_h{authorization = "Basic " ++ UserPasswd};
 	[User] ->
-	    UserPasswd = base64:encode_to_string(User ++ ":"),
+	    UserPasswd = base64:encode_to_string(uri_string:percent_decode(User) ++ ":"),
 	    Headers#http_request_h{authorization = "Basic " ++ UserPasswd}; 
 	_ ->
 	    Headers

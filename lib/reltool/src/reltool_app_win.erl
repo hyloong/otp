@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2009-2013. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2009-2026. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -18,6 +20,9 @@
 %% %CopyrightEnd%
 
 -module(reltool_app_win).
+-moduledoc false.
+
+-compile([{nowarn_possibly_unsafe_function, {erlang, list_to_atom, 1}}]).
 
 %% Public
 -export([start_link/4, raise/1, refresh/1, open_mod/2]).
@@ -98,12 +103,13 @@ open_mod(Pid, ModName) ->
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %% Server
 
+-spec init(term(), term(), term(), term(), term()) -> no_return().
 init(Parent, WxEnv, Xref, C, AppName) ->
     try
 	do_init(Parent, WxEnv, Xref, C, AppName)
     catch
-	error:Reason ->
-	    exit({Reason, erlang:get_stacktrace()})
+	error:Reason:Stacktrace ->
+	    exit({Reason, Stacktrace})
     end.
 
 do_init(Parent, WxEnv, Xref, C, AppName) ->
@@ -174,7 +180,7 @@ loop(#state{xref_pid = Xref, common = C, app = App} = S) ->
 						    S#state.mod_wins)},
             ?MODULE:loop(S2);
         Msg ->
-            error_logger:format("~w~w got unexpected message:\n\t~p\n",
+            error_logger:format("~w~w got unexpected message:\n\t~tp\n",
                                 [?MODULE, self(), Msg]),
             ?MODULE:loop(S)
     end.
@@ -182,7 +188,7 @@ loop(#state{xref_pid = Xref, common = C, app = App} = S) ->
 exit_warning({'EXIT', _Pid, shutdown}) ->
     ok;
 exit_warning({'EXIT', _Pid, _Reason} = Msg) ->
-    error_logger:format("~w~w got unexpected message:\n\t~p\n",
+    error_logger:format("~w~w got unexpected message:\n\t~tp\n",
 			[?MODULE, self(), Msg]).
 
 create_window(#state{app = App} = S) ->
@@ -629,7 +635,7 @@ handle_event(#state{sys = Sys, app = App} = S, Wx) ->
 	    handle_mod_button(S, Items, Action);
         _ ->
             error_logger:format("~w~w got unexpected app event from "
-				"wx:\n\t~p\n",
+				"wx:\n\t~tp\n",
                                 [?MODULE, self(), Wx]),
             S
     end.
@@ -676,7 +682,7 @@ move_mod(App, {_ItemNo, ModStr}, Action) ->
 		undefined;
 	    _ ->
 		error_logger:format("~w~w got unexpected mod "
-				    "button event: ~w\n\t ~p\n",
+				    "button event: ~w\n\t ~tp\n",
 				    [?MODULE, self(), ModName, Action]),
 		M#mod.incl_cond
 	end,
@@ -825,8 +831,8 @@ app_to_mods(#state{xref_pid = Xref, app = App}) ->
 			{true, M}
 		end
         end,
-    UsedByMods = lists:zf(GetMod, App#app.used_by_mods),
-    UsesMods = lists:zf(GetMod, App#app.uses_mods),
+    UsedByMods = lists:filtermap(GetMod, App#app.used_by_mods),
+    UsesMods = lists:filtermap(GetMod, App#app.uses_mods),
     {
      [select_image(source,    M) || M <- SourceMods],
      [select_image(whitelist, M) || M <- WhiteMods],

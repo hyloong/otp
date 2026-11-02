@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2008-2013. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2008-2026. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -20,10 +22,13 @@
 
 %%
 -module(dbg_wx_trace_win).
+-moduledoc false.
+
+-compile([{nowarn_possibly_unsafe_function, {erlang, list_to_atom, 1}}]).
 
 %% External exports
 -export([init/0, stop/1]).
--export([create_win/4, 
+-export([create_win/4,
 	 get_window/1,
 	 configure/2,
 	 enable/2, is_enabled/1, select/2,
@@ -31,11 +36,11 @@
 	 clear_breaks/1, clear_breaks/2,
 	 display/2,                                   % Help messages
 	 is_shown/2,                                  % Code area
-	 show_code/3, show_no_code/1, remove_code/2,      
+	 show_code/3, show_no_code/1, remove_code/2,
 	 mark_line/3, unmark_line/1,
 	 select_line/2, selected_line/1,
-	 eval_output/3,                               % Evaluator area
-	 update_bindings/2,                           % Bindings area
+	 eval_output/3, eval_output/4, eval_output/5, % Evaluator area
+	 update_bindings/3,                           % Bindings area
          update_strings/1,
 	 trace_output/2,                              % Trace area
 	 handle_event/2
@@ -123,7 +128,8 @@
 %%   GS = term()
 %%--------------------------------------------------------------------
 init() ->
-    dbg_wx_win:init().
+    _ = dbg_wx_win:init(),
+    ok.
 
 stop(#winInfo{window=Win}) ->
     (catch wxFrame:destroy(Win)),
@@ -149,29 +155,29 @@ create_win(Parent, Title, Windows, Menus) ->
 		
 		Sizer = wxBoxSizer:new(?wxVERTICAL),
 		Code = code_area(Panel),
-		wxSizer:add(Sizer, Code#sub.win, 
+		_ = wxSizer:add(Sizer, Code#sub.win, 
 			    [{proportion,1}, {border, 2}, 
 			     {flag, ?wxEXPAND bor ?wxDOWN}]),
 		wxSizer:setVirtualSizeHints(Sizer, Code#sub.win),
 
 		ExpandWithBorder = [{border, 3},{flag,?wxEXPAND bor ?wxALL}],
 		Search = search_area(Panel),
-		wxSizer:add(Sizer, Search#sub.win, ExpandWithBorder),
+		_ = wxSizer:add(Sizer, Search#sub.win, ExpandWithBorder),
 		Bs     = button_area(Panel),
-		wxSizer:add(Sizer, Bs#sub.win, ExpandWithBorder),
+		_ = wxSizer:add(Sizer, Bs#sub.win, ExpandWithBorder),
 
 		InfoArea = wxBoxSizer:new(?wxHORIZONTAL),
 		wxSizer:setMinSize(InfoArea, {100, ?EVAL_H}),
 		Eval  = eval_area(Panel),
-		wxSizer:add(InfoArea, Eval#sub.win, [{proportion,1},{flag,?wxEXPAND}]),
+		_ = wxSizer:add(InfoArea, Eval#sub.win, [{proportion,1},{flag,?wxEXPAND}]),
 		Bind  = bind_area(Panel),		
-		wxSizer:add(InfoArea, Bind#sub.win, 
+		_ = wxSizer:add(InfoArea, Bind#sub.win, 
 			    [{proportion,1},{border, 2}, 
 			     {flag,?wxEXPAND bor ?wxLEFT}]),
-		wxSizer:add(Sizer, InfoArea, ExpandWithBorder),
+		_ = wxSizer:add(Sizer, InfoArea, ExpandWithBorder),
 		
 		Trace = trace_area(Panel),
-		wxSizer:add(Sizer, Trace#sub.win, ExpandWithBorder),
+		_ = wxSizer:add(Sizer, Trace#sub.win, ExpandWithBorder),
 		SB    = wxFrame:createStatusBar(Win,[]),
 
 		%% Note id and lastId to get the event when it dragged is complete
@@ -192,7 +198,7 @@ create_win(Parent, Title, Windows, Menus) ->
 		
 		Wi = show_windows(enable_windows(Wi0,Windows)),
 		wxWindow:setSizer(Panel, Sizer),
-		wxSizer:fit(Sizer, Win),
+		_ = wxSizer:fit(Sizer, Win),
 		wxSizer:setSizeHints(Sizer,Win),
 
 		IconFile = dbg_wx_win:find_icon("erlang_bug.png"),
@@ -204,7 +210,7 @@ create_win(Parent, Title, Windows, Menus) ->
 		put(window, Win),
                 put(strings, [str_on]),
 		Wi
-	end,
+        end,
 
     try wx:batch(Do) 
     catch E:R ->
@@ -230,11 +236,11 @@ get_window(WinInfo) ->
 %%--------------------------------------------------------------------
 configure(Wi=#winInfo{window=Win,m_szr={Panel,Sizer}}) ->
     wx:batch(fun() ->
-		     show_windows(Wi),
+		     _ = show_windows(Wi),
 		     wxSizer:layout(Sizer),
 		     %%wxWindow:setSizerAndFit(Panel,Sizer),
 		     wxWindow:setSizer(Panel, Sizer),
-		     wxSizer:fit(Sizer, Win),
+		     _ = wxSizer:fit(Sizer, Win),
 		     wxSizer:setSizeHints(Sizer,Win),		
 		     Wi
 	     end).
@@ -242,10 +248,10 @@ configure(Wi=#winInfo{window=Win,m_szr={Panel,Sizer}}) ->
 configure(Wi0=#winInfo{window=Win,m_szr={Panel,Sizer}}, Windows) ->
     wx:batch(fun() -> 
 		     Wi = enable_windows(Wi0, Windows),
-		     show_windows(Wi),
+		     _ = show_windows(Wi),
 		     wxSizer:layout(Sizer),
 		     wxWindow:setSizer(Panel, Sizer),
-		     wxSizer:fit(Sizer, Win),
+		     _ = wxSizer:fit(Sizer, Win),
 		     wxSizer:setSizeHints(Sizer,Win),		
 		     Wi
 	     end).
@@ -348,7 +354,7 @@ add_break(WinInfo, Menu, {{Mod,Line},[Status|_Options]}=Break) ->
     case WinInfo#winInfo.editor of
 	{Mod, Editor} ->
 	    dbg_wx_code:add_break_to_code(Editor, Line, Status);
-	_ -> ignore
+	_ -> ok
     end,
     add_break_to_menu(WinInfo, Menu, Break).
 
@@ -372,7 +378,7 @@ update_break(WinInfo, {{Mod,Line},[Status|_Options]}=Break) ->
     case WinInfo#winInfo.editor of
 	{Mod, Editor} ->
 	    dbg_wx_code:add_break_to_code(Editor, Line, Status);
-	_ -> ignore
+	_ -> ok
     end,
     update_break_in_menu(WinInfo, Break).
 
@@ -557,28 +563,82 @@ selected_line(#winInfo{editor={_,Ed}}) ->
 %%   Str = string()
 %%   Face = normal | bold
 %%--------------------------------------------------------------------
-eval_output(#winInfo{eval=#sub{out=Log}}, Text, _Face) -> 
+eval_output(#winInfo{eval=#sub{out=Log}}, Text, bold) ->
+    Style = wxTextCtrl:getDefaultStyle(Log),
+    Font = wxTextAttr:getFont(Style),
+    wxFont:setWeight(Font, ?wxFONTWEIGHT_BOLD),
+    wxTextAttr:setFont(Style, Font),
+    wxTextCtrl:setDefaultStyle(Log, Style),
+    wxTextCtrl:appendText(Log, dbg_wx_win:to_string(Text)),
+    wxFont:setWeight(Font, ?wxFONTWEIGHT_NORMAL),
+    wxTextAttr:setFont(Style, Font),
+    wxTextCtrl:setDefaultStyle(Log, Style),
+    ok;
+eval_output(#winInfo{eval=#sub{out=Log}}, Text, _Face) ->
     wxTextCtrl:appendText(Log, dbg_wx_win:to_string(Text)),
     ok.
-    
+
+%%--------------------------------------------------------------------
+%% eval_output(winInfo{}, Prefix, Term, [Mod,] Face)
+%%   Prefix = string()
+%%   Term = term   to be formatted
+%%   Mod = module() | undefined  for record formatting
+%%   Face = normal | bold
+%%--------------------------------------------------------------------
+eval_output(Wi, Prefix, Term, Face) ->
+    {Mod,_Bs} = get(bindings),
+    eval_output(Wi, Prefix, Term, Mod, Face).
+
+eval_output(#winInfo{eval=#sub{out=Log}}=Wi, Prefix, Term, Mod, Face) ->
+    {CW, _, _, _ } = wxTextCtrl:getTextExtent(Log,"w"),
+    {W, _} = wxTextCtrl:getClientSize(Log),
+    LineLength = max(40, W div CW),
+    Column = string:length(Prefix),
+    ValStr = format_term(Term, Mod, LineLength-Column, Column, -1, -1),
+    eval_output(Wi, Prefix, bold),
+    eval_output(Wi, [ValStr, "\n"], Face),
+    ok.
+
 %%--------------------------------------------------------------------
 %% update_bindings(Bs)
 %%   Bs = [{Var,Val}]
 %%--------------------------------------------------------------------
-update_bindings(#winInfo{bind=#sub{out=BA}}, Bs) ->
+update_bindings(#winInfo{bind=#sub{out=BA}}, Mod, Bs) ->
     wxListCtrl:deleteAllItems(BA),
     wx:foldl(fun({Var,Val},Row) ->
-		     wxListCtrl:insertItem(BA, Row, ""), 
+		     wxListCtrl:insertItem(BA, Row, ""),
 		     wxListCtrl:setItem(BA, Row, 0, dbg_wx_win:to_string(Var)),
-                     Format = case get(strings) of
-                                  []        -> "~999999lP";
-                                  [str_on]  -> "~999999tP"
-                              end,
-		     wxListCtrl:setItem(BA, Row, 1, dbg_wx_win:to_string(Format,[Val, 20])),
+                     Str = format_term_line(Val, Mod),
+                     wxListCtrl:setItem(BA, Row, 1, Str),
 		     Row+1
 	     end, 0, Bs),
-    put(bindings,Bs),
+    put(bindings,{Mod,Bs}),
     ok.
+
+format_term_line(Val, Mod) ->
+    format_term(Val, Mod, 0, 1, 20, 300).
+
+format_term(Val, Mod, LineLenght, Column, Depth, Limit) ->
+    RecFun = fun(Tag,NoFields) -> record_fields(Tag, NoFields, Mod) end,
+    UseStrings = case get(strings) of
+                     [] -> false;
+                     [str_on] -> true
+                 end,
+    Opts = [{line_length,LineLenght}, {depth, Depth}, {chars_limit, Limit}, {column, Column},
+            {strings, UseStrings}, {encoding, unicode}, {record_print_fun, RecFun}],
+    io_lib_pretty:print(Val, Opts).
+
+record_fields(Tag, NoFields, Mod) ->
+    case dbg_iserver:call({get_module_db, Mod}) of
+        not_found -> no;
+        ModDb ->
+            case dbg_idb:lookup(ModDb, {record, Mod, Tag, NoFields}) of
+                {ok, Value} ->
+                    Value;
+                not_found ->
+                    no
+            end
+    end.
 
 update_strings(Strings) ->
     _ = put(strings, Strings),
@@ -855,26 +915,23 @@ handle_event(#wx{id=?EVAL_ENTRY, event=#wxCommand{type=command_text_enter}},
 	    eval_output(Wi, "\n", normal),
 	    ignore;
 	Cmd ->
-	    eval_output(Wi, [$>, Cmd, 10], normal),
+	    eval_output(Wi, [$>, Cmd, 10], bold),
 	    wxTextCtrl:setValue(TC,""),
 	    {user_command, Cmd}
     end;
 
 %% Bindings area
 handle_event(#wx{event=#wxList{type=command_list_item_selected, itemIndex=Row}},Wi) ->
-    Bs = get(bindings),
+    {Mod,Bs} = get(bindings),
     {Var,Val} = lists:nth(Row+1, Bs),
-    Str = case get(strings) of
-              []       -> io_lib:format("< ~s = ~lp~n", [Var, Val]);
-              [str_on] -> io_lib:format("< ~s = ~tp~n", [Var, Val])
-          end,
-    eval_output(Wi, Str, bold),
+    Header = io_lib:format("< ~s = ", [Var]),
+    eval_output(Wi, Header, Val, Mod, normal),
     ignore;
-handle_event(#wx{event=#wxList{type=command_list_item_activated, itemIndex=Row}},_Wi) ->    
-    Bs = get(bindings),
+handle_event(#wx{event=#wxList{type=command_list_item_activated, itemIndex=Row}},_Wi) ->
+    {_Mod,Bs} = get(bindings),
     Binding = lists:nth(Row+1, Bs),
     {edit, Binding};
-    
+
 handle_event(_GSEvent, _WinInfo) ->
     %%io:format("~p: unhandled ~p~n",[?MODULE, _GSEvent]),
     ignore.
@@ -925,11 +982,12 @@ is_button(Name) ->
 
 button_area(Parent) -> 
     Sz = wxBoxSizer:new(?wxHORIZONTAL),
-    wx:foreach(fun({Name, Button}) ->
-		       B=wxButton:new(Parent, Button, 
+    wx:foreach(fun({Name0, Button}) ->
+                       Name = [$&|atom_to_list(Name0)],
+		       B=wxButton:new(Parent, Button,
 				      [{label,dbg_wx_win:to_string(Name)}]),
 		       Id = wxWindow:getId(B),
-		       wxSizer:add(Sz,B, []),
+		       _ = wxSizer:add(Sz,B, []),
 		       wxButton:connect(B, command_button_clicked, [{id,Id}])
 	       end, buttons()),
     #sub{name='Button Area', win=Sz}.
@@ -938,22 +996,22 @@ button_area(Parent) ->
 
 search_area(Parent) ->
     HSz = wxBoxSizer:new(?wxHORIZONTAL),
-    wxSizer:add(HSz, wxStaticText:new(Parent, ?wxID_ANY, "Find:"), 
+    _ = wxSizer:add(HSz, wxStaticText:new(Parent, ?wxID_ANY, "Find: "), 
 		[{flag,?wxALIGN_CENTER_VERTICAL}]),
     TC1 = wxTextCtrl:new(Parent, ?SEARCH_ENTRY, [{style, ?wxTE_PROCESS_ENTER}]), 
-    wxSizer:add(HSz, TC1,  [{proportion,3}, {flag, ?wxEXPAND}]),
+    _ = wxSizer:add(HSz, TC1,  [{proportion,3}, {flag, ?wxEXPAND}]),
     Nbtn = wxRadioButton:new(Parent, ?wxID_ANY, "Next"),
     wxRadioButton:setValue(Nbtn, true),
-    wxSizer:add(HSz,Nbtn,[{flag,?wxALIGN_CENTER_VERTICAL}]),
+    _ = wxSizer:add(HSz,Nbtn,[{flag,?wxALIGN_CENTER_VERTICAL}]),
     Pbtn = wxRadioButton:new(Parent, ?wxID_ANY, "Previous"),
-    wxSizer:add(HSz,Pbtn,[{flag,?wxALIGN_CENTER_VERTICAL}]),
+    _ = wxSizer:add(HSz,Pbtn,[{flag,?wxALIGN_CENTER_VERTICAL}]),
     Cbtn = wxCheckBox:new(Parent, ?wxID_ANY, "Match Case"),
-    wxSizer:add(HSz,Cbtn,[{flag,?wxALIGN_CENTER_VERTICAL}]),
-    wxSizer:add(HSz, 15,15, [{proportion,1}, {flag, ?wxEXPAND}]),
-    wxSizer:add(HSz, wxStaticText:new(Parent, ?wxID_ANY, "Goto Line:"), 
+    _ = wxSizer:add(HSz,Cbtn,[{flag,?wxALIGN_CENTER_VERTICAL}]),
+    _ = wxSizer:add(HSz, 15,15, [{proportion,1}, {flag, ?wxEXPAND}]),
+    _ = wxSizer:add(HSz, wxStaticText:new(Parent, ?wxID_ANY, "Goto Line: "), 
 		[{flag,?wxALIGN_CENTER_VERTICAL}]),
     TC2 = wxTextCtrl:new(Parent, ?GOTO_ENTRY, [{style, ?wxTE_PROCESS_ENTER}]), 
-    wxSizer:add(HSz, TC2,  [{proportion,0}, {flag, ?wxEXPAND}]),
+    _ = wxSizer:add(HSz, TC2,  [{proportion,0}, {flag, ?wxEXPAND}]),
     wxTextCtrl:connect(TC1, command_text_updated),
     wxTextCtrl:connect(TC1, command_text_enter),
     wxTextCtrl:connect(TC1, kill_focus),
@@ -969,14 +1027,20 @@ eval_area(Parent) ->
     VSz = wxBoxSizer:new(?wxVERTICAL),
     HSz = wxBoxSizer:new(?wxHORIZONTAL),
     
-    wxSizer:add(HSz, wxStaticText:new(Parent, ?wxID_ANY, "Evaluator:"), 
+    _ = wxSizer:add(HSz, wxStaticText:new(Parent, ?wxID_ANY, "Evaluator: "), 
 		[{flag,?wxALIGN_CENTER_VERTICAL}]),
     TC = wxTextCtrl:new(Parent, ?EVAL_ENTRY, [{style, ?wxTE_PROCESS_ENTER}]), 
-    wxSizer:add(HSz, TC,  [{proportion,1}, {flag, ?wxEXPAND}]),
-    wxSizer:add(VSz, HSz, [{flag, ?wxEXPAND}]),
-    TL = wxTextCtrl:new(Parent, ?EVAL_LOG, [{style, ?wxTE_DONTWRAP bor 
-					  ?wxTE_MULTILINE bor ?wxTE_READONLY}]), 
-    wxSizer:add(VSz, TL, [{proportion,5}, {flag, ?wxEXPAND}]),
+    _ = wxSizer:add(HSz, TC,  [{proportion,1}, {flag, ?wxEXPAND}]),
+    _ = wxSizer:add(VSz, HSz, [{flag, ?wxEXPAND}]),
+    TL = wxTextCtrl:new(Parent, ?EVAL_LOG, [{style,
+                                             ?wxTE_DONTWRAP
+                                                 bor ?wxTE_MULTILINE
+                                                 bor ?wxTE_READONLY
+                                                 bor ?wxTE_RICH2
+                                            }]),
+    FixedFont = wxFont:new(10, ?wxFONTFAMILY_TELETYPE, ?wxNORMAL, ?wxNORMAL,[]),
+    wxWindow:setFont(TL, FixedFont),
+    _ = wxSizer:add(VSz, TL, [{proportion,5}, {flag, ?wxEXPAND}]),
     
     wxTextCtrl:connect(TC, command_text_enter),
     #sub{name='Evaluator Area', win=VSz, in=TC, out=TL}.

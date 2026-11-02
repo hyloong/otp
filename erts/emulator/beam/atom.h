@@ -1,7 +1,9 @@
 /*
  * %CopyrightBegin%
  *
- * Copyright Ericsson AB 1996-2013. All Rights Reserved.
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Copyright Ericsson AB 1996-2025. All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -21,10 +23,7 @@
 #ifndef __ATOM_H__
 #define __ATOM_H__
 
-#ifndef __INDEX_H__
 #include "index.h"
-#endif
-
 #include "erl_atom_table.h"
 
 #define MAX_ATOM_CHARACTERS 255
@@ -32,12 +31,14 @@
 #define MAX_ATOM_SZ_LIMIT (4*MAX_ATOM_CHARACTERS) /* theoretical byte limit */
 #define ATOM_LIMIT (1024*1024)
 #define MIN_ATOM_TABLE_SIZE 8192
+#define ATOM_BAD_ENCODING_ERROR -1
+#define ATOM_MAX_CHARS_ERROR -2
 
 #ifndef ARCH_32
 /* Internal atom cache needs MAX_ATOM_TABLE_SIZE to be less than an
    unsigned 32 bit integer. See external.c(erts_encode_ext_dist_header_setup)
    for more details. */
-#define MAX_ATOM_TABLE_SIZE ((MAX_ATOM_INDEX + 1 < (UWORD_CONSTANT(1) << 32)) ? MAX_ATOM_INDEX + 1 : (UWORD_CONSTANT(1) << 32))
+#define MAX_ATOM_TABLE_SIZE ((MAX_ATOM_INDEX + 1 < (UWORD_CONSTANT(1) << 32)) ? MAX_ATOM_INDEX + 1 : ((UWORD_CONSTANT(1) << 31) - 1)) /* Here we use maximum signed integer value to avoid integer overflow */
 #else
 #define MAX_ATOM_TABLE_SIZE (MAX_ATOM_INDEX + 1)
 #endif
@@ -51,7 +52,10 @@ typedef struct atom {
     Sint16 len;      /* length of atom name (UTF-8 encoded) */
     Sint16 latin1_chars; /* 0-255 if atom can be encoded in latin1; otherwise, -1 */
     int ord0;        /* ordinal value of first 3 bytes + 7 bits */
-    byte* name;      /* name of atom */
+    union{
+        byte* name;      /* name of atom, used by templates */
+        Eterm bin;       /* name of atom, used when atom is in table*/
+    } u;
 } Atom;
 
 extern IndexTable erts_atom_table;
@@ -59,6 +63,9 @@ extern IndexTable erts_atom_table;
 ERTS_GLB_INLINE Atom* atom_tab(Uint i);
 ERTS_GLB_INLINE int erts_is_atom_utf8_bytes(byte *text, size_t len, Eterm term);
 ERTS_GLB_INLINE int erts_is_atom_str(const char *str, Eterm term, int is_latin1);
+ERTS_GLB_INLINE int erts_is_atom_index_ok(Uint ix);
+
+const byte *erts_atom_get_name(const Atom *atom);
 
 #if ERTS_GLB_INLINE_INCL_FUNC_DEF
 ERTS_GLB_INLINE Atom*
@@ -74,7 +81,7 @@ ERTS_GLB_INLINE int erts_is_atom_utf8_bytes(byte *text, size_t len, Eterm term)
 	return 0;
     a = atom_tab(atom_val(term));
     return (len == (size_t) a->len
-	    && sys_memcmp((void *) a->name, (void *) text, len) == 0);
+	    && sys_memcmp((void *) erts_atom_get_name(a), (void *) text, len) == 0);
 }
 
 ERTS_GLB_INLINE int erts_is_atom_str(const char *str, Eterm term, int is_latin1)
@@ -88,7 +95,7 @@ ERTS_GLB_INLINE int erts_is_atom_str(const char *str, Eterm term, int is_latin1)
 	return 0;
     a = atom_tab(atom_val(term));
     len = a->len;
-    aname = a->name;
+    aname = erts_atom_get_name(a);
     if (is_latin1) {
 	for (i = 0; i < len; s++) {
 	    if (aname[i] < 0x80) {
@@ -113,6 +120,21 @@ ERTS_GLB_INLINE int erts_is_atom_str(const char *str, Eterm term, int is_latin1)
     return *s == '\0';
 }
 
+ERTS_GLB_INLINE int erts_is_atom_index_ok(Uint ix)
+{
+    /*
+     * This is technically a thread-unsafe read, but we assume
+     * + the hardware will get us a consistent integer value even during
+     *   concurrent writes.
+     * + the tested 'ix' (if ok) comes from an earlier read of 'entries'
+     *   and 'entries' is never decremented.
+     *
+     * So we don't care if we race and miss some unrelated increments.
+     */
+    return ix < (Uint)erts_atom_table.entries;
+}
+
+
 #endif
 
 typedef enum {
@@ -129,18 +151,19 @@ typedef enum {
   (erts_is_atom_utf8_bytes((byte *) LSTR, sizeof(LSTR) - 1, (TERM)))
 #define ERTS_DECL_AM(S) Eterm AM_ ## S = am_atom_put(#S, sizeof(#S) - 1)
 #define ERTS_INIT_AM(S) AM_ ## S = am_atom_put(#S, sizeof(#S) - 1)
+#define ERTS_MAKE_AM(Str) am_atom_put(Str, sizeof(Str) - 1)
 
 int atom_table_size(void);	/* number of elements */
 int atom_table_sz(void);	/* table size in bytes, excluding stored objects */
 
-Eterm am_atom_put(const char*, int); /* ONLY 7-bit ascii! */
-Eterm erts_atom_put(const byte *name, int len, ErtsAtomEncoding enc, int trunc);
-int atom_erase(byte*, int);
-int atom_static_put(byte*, int);
+Eterm am_atom_put(const char*, Sint); /* ONLY 7-bit ascii! */
+Eterm erts_atom_put(const byte *name, Sint len, ErtsAtomEncoding enc, int trunc);
+int erts_atom_put_index(const byte *name, Sint len, ErtsAtomEncoding enc, int trunc);
 void init_atom_table(void);
-void atom_info(int, void *);
-void dump_atoms(int, void *);
-int erts_atom_get(const char* name, int len, Eterm* ap, ErtsAtomEncoding enc);
+void atom_info(fmtfn_t, void *);
+void dump_atoms(fmtfn_t, void *);
+Uint erts_get_atom_limit(void);
+int erts_atom_get(const char* name, Uint len, Eterm* ap, ErtsAtomEncoding enc);
 void erts_atom_get_text_space_sizes(Uint *reserved, Uint *used);
 #endif
 

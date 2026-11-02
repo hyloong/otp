@@ -1,8 +1,10 @@
 %%
 %% %CopyrightBegin%
-%% 
-%% Copyright Ericsson AB 2009-2012. All Rights Reserved.
-%% 
+%%
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2009-2025. All Rights Reserved.
+%%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
 %% You may obtain a copy of the License at
@@ -14,7 +16,7 @@
 %% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 %% See the License for the specific language governing permissions and
 %% limitations under the License.
-%% 
+%%
 %% %CopyrightEnd%
 
 -module(ex_canvas_paint).
@@ -157,10 +159,15 @@ handle_event(#wx{event = #wxMouse{type = motion, x = X, y = Y}},
     {noreply, State#state{old_pos = {X,Y}}};
 %% Resize event
 handle_event(#wx{event = #wxSize{size = {W,H}}}, State = #state{bitmap=Prev}) ->
-    wxBitmap:destroy(Prev),
-    Bitmap = wxBitmap:new(W,H),
-    draw(State#state.canvas, Bitmap, fun(DC) -> wxDC:clear(DC) end),
-    {noreply, State#state{bitmap=Bitmap}};
+    case W > 0 andalso H > 0 of
+	true ->
+	    wxBitmap:destroy(Prev),
+	    Bitmap = wxBitmap:new(W,H),
+	    draw(State#state.canvas, Bitmap, fun(DC) -> wxDC:clear(DC) end),
+	    {noreply, State#state{bitmap=Bitmap}};
+	false ->
+	    {noreply, State}
+    end;
 handle_event(#wx{event = #wxMouse{type = left_dclick,x = X,y = Y}}, State = #state{}) ->
     wxPanel:connect(State#state.canvas, motion),
     {noreply, State#state{old_pos = {X,Y}}};
@@ -235,11 +242,10 @@ draw(Canvas, Bitmap, Fun) ->
     CDC = wxClientDC:new(Canvas),
 
     Fun(MemoryDC),
-    
     wxDC:blit(CDC, {0,0},
 	      {wxBitmap:getWidth(Bitmap), wxBitmap:getHeight(Bitmap)},
 	      MemoryDC, {0,0}),
-    
+
     wxClientDC:destroy(CDC),
     wxMemoryDC:destroy(MemoryDC).
 

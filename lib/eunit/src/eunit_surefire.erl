@@ -1,30 +1,48 @@
-%% This library is free software; you can redistribute it and/or modify
-%% it under the terms of the GNU Lesser General Public License as
-%% published by the Free Software Foundation; either version 2 of the
-%% License, or (at your option) any later version.
+%% %CopyrightBegin%
 %%
-%% This library is distributed in the hope that it will be useful, but
-%% WITHOUT ANY WARRANTY; without even the implied warranty of
-%% MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
-%% Lesser General Public License for more details.
+%% SPDX-License-Identifier: Apache-2.0 OR LGPL-2.1-or-later
 %%
-%% You should have received a copy of the GNU Lesser General Public
-%% License along with this library; if not, write to the Free Software
-%% Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307
-%% USA
+%% Copyright 2009 Mickaël Rémond, Paul Guyot
+%% Copyright Ericsson AB 2009-2025. All Rights Reserved.
 %%
-%% @author Mickaël Rémond <mickael.remond@process-one.net>
-%% @copyright 2009 Mickaël Rémond, Paul Guyot
-%% @see eunit
-%% @doc Surefire reports for EUnit (Format used by Maven and Atlassian
-%% Bamboo for example to integrate test results). Based on initial code
-%% from Paul Guyot.
+%% Licensed under the Apache License, Version 2.0 (the "License");
+%% you may not use this file except in compliance with the License.
+%% You may obtain a copy of the License at
 %%
-%% Example: Generate XML result file in the current directory:
-%% ```eunit:test([fib, eunit_examples],
-%%               [{report,{eunit_surefire,[{dir,"."}]}}]).'''
+%%     http://www.apache.org/licenses/LICENSE-2.0
+%%
+%% Unless required by applicable law or agreed to in writing, software
+%% distributed under the License is distributed on an "AS IS" BASIS,
+%% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+%% See the License for the specific language governing permissions and
+%% limitations under the License.
+%%
+%% Alternatively, you may use this file under the terms of the GNU Lesser
+%% General Public License (the "LGPL") as published by the Free Software
+%% Foundation; either version 2.1, or (at your option) any later version.
+%% If you wish to allow use of your version of this file only under the
+%% terms of the LGPL, you should delete the provisions above and replace
+%% them with the notice and other provisions required by the LGPL; see
+%% <http://www.gnu.org/licenses/>. If you do not delete the provisions
+%% above, a recipient may use your version of this file under the terms of
+%% either the Apache License or the LGPL.
+%%
+%% %CopyrightEnd%
 
 -module(eunit_surefire).
+-moduledoc """
+Surefire reports for EUnit (Format used by Maven and Atlassian Bamboo for
+example to integrate test results). Based on initial code from Paul Guyot.
+
+Example: Generate XML result file in the current directory:
+
+```text
+     eunit:test([fib, eunit_examples],
+                [{report,{eunit_surefire,[{dir,"."}]}}]).
+```
+
+_See also: _`m:eunit`.
+""".
 
 -behaviour(eunit_listener).
 
@@ -56,7 +74,11 @@
 	{
 	  name :: chars(),
 	  description :: chars(),
-	  result :: ok | {failed, tuple()} | {aborted, tuple()} | {skipped, term()},
+	  result :: ok
+                  | {failed, tuple()}
+                  | {aborted, tuple()}
+                  | {skipped, term()}
+                  | undefined,
 	  time :: integer(),
 	  output :: binary()
 	 }).
@@ -78,14 +100,18 @@
 		testsuites = [] :: [#testsuite{}]
 	       }).
 
+-doc false.
 start() ->
     start([]).
 
+-doc false.
 start(Options) ->
     eunit_listener:start(?MODULE, Options).
 
+-doc false.
 init(Options) ->
     XMLDir = proplists:get_value(dir, Options, ?XMLDIR),
+    ensure_xmldir(XMLDir),
     St = #state{verbose = proplists:get_bool(verbose, Options),
 		xmldir = XMLDir,
 		testsuites = []},
@@ -94,6 +120,7 @@ init(Options) ->
 	    St
     end.
 
+-doc false.
 terminate({ok, _Data}, St) ->
     TestSuites = St#state.testsuites,
     XmlDir = St#state.xmldir,
@@ -104,6 +131,7 @@ terminate({error, _Reason}, _St) ->
     %% Just terminate.
     ok.
 
+-doc false.
 handle_begin(Kind, Data, St) when Kind == group; Kind == test ->
     %% Run this code both for groups and tests; test is a bit
     %% surprising: This is a workaround for the fact that we don't get
@@ -122,6 +150,8 @@ handle_begin(Kind, Data, St) when Kind == group; Kind == test ->
 	_ ->
 	    St
     end.
+
+-doc false.
 handle_end(group, Data, St) ->
     %% Retrieve existing test suite:
     case proplists:get_value(id, Data) of
@@ -157,6 +187,7 @@ handle_end(test, Data, St) ->
 
 %% Cancel group does not give information on the individual cancelled test case
 %% We ignore this event...
+-doc false.
 handle_cancel(group, Data, St) ->
     %% ...except when it tells us that a fixture setup or cleanup failed.
     case proplists:get_value(reason, Data) of
@@ -244,6 +275,19 @@ add_testcase_to_testsuite({error, Exception}, TestCaseTmp, TestSuite) ->
 	    TestSuite#testsuite{
 	      aborted = TestSuite#testsuite.aborted+1,
 	      testcases = [TestCase|TestSuite#testsuite.testcases] }
+    end.
+
+ensure_xmldir(XMLDir) ->
+    Steps = [
+        fun filelib:ensure_dir/1,
+        fun file:make_dir/1],
+    lists:foldl(fun ensure_xmldir/2, XMLDir, Steps).
+
+ensure_xmldir(Fun, XMLDir) ->
+    case Fun(XMLDir) of
+        ok -> XMLDir;
+        {error, eexist} -> XMLDir;
+        {error, _Reason} = Error -> throw(Error)
     end.
 
 %% ----------------------------------------------------------------------------
@@ -372,6 +416,10 @@ format_testcase_result({skipped, {abort, Error}}) when is_tuple(Error) ->
     [?INDENT, ?INDENT, <<"<skipped type=\"">>, escape_attr(atom_to_list(element(1, Error))), <<"\">">>, ?NEWLINE,
     escape_text(eunit_lib:format_error(Error)),
     ?INDENT, ?INDENT, <<"</skipped>">>, ?NEWLINE];
+format_testcase_result({skipped, {timeout, #{stacktrace := Stack}}}) ->
+    [?INDENT, ?INDENT, <<"<skipped type=\"timeout\">">>, ?NEWLINE,
+    escape_text(eunit_lib:format_stacktrace(Stack)),
+    ?INDENT, ?INDENT, <<"</skipped>">>, ?NEWLINE];
 format_testcase_result({skipped, {Type, Term}}) when is_atom(Type) ->
     [?INDENT, ?INDENT, <<"<skipped type=\"">>, escape_attr(atom_to_list(Type)), <<"\">">>, ?NEWLINE,
     escape_text(io_lib:write(Term)),
@@ -415,6 +463,7 @@ escape_suitename(String) ->
 escape_suitename([], Acc) -> lists:reverse(Acc);
 escape_suitename([$  | Tail], Acc) -> escape_suitename(Tail, [$_ | Acc]);
 escape_suitename([$' | Tail], Acc) -> escape_suitename(Tail, Acc);
+escape_suitename([$" | Tail], Acc) -> escape_suitename(Tail, Acc);
 escape_suitename([$/ | Tail], Acc) -> escape_suitename(Tail, [$: | Acc]);
 escape_suitename([$\\ | Tail], Acc) -> escape_suitename(Tail, [$: | Acc]);
 escape_suitename([Char | Tail], Acc) when Char < $! -> escape_suitename(Tail, Acc);
@@ -441,6 +490,11 @@ escape_xml([$< | Tail], Acc, ForAttr) -> escape_xml(Tail, [$;, $t, $l, $& | Acc]
 escape_xml([$> | Tail], Acc, ForAttr) -> escape_xml(Tail, [$;, $t, $g, $& | Acc], ForAttr);
 escape_xml([$& | Tail], Acc, ForAttr) -> escape_xml(Tail, [$;, $p, $m, $a, $& | Acc], ForAttr);
 escape_xml([$" | Tail], Acc, true) -> escape_xml(Tail, [$;, $t, $o, $u, $q, $& | Acc], true); % "
+escape_xml([Char | Tail], Acc, ForAttr) when
+	  Char == $\n; Char == $\r; Char == $\t -> escape_xml(Tail, [Char | Acc], ForAttr);
+%% Strip C0 control codes which are not allowed in XML 1.0
+escape_xml([Char | Tail], Acc, ForAttr) when
+	  0 =< Char, Char =< 31 -> escape_xml(Tail, Acc, ForAttr);
 escape_xml([Char | Tail], Acc, ForAttr) when is_integer(Char) -> escape_xml(Tail, [Char | Acc], ForAttr).
 
 %% the input may be utf8 or latin1; the resulting list is unicode

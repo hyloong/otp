@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2000-2010. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2000-2025. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -259,11 +261,11 @@ validate(ExpStatusCode,Socket,Response) ->
     vtrace("validate -> Entry with ~p bytes response",[Sz]),
     Size = trash_the_rest(Socket,Sz),
     close(Socket),
-    case inets_regexp:split(Response," ") of
-	{ok,["HTTP/1.0",ExpStatusCode|_]} ->
+    case re:split(Response," ", [{return, list}]) of
+	["HTTP/1.0",ExpStatusCode|_] ->
 	    vlog("response (~p bytes) was ok",[Size]),
 	    ok;
-	{ok,["HTTP/1.0",StatusCode|_]} -> 
+	["HTTP/1.0",StatusCode|_] -> 
 	    verror("unexpected response status received: ~s => ~s",
 		   [StatusCode,status_to_message(StatusCode)]),
 	    log("unexpected result to GET of '~s': ~s => ~s",
@@ -299,7 +301,7 @@ add(_N1, N2) when is_integer(N2) ->
 sz(L) when is_list(L) ->
     length(lists:flatten(L));
 sz(B) when is_binary(B) ->
-    size(B);
+    byte_size(B);
 sz(O) ->
     {unknown_size,O}.
 
@@ -332,6 +334,7 @@ status_to_message(303) -> "Section 10.3.4: See Other";
 status_to_message(304) -> "Section 10.3.5: Not Modified";
 status_to_message(305) -> "Section 10.3.6: Use Proxy";
 status_to_message(307) -> "Section 10.3.8: Temporary Redirect";
+status_to_message(308) -> "RFC 9110, Section 15.4.9: Permanent Redirect";
 status_to_message(400) -> "Section 10.4.1: Bad Request";
 status_to_message(401) -> "Section 10.4.2: Unauthorized";
 status_to_message(402) -> "Section 10.4.3: Peyment Required";

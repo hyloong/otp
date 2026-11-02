@@ -1,8 +1,10 @@
 %%
 %% %CopyrightBegin%
-%% 
-%% Copyright Ericsson AB 1996-2015. All Rights Reserved.
-%% 
+%%
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 1996-2025. All Rights Reserved.
+%%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
 %% You may obtain a copy of the License at
@@ -14,7 +16,7 @@
 %% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 %% See the License for the specific language governing permissions and
 %% limitations under the License.
-%% 
+%%
 %% %CopyrightEnd%
 %%
 
@@ -23,12 +25,12 @@
   {vsn, "%VSN%"},
   {modules, [
              %% Compiler modules (not in the runtime part of the app)
-%             snmpc,
-%             snmpc_lib,
-%             snmpc_mib_gram,
-%             snmpc_mib_to_hrl,
-%             snmpc_misc,
-%             snmpc_tok,
+             snmpc,
+             snmpc_lib,
+             snmpc_mib_gram,
+             snmpc_mib_to_hrl,
+             snmpc_misc,
+             snmpc_tok,
 
              %% Application modules
              snmp,
@@ -49,6 +51,9 @@
              snmpa_error_io,
              snmpa_error_logger,
              snmpa_error_report,
+             snmpa_get,
+             snmpa_get_lib,
+             snmpa_get_mechanism, 
              snmpa_local_db,
              snmpa_mib,
              snmpa_mib_data,
@@ -114,6 +119,7 @@
              snmp_mini_mib,
              snmp_misc,
              snmp_note_store,
+             snmp_pdus_basic, % Generated from ASN.1 spec
              snmp_pdus,
              snmp_usm,
 	     snmp_verbosity
@@ -138,5 +144,7 @@
   %% before snmp.
   {applications, [kernel, stdlib]},
   {mod, {snmp_app, []}},
-  {runtime_dependencies, ["stdlib-2.5","runtime_tools-1.8.14","mnesia-4.12",
-			  "kernel-3.0","erts-6.0","crypto-3.3"]}]}.
+  {runtime_dependencies,
+   ["asn1-5.4",
+    "stdlib-5.0","runtime_tools-1.8.14","mnesia-4.12",
+    "kernel-8.0","erts-12.0","crypto-4.6"]}]}.

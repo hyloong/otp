@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 1996-2013. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 1996-2025. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -18,11 +20,27 @@
 %% %CopyrightEnd%
 %%
 -module(error_handler).
-%% FIXME: remove no_native directive after HiPE has been changed to make
-%% remote calls link to the target's Export* like BEAM does.
-%% For a detailed explanation see the commit titled
-%% "error_handler: add no_native compiler directive"
--compile(no_native).
+-moduledoc """
+Default system error handler.
+
+This module defines what happens when certain types of errors occur.
+
+You can change the error handler of a process by calling
+[`erlang:process_flag(error_handler, NewErrorHandler)`](`erlang#process_flag_error_handler`).
+
+## Notes
+
+The code in `error_handler` is complex. Do not change it without fully
+understanding the interaction between the error handler, the `init` process of
+the code server, and the I/O mechanism of the code.
+
+Code changes that seem small can cause a deadlock, as unforeseen consequences
+can occur. The use of `input` is dangerous in this type of code.
+""".
+
+%% See the comment before the int/0 function for an explanation
+%% why this option is needed.
+-compile(no_module_opt).
 
 %% Callbacks called from the run-time system.
 -export([undefined_function/3,undefined_lambda/3,breakpoint/3]).
@@ -31,6 +49,33 @@
 -export([raise_undef_exception/3]).
 -export([stub_function/3]).
 
+-doc """
+This function is called by the runtime system if a call is made to
+`Module:Function(Arg1,.., ArgN)` and `Module:Function/N` is undefined. Notice
+that this function is evaluated inside the process making the original call.
+
+This function first attempts to autoload `Module`. If that is not possible, an
+`undef` exception is raised.
+
+If it is possible to load `Module` and function `Function/N` is exported, it is
+called.
+
+Otherwise, if function `'$handle_undefined_function'/2` is exported, it is
+called as `'$handle_undefined_function'(`Function, Args).
+
+> #### Warning {: .warning }
+>
+> Defining `'$handle_undefined_function'/2` in ordinary application code is
+> highly discouraged. It is very easy to make subtle errors that can take a long
+> time to debug. Furthermore, none of the tools for static code analysis (such
+> as Dialyzer and Xref) supports the use of `'$handle_undefined_function'/2` and
+> no such support will be added. Only use this function after having carefully
+> considered other, less dangerous, solutions. One example of potential
+> legitimate use is creating stubs for other sub-systems during testing and
+> debugging.
+
+Otherwise an `undef` exception is raised.
+""".
 -spec undefined_function(Module, Function, Args) ->
 	any() when
       Module :: atom(),
@@ -52,6 +97,18 @@ undefined_function(Module, Func, Args) ->
 	    crash(Module, Func, Args)
     end.
 
+-doc """
+This function is evaluated if a call is made to `Fun(Arg1,.., ArgN)` when the
+module defining the fun is not loaded. The function is evaluated inside the
+process making the original call.
+
+If `Module` is interpreted, the interpreter is invoked and the return value of
+the interpreted `Fun(Arg1,.., ArgN)` call is returned.
+
+Otherwise, it returns, if possible, the value of [`apply(Fun, Args)`](`apply/2`)
+after an attempt is made to autoload `Module`. If this is not possible, the call
+fails with exit reason `undef`.
+""".
 -spec undefined_lambda(Module, Fun, Args) -> term() when
       Module :: atom(),
       Fun :: fun(),
@@ -69,12 +126,18 @@ undefined_lambda(Module, Fun, Args) ->
 	    crash(Fun, Args)
     end.
 
+-doc false.
 -spec breakpoint(Module :: atom(), Function :: atom(), Args :: [_]) ->
 	any().
 
 breakpoint(Module, Func, Args) ->
     (int()):eval(Module, Func, Args).
 
+-doc """
+Raises an `undef` exception with a stacktrace, indicating that
+`Module:Function/N` is undefined.
+""".
+-doc(#{since => <<"OTP R16B">>}).
 -spec raise_undef_exception(Module, Function, Args) -> no_return() when
       Module :: atom(),
       Function :: atom(),
@@ -84,7 +147,10 @@ raise_undef_exception(Module, Func, Args) ->
     crash({Module,Func,Args,[]}).
 
 %% Used to make the call to the 'int' module a "weak" one, to avoid
-%% building strong components in xref or dialyzer.
+%% making Kernel a visible dependency to Debugger in xref. (To ensure
+%% that the call in breakpoint/3 is kept as an apply to an unknown
+%% module, this module must be compiled with the 'no_module_opt'
+%% option to turn off inter-function type analysis.)
 
 int() -> int.
 
@@ -106,8 +172,8 @@ crash(M, F, A) ->
 crash(Tuple) ->
     try erlang:error(undef)
     catch
-	error:undef ->
-	    Stk = [Tuple|tl(erlang:get_stacktrace())],
+	error:undef:Stacktrace ->
+	    Stk = [Tuple|tl(Stacktrace)],
 	    erlang:raise(error, undef, Stk)
     end.
 
@@ -126,11 +192,23 @@ ensure_loaded(Module) ->
 		atom_to_list(Module) ++ "'",
 	    halt(Error);
 	Pid when is_pid(Pid) ->
-	    code:ensure_loaded(Module);
+            try
+                code:ensure_loaded(Module)
+            catch
+                %% The code server was running when we looked it up above, but
+                %% terminated before or while we talked to it, e.g. during system
+                %% shutdown or a start-up crash. Fall back to loading via init,
+                %% which does not depend on the code server.
+                error:badarg ->
+                    init:ensure_loaded(Module);
+                exit:{'DOWN',code_server,_} ->
+                    init:ensure_loaded(Module)
+            end;
 	_ ->
 	    init:ensure_loaded(Module)
     end.
 
+-doc false.
 -spec stub_function(atom(), atom(), [_]) -> no_return().
 
 stub_function(Mod, Func, Args) ->

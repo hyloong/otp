@@ -1,8 +1,10 @@
 /*
  * %CopyrightBegin%
- * 
- * Copyright Ericsson AB 1998-2013. All Rights Reserved.
- * 
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Copyright Ericsson AB 1998-2025. All Rights Reserved.
+ *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
@@ -14,7 +16,7 @@
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  * See the License for the specific language governing permissions and
  * limitations under the License.
- * 
+ *
  * %CopyrightEnd%
  */
 
@@ -46,10 +48,11 @@ void kill_epmd(EpmdVars *g)
     if ((rval = read_fill(fd,buf,2)) == 2) {
 	if (buf[0] == 'O' && buf[1] == 'K') {
 	    printf("Killed\n");
+	    epmd_cleanup_exit(g,0);
 	} else {
 	    printf("Killing not allowed - living nodes in database.\n");
+	    epmd_cleanup_exit(g,1);
 	}
-	epmd_cleanup_exit(g,0);
     } else if (rval < 0) {
 	printf("epmd: failed to read answer from local epmd\n");
 	epmd_cleanup_exit(g,1);
@@ -136,19 +139,33 @@ void epmd_call(EpmdVars *g,int what)
 static int conn_to_epmd(EpmdVars *g)
 {
     struct EPMD_SOCKADDR_IN address;
+    size_t salen = 0;
     int connect_sock;
-    
-    connect_sock = socket(FAMILY, SOCK_STREAM, 0);
+    unsigned short sport = g->port;
+
+#if defined(EPMD6)
+    SET_ADDR6(address, in6addr_loopback, sport);
+    salen = sizeof(struct sockaddr_in6);
+
+    connect_sock = socket(AF_INET6, SOCK_STREAM, 0);
+    if (connect_sock>=0) {
+
+    if (connect(connect_sock, (struct sockaddr*)&address, salen) == 0)
+	return connect_sock;
+
+    close(connect_sock);
+    }
+#endif
+    SET_ADDR(address, htonl(INADDR_LOOPBACK), sport);
+    salen = sizeof(struct sockaddr_in);
+
+    connect_sock = socket(AF_INET, SOCK_STREAM, 0);
     if (connect_sock<0)
 	goto error;
 
-    { /* store port number in unsigned short */
-      unsigned short sport = g->port;
-      SET_ADDR(address, EPMD_ADDR_LOOPBACK, sport);
-    }
-
-    if (connect(connect_sock, (struct sockaddr*)&address, sizeof address) < 0) 
+    if (connect(connect_sock, (struct sockaddr*)&address, salen) < 0)
 	goto error;
+
     return connect_sock;
 
  error:

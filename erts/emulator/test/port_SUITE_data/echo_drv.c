@@ -18,9 +18,15 @@ typedef struct _erl_drv_data EchoDrvData;
 
 static EchoDrvData *echo_drv_start(ErlDrvPort port, char *command);
 static void         echo_drv_stop(EchoDrvData *data_p);
-static void         echo_drv_output(ErlDrvData drv_data, char *buf,
-				    ErlDrvSizeT len);
+static void         echo_drv_output(ErlDrvData drv_data, char *buf, ErlDrvSizeT len);
+static ErlDrvSSizeT echo_control(ErlDrvData drv_data,
+                                 unsigned int command, char *buf,
+                                 ErlDrvSizeT len, char **rbuf, ErlDrvSizeT rlen);
+static void         echo_outputv(ErlDrvData drv_data, ErlIOVec *ev);
 static void         echo_drv_finish(void);
+static ErlDrvSSizeT echo_call(ErlDrvData drv_data, unsigned int command, char *buf,
+                              ErlDrvSizeT len, char **rbuf, ErlDrvSizeT rlen,
+                              unsigned int *flags);
 
 static ErlDrvEntry echo_drv_entry = { 
     NULL, /* init */
@@ -32,13 +38,13 @@ static ErlDrvEntry echo_drv_entry = {
     "echo_drv",
     echo_drv_finish,
     NULL, /* handle */
-    NULL, /* control */
+    echo_control, /* control */
     NULL, /* timeout */
-    NULL, /* outputv */
+    echo_outputv, /* outputv */
     NULL, /* ready_async */
-    NULL,
-    NULL,
-    NULL,
+    NULL, /* flush */
+    echo_call,
+    NULL, /* unused */
     ERL_DRV_EXTENDED_MARKER,
     ERL_DRV_EXTENDED_MAJOR_VERSION,
     ERL_DRV_EXTENDED_MINOR_VERSION,
@@ -56,6 +62,14 @@ static ErlDrvEntry echo_drv_entry = {
 
 DRIVER_INIT(echo_drv)
 {
+    char buf[10];
+    size_t bufsz = sizeof(buf);
+    char *use_outputv;
+    use_outputv = (erl_drv_getenv("ECHO_DRV_USE_OUTPUTV", buf, &bufsz) == 0
+		   ? buf
+		   : "false");
+    if (strcmp(use_outputv, "true") != 0)
+	echo_drv_entry.outputv = NULL;
     return &echo_drv_entry;
 }
 
@@ -86,4 +100,29 @@ static void echo_drv_output(ErlDrvData drv_data, char *buf, ErlDrvSizeT len) {
 }
 
 static void echo_drv_finish() {
+}
+
+static ErlDrvSSizeT echo_control(ErlDrvData drv_data,
+                                 unsigned int command, char *buf,
+                                 ErlDrvSizeT len, char **rbuf, ErlDrvSizeT rlen)
+{
+    *rbuf = NULL;
+    return 0;
+}
+
+static void echo_outputv(ErlDrvData drv_data, ErlIOVec *ev)
+{
+    return;
+}
+
+static ErlDrvSSizeT echo_call(ErlDrvData drv_data, unsigned int command, char *buf,
+                              ErlDrvSizeT len, char **rbuf, ErlDrvSizeT rlen,
+                              unsigned int *flags)
+{
+    char *res_buf = driver_alloc(2);
+    /* Write NIL on external term format... */
+    res_buf[0] = 131;
+    res_buf[1] = 106;
+    *rbuf = res_buf;
+    return 2;
 }

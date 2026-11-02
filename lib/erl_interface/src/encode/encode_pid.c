@@ -1,8 +1,10 @@
 /*
  * %CopyrightBegin%
- * 
- * Copyright Ericsson AB 1998-2013. All Rights Reserved.
- * 
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Copyright Ericsson AB 1998-2025. All Rights Reserved.
+ *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
@@ -14,7 +16,7 @@
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  * See the License for the specific language governing permissions and
  * limitations under the License.
- * 
+ *
  * %CopyrightEnd%
  */
 #include <string.h>
@@ -24,7 +26,7 @@
 
 int ei_encode_pid(char *buf, int *index, const erlang_pid *p)
 {
-  char *s = buf + *index;
+  char* s = buf + *index;
 
   ++(*index); /* skip ERL_PID_EXT */
   if (ei_encode_atom_len_as(buf, index, p->node, strlen(p->node),
@@ -32,17 +34,17 @@ int ei_encode_pid(char *buf, int *index, const erlang_pid *p)
       return -1;
 
   if (buf) {
-    put8(s,ERL_PID_EXT);
+    put8(s, ERL_NEW_PID_EXT);
 
     s = buf + *index;
 
     /* now the integers */
-    put32be(s,p->num & 0x7fff); /* 15 bits */
-    put32be(s,p->serial & 0x1fff); /* 13 bits */
-    put8(s,(p->creation & 0x03)); /* 2 bits */
+    put32be(s, p->num);
+    put32be(s, p->serial);
+    put32be(s, p->creation); /* 32 bits */
   }
 
-  *index += 4 + 4 + 1;  
+  *index += 4 + 4 + 4;
   return 0;
 }
 

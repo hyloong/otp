@@ -1,7 +1,9 @@
 /*
  * %CopyrightBegin%
  *
- * Copyright Ericsson AB 2004-2011. All Rights Reserved.
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Copyright Ericsson AB 2004-2025. All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -41,7 +43,7 @@
 
 #define PRINT_VA_LIST(FRMT)						\
 do {									\
-    if (FRMT && FRMT != '\0') {						\
+    if (FRMT && *(FRMT) != '\0') {					\
 	va_list args;							\
 	va_start(args, FRMT);						\
 	vfprintf(stderr, FRMT, args);					\
@@ -217,16 +219,23 @@ create_join_thread_test(void)
  * Tests ethr_equal_tids.
  */
 
-#define ETT_THREADS 100000
+#define ETT_THREADS 1000
 
 static ethr_tid ett_tids[3];
 static ethr_mutex ett_mutex;
 static ethr_cond ett_cond;
 static int ett_terminate;
+static int ett_thread_go;
 
 static void *
 ett_thread(void *my_tid)
 {
+    ethr_mutex_lock(&ett_mutex);
+    while (!ett_thread_go) {
+	int res = ethr_cond_wait(&ett_cond, &ett_mutex);
+	ASSERT(res == 0);
+    }
+    ethr_mutex_unlock(&ett_mutex);
 
     ASSERT(!ethr_equal_tids(ethr_self(), ett_tids[0]));
     ASSERT(ethr_equal_tids(ethr_self(), *((ethr_tid *) my_tid)));
@@ -257,17 +266,35 @@ equal_tids_test(void)
     res = ethr_cond_init(&ett_cond);
     ASSERT(res == 0);
     ett_tids[0] = ethr_self();
+
+    ethr_mutex_lock(&ett_mutex);
+    ett_thread_go = 0;
+    ethr_mutex_unlock(&ett_mutex);
     
     res = ethr_thr_create(&ett_tids[1], ett_thread, (void *) &ett_tids[1], NULL);
     ASSERT(res == 0);
 
+    ethr_mutex_lock(&ett_mutex);
+    ett_thread_go = 1;
+    ethr_cond_signal(&ett_cond);
+    ethr_mutex_unlock(&ett_mutex);
+    
     ASSERT(ethr_equal_tids(ethr_self(), ett_tids[0]));
     ASSERT(!ethr_equal_tids(ethr_self(), ett_tids[1]));
 
     res = ethr_thr_join(ett_tids[1], NULL);
 
+    ethr_mutex_lock(&ett_mutex);
+    ett_thread_go = 0;
+    ethr_mutex_unlock(&ett_mutex);
+
     res = ethr_thr_create(&ett_tids[2], ett_thread, (void *) &ett_tids[2], NULL);
     ASSERT(res == 0);
+
+    ethr_mutex_lock(&ett_mutex);
+    ett_thread_go = 1;
+    ethr_cond_signal(&ett_cond);
+    ethr_mutex_unlock(&ett_mutex);
 
     ASSERT(ethr_equal_tids(ethr_self(), ett_tids[0]));
     ASSERT(!ethr_equal_tids(ethr_self(), ett_tids[1]));
@@ -294,8 +321,17 @@ equal_tids_test(void)
     ASSERT(!ethr_equal_tids(ett_tids[0], ett_tids[1]));
 
     for (i = 0; i < ETT_THREADS; i++) {
+        ethr_mutex_lock(&ett_mutex);
+        ett_thread_go = 0;
+        ethr_mutex_unlock(&ett_mutex);
+
 	res = ethr_thr_create(&ett_tids[2], ett_thread, (void*)&ett_tids[2], NULL);
 	ASSERT(res == 0);
+
+        ethr_mutex_lock(&ett_mutex);
+        ett_thread_go = 1;
+        ethr_cond_broadcast(&ett_cond);
+        ethr_mutex_unlock(&ett_mutex);
 
 	ASSERT(!ethr_equal_tids(ett_tids[0], ett_tids[2]));
 	ASSERT(!ethr_equal_tids(ett_tids[1], ett_tids[2]));
@@ -1457,6 +1493,9 @@ do { \
     ASSERT(ethr_ ## A ## _read ## B(&A) == 0x33333333); \
 } while (0)
 
+ethr_atomic32_t atomic32;
+ethr_atomic_t atomic;
+ethr_dw_atomic_t dw_atomic;
 
 static void
 atomic_basic_test(void)
@@ -1465,8 +1504,6 @@ atomic_basic_test(void)
      * Verify that each op does what it is expected
      * to do for at least one input.
      */
-    ethr_atomic32_t atomic32;
-    ethr_atomic_t atomic;
 
     print_line("AT_AINT32_MAX=%d",AT_AINT32_MAX);
     print_line("AT_AINT32_MIN=%d",AT_AINT32_MIN);
@@ -1629,7 +1666,6 @@ atomic_basic_test(void)
 
     /* Double word */
     {
-	ethr_dw_atomic_t dw_atomic;
 	ethr_dw_sint_t dw0, dw1;
 	dw0.sint[0] = 4711;
 	dw0.sint[1] = 4712;
@@ -1723,6 +1759,7 @@ at_dw_thr(void *vval)
 		break;
 	}
     }
+    return NULL;
 }
 
 static void
@@ -1747,6 +1784,120 @@ dw_atomic_massage_test(void)
 	res = ethr_thr_join(tid[i-AT_DW_MIN], NULL);
 	ASSERT(res == 0);
     }
+}
+
+static ethr_mutex thread_name_mutex;
+static ethr_cond thread_name_cond;
+static int thread_name_state;
+
+static void *
+thread_name_thread(void *my_tid)
+{
+    int res;
+
+    ethr_mutex_lock(&thread_name_mutex);
+    thread_name_state = 1;
+    while (thread_name_state == 1) {
+	res = ethr_cond_wait(&thread_name_cond, &thread_name_mutex);
+	ASSERT(res == 0);
+    }
+    ethr_mutex_unlock(&thread_name_mutex);
+    return NULL;
+}
+
+static void
+thread_name(void)
+{
+    static const ethr_thr_opts default_thr_opts = ETHR_THR_OPTS_DEFAULT_INITER;
+    ethr_tid tid;
+    ethr_thr_opts thr_opts;
+    int res;
+    char buf[ETHR_THR_NAME_MAX + 1];
+
+    res = ethr_mutex_init(&thread_name_mutex);
+    ASSERT(res == 0);
+    res = ethr_cond_init(&thread_name_cond);
+    ASSERT(res == 0);
+
+    if (ethr_getname(ethr_self(), buf, sizeof(buf)) == ENOSYS) {
+        skip("thread names are not supported");
+        return;
+    }
+
+    /* create a thread with the minimum name length */
+    thread_name_state = 0;
+
+    memcpy(&thr_opts, &default_thr_opts, sizeof(thr_opts));
+    thr_opts.name = "";
+    res = ethr_thr_create(&tid, thread_name_thread, NULL, &thr_opts);
+    ASSERT(res == 0);
+
+    memset(buf, 0xFF, sizeof(buf));
+    res = ethr_getname(tid, buf, sizeof(buf));
+    ASSERT(res == 0);
+
+    res = strcmp(buf, "");
+    ASSERT(res == 0);
+
+    ethr_mutex_lock(&thread_name_mutex);
+    thread_name_state = 0;
+    ethr_cond_signal(&thread_name_cond);
+    ethr_mutex_unlock(&thread_name_mutex);
+
+    res = ethr_thr_join(tid, NULL);
+    ASSERT(res == 0);
+
+    /* create a thread with a middling name length */
+    thread_name_state = 0;
+
+    memcpy(&thr_opts, &default_thr_opts, sizeof(thr_opts));
+    thr_opts.name = "123456789";
+    res = ethr_thr_create(&tid, thread_name_thread, NULL, &thr_opts);
+    ASSERT(res == 0);
+
+    memset(buf, 0xFF, sizeof(buf));
+    res = ethr_getname(tid, buf, sizeof(buf));
+    ASSERT(res == 0);
+
+    res = strcmp(buf, "123456789");
+    ASSERT(res == 0);
+
+    ethr_mutex_lock(&thread_name_mutex);
+    thread_name_state = 0;
+    ethr_cond_signal(&thread_name_cond);
+    ethr_mutex_unlock(&thread_name_mutex);
+
+    res = ethr_thr_join(tid, NULL);
+    ASSERT(res == 0);
+
+    /* create a thread with the maximum name length */
+    thread_name_state = 0;
+
+    memcpy(&thr_opts, &default_thr_opts, sizeof(thr_opts));
+    thr_opts.name = "123456789012345";
+    res = ethr_thr_create(&tid, thread_name_thread, NULL, &thr_opts);
+    ASSERT(res == 0);
+
+    memset(buf, 0xFF, sizeof(buf));
+    res = ethr_getname(tid, buf, sizeof(buf));
+    ASSERT(res == 0);
+
+    res = strcmp(buf, "123456789012345");
+    ASSERT(res == 0);
+
+    ethr_mutex_lock(&thread_name_mutex);
+    thread_name_state = 0;
+    ethr_cond_signal(&thread_name_cond);
+    ethr_mutex_unlock(&thread_name_mutex);
+
+    res = ethr_thr_join(tid, NULL);
+    ASSERT(res == 0);
+
+    /* create a thread with an over-sized name length */
+    memcpy(&thr_opts, &default_thr_opts, sizeof(thr_opts));
+    thr_opts.name = "1234567890123456";
+    res = ethr_thr_create(&tid, thread_name_thread, NULL, &thr_opts);
+    ASSERT(res == EINVAL);
 }
 
 void *
@@ -1924,6 +2075,8 @@ main(int argc, char *argv[])
 	    atomic_test();
 	else if (strcmp(testcase, "dw_atomic_massage") == 0)
 	    dw_atomic_massage_test();
+        else if (strcmp(testcase, "thread_name") == 0)
+            thread_name();
 	else
 	    skip("Test case \"%s\" not implemented yet", testcase);
 

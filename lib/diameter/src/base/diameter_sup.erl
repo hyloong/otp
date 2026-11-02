@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2010-2015. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2010-2025. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -23,6 +25,7 @@
 %%
 
 -module(diameter_sup).
+-moduledoc false.
 
 -behaviour(supervisor).
 
@@ -34,6 +37,7 @@
 -export([init/1]).
 
 -define(CHILDREN, [diameter_misc_sup,
+                   diameter_config_sup,
                    diameter_watchdog_sup,
                    diameter_peer_fsm_sup,
                    diameter_transport_sup,
@@ -41,7 +45,7 @@
 
 -define(TABLES, [{diameter_sequence, [set]},
                  {diameter_service,  [set, {keypos, 3}]},
-                 {diameter_request,  [bag]},
+                 {diameter_request,  [set]},
                  {diameter_config,   [bag, {keypos, 2}]}]).
 
 %% start_link/0
@@ -76,7 +80,8 @@ ets_new(List)
     lists:foreach(fun ets_new/1, List);
 
 ets_new({Table, Opts}) ->
-    ets:new(Table, [named_table, public | Opts]).
+    ets:new(Table, [named_table, public | Opts]),
+    ok.
 
 %% tree/0
 

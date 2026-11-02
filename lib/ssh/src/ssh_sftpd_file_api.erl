@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2007-2012. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2007-2025. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -21,6 +23,7 @@
 %%
 
 -module(ssh_sftpd_file_api).
+-moduledoc false.
 
 %% To be further specified later
 -callback close(file:io_device(), State::term()) ->
@@ -36,7 +39,7 @@
 -callback list_dir(file:name(), State::term()) ->
     {{ok, Filenames::term()}, State::term()} | {{error, Reason::term()}, State::term()}.
 -callback make_dir(Dir::term(), State::term()) ->
-    {{ok, State::term()},State::term()} | {{error, Reason::term()}, State::term()}.
+    {ok, State::term()} | {{error, Reason::term()}, State::term()}.
 -callback make_symlink(Path2::term(), Path::term(), State::term()) ->
     {ok, State::term()} | {{error, Reason::term()}, State::term()}.
 -callback open(Path::term(), Flags::term(), State::term()) ->

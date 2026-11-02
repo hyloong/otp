@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2003-2013. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2003-2026. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -19,10 +21,19 @@
 %%
 -module(test_lib).
 
--include_lib("test_server/include/test_server.hrl").
+-include_lib("common_test/include/ct.hrl").
 -compile({no_auto_import,[binary_part/2]}).
--export([id/1,recompile/1,parallel/0,uniq/0,opt_opts/1,get_data_dir/1,
-	 smoke_disasm/1,p_run/2,binary_part/2]).
+-export([id/1,recompile/1,recompile_core/1,parallel/0,
+         uniq/0,opt_opts/1,get_data_dir/1,
+         smoke_disasm/1,
+         p_run/2,
+         highest_opcode/1,
+         get_unique_files/1,get_unique_files/2,
+         assert_error_stack/3
+        ]).
+
+%% Used by test case that override BIFs.
+-export([binary_part/2,binary/1]).
 
 id(I) -> I.
 
@@ -33,9 +44,24 @@ recompile(Mod) when is_atom(Mod) ->
 	    %% Re-compile the test suite if the cover server is running.
 	    Beam = code:which(Mod),
 	    Src = filename:rootname(Beam, ".beam") ++ ".erl",
-	    Opts = [bin_opt_info|opt_opts(Mod)],
+	    Opts = [bin_opt_info,recv_opt_info|opt_opts(Mod)],
 	    io:format("Recompiling ~p (~p)\n", [Mod,Opts]),
 	    c:c(Src, [{outdir,filename:dirname(Src)}|Opts])
+    end,
+
+    %% Smoke-test of beam disassembler.
+    smoke_disasm(Mod).
+
+recompile_core(Mod) when is_atom(Mod) ->
+    case whereis(cover_server) of
+        undefined -> ok;
+        _ ->
+            %% Re-compile the test suite if the cover server is running.
+            Beam = code:which(Mod),
+            Src = filename:rootname(Beam, ".beam"),
+            Opts = [bin_opt_info,recv_opt_info|opt_opts(Mod)],
+            io:format("Recompiling ~p (~p)\n", [Mod,Opts]),
+            c:c(Src, [from_core,{outdir,filename:dirname(Src)}|Opts])
     end,
 
     %% Smoke-test of beam disassembler.
@@ -47,12 +73,8 @@ smoke_disasm(File) when is_list(File) ->
     Res = beam_disasm:file(File),
     {beam_file,_Mod} = {element(1, Res),element(2, Res)}.
 
-%% If we are running cover, we don't want to run test cases that
-%% invokes the compiler in parallel, as doing so would probably
-%% be slower than running them sequentially.
-
 parallel() ->
-    case ?t:is_cover() orelse erlang:system_info(schedulers) =:= 1 of
+    case erlang:system_info(schedulers) =:= 1 of
 	true -> [];
 	false -> [parallel]
     end.
@@ -66,60 +88,136 @@ uniq() ->
 
 opt_opts(Mod) ->
     Comp = Mod:module_info(compile),
-    {value,{options,Opts}} = lists:keysearch(options, 1, Comp),
-    lists:filter(fun(no_copt) -> true;
-		    (no_postopt) -> true;
-		    (no_float_opt) -> true;
-		    (no_new_funs) -> true;
-		    (no_new_binaries) -> true;
-		    (no_new_apply) -> true;
-		    (no_gc_bifs) -> true;
-		    (no_stack_trimming) -> true;
-		    (debug_info) -> true;
-		    (inline) -> true;
-		    (_) -> false
-		 end, Opts).
+    %% `options` may not be set at all if +deterministic is enabled.
+    Opts = proplists:get_value(options, Comp, []),
+    lists:filter(fun
+                     (beam_debug_info) -> true;
+                     (debug_info) -> true;
+                     (dialyzer) -> true;
+                     ({feature,_,enable}) -> true;
+                     ({feature,_,disable}) -> true;
+                     (inline) -> true;
+                     (line_coverage) -> true;
+                     (no_badrecord) -> true;
+                     (no_bool_opt) -> true;
+                     (no_bs_create_bin) -> true;
+                     (no_bsm_opt) -> true;
+                     (no_bs_match) -> true;
+                     (no_copt) -> true;
+                     (no_fun_opt) -> true;
+                     (no_min_max_bifs) -> true;
+                     (no_module_opt) -> true;
+                     (no_native_record_opt) -> true;
+                     (no_postopt) -> true;
+                     (no_recv_opt) -> true;
+                     (no_share_opt) -> true;
+                     (no_ssa_opt_float) -> true;
+                     (no_ssa_opt_ranges) -> true;
+                     (no_ssa_opt) -> true;
+                     (no_stack_trimming) -> true;
+                     (no_type_opt) -> true;
+                     (_) -> false
+                end, Opts).
 
 %% Some test suites gets cloned (e.g. to "record_SUITE" to
 %% "record_no_opt_SUITE"), but the data directory is not cloned.
 %% This function retrieves the path to the original data directory.
 
 get_data_dir(Config) ->
-    Data0 = ?config(data_dir, Config),
+    Data = proplists:get_value(data_dir, Config),
     Opts = [{return,list}],
-    Data1 = re:replace(Data0, "_no_opt_SUITE", "_SUITE", Opts),
-    Data = re:replace(Data1, "_post_opt_SUITE", "_SUITE", Opts),
-    re:replace(Data, "_inline_SUITE", "_SUITE", Opts).
+    Suffixes = ["_no_opt_SUITE",
+                "_no_bool_opt_SUITE",
+                "_no_copt_SUITE",
+                "_no_copt_ssa_SUITE",
+                "_post_opt_SUITE",
+                "_inline_SUITE",
+                "_no_module_opt_SUITE",
+                "_no_type_opt_SUITE",
+                "_no_ssa_opt_SUITE",
+                "_cover_SUITE",
+                "_r29_SUITE"],
+    case filelib:is_dir(Data) of
+        true ->
+            %% Build system already provides it
+            Data;
+        false ->
+            lists:foldl(fun(Suffix, Acc) ->
+                                Opts = [{return,list}],
+                                re:replace(Acc, Suffix, "_SUITE", Opts)
+                        end, Data, Suffixes)
+    end.
+
+%% Test whether the module is cloned. We don't consider modules
+%% compiled with compatibility for an older release cloned (that
+%% will improve coverage).
+
+is_cloned("_no_opt_SUITE") -> true;
+is_cloned("_no_bool_opt_SUITE") -> true;
+is_cloned("_no_copt_SUITE") -> true;
+is_cloned("_no_copt_ssa_SUITE") -> true;
+is_cloned("_no_ssa_opt_SUITE") -> true;
+is_cloned("_no_type_opt_SUITE") -> true;
+is_cloned("_post_opt_SUITE") -> true;
+is_cloned("_inline_SUITE") -> true;
+is_cloned("_no_module_opt_SUITE") -> true;
+is_cloned("_cover_SUITE") -> true;
+is_cloned([_|T]) -> is_cloned(T);
+is_cloned([]) -> false.
+
+%% Return the highest opcode use in the BEAM module.
+
+highest_opcode(Beam) ->
+    {ok,{_Mod,[{"Code",Code}]}} = beam_lib:chunks(Beam, ["Code"]),
+    FormatNumber = 0,
+    <<16:32,FormatNumber:32,HighestOpcode:32,_/binary>> = Code,
+    HighestOpcode.
+
+%% Get all unique files in the test case directory.
+get_unique_files(Ext) ->
+    get_unique_files(Ext, fun(_ModString) -> false end).
+
+get_unique_files(Ext, IsCloned) when is_function(IsCloned, 1) ->
+    Wc = filename:join(filename:dirname(code:which(?MODULE)), "*"++Ext),
+    [F || F <- filelib:wildcard(Wc),
+	  not is_cloned(F, Ext, IsCloned), not is_lfe_module(F, Ext)].
+
+is_cloned(File, Ext, IsCloned) ->
+    ModString = filename:basename(File, Ext),
+    is_cloned(ModString) orelse IsCloned(ModString).
+
+is_lfe_module(File, Ext) ->
+    case filename:basename(File, Ext) of
+	"lfe_" ++ _ -> true;
+	_ -> false
+    end.
 
 %% p_run(fun(Data) -> ok|error, List) -> ok
 %%  Will fail the test case if there were any errors.
 
 p_run(Test, List) ->
-    S = erlang:system_info(schedulers),
-    N = case ?t:is_cover() of
-	    false ->
-		S + 1;
-	    true ->
-		%% Cover is running. Using too many processes
-		%% could slow us down. Measurements on my computer
-		%% showed that using 4 parallel processes was
-		%% slightly faster than using 3. Using more than
-		%% 4 would not buy us much and could actually be
-		%% slower.
-		max(S, 4)
-	end,
+    case erlang:system_info(wordsize) of
+        4 ->
+            %% A 32-bit system. If this is Windows, only 2 GiB of
+            %% virtual address space is available. In an attempt to
+            %% avoid fragmenting the memory, we don't spawn any new
+            %% processes, and instead run the tests sequentially in
+            %% the same process.
+            s_run(Test, List);
+        8 ->
+            %% Limit the number of parallel processes to avoid running
+            %% out of virtual address space or memory.
+            N = min(erlang:system_info(schedulers), 8),
+            p_run(Test, List, N)
+    end.
+
+p_run(Test, List, N) ->
+    io:format("p_run: ~p parallel processes; ~p jobs\n",
+              [N,length(List)]),
     p_run_loop(Test, List, N, [], 0, 0).
 
 p_run_loop(_, [], _, [], Errors, Ws) ->
-    case Errors of
-	0 ->
-	    case Ws of
-		0 -> ok;
-		1 -> {comment,"1 warning"};
-		N -> {comment,integer_to_list(N)++" warnings"}
-	    end;
-	N -> ?t:fail({N,errors})
-    end;
+    run_result(Errors, Ws);
 p_run_loop(Test, [H|T], N, Refs, Errors, Ws) when length(Refs) < N ->
     {_,Ref} = erlang:spawn_monitor(fun() -> exit(Test(H)) end),
     p_run_loop(Test, T, N, [Ref|Refs], Errors, Ws);
@@ -135,6 +233,68 @@ p_run_loop(Test, List, N, Refs0, Errors0, Ws0) ->
 	    p_run_loop(Test, List, N, Refs, Errors, Ws)
     end.
 
+s_run(Test, List) ->
+    io:format("p_run: a single process; ~p jobs\n",
+              [length(List)]),
+    s_run_loop(Test, List, 0, 0).
+
+s_run_loop(_Test, [], Errors, Ws) ->
+    run_result(Errors, Ws);
+s_run_loop(Test, [H|T], Errors, Ws)  ->
+    case Test(H) of
+        ok ->
+            s_run_loop(Test, T, Errors, Ws);
+        error ->
+            s_run_loop(Test, T, Errors + 1, Ws);
+        warning ->
+            s_run_loop(Test, T, Errors, Ws + 1)
+    end.
+
+run_result(Errors, Ws) ->
+    case Errors of
+	0 ->
+	    case Ws of
+		0 -> ok;
+		1 -> {comment,"1 warning"};
+		N -> {comment,integer_to_list(N)++" warnings"}
+	    end;
+	N ->
+	    ct:fail({N,errors})
+    end.
+
 %% This is for the misc_SUITE:override_bif testcase
 binary_part(_A,_B) ->
     dummy.
+
+%% This is for overridden_bif_SUITE.
+binary(N) ->
+    N rem 10 =:= 0.
+
+%% Helper for ?AssertErrorStack().
+assert_error_stack(ErrorFun, StackFun, ExprFun) ->
+    try ExprFun() of
+        Result ->
+            error({unexpected_success,Result})
+    catch
+        error:Error:Stack ->
+            case {ErrorFun(Error),StackFun(Stack)} of
+                {ok,ok} ->
+                    ok;
+                {ActualError,ActualStack} ->
+                    Args = case ActualError of
+                               ok ->
+                                   [];
+                               _ ->
+                                   [{unexpected_error, Error},
+                                    {expected, ActualError}]
+                           end ++
+                        case ActualStack of
+                            ok ->
+                                [];
+                            _ ->
+                                [{unexpected_stack, Stack},
+                                 {expected_stack, ActualStack}]
+                        end,
+                    error(assertException, Args)
+            end
+    end.

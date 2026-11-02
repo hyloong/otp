@@ -1,8 +1,10 @@
 /*
  * %CopyrightBegin%
- * 
- * Copyright Ericsson AB 2008-2013. All Rights Reserved.
- * 
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Copyright Ericsson AB 2008-2026. All Rights Reserved.
+ *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
@@ -14,7 +16,7 @@
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  * See the License for the specific language governing permissions and
  * limitations under the License.
- * 
+ *
  * %CopyrightEnd%
  */
 
@@ -38,15 +40,6 @@
 #   undef DEBUGF
 #   define DEBUGF(X) printf X
 #endif
-
-#define get_int24(s) ((((unsigned char*) (s))[0] << 16) | \
-                      (((unsigned char*) (s))[1] << 8)  | \
-                      (((unsigned char*) (s))[2]))
-
-#define get_little_int32(s) ((((unsigned char*) (s))[3] << 24) | \
-                             (((unsigned char*) (s))[2] << 16)  | \
-                             (((unsigned char*) (s))[1] << 8) | \
-                             (((unsigned char*) (s))[0]))
 
 #if !defined(__WIN32__) && !defined(HAVE_STRNCASECMP)
 #define STRNCASECMP my_strncasecmp
@@ -200,7 +193,7 @@ static int http_init(void)
     for (i = 0; i < HTTP_HDR_HASH_SIZE; i++)
         http_hdr_hash[i] = NULL;
     for (i = 0; http_hdr_strings[i] != NULL; i++) {
-        ASSERT(strlen(http_hdr_strings[i]) <= HTTP_MAX_NAME_LEN);
+        ASSERT(sys_strlen(http_hdr_strings[i]) <= HTTP_MAX_NAME_LEN);
         http_hdr_table[i].index = i;
         http_hash_insert(http_hdr_strings[i], 
                          &http_hdr_table[i], 
@@ -239,7 +232,7 @@ struct tpkt_head {
     unsigned char packet_length[2]; /* size incl header, big-endian (?) */
 };
 
-void packet_parser_init()
+void packet_parser_init(void)
 {
     static int done = 0;
     if (!done) {
@@ -256,6 +249,7 @@ int packet_get_length(enum PacketParseType htype,
                       const char* ptr, unsigned n, /* Bytes read so far */
                       unsigned max_plen,     /* Max packet length, 0=no limit */
                       unsigned trunc_len,    /* Truncate (lines) if longer, 0=no limit */
+                      char     delimiter,    /* Line delimiting character */
                       int*     statep)       /* Protocol specific state */
 {
     unsigned hlen, plen;
@@ -299,9 +293,9 @@ int packet_get_length(enum PacketParseType htype,
         goto remain;
 
     case TCP_PB_LINE_LF: {
-        /* TCP_PB_LINE_LF:  [Data ... \n]  */
+        /* TCP_PB_LINE_LF:  [Data ... Delimiter]  */
         const char* ptr2;
-        if ((ptr2 = memchr(ptr, '\n', n)) == NULL) {
+        if ((ptr2 = sys_memchr(ptr, delimiter, n)) == NULL) {
             if (n > max_plen && max_plen != 0) { /* packet full */
                 DEBUGF((" => packet full (no NL)=%d\r\n", n));
                 goto error;
@@ -396,6 +390,7 @@ int packet_get_length(enum PacketParseType htype,
     case TCP_PB_HTTPH:
     case TCP_PB_HTTPH_BIN:
         *statep = !0;
+        ERTS_FALLTHROUGH();
     case TCP_PB_HTTP:
     case TCP_PB_HTTP_BIN:
         /* TCP_PB_HTTP:  data \r\n(SP data\r\n)*  */
@@ -415,7 +410,7 @@ int packet_get_length(enum PacketParseType htype,
 	    }
 
             while (1) {
-                const char* ptr2 = memchr(ptr1, '\n', len);
+                const char* ptr2 = sys_memchr(ptr1, '\n', len);
                 
                 if (ptr2 == NULL) {
                     if (max_plen != 0) {
@@ -489,14 +484,14 @@ more:
     return 0;
 
 remain:
-    {
-        int tlen = hlen + plen;
-	if ((max_plen != 0 && plen > max_plen)
-	    || tlen < (int)hlen) { /* wrap-around protection */
-	    return -1;
-	}
-	return tlen;
-    }		
+    ASSERT(INT_MAX >= hlen);
+    if (max_plen == 0) {
+        max_plen = INT_MAX - hlen;
+    }
+    if (plen > max_plen) {
+        return -1;
+    }
+    return hlen + plen;
 
 done:
     return plen;
@@ -515,7 +510,7 @@ static http_atom_t* http_hash_lookup(const char* name, int len,
 
     while (ap != NULL) {
         if ((ap->h == h) && (ap->len == len) && 
-            (strncmp(ap->name, name, len) == 0))
+            (sys_strncmp(ap->name, name, len) == 0))
             return ap;
         ap = ap->next;
     }
@@ -526,8 +521,9 @@ static void
 http_parse_absoluteURI(PacketHttpURI* uri, const char* uri_ptr, int uri_len)
 {
     const char* p;
+    const char* v;
     
-    if ((p = memchr(uri_ptr, '/', uri_len)) == NULL) {
+    if ((p = sys_memchr(uri_ptr, '/', uri_len)) == NULL) {
         /* host [":" port] */
         uri->s2_ptr = "/";
         uri->s2_len = 1;
@@ -541,15 +537,39 @@ http_parse_absoluteURI(PacketHttpURI* uri, const char* uri_ptr, int uri_len)
 
     uri->s1_ptr = uri_ptr;
     uri->port = 0; /* undefined */
-    /* host[:port]  */
-    if ((p = memchr(uri_ptr, ':', uri_len)) == NULL) {
+    if ((p = sys_memchr(uri_ptr, ':', uri_len)) == NULL) {
         uri->s1_len = uri_len;
     }
+    /* ipv6
+     * eg [::1]:4000
+     * eg [FEDC:BA98:7654:3210:FEDC:BA98:7654:3210]:80
+     */
+    else if (sys_memchr(uri_ptr, '[', uri_len) == uri_ptr &&
+        (v = sys_memchr(uri_ptr, ']', uri_len)) != NULL) {
+      int n = (v - uri_ptr) + 1;
+      int port = 0;
+      uri->s1_len = n;
+      n = uri_len - (n+1);
+      // parse port if the next char is `:`
+      if (sys_memrchr(uri_ptr, ':', uri_len) == v + 1) {
+        // Skip over `]:`
+        v = v + 2;
+        while(n && isdigit((int) *v)) {
+            port = port*10 + (*v - '0');
+            n--;
+            v++;
+        }
+        if (n==0 && port!=0)
+            uri->port = port;
+      }
+    }
+    /* host[:port]  */
     else {
         int n = (p - uri_ptr);
         int port = 0;        
         uri->s1_len = n;
         n = uri_len - (n+1);
+        // Skip over port delimiter `:`
         p++;
         while(n && isdigit((int) *p)) {
             port = port*10 + (*p - '0');
@@ -615,7 +635,7 @@ static void http_parse_uri(PacketHttpURI* uri, const char* uri_ptr, int uri_len)
     }
     else {
         char* ptr;
-        if ((ptr = memchr(uri_ptr, ':', uri_len)) == NULL) {
+        if ((ptr = sys_memchr(uri_ptr, ':', uri_len)) == NULL) {
             uri->type = URI_STRING;
             uri->s1_ptr = uri_ptr;
             uri->s1_len = uri_len;
@@ -655,7 +675,7 @@ int packet_parse_http(const char* buf, int len, int* statep,
     if (*statep == 0) {
         /* start-line = Request-Line | Status-Line */
 
-        if (n >= 5 && (strncmp(buf, "HTTP/", 5) == 0)) {
+        if (n >= 5 && (sys_strncmp(buf, "HTTP/", 5) == 0)) {
             int major  = 0;
             int minor  = 0;
             int status = 0;
@@ -749,7 +769,7 @@ int packet_parse_http(const char* buf, int len, int* statep,
             }
             if (n < 8)
                 return -1;
-            if (strncmp(ptr, "HTTP/", 5) != 0)
+            if (sys_strncmp(ptr, "HTTP/", 5) != 0)
                 return -1;
             ptr += 5;
             n   -= 5;
@@ -815,9 +835,6 @@ int packet_parse_http(const char* buf, int len, int* statep,
             ptr++;
             if (--n == 0) return -1;
         }
-        while (n && SP(ptr)) { /* Skip white space before ':' */
-            ptr++; n--;
-        } 
         if (*ptr != ':') {
             return -1;
         }
@@ -836,7 +853,9 @@ int packet_parse_http(const char* buf, int len, int* statep,
         while (n && SP(ptr)) {
             ptr++; n--;
         }
-        return pcb->http_header(arg, name, name_ptr, name_len,
+        return pcb->http_header(arg, name,
+                                name_ptr, name_len,
+                                buf, name_len,
                                 ptr, n);
     }
     return -1;

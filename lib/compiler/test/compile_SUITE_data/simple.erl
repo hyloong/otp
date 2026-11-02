@@ -1,8 +1,10 @@
 %%
 %% %CopyrightBegin%
-%% 
-%% Copyright Ericsson AB 1997-2011. All Rights Reserved.
-%% 
+%%
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 1997-2025. All Rights Reserved.
+%%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
 %% You may obtain a copy of the License at
@@ -14,12 +16,12 @@
 %% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 %% See the License for the specific language governing permissions and
 %% limitations under the License.
-%% 
+%%
 %% %CopyrightEnd%
 %%
 -module(simple).
 
--export([test/0]).
+-export([test/0,unicode/0]).
 
 -ifdef(need_foo).
 -export([foo/0]).
@@ -28,12 +30,19 @@
 test() ->
     passed.
 
+-doc {file, "unicode-0.md"}.
+unicode() ->
+    {"это",'спутник'}.
+
 %% Conditional inclusion.
 %% Compile with [{d, need_foo}, {d, foo_value, 42}].
 
 -ifdef(need_foo).
 -include("simple.hrl").
 
+-ifdef(include_generated).
+-doc {file, "foo.md"}.
+-endif.
 foo() ->
     {?included_value, ?foo_value}.
 

@@ -1,8 +1,10 @@
 %%
 %% %CopyrightBegin%
-%% 
-%% Copyright Ericsson AB 2010. All Rights Reserved.
-%% 
+%%
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2010-2025. All Rights Reserved.
+%%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
 %% You may obtain a copy of the License at
@@ -14,13 +16,13 @@
 %% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 %% See the License for the specific language governing permissions and
 %% limitations under the License.
-%% 
+%%
 %% %CopyrightEnd%
 %%
 -module(error_logger_forwarder).
 
 %% API.
--export([register/0]).
+-export([register/0, unregister/0]).
 
 %% Internal export for error_logger.
 -export([init/1,
@@ -32,6 +34,10 @@
 %%
 register() ->
     error_logger:add_report_handler(?MODULE, self()).
+
+unregister() ->
+    Self = self(),
+    Self = error_logger:delete_report_handler(?MODULE).
 
 init(Tester) ->
     {ok,Tester}.

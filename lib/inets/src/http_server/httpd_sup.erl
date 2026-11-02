@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2004-2013. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2004-2026. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -24,6 +26,11 @@
 %%----------------------------------------------------------------------
 
 -module(httpd_sup).
+-moduledoc false.
+
+-compile([{nowarn_possibly_unsafe_function, {erlang, list_to_atom, 1}},
+          {nowarn_possibly_unsafe_function, {file, consult, 1}},
+          {nowarn_deprecated_function, [{erlang,exit,2}]}]).
 
 -behaviour(supervisor).
 
@@ -63,7 +70,6 @@ start_child(Config) ->
 	    Error
     end.
     
-
 restart_child(Address, Port, Profile) ->
     Name = id(Address, Port, Profile),
     case supervisor:terminate_child(?MODULE, Name) of
@@ -104,7 +110,7 @@ init([HttpdServices]) ->
 %% The format of the httpd service is:
 %% httpd_service() -> {httpd,httpd()}
 %% httpd()         -> [httpd_config()] | file()
-%% httpd_config()  -> {file,file()} |
+%% httpd_config()  -> {proplist_file,file()} |
 %%                    {debug,debug()} |
 %%                    {accept_timeout,integer()}
 %% debug()         -> disable | [debug_options()]
@@ -135,23 +141,18 @@ child_spec(HttpdService) ->
     httpd_child_spec(Config, AcceptTimeout, Debug).
 
 httpd_config([Value| _] = Config) when is_tuple(Value) ->
-    case proplists:get_value(file, Config) of
-	undefined -> 
-	    case proplists:get_value(proplist_file, Config) of
-		undefined ->
-		    httpd_conf:validate_properties(Config);
-		File ->
-		   try file:consult(File) of
-		       {ok, [PropList]} ->
-			   httpd_conf:validate_properties(PropList)
-		   catch 
-		       exit:_ ->
-			   throw({error, 
-				  {could_not_consult_proplist_file, File}})  
-		   end
-	    end;
-	File -> 
-	    {ok, File}
+    case proplists:get_value(proplist_file, Config) of
+        undefined ->
+            httpd_conf:validate_properties(Config);
+        File ->
+            try file:consult(File) of
+                {ok, [PropList]} ->
+                    httpd_conf:validate_properties(PropList)
+            catch 
+                exit:_ ->
+                    throw({error, 
+                           {could_not_consult_proplist_file, File}})  
+            end
     end.
 
 httpd_child_spec([Value| _] = Config, AcceptTimeout, Debug)  
@@ -159,38 +160,20 @@ httpd_child_spec([Value| _] = Config, AcceptTimeout, Debug)
     Address = proplists:get_value(bind_address, Config, any),
     Port    = proplists:get_value(port, Config, 80),
     Profile =  proplists:get_value(profile, Config, ?DEFAULT_PROFILE),
-    httpd_child_spec(Config, AcceptTimeout, Debug, Address, Port, Profile);
+    httpd_child_spec(Config, AcceptTimeout, Debug, Address, Port, Profile).
 
-%% In this case the AcceptTimeout and Debug will only have default values...
-httpd_child_spec(ConfigFile, AcceptTimeoutDef, DebugDef) ->
-    case httpd_conf:load(ConfigFile) of
-	{ok, ConfigList} ->
-	    case (catch httpd_conf:validate_properties(ConfigList)) of
-		{ok, Config} ->
-		    Address = proplists:get_value(bind_address, Config, any), 
-		    Port    = proplists:get_value(port, Config, 80),
-		    Profile = proplists:get_value(profile, Config, ?DEFAULT_PROFILE),
-		    AcceptTimeout = 
-			proplists:get_value(accept_timeout, Config, 
-					    AcceptTimeoutDef),
-		    Debug   = 
-			proplists:get_value(debug, Config, DebugDef),
-		    httpd_child_spec([{file, ConfigFile} | Config], 
-				     AcceptTimeout, Debug, Address, Port, Profile);
-		Error ->
-		    Error
+
+httpd_child_spec(Config, AcceptTimeout, Debug, Addr, Port, Profile) ->
+    case get_fd(Port) of
+	{ok, Fd} ->
+	    case Port == 0 orelse Fd =/= undefined of
+		true ->
+		    httpd_child_spec_listen(Config, AcceptTimeout, Debug, Addr, Port, Profile);
+		false ->
+		    httpd_child_spec_nolisten(Config, AcceptTimeout, Debug, Addr, Port, Profile)
 	    end;
 	Error ->
 	    Error
-    end.
-
-httpd_child_spec(Config, AcceptTimeout, Debug, Addr, Port, Profile) ->
-    Fd  = proplists:get_value(fd, Config, undefined),
-    case Port == 0 orelse Fd =/= undefined of
-	true ->
-	    httpd_child_spec_listen(Config, AcceptTimeout, Debug, Addr, Port, Profile);
-	false ->
-	    httpd_child_spec_nolisten(Config, AcceptTimeout, Debug, Addr, Port, Profile)
     end.
 
 httpd_child_spec_listen(Config, AcceptTimeout, Debug, Addr, Port, Profile) ->
@@ -236,8 +219,8 @@ listen(Address, Port, Config)  ->
 	SocketType ->
 	    case http_transport:start(SocketType) of
 		ok ->
-		    Fd = proplists:get_value(fd, Config),
-		    IpFamily =  proplists:get_value(ipfamily, Config, inet6fb4),
+		    {ok, Fd} = get_fd(Port),
+		    IpFamily =  proplists:get_value(ipfamily, Config, inet),
 		    case http_transport:listen(SocketType, Address, Port, Fd, IpFamily) of
 			{ok, ListenSocket} ->
 			    NewConfig = proplists:delete(port, Config),
@@ -275,83 +258,29 @@ listen_loop() ->
 	{'EXIT', _, _} ->
 	    ok
     end.
-	    
+
 socket_type(Config) ->
-    SocketType = proplists:get_value(socket_type, Config, ip_comm), 
-    socket_type(SocketType, Config).
-
-socket_type(ip_comm = SocketType, _) ->
-    SocketType;
-socket_type({essl, _} = SocketType, _) ->
-    SocketType;
-socket_type(_, Config) ->
-    {essl, ssl_config(Config)}.
-
-%%% Backwards compatibility    
-ssl_config(Config) ->
-    ssl_certificate_key_file(Config) ++
-	ssl_verify_client(Config) ++
-	ssl_ciphers(Config) ++
-	ssl_password(Config) ++
-	ssl_verify_depth(Config) ++
-	ssl_ca_certificate_file(Config).
-
-ssl_certificate_key_file(Config) ->
-    case proplists:get_value(ssl_certificate_key_file, Config) of
-	undefined ->
-	    [];
-	SSLCertificateKeyFile ->
-	    [{keyfile,SSLCertificateKeyFile}]
-    end.
-
-ssl_verify_client(Config) ->
-    case proplists:get_value(ssl_verify_client, Config) of
-	undefined ->
-	    [];
-	SSLVerifyClient ->
-	    [{verify,SSLVerifyClient}]
-    end.
-
-ssl_ciphers(Config) ->
-    case proplists:get_value(ssl_ciphers, Config) of
-	undefined ->
-	    [];
-	Ciphers ->
-	    [{ciphers, Ciphers}]
-    end.
-
-ssl_password(Config) ->
-    case  proplists:get_value(ssl_password_callback_module, Config) of
-	undefined ->
-	    [];
-	Module ->
-	    case proplists:get_value(ssl_password_callback_function, Config) of
-		undefined ->
-		    [];
-		Function ->
-		    Args = case  proplists:get_value(ssl_password_callback_arguments, Config) of
-			       undefined ->
-				   [];
-			       Arguments  ->
-				   [Arguments]
-			   end,
-		    Password = apply(Module, Function, Args),
-		    [{password, Password}]
-	    end
-    end.
-
-ssl_verify_depth(Config) ->
-    case proplists:get_value(ssl_verify_client_depth, Config) of
-	undefined ->
-	    [];
-	Depth ->
-	    [{depth, Depth}]
-    end.
-
-ssl_ca_certificate_file(Config) ->
-    case proplists:get_value(ssl_ca_certificate_file, Config) of
-	undefined ->
-	    [];
-	File ->
-	    [{cacertfile, File}]
+   case proplists:get_value(socket_type, Config, ip_comm) of
+       {essl, Value} ->
+           {ssl, Value};
+       Other ->
+            Other
+   end.   
+-spec get_fd(Port) -> Object when
+      Port :: integer(),
+      Object :: {ok, integer() | undefined} | {error, {bad_descriptor, term()}}.
+get_fd(0) ->
+    {ok, undefined};
+get_fd(Port) ->
+    FdKey = list_to_atom("httpd_" ++ integer_to_list(Port)),
+    case init:get_argument(FdKey) of
+	{ok, [[Value]]} ->
+	    case (catch list_to_integer(Value)) of
+		N when is_integer(N) ->
+		    {ok, N};
+		_ ->
+		    {error, {bad_descriptor, Value}}
+	    end;
+	_ ->
+	    {ok, undefined}
     end.

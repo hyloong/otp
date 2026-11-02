@@ -1,8 +1,10 @@
 %%
 %% %CopyrightBegin%
-%% 
-%% Copyright Ericsson AB 1998-2010. All Rights Reserved.
-%% 
+%%
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 1998-2025. All Rights Reserved.
+%%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
 %% You may obtain a copy of the License at
@@ -14,11 +16,12 @@
 %% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 %% See the License for the specific language governing permissions and
 %% limitations under the License.
-%% 
+%%
 %% %CopyrightEnd%
 %%
 %%
 -module(mod_auth_plain).
+-moduledoc false.
 
 -include("httpd.hrl").
 -include("mod_auth.hrl").
@@ -244,11 +247,11 @@ parse_group(Stream, GroupList, "") ->
 parse_group(Stream, GroupList, [$#|_]) ->
     parse_group(Stream, GroupList);
 parse_group(Stream, GroupList, Line) ->      
-    case inets_regexp:split(Line, ":") of
-	{ok, [Group,Users]} ->
-	    {ok, UserList} = inets_regexp:split(Users," "),
+    case re:split(Line, ":", [{return, list}]) of
+	[Group,Users] ->
+	    UserList = re:split(Users," ", [{return, list}]),
 	    parse_group(Stream, [{Group,UserList}|GroupList]);
-	{ok, _} ->
+	_ ->
 	    {error, ?NICE(Line)}
     end.
 
@@ -278,10 +281,10 @@ parse_passwd(Stream, PasswdList, "") ->
 parse_passwd(Stream, PasswdList, [$#|_]) ->
     parse_passwd(Stream, PasswdList);
 parse_passwd(Stream, PasswdList, Line) ->      
-    case inets_regexp:split(Line,":") of
-	{ok, [User,Password]} ->
+    case re:split(Line,":", [{return, list}]) of
+	[User,Password] ->
 	    parse_passwd(Stream, [{User,Password, []}|PasswdList]);
-	{ok,_} ->
+	_ ->
 	    {error, ?NICE(Line)}
     end.
 

@@ -1,7 +1,9 @@
 #
 # %CopyrightBegin%
 #
-# Copyright Ericsson AB 1997-2012. All Rights Reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Copyright Ericsson AB 1997-2025. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -30,7 +32,6 @@ MODULES= \
 	disksup_SUITE \
 	memsup_SUITE \
 	cpu_sup_SUITE \
-	os_mon_mib_SUITE \
 	os_sup_SUITE \
 	os_mon_conf
 
@@ -55,8 +56,8 @@ RELSYSDIR = $(RELEASE_PATH)/os_mon_test
 # FLAGS
 # ----------------------------------------------------
 ERL_MAKE_FLAGS +=
-ERL_COMPILE_FLAGS += -I$(ERL_TOP)/lib/test_server/include \
-	-I$(ERL_TOP)/lib/snmp/include
+ERL_COMPILE_FLAGS += -I$(ERL_TOP)/lib/snmp/include +nowarn_missing_spec_documented
+ERL_COMPILE_FLAGS := $(filter-out +deterministic,$(ERL_COMPILE_FLAGS))
 
 # ----------------------------------------------------
 # Targets
@@ -66,7 +67,7 @@ make_emakefile:
 	$(ERL_TOP)/make/make_emakefile $(ERL_COMPILE_FLAGS) -o$(EBIN) $(MODULES)\
 	> $(EMAKEFILE)
 
-tests debug opt: make_emakefile
+tests $(TYPES): make_emakefile
 	erl $(ERL_MAKE_FLAGS) -make
 
 clean:
@@ -88,7 +89,6 @@ release_tests_spec: make_emakefile
 	$(INSTALL_DIR) "$(RELSYSDIR)"
 	$(INSTALL_DATA) os_mon.spec os_mon.cover os_mon_smoke.spec \
 		$(EMAKEFILE) $(SOURCE) "$(RELSYSDIR)"
-	$(INSTALL_DATA) os_mon_mib_SUITE.cfg "$(RELSYSDIR)"
 
 ##	tar chf - *_SUITE_data | (cd "$(RELSYSDIR)"; tar xf -)
 

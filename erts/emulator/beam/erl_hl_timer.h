@@ -1,7 +1,9 @@
 /*
  * %CopyrightBegin%
+ *
+ * SPDX-License-Identifier: Apache-2.0
  * 
- * Copyright Ericsson AB 2015. All Rights Reserved.
+ * Copyright Ericsson AB 2015-2025. All Rights Reserved.
  * 
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -21,7 +23,8 @@
 #ifndef ERL_HL_TIMER_H__
 #define ERL_HL_TIMER_H__
 
-typedef struct ErtsHLTimer_ ErtsBifTimers;
+typedef struct ErtsBifTimer_ ErtsBifTimers;
+typedef struct ErtsPausedBifTimers_ ErtsPausedBifTimers;
 typedef struct ErtsHLTimerService_ ErtsHLTimerService;
 
 #include "sys.h"
@@ -36,16 +39,16 @@ typedef struct ErtsHLTimerService_ ErtsHLTimerService;
 #define ERTS_PTMR_TIMEDOUT (ERTS_PTMR_NONE + ((erts_aint_t) 1))
 
 #define ERTS_PTMR_INIT(P) \
-    erts_smp_atomic_init_nob(&(P)->common.timer, ERTS_PTMR_NONE)
+    erts_atomic_init_nob(&(P)->common.timer, ERTS_PTMR_NONE)
 #define ERTS_PTMR_IS_SET(P) \
-    (ERTS_PTMR_NONE != erts_smp_atomic_read_nob(&(P)->common.timer))
+    (ERTS_PTMR_NONE != erts_atomic_read_nob(&(P)->common.timer))
 #define ERTS_PTMR_IS_TIMED_OUT(P) \
-    (ERTS_PTMR_TIMEDOUT == erts_smp_atomic_read_nob(&(P)->common.timer))
+    (ERTS_PTMR_TIMEDOUT == erts_atomic_read_nob(&(P)->common.timer))
 
 #define ERTS_PTMR_CLEAR(P)					\
     do {							\
 	ASSERT(ERTS_PTMR_IS_TIMED_OUT((P)));			\
-	erts_smp_atomic_set_nob(&(P)->common.timer,		\
+	erts_atomic_set_nob(&(P)->common.timer,		\
 				ERTS_PTMR_NONE);		\
     } while (0)
 
@@ -53,26 +56,29 @@ size_t erts_timer_type_size(ErtsAlcType_t type);
 int erts_set_proc_timer_term(Process *, Eterm);
 void erts_set_proc_timer_uword(Process *, UWord);
 void erts_cancel_proc_timer(Process *);
+void erts_pause_proc_timer(Process *);
+void erts_resume_paused_proc_timer(Process *);
+void erts_pause_bif_timers(Process *, ErtsProcLocks);
+void erts_resume_paused_bif_timers(Process *);
+void erts_destroy_paused_bif_timers(Process *c_p);
 void erts_set_port_timer(Port *, Sint64);
 void erts_cancel_port_timer(Port *);
 Sint64 erts_read_port_timer(Port *);
-int erts_cancel_bif_timers(Process *, ErtsBifTimers *, void **);
+int erts_cancel_bif_timers(Process *, ErtsBifTimers **, void **, int);
 int erts_detach_accessor_bif_timers(Process *, ErtsBifTimers *, void **);
 ErtsHLTimerService *erts_create_timer_service(void);
 void erts_hl_timer_init(void);
 void erts_start_timer_callback(ErtsMonotonicTime,
 			       void (*)(void *),
 			       void *);
-#ifdef ERTS_SMP
 void
 erts_handle_canceled_timers(void *vesdp,
 			    int *need_thr_progress,
 			    ErtsThrPrgrVal *thr_prgr_p,
 			    int *need_more_work);
-#endif
 
 Uint erts_bif_timer_memory_size(void);
-void erts_print_bif_timer_info(int to, void *to_arg);
+void erts_print_bif_timer_info(fmtfn_t to, void *to_arg);
 
 void erts_debug_bif_timer_foreach(void (*func)(Eterm,
 					       Eterm,

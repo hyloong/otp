@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 1996-2013. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 1996-2026. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -30,6 +32,47 @@
 %%
 
 -module(erl_prim_loader).
+-moduledoc """
+The low-level Erlang loader. This module is used to load all Erlang modules into
+the system. The start script is also fetched with this low-level loader.
+
+`erl_prim_loader` knows about the environment and how to fetch modules.
+
+Command-line flag `-loader Loader` can be used to choose the method used by
+`erl_prim_loader`. Two `Loader` methods are supported by the Erlang runtime
+system: `efile` and `inet`.
+
+## Command-Line Flags
+
+The `erl_prim_loader` module interprets the following command-line flags:
+
+- **`-loader Loader`** - Specifies the name of the loader used by
+  `erl_prim_loader`. `Loader` can be `efile` (use the local file system) or
+  `inet` (load using the `boot_server` on another Erlang node).
+
+  If flag `-loader` is omitted, it defaults to `efile`.
+
+- **`-loader_debug`** - Makes the `efile` loader write some debug information,
+  such as the reason for failures, while it handles files.
+
+- **`-hosts Hosts`** - Specifies which other Erlang nodes the `inet` loader can
+  use. This flag is mandatory if flag `-loader inet` is present. On each host,
+  there must be on Erlang node with the `m:erl_boot_server`, which handles the
+  load requests. `Hosts` is a list of IP addresses (hostnames are not
+  acceptable).
+
+- **`-setcookie Cookie`** - Specifies the cookie of the Erlang runtime system.
+  This flag is mandatory if flag `-loader inet` is present.
+
+The loader retains support for the primary archive used by `m:escript`.
+
+### See Also
+
+`m:init`, `m:erl_boot_server`
+""".
+
+-compile([{nowarn_possibly_unsafe_function, {erlang, binary_to_term, 1}},
+          {nowarn_deprecated_function, [{erlang,exit,2}]}]).
 
 %% If the macro DEBUG is defined during compilation, 
 %% debug printouts are done through erlang:display/1.
@@ -42,38 +85,40 @@
 -include("inet_boot.hrl").
 
 %% Public
--export([start/3, set_path/1, get_path/0, get_file/1, get_files/2,
+-export([start/0, set_path/1, get_path/0, get_file/1, read_file/1,
          list_dir/1, read_file_info/1, read_link_info/1, get_cwd/0, get_cwd/1]).
 
 %% Used by erl_boot_server
--export([prim_init/0, prim_get_file/2, prim_list_dir/2,
+-export([prim_init/0, prim_read_file/2, prim_list_dir/2,
          prim_read_file_info/3, prim_get_cwd/2]).
 
-%% Used by escript and code
--export([set_primary_archive/4, release_archives/0]).
+%% Used by escript
+-export([set_primary_archive/4]).
+
+%% Used by test suites
+-export([get_modules/3]).
+
+%% Used by init and the code server
+-export([get_modules/2, is_basename/1]).
 
 -include_lib("kernel/include/file.hrl").
 
 -type host() :: atom().
 
 -record(prim_state, {debug :: boolean(),
-		     cache,
 		     primary_archive}).
 -type prim_state() :: #prim_state{}.
+-type archive() :: {archive, file:filename(), file:filename()}.
 
 -record(state, 
         {loader            :: 'efile' | 'inet',
          hosts = []        :: [host()], % hosts list (to boot from)
-         id,                      % not used any more?
          data              :: 'noport' | port(), % data port etc
-         timeout           :: timeout(),         % idle timeout
-	 %% Number of timeouts before archives are released
-	 n_timeouts        :: non_neg_integer(),
-         multi_get = false :: boolean(),
+         timeout           :: timeout(),	 % idle timeout
          prim_state        :: prim_state()}).    % state for efile code loader
 
--define(IDLE_TIMEOUT, 60000).  %% tear inet connection after 1 minutes
--define(N_TIMEOUTS, 6).        %% release efile archive after 6 minutes
+-define(EFILE_IDLE_TIMEOUT, (6*60*1000)).	%idle timeout
+-define(INET_IDLE_TIMEOUT, (60*1000)). 		%tear down connection timeout
 
 %% Defines for inet as prim_loader
 -define(INET_FAMILY, inet).
@@ -103,26 +148,14 @@ debug(#prim_state{debug = Deb}, Term) ->
 %%% Interface Functions. 
 %%% --------------------------------------------------------
 
--spec start(Id, Loader, Hosts) ->
+-doc false.
+-spec start() ->
 	    {'ok', Pid} | {'error', What} when
-      Id :: term(),
-      Loader :: atom() | string(),
-      Hosts :: Host | [Host],
-      Host :: host(),
       Pid :: pid(),
       What :: term().
-start(Id, Pgm, Hosts) when is_atom(Hosts) ->
-    start(Id, Pgm, [Hosts]);
-start(Id, Pgm0, Hosts) ->
-    Pgm = if
-              is_atom(Pgm0) ->
-                  atom_to_list(Pgm0);
-              true ->
-                  Pgm0
-          end,
+start() ->
     Self = self(),
-    Pid = spawn_link(fun() -> start_it(Pgm, Id, Self, Hosts) end),
-    register(erl_prim_loader, Pid),
+    Pid = spawn_link(fun() -> start_it(Self) end),
     receive
         {Pid,ok} ->
             {ok,Pid};
@@ -130,29 +163,42 @@ start(Id, Pgm0, Hosts) ->
             {error,Reason}
     end.
 
-%% Hosts must be a list of form ['1.2.3.4' ...]
-start_it("inet", Id, Pid, Hosts) ->
+start_it(Parent) ->
     process_flag(trap_exit, true),
-    ?dbg(inet, {Id,Pid,Hosts}),
+    register(erl_prim_loader, self()),
+    Loader = case init:get_argument(loader) of
+		 {ok,[[Loader0]]} ->
+		     Loader0;
+		 error ->
+		     "efile"
+	     end,
+    case Loader of
+	"efile" -> start_efile(Parent);
+	"inet" -> start_inet(Parent)
+    end.
+
+%% Hosts must be a list of form ['1.2.3.4' ...]
+start_inet(Parent) ->
+    Hosts = case init:get_argument(hosts) of
+		{ok,[Hosts0]} -> Hosts0;
+		_ -> []
+	    end,
     AL = ipv4_list(Hosts),
     ?dbg(addresses, AL),
     {ok,Tcp} = find_master(AL),
-    init_ack(Pid),
+    init_ack(Parent),
     PS = prim_init(),
     State = #state {loader = inet,
                     hosts = AL,
-                    id = Id,
                     data = Tcp,
-                    timeout = ?IDLE_TIMEOUT,
-		    n_timeouts = ?N_TIMEOUTS,
+                    timeout = ?INET_IDLE_TIMEOUT,
                     prim_state = PS},
-    loop(State, Pid, []);
+    set_loader_config(inet),
+    loop(State, Parent, []).
 
-start_it("efile", Id, Pid, _Hosts) ->
-    process_flag(trap_exit, true),
-    {ok, Port} = prim_file:start(),
+start_efile(Parent) ->
     %% Check that we started in a valid directory.
-    case prim_file:get_cwd(Port) of
+    case prim_file:get_cwd() of
 	{error, _} ->
 	    %% At this point in the startup, we have no error_logger at all.
 	    Report = "Invalid current directory or invalid filename "
@@ -160,35 +206,55 @@ start_it("efile", Id, Pid, _Hosts) ->
 	    erlang:display(Report),
 	    exit({error, invalid_current_directory});
 	_ ->
-	    init_ack(Pid)
+	    init_ack(Parent)
     end,
-    MultiGet = case erlang:system_info(thread_pool_size) of
-                   0 -> false;
-                   _ -> true
-               end,
     PS = prim_init(),
     State = #state {loader = efile,
-                    id = Id,
-                    data = Port,
-                    timeout = infinity,
-                    multi_get = MultiGet,
+                    data = noport,
+                    timeout = ?EFILE_IDLE_TIMEOUT,
                     prim_state = PS},
-    loop(State, Pid, []).
+    set_loader_config({efile, PS#prim_state.primary_archive}),
+    loop(State, Parent, []).
 
 init_ack(Pid) ->
     Pid ! {self(),ok},
     ok.
 
+set_loader_config(Value) ->
+    persistent_term:put(?MODULE, Value).
+get_loader_config() ->
+    persistent_term:get(?MODULE).
+
+-doc """
+Sets the path of the loader if `m:init` interprets a `path` command in the start
+script.
+""".
 -spec set_path(Path) -> 'ok' when
       Path :: [Dir :: string()].
 set_path(Paths) when is_list(Paths) ->
     request({set_path,Paths}).
 
+-doc """
+_Use of this function is deprecated in favor of `code:get_path/0`._
+
+Gets the path set in the loader. The path is set by the `m:init` process
+according to information found in the start script.
+""".
 -spec get_path() -> {'ok', Path} when
       Path :: [Dir :: string()].
 get_path() ->
     request({get_path,[]}).
 
+-doc """
+_Use of this function is deprecated in favor of [`read_file/1`](`read_file/1`)._
+
+Fetches a file using the low-level loader. `Filename` is either an absolute
+filename or only the name of the file, for example, `"lists.beam"`. If an
+internal path is set to the loader, this path is used to find the file.
+`FullName` is the complete name of the fetched file. `Bin` is the contents of
+the file as a binary.
+
+""".
 -spec get_file(Filename) -> {'ok', Bin, FullName} | 'error' when
       Filename :: atom() | string(),
       Bin :: binary(),
@@ -198,46 +264,93 @@ get_file(File) when is_atom(File) ->
 get_file(File) ->
     check_file_result(get_file, File, request({get_file,File})).
 
--spec get_files([{atom(), string()}],
-		fun((atom(),binary(),string()) -> 'ok' | {'error', atom()})) ->
-			'ok' | {'error', atom()}.
-get_files(ModFiles, Fun) ->
-    case request({get_files,{ModFiles,Fun}}) of
-        E = {error,_M} ->
-            E;
-        {error,Reason,M} ->
-            check_file_result(get_files, M, {error,Reason}),
-            {error,M};
-        ok ->
-            ok
-    end.
+-doc """
+Lists all the files in a directory.
 
+Returns `{ok, Filenames}` if successful, otherwise `error`. `Filenames`
+is a list of the names of all the files in the directory. The names are
+not sorted.
+
+""".
 -spec list_dir(Dir) -> {'ok', Filenames} | 'error' when
       Dir :: string(),
       Filenames :: [Filename :: string()].
 list_dir(Dir) ->
-    check_file_result(list_dir, Dir, request({list_dir,Dir})).
+    check_file_result(list_dir, Dir, client_or_request(list_dir, Dir)).
 
+-doc """
+Reads a file using the low-level loader.
+
+Returns `{ok, Bin}` if successful, otherwise `error`. `Bin` is the contents
+of the file as a binary.
+
+""".
+-doc(#{since => <<"OTP 27.0">>}).
+-spec read_file(Filename) -> {'ok', Bin} | 'error' when
+      Filename :: string(),
+      Bin :: binary().
+read_file(File) ->
+    check_file_result(read_file, File, client_or_request(read_file, File)).
+
+-doc """
+Retrieves information about a file.
+
+Returns `{ok, FileInfo}` if successful, otherwise `error`. `FileInfo` is a
+record [`file_info`](`t:file:file_info/0`), defined in the Kernel include file
+ `file.hrl`. Include the following directive in the module from which the
+function is called:
+
+```erlang
+-include_lib("kernel/include/file.hrl").
+```
+
+For more information about the record see `file:read_file_info/2`.
+
+""".
 -spec read_file_info(Filename) -> {'ok', FileInfo} | 'error' when
       Filename :: string(),
       FileInfo :: file:file_info().
 read_file_info(File) ->
-    check_file_result(read_file_info, File, request({read_file_info,File})).
+    check_file_result(read_file_info, File, client_or_request(read_file_info, File)).
 
+-doc """
+Works like `read_file_info/1` except that if `Filename` is a symbolic link,
+information about the link is returned in the [`file_info`](`t:file:file_info/0`)
+record and the `type` field of the record is set to `symlink`.
+
+If `Filename` is not a symbolic link, this function returns exactly the same
+result as [`read_file_info/1`](`read_file_info/1`). On platforms that do not
+support symbolic links, this function is always equivalent to
+[`read_file_info/1`](`read_file_info/1`).
+""".
+-doc(#{since => <<"OTP 17.1.2">>}).
 -spec read_link_info(Filename) -> {'ok', FileInfo} | 'error' when
       Filename :: string(),
       FileInfo :: file:file_info().
 read_link_info(File) ->
-    check_file_result(read_link_info, File, request({read_link_info,File})).
+    check_file_result(read_link_info, File, client_or_request(read_link_info, File)).
 
+-doc false.
 -spec get_cwd() -> {'ok', string()} | 'error'.
 get_cwd() ->
-    check_file_result(get_cwd, [], request({get_cwd,[]})).
+    Res =
+        case get_loader_config() of
+            {efile, _} -> prim_file:get_cwd();
+            inet -> request({get_cwd,[]})
+        end,
+    check_file_result(get_cwd, [], Res).
 
+-doc false.
 -spec get_cwd(string()) -> {'ok', string()} | 'error'.
 get_cwd(Drive) ->
-    check_file_result(get_cwd, Drive, request({get_cwd,[Drive]})).
+    Res =
+        case get_loader_config() of
+            {efile, _} -> prim_file:get_cwd(Drive);
+            inet -> request({get_cwd,[Drive]})
+        end,
+    check_file_result(get_cwd, Drive, Res).
 
+-doc false.
 -spec set_primary_archive(File :: string() | 'undefined', 
 			  ArchiveBin :: binary() | 'undefined',
 			  FileInfo :: #file_info{} | 'undefined',
@@ -250,10 +363,24 @@ set_primary_archive(File, ArchiveBin, FileInfo, ParserFun)
   when is_list(File), is_binary(ArchiveBin), is_record(FileInfo, file_info) ->
     request({set_primary_archive, File, ArchiveBin, FileInfo, ParserFun}).
 
--spec release_archives() -> 'ok' | {'error', _}.
+-doc false.
+-spec get_modules([module()],
+		  fun((atom(), string(), binary()) ->
+			     {'ok',any()} | {'error',any()})) ->
+			 {'ok',{[any()],[any()]}}.
 
-release_archives() ->
-    request(release_archives).
+get_modules(Modules, Fun) ->
+    request({get_modules,{Modules,Fun}}).
+
+-doc false.
+-spec get_modules([module()],
+		  fun((atom(), string(), binary()) ->
+			     {'ok',any()} | {'error',any()}),
+		  [string()]) ->
+			 {'ok',{[any()],[any()]}}.
+
+get_modules(Modules, Fun, Path) ->
+    request({get_modules,{Modules,Fun,Path}}).
 
 request(Req) ->
     Loader = whereis(erl_prim_loader),
@@ -265,44 +392,65 @@ request(Req) ->
             error
     end.
 
+client_or_request(Fun, File) ->
+    case get_loader_config() of
+        {efile, PrimaryArchive} ->
+            case name_split(PrimaryArchive, File) of
+                {file, SplitFile} -> prim_file:Fun(SplitFile);
+                {archive, _, _} = Archive -> request({Fun,Archive})
+            end;
+        inet ->
+            request({Fun,File})
+    end.
+
 check_file_result(_, _, {error,enoent}) ->
     error;
 check_file_result(_, _, {error,enotdir}) ->
     error;
 check_file_result(_, _, {error,einval}) ->
     error;
-check_file_result(Func, Target, {error,Reason}) ->   
-    case (catch atom_to_list(Reason)) of
-        {'EXIT',_} ->                           % exit trapped
-            error;
-        Errno ->                                % errno
-            Process = case process_info(self(), registered_name) of
-                          {registered_name,R} -> 
-                              "Process: " ++ atom_to_list(R) ++ ".";
-                          _ -> 
-                              ""
-                      end,
-            TargetStr =
-                if is_atom(Target) -> atom_to_list(Target);
-                   is_list(Target) -> Target;
-                   true -> []
-                end,
-            Report = 
-                case TargetStr of
-                    [] ->
-                        "File operation error: " ++ Errno ++ ". " ++
-                        "Function: " ++ atom_to_list(Func) ++ ". " ++ Process;
-                    _ ->
-                        "File operation error: " ++ Errno ++ ". " ++
-                        "Target: " ++ TargetStr ++ ". " ++
-                        "Function: " ++ atom_to_list(Func) ++ ". " ++ Process
-                end,
-            %% this is equal to calling error_logger:error_report/1 which
-            %% we don't want to do from code_server during system boot
-            error_logger ! {notify,{error_report,group_leader(),
-                                    {self(),std_error,Report}}},
-            error
-    end;
+check_file_result(Func, Target, {error,Reason}) when is_atom(Reason) ->
+    Errno = atom_to_list(Reason),
+    Process =
+        case process_info(self(), registered_name) of
+            {registered_name,R} ->
+                "Process: " ++ atom_to_list(R) ++ ".";
+            _ ->
+                ""
+        end,
+    TargetStr =
+        if is_atom(Target) -> atom_to_list(Target);
+           is_list(Target) -> Target;
+           true -> []
+        end,
+    Report =
+        case TargetStr of
+            [] ->
+                "File operation error: " ++ Errno ++ ". " ++
+                "Function: " ++ atom_to_list(Func) ++ ". " ++ Process;
+            _ ->
+                "File operation error: " ++ Errno ++ ". " ++
+                "Target: " ++ TargetStr ++ ". " ++
+                "Function: " ++ atom_to_list(Func) ++ ". " ++ Process
+        end,
+    %% This is equal to calling logger:error/2 which
+    %% we don't want to do from code_server during system boot.
+    %% We don't want to call logger:timestamp() either.
+    _ = try
+            logger ! {log,error,#{label=>{?MODULE,file_error},report=>Report},
+                      #{pid=>self(),
+                        gl=>group_leader(),
+                        time=>os:system_time(microsecond),
+                        error_logger=>#{tag=>error_report,
+                                        type=>std_error}}}
+        catch _:_ ->
+                %% If logger has not been started yet we just display it
+                erlang:display({?MODULE,file_error}),
+                erlang:display(Report)
+        end,
+    error;
+check_file_result(_, _, {error, _}) ->
+    error;
 check_file_result(_, _, Other) ->
     Other.
 
@@ -310,76 +458,64 @@ check_file_result(_, _, Other) ->
 %%% The main loop.
 %%% --------------------------------------------------------
 
-loop(State, Parent, Paths) ->
+loop(St0, Parent, Paths) ->
     receive
+	{Pid,{set_path,NewPaths}} when is_pid(Pid) ->
+	    Pid ! {self(),ok},
+	    loop(St0, Parent, to_strs(NewPaths));
         {Pid,Req} when is_pid(Pid) ->
-            %% erlang:display(Req),
-            {Resp,State2,Paths2} =
-                case Req of
-                    {set_path,NewPaths} ->
-                        {ok,State,to_strs(NewPaths)};
-                    {get_path,_} ->
-                        {{ok,Paths},State,Paths};
-                    {get_file,File} ->
-                        {Res,State1} = handle_get_file(State, Paths, File),
-                        {Res,State1,Paths};
-                    {get_files,{ModFiles,Fun}} ->
-                        {Res,State1} = handle_get_files(State, ModFiles, Paths, Fun),
-                        {Res,State1,Paths};
-                    {list_dir,Dir} ->
-                        {Res,State1} = handle_list_dir(State, Dir),
-                        {Res,State1,Paths};
-                    {read_file_info,File} ->
-                        {Res,State1} = handle_read_file_info(State, File),
-                        {Res,State1,Paths};
-                    {read_link_info,File} ->
-                        {Res,State1} = handle_read_link_info(State, File),
-                        {Res,State1,Paths};
-                    {get_cwd,[]} ->
-                        {Res,State1} = handle_get_cwd(State, []),
-                        {Res,State1,Paths};
-                    {get_cwd,[_]=Args} ->
-                        {Res,State1} = handle_get_cwd(State, Args),
-                        {Res,State1,Paths};
-                    {set_primary_archive,File,ArchiveBin,FileInfo,ParserFun} ->
-                        {Res,State1} =
-			    handle_set_primary_archive(State, File,
-						       ArchiveBin, FileInfo,
-						       ParserFun),
-                        {Res,State1,Paths};
-                    release_archives ->
-                        {Res,State1} = handle_release_archives(State),
-                        {Res,State1,Paths};
-                    _Other ->
-                        {ignore,State,Paths}
-                end,
-            if Resp =:= ignore -> ok;
-               true -> Pid ! {self(),Resp}, ok
-            end,
-            if 
-                is_record(State2, state) ->
-                    loop(State2, Parent, Paths2);
-                true ->
-                    exit({bad_state, Req, State2})          
+	    case handle_request(Req, Paths, St0) of
+		ignore ->
+		    ok;
+		{Resp,#state{}=St1} ->
+		    Pid ! {self(),Resp},
+                    erlang:garbage_collect(),
+                    loop(St1, Parent, Paths);
+		{_,State2,_} ->
+                    exit({bad_state,Req,State2})
             end;
         {'EXIT',Parent,W} ->
-            _State1 = handle_stop(State),
+            _ = handle_stop(St0),
             exit(W);
         {'EXIT',P,W} ->
-            State1 = handle_exit(State, P, W),
-            loop(State1, Parent, Paths);
+            St1 = handle_exit(St0, P, W),
+            loop(St1, Parent, Paths);
         _Message ->
-            loop(State, Parent, Paths)
-    after State#state.timeout ->
-            State1 = handle_timeout(State, Parent),
-            loop(State1, Parent, Paths)
+            loop(St0, Parent, Paths)
+    after St0#state.timeout ->
+            St1 = handle_timeout(St0, Parent),
+            loop(St1, Parent, Paths)
     end.
 
-handle_get_files(State = #state{multi_get = true}, ModFiles, Paths, Fun) ->
-    ?SAFE2(efile_multi_get_file_from_port(State, ModFiles, Paths, Fun), State);
-handle_get_files(State, _ModFiles, _Paths, _Fun) ->     % no multi get
-    {{error,no_multi_get},State}.
-    
+handle_request(Req, Paths, St0) ->
+    case Req of
+	{get_path,_} ->
+	    {{ok,Paths},St0};
+	{get_file,File} ->
+	    handle_get_file(St0, Paths, File);
+	{get_modules,{Modules,Fun}} ->
+	    handle_get_modules(St0, Modules, Fun, Paths);
+	{get_modules,{Modules,Fun,ModPaths}} ->
+	    handle_get_modules(St0, Modules, Fun, ModPaths);
+	{list_dir,Dir} ->
+	    handle_list_dir(St0, Dir);
+        {read_file,File} ->
+            handle_read_file(St0, File);
+	{read_file_info,File} ->
+	    handle_read_file_info(St0, File);
+	{read_link_info,File} ->
+	    handle_read_link_info(St0, File);
+	{get_cwd,[]} ->
+	    handle_get_cwd(St0, []);
+	{get_cwd,[_]=Args} ->
+	    handle_get_cwd(St0, Args);
+	{set_primary_archive,File,ArchiveBin,FileInfo,ParserFun} ->
+	    handle_set_primary_archive(St0, File, ArchiveBin,
+				       FileInfo, ParserFun);
+	_ ->
+	    ignore
+    end.
+
 handle_get_file(State = #state{loader = efile}, Paths, File) ->
     ?SAFE2(efile_get_file_from_port(State, File, Paths), State);
 handle_get_file(State = #state{loader = inet}, Paths, File) ->
@@ -388,13 +524,15 @@ handle_get_file(State = #state{loader = inet}, Paths, File) ->
 handle_set_primary_archive(State= #state{loader = efile}, File, ArchiveBin, FileInfo, ParserFun) ->
     ?SAFE2(efile_set_primary_archive(State, File, ArchiveBin, FileInfo, ParserFun), State).
 
-handle_release_archives(State= #state{loader = efile}) ->
-    ?SAFE2(efile_release_archives(State), State).
-
 handle_list_dir(State = #state{loader = efile}, Dir) ->
     ?SAFE2(efile_list_dir(State, Dir), State);
 handle_list_dir(State = #state{loader = inet}, Dir) ->
     ?SAFE2(inet_list_dir(State, Dir), State).
+
+handle_read_file(State = #state{loader = efile}, File) ->
+    ?SAFE2(efile_read_file(State, File), State);
+handle_read_file(State = #state{loader = inet}, File) ->
+    ?SAFE2(inet_read_file(State, File), State).
 
 handle_read_file_info(State = #state{loader = efile}, File) ->
     ?SAFE2(efile_read_file_info(State, File, true), State);
@@ -406,18 +544,16 @@ handle_read_link_info(State = #state{loader = efile}, File) ->
 handle_read_link_info(State = #state{loader = inet}, File) ->
     ?SAFE2(inet_read_link_info(State, File), State).
 
-handle_get_cwd(State = #state{loader = efile}, Drive) ->
-    ?SAFE2(efile_get_cwd(State, Drive), State);
 handle_get_cwd(State = #state{loader = inet}, Drive) ->
     ?SAFE2(inet_get_cwd(State, Drive), State).
     
 handle_stop(State = #state{loader = efile}) ->
-    efile_stop_port(State);
+    State;
 handle_stop(State = #state{loader = inet}) ->
     inet_stop_port(State).
 
-handle_exit(State = #state{loader = efile}, Who, Reason) ->
-    efile_exit_port(State, Who, Reason);
+handle_exit(State = #state{loader = efile}, _Who, _Reason) ->
+    State;
 handle_exit(State = #state{loader = inet}, Who, Reason) ->
     inet_exit_port(State, Who, Reason).
 
@@ -430,53 +566,6 @@ handle_timeout(State = #state{loader = inet}, Parent) ->
 %%% Functions which handle efile as prim_loader (default).
 %%% --------------------------------------------------------
 
-%%% Reading many files in parallel is an optimization. 
-%%% See also comment in init.erl.
-
-%% -> {ok,State} | {{error,Module},State} | {{error,Reason,Module},State}
-efile_multi_get_file_from_port(State, ModFiles, Paths, Fun) ->
-    Ref = make_ref(),
-    %% More than 200 processes is no gain.
-    Max = erlang:min(200, erlang:system_info(thread_pool_size)),
-    efile_multi_get_file_from_port2(ModFiles, 0, Max, State, Paths, Fun, Ref, ok).
-
-efile_multi_get_file_from_port2([MF | MFs], Out, Max, State, Paths, Fun, Ref, Ret) when Out < Max ->
-    Self = self(),
-    _Pid = spawn(fun() -> efile_par_get_file(Ref, State, MF, Paths, Self, Fun) end),
-    efile_multi_get_file_from_port2(MFs, Out+1, Max, State, Paths, Fun, Ref, Ret);
-efile_multi_get_file_from_port2(MFs, Out, Max, _State, Paths, Fun, Ref, Ret) when Out > 0 ->
-    receive 
-        {Ref, ok, State1} ->
-            efile_multi_get_file_from_port2(MFs, Out-1, Max, State1, Paths, Fun, Ref, Ret);
-        {Ref, {error,_Mod} = Error, State1} ->
-            efile_multi_get_file_from_port2(MFs, Out-1, Max, State1, Paths, Fun, Ref, Error);
-        {Ref, MF, {error,emfile,State1}} ->
-            %% Max can take negative values. Out cannot.
-            efile_multi_get_file_from_port2([MF | MFs], Out-1, Max-1, State1, Paths, Fun, Ref, Ret);
-        {Ref, {M,_F}, {error,Error,State1}} -> 
-            efile_multi_get_file_from_port2(MFs, Out-1, 0, State1, Paths, Fun, Ref, {error,Error,M})
-    end;
-efile_multi_get_file_from_port2(_MFs, 0, _Max, State, _Paths, _Fun, _Ref, Ret) ->
-    {Ret,State}.
-
-efile_par_get_file(Ref, State, {Mod,File} = MF, Paths, Pid, Fun) ->
-    %% One port for each file read in "parallel":
-    case prim_file:start() of
-        {ok, Port} ->
-            Port0 = State#state.data,
-            State1 = State#state{data = Port},
-            R = case efile_get_file_from_port(State1, File, Paths) of
-                    {{error,Reason},State2} -> 
-                        {Ref,MF,{error,Reason,State2}};
-                    {{ok,BinFile,Full},State2} -> 
-                        %% Fun(...) -> ok | {error,Mod}
-                        {Ref,Fun(Mod, BinFile, Full),State2#state{data=Port0}}
-                end,
-            prim_file:close(Port),
-            Pid ! R;
-        {error, Error} ->
-            Pid ! {Ref,MF,{error,Error,State}}
-    end.
 
 %% -> {{ok,BinFile,File},State} | {{error,Reason},State}
 efile_get_file_from_port(State, File, Paths) ->
@@ -490,10 +579,8 @@ efile_get_file_from_port(State, File, Paths) ->
     end.
 
 efile_get_file_from_port2(#state{prim_state = PS} = State, File) ->
-    {Res, PS2} = prim_get_file(PS, File),
+    {Res, PS2} = prim_read_file(PS, File),
     case Res of
-        {error,port_died} ->
-            exit('prim_load port died');
         {error,Reason} ->
             {{error,Reason},State#state{prim_state = PS2}};
         {ok,BinFile} ->
@@ -519,41 +606,142 @@ efile_set_primary_archive(#state{prim_state = PS} = State, File,
 			  ArchiveBin, FileInfo, ParserFun) ->
     {Res, PS2} = prim_set_primary_archive(PS, File, ArchiveBin,
 					  FileInfo, ParserFun),
-    {Res,State#state{prim_state = PS2}}.
-
-efile_release_archives(#state{prim_state = PS} = State) ->
-    {Res, PS2} = prim_release_archives(PS),
+    set_loader_config({efile, PS2#prim_state.primary_archive}),
     {Res,State#state{prim_state = PS2}}.
 
 efile_list_dir(#state{prim_state = PS} = State, Dir) ->
     {Res, PS2} = prim_list_dir(PS, Dir),
     {Res, State#state{prim_state = PS2}}.
 
+efile_read_file(#state{prim_state = PS} = State, File) ->
+    {Res, PS2} = prim_read_file(PS, File),
+    {Res, State#state{prim_state = PS2}}.
+
 efile_read_file_info(#state{prim_state = PS} = State, File, FollowLinks) ->
     {Res, PS2} = prim_read_file_info(PS, File, FollowLinks),
     {Res, State#state{prim_state = PS2}}.
 
-efile_get_cwd(#state{prim_state = PS} = State, Drive) ->
-    {Res, PS2} = prim_get_cwd(PS, Drive),
-    {Res, State#state{prim_state = PS2}}.
-
-efile_stop_port(#state{data=Port}=State) ->
-    prim_file:close(Port),
-    State#state{data=noport}.
-
-efile_exit_port(State, Port, Reason) when State#state.data =:= Port ->
-    exit({port_died,Reason});
-efile_exit_port(State, _Port, _Reason) ->
+efile_timeout_handler(State, _Parent) ->
     State.
 
-efile_timeout_handler(#state{n_timeouts = N} = State, _Parent) ->
-    if
-	N =< 0 ->
-	    {_Res, State2} = efile_release_archives(State),
-	    State2#state{n_timeouts = ?N_TIMEOUTS};
-	true ->
-	    State#state{n_timeouts = N - 1}
+%%% --------------------------------------------------------
+%%% Read and process severals modules in parallel.
+%%% --------------------------------------------------------
+
+handle_get_modules(#state{loader=efile}=St, Ms, Process, Paths) ->
+    Primary = (St#state.prim_state)#prim_state.primary_archive,
+    Res = case (Primary =/= undefined) andalso efile_any_archives(Paths, Primary) of
+	      false ->
+		  efile_get_mods_par(Ms, Process, Paths);
+	      true ->
+		  Get = fun efile_get_file_from_port/3,
+		  gm_get_mods(St, Get, Ms, Process, Paths)
+	  end,
+    {Res,St};
+handle_get_modules(#state{loader=inet}=St, Ms, Process, Paths) ->
+    Get = fun inet_get_file_from_port/3,
+    {gm_get_mods(St, Get, Ms, Process, Paths),St}.
+
+efile_get_mods_par(Ms, Process, Paths) ->
+    Self = self(),
+    Ref = make_ref(),
+    GmSpawn = fun() ->
+		      efile_gm_spawn({Self,Ref}, Ms, Process, Paths)
+	      end,
+    _ = spawn_link(GmSpawn),
+    N = length(Ms),
+    efile_gm_recv(N, Ref, [], []).
+
+efile_any_archives([H|T], Primary) ->
+    case name_split(Primary, H) of
+	{file,_} -> efile_any_archives(T, Primary);
+	{archive,_,_} -> true
+    end;
+efile_any_archives([], _) ->
+    false.
+
+efile_gm_recv(0, _Ref, Succ, Fail) ->
+    {ok,{Succ,Fail}};
+efile_gm_recv(N, Ref, Succ, Fail) ->
+    receive
+	{Ref,Mod,{ok,Res}} ->
+	    efile_gm_recv(N-1, Ref, [{Mod,Res}|Succ], Fail);
+	{Ref,Mod,{error,Res}} ->
+	    efile_gm_recv(N-1, Ref, Succ, [{Mod,Res}|Fail])
     end.
+
+efile_gm_spawn(ParentRef, Ms, Process, Paths) ->
+    S = erlang:system_info(schedulers_online),
+    MaxN = min(S + (S bsr 1), 32),
+    efile_gm_spawn_1(0, MaxN, Ms, ParentRef, Process, Paths).
+
+efile_gm_spawn_1(N, MaxN, Ms, ParentRef, Process, Paths) when N > MaxN ->
+    receive
+	{'DOWN',_,process,_,_} ->
+	    efile_gm_spawn_1(N-1, MaxN, Ms, ParentRef, Process, Paths)
+    end;
+efile_gm_spawn_1(N, MaxN, [M|Ms], ParentRef, Process, Paths) ->
+    Get = fun() -> efile_gm_get(Paths, M, ParentRef, Process) end,
+    _ = spawn_monitor(Get),
+    efile_gm_spawn_1(N+1, MaxN, Ms, ParentRef, Process, Paths);
+efile_gm_spawn_1(_, _, [], _, _, _) ->
+    ok.
+
+efile_gm_get(Paths, Mod, ParentRef, Process) ->
+    File = atom_to_list(Mod) ++ init:objfile_extension(),
+    efile_gm_get_1(Paths, File, Mod, ParentRef, Process).
+
+efile_gm_get_1([P|Ps], File0, Mod, {Parent,Ref}=PR, Process) ->
+    File = join(P, File0),
+    try prim_file:read_file(File) of
+	{ok,Bin} ->
+	    Res = gm_process(Mod, File, Bin, Process),
+	    Parent ! {Ref,Mod,Res};
+	Error ->
+	    _ = check_file_result(get_modules, File, Error),
+	    efile_gm_get_1(Ps, File0, Mod, PR, Process)
+    catch
+	_:Reason ->
+	    Res = {error,{crash,Reason}},
+	    Parent ! {Ref,Mod,Res}
+    end;
+efile_gm_get_1([], _, Mod, {Parent,Ref}, _Process) ->
+    Parent ! {Ref,Mod,{error,enoent}}.
+
+gm_get_mods(St, Get, Ms, Process, Paths) ->
+    gm_get_mods(St, Get, Ms, Process, Paths, [], []).
+
+gm_get_mods(St, Get, [M|Ms], Process, Paths, Succ, Fail) ->
+    File = atom_to_list(M) ++ init:objfile_extension(),
+    case gm_arch_get(St, Get, M, File, Paths, Process) of
+	{ok,Res} ->
+	    gm_get_mods(St, Get, Ms, Process, Paths,
+			[{M,Res}|Succ], Fail);
+	{error,Res} ->
+	    gm_get_mods(St, Get, Ms, Process, Paths,
+			Succ, [{M,Res}|Fail])
+    end;
+gm_get_mods(_St, _Get, [], _, _, Succ, Fail) ->
+    {ok,{Succ,Fail}}.
+
+gm_arch_get(St, Get, Mod, File, Paths, Process) ->
+    case Get(St, File, Paths) of
+	{{error,_}=E,_} ->
+	    E;
+	{{ok,Bin,Full},_} ->
+	    gm_process(Mod, Full, Bin, Process)
+    end.
+
+gm_process(Mod, File, Bin, Process) ->
+    try Process(Mod, File, Bin) of
+	{ok,_}=Res -> Res;
+	{error,_}=Res -> Res;
+	Other -> {error,{bad_return,Other}}
+    catch
+	_:Error ->
+	    {error,{crash,Error}}
+    end.
+
 
 %%% --------------------------------------------------------
 %%% Functions which handle inet prim_loader
@@ -669,39 +857,44 @@ inet_timeout_handler(State, _Parent) ->
 inet_get_file_from_port(State, File, Paths) ->
     case is_basename(File) of
         false ->                        % get absolute file name.
-            inet_send_and_rcv({get,File}, File, State);
+            inet_get_file_from_port1(File, State);
         true when Paths =:= [] ->       % get plain file name.
-            inet_send_and_rcv({get,File}, File, State);
+            inet_get_file_from_port1(File, State);
         true ->                         % use paths.
-            inet_get_file_from_port1(File, Paths, State)
+            inet_get_file_from_port2(File, Paths, State)
     end.
 
-inet_get_file_from_port1(File, [P | Paths], State) ->
+inet_get_file_from_port1(File, State0) ->
+    {Res, State1} = inet_send_and_rcv({get,File}, State0),
+    case Res of
+        {ok, BinFile} -> {{ok, BinFile, File}, State1};
+        Other -> {Other, State1}
+    end.
+
+inet_get_file_from_port2(File, [P | Paths], State) ->
     File1 = join(P, File),
-    case inet_send_and_rcv({get,File1}, File1, State) of
+    case inet_get_file_from_port1(File1, State) of
         {{error,Reason},State1} ->
             case Paths of
                 [] ->                           % return last error
                     {{error,Reason},State1};
                 _ ->                            % try more paths            
-                    inet_get_file_from_port1(File, Paths, State1)
+                    inet_get_file_from_port2(File, Paths, State1)
             end;
         Result -> Result
     end;
-inet_get_file_from_port1(_File, [], State) ->
+inet_get_file_from_port2(_File, [], State) ->
     {{error,file_not_found},State}.
 
-inet_send_and_rcv(Msg, Tag, State) when State#state.data =:= noport ->
-    {ok,Tcp} = find_master(State#state.hosts),     %% reconnect
-    inet_send_and_rcv(Msg, Tag, State#state{data = Tcp,
-					    timeout = ?IDLE_TIMEOUT});
-inet_send_and_rcv(Msg, Tag, #state{data = Tcp, timeout = Timeout} = State) ->
+inet_send_and_rcv(Msg, State0) when State0#state.data =:= noport ->
+    {ok,Tcp} = find_master(State0#state.hosts),     %% reconnect
+    State1 = State0#state{data = Tcp, timeout = ?INET_IDLE_TIMEOUT},
+    inet_send_and_rcv(Msg, State1);
+inet_send_and_rcv(Msg, #state{data = Tcp, timeout = Timeout} = State) ->
     prim_inet:send(Tcp, term_to_binary(Msg)),
     receive
         {tcp,Tcp,BinMsg} ->
             case catch binary_to_term(BinMsg) of
-                {get,{ok,BinFile}} ->
-                    {{ok,BinFile,Tag},State};
                 {_Cmd,Res={ok,_}} ->
                     {Res,State};
                 {_Cmd,{error,Error}} ->
@@ -713,35 +906,39 @@ inet_send_and_rcv(Msg, Tag, #state{data = Tcp, timeout = Timeout} = State) ->
             end;
         {tcp_closed,Tcp} ->
             %% Ok we must reconnect
-            inet_send_and_rcv(Msg, Tag, State#state{data = noport});
+            inet_send_and_rcv(Msg, State#state{data = noport});
         {tcp_error,Tcp,_Reason} ->
             %% Ok we must reconnect
-            inet_send_and_rcv(Msg, Tag, inet_stop_port(State));
+            inet_send_and_rcv(Msg, inet_stop_port(State));
         {'EXIT', Tcp, _} -> 
             %% Ok we must reconnect
-            inet_send_and_rcv(Msg, Tag, State#state{data = noport})
+            inet_send_and_rcv(Msg, State#state{data = noport})
     after Timeout ->
             %% Ok we must reconnect
-            inet_send_and_rcv(Msg, Tag, inet_stop_port(State))
+            inet_send_and_rcv(Msg, inet_stop_port(State))
     end.
 
 %% -> {{ok,List},State} | {{error,Reason},State}
 inet_list_dir(State, Dir) ->
-    inet_send_and_rcv({list_dir,Dir}, list_dir, State).
+    inet_send_and_rcv({list_dir,Dir}, State).
+
+%% -> {{ok,Binary},State} | {{error,Reason},State}
+inet_read_file(State, File) ->
+    inet_send_and_rcv({get,File}, State).
 
 %% -> {{ok,Info},State} | {{error,Reason},State}
 inet_read_file_info(State, File) ->
-    inet_send_and_rcv({read_file_info,File}, read_file_info, State).
+    inet_send_and_rcv({read_file_info,File}, State).
 
 %% -> {{ok,Info},State} | {{error,Reason},State}
 inet_read_link_info(State, File) ->
-    inet_send_and_rcv({read_link_info,File}, read_link_info, State).
+    inet_send_and_rcv({read_link_info,File}, State).
 
 %% -> {{ok,Cwd},State} | {{error,Reason},State}
 inet_get_cwd(State, []) ->
-    inet_send_and_rcv(get_cwd, get_cwd, State);
+    inet_send_and_rcv(get_cwd, State);
 inet_get_cwd(State, [Drive]) ->
-    inet_send_and_rcv({get_cwd,Drive}, get_cwd, State).
+    inet_send_and_rcv({get_cwd,Drive}, State).
 
 inet_stop_port(#state{data=Tcp}=State) ->
     prim_inet:close(Tcp),
@@ -810,6 +1007,7 @@ port_error(S, Error) ->
     
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
+-doc false.
 -spec prim_init() -> prim_state().
 prim_init() ->
     Deb =
@@ -817,34 +1015,7 @@ prim_init() ->
             {ok, _} -> true;
             error -> false
         end,
-    cache_new(#prim_state{debug = Deb}).
-
-prim_release_archives(PS) ->
-    debug(PS, release_archives),
-    {Res, PS2} = prim_do_release_archives(PS, get(), []),
-    debug(PS2, {return, Res}),
-    {Res, PS2}.
-
-prim_do_release_archives(PS, [{ArchiveFile, DictVal} | KeyVals], Acc) ->
-    Res = 
-	case DictVal of
-	    {primary, _PrimZip, _FI, _ParserFun} ->
-		ok; % Keep primary archive
-	    {Cache, _FI} ->
-		debug(PS, {release, cache, ArchiveFile}),
-		erase(ArchiveFile),
-		clear_cache(ArchiveFile, Cache)
-	end,
-    case Res of
-	ok ->
-	    prim_do_release_archives(PS, KeyVals, Acc);
-	{error, Reason} ->
-	    prim_do_release_archives(PS, KeyVals, [{ArchiveFile, Reason} | Acc])
-    end;
-prim_do_release_archives(PS, [], []) ->
-    {ok, PS#prim_state{primary_archive = undefined}};
-prim_do_release_archives(PS, [], Errors) ->
-    {{error, Errors}, PS#prim_state{primary_archive = undefined}}.
+    #prim_state{debug = Deb}.
 
 prim_set_primary_archive(PS, undefined, undefined, undefined, _ParserFun) ->
     debug(PS, {set_primary_archive, clean}),
@@ -892,16 +1063,17 @@ prim_set_primary_archive(PS, ArchiveFile0, ArchiveBin,
     debug(PS3, {return, Res3}),
     {Res3, PS3}.
 
--spec prim_get_file(prim_state(), file:filename()) -> {_, prim_state()}.
-prim_get_file(PS, File) ->
-    debug(PS, {get_file, File}),
+-doc false.
+-spec prim_read_file(prim_state(), file:filename() | archive()) -> {_, prim_state()}.
+prim_read_file(PS, File) ->
+    debug(PS, {read_file, File}),
     {Res2, PS2} =
         case name_split(PS#prim_state.primary_archive, File) of
             {file, PrimFile} ->
                 Res = prim_file:read_file(PrimFile),
                 {Res, PS};
             {archive, ArchiveFile, FileInArchive} ->
-                debug(PS, {archive_get_file, ArchiveFile, FileInArchive}),
+                debug(PS, {archive_read_file, ArchiveFile, FileInArchive}),
                 FileComponents = path_split(FileInArchive),
                 Fun =
                     fun({Components, _GetInfo, GetBin}, Acc) ->
@@ -917,7 +1089,8 @@ prim_get_file(PS, File) ->
     debug(PS, {return, Res2}),
     {Res2, PS2}.    
 
--spec prim_list_dir(prim_state(), file:filename()) ->
+-doc false.
+-spec prim_list_dir(prim_state(), file:filename() | archive()) ->
 	 {{'ok', [file:filename()]}, prim_state()}
        | {{'error', term()}, prim_state()}.
 prim_list_dir(PS, Dir) ->
@@ -970,7 +1143,8 @@ prim_list_dir(PS, Dir) ->
     debug(PS, {return, Res2}),
     {Res2, PS3}.
 
--spec prim_read_file_info(prim_state(), file:filename(), boolean()) ->
+-doc false.
+-spec prim_read_file_info(prim_state(), file:filename() | archive(), boolean()) ->
 	{{'ok', #file_info{}}, prim_state()}
       | {{'error', term()}, prim_state()}.
 prim_read_file_info(PS, File, FollowLinks) ->
@@ -1013,6 +1187,7 @@ prim_read_file_info(PS, File, FollowLinks) ->
     debug(PS2, {return, Res2}),
     {Res2, PS2}.
 
+-doc false.
 -spec prim_get_cwd(prim_state(), [file:filename()]) ->
         {{'error', term()} | {'ok', _}, prim_state()}.
 prim_get_cwd(PS, []) ->
@@ -1031,16 +1206,7 @@ prim_get_cwd(PS, [Drive]) ->
 apply_archive(PS, Fun, Acc, Archive) ->
     case get(Archive) of
         undefined ->
-	    case open_archive(Archive, Acc, Fun) of
-		{ok, PrimZip, {Acc2, FI, _}} ->
-		    debug(PS, {cache, ok}),
-		    put(Archive, {{ok, PrimZip}, FI}),
-		    {Acc2, PS};
-		Error ->
-		    debug(PS, {cache, Error}),
-		    %% put(Archive, {Error, FI}),
-		    {Error, PS}
-	    end;
+            {{error, enoent}, PS};
         {primary, PrimZip, FI, ParserFun} ->
 	    case prim_file:read_file_info(Archive) of
                 {ok, FI2} 
@@ -1066,41 +1232,7 @@ apply_archive(PS, Fun, Acc, Archive) ->
 		    debug(PS, {cache, {clear, Error}}),
 		    ok = clear_cache(Archive, {ok, PrimZip}),
 		    apply_archive(PS, Fun, Acc, Archive)
-	    end;
-        {Cache, FI} ->
-            case prim_file:read_file_info(Archive) of
-                {ok, FI2} 
-		  when FI#file_info.mtime =:= FI2#file_info.mtime ->
-                    case Cache of
-                        {ok, PrimZip} ->
-                            case foldl_archive(PrimZip, Acc, Fun) of
-                                {ok, _PrimZip2, Acc2} ->
-                                    {Acc2, PS};
-                                Error ->
-                                    debug(PS, {cache, {clear, Error}}),
-                                    ok = clear_cache(Archive, Cache),
-                                    debug(PS, {cache, Error}),
-				    erase(Archive),
-                                    %% put(Archive, {Error, FI}),
-                                    {Error, PS}
-                            end;
-                        Error ->
-                            debug(PS, {cache, Error}),
-                            {Error, PS}
-                    end;
-                Error ->
-                    debug(PS, {cache, {clear, Error}}),
-                    ok = clear_cache(Archive, Cache),
-                    apply_archive(PS, Fun, Acc, Archive)
             end
-    end.
-
-open_archive(Archive, Acc, Fun) ->
-    case prim_file:read_file_info(Archive) of
-	{ok, FileInfo} ->
-	    open_archive(Archive, FileInfo, Acc, Fun);
-	{error, Reason} ->
-	    {error, Reason}
     end.
 
 %% Open the given archive and iterate through all files with an own
@@ -1156,7 +1288,7 @@ ensure_virtual_dirs(Components, Fun, FakeFI, Includes, Dirs, Acc) ->
 		    {I, F, Acc3};
 		true ->
 		    %% The directory element does already exist
-		    %% Recursivly ensure dir elements on all levels
+		    %% Recursively ensure dir elements on all levels
 		    ensure_virtual_dirs(Dir,Fun,FakeFI,Includes,Dirs,Acc)
 	    end
     end.
@@ -1170,23 +1302,16 @@ foldl_archive(PrimZip, Acc, Fun) ->
         end,                        
     prim_zip:foldl(Wrapper, Acc, PrimZip).
 
-cache_new(PS) ->
-    PS.
-
-clear_cache(Archive, Cache) ->
+clear_cache(Archive, {ok, PrimZip}) ->
     erase(Archive),
-    case Cache of
-        {ok, PrimZip} ->
-            prim_zip:close(PrimZip);
-        {error, _} ->
-            ok
-    end.
+    prim_zip:close(PrimZip).
 
 %%% --------------------------------------------------------
 %%% Misc. functions.
 %%% --------------------------------------------------------
 
 %%% Look for directory separators
+-doc false.
 is_basename(File) ->
     case deep_member($/, File) of
         true -> 
@@ -1287,70 +1412,34 @@ path_join([Path],Acc) ->
 path_join([Path|Paths],Acc) ->
     path_join(Paths,"/" ++ reverse(Path) ++ Acc).
 
+name_split(undefined, File) ->
+    {file, File};
+name_split(ArchiveFile, {archive, ArchiveFile, _} = Archive) ->
+    Archive;
 name_split(ArchiveFile, File0) ->
-    File = absname(File0),
-    do_name_split(ArchiveFile, File).
-    
-do_name_split(undefined, File) ->
-    %% Ignore primary archive
-    case string_split(File, init:archive_extension(), []) of
-        no_split ->
-            %% Plain file
-            {file, File};
-        {split, _RevArchiveBase, RevArchiveFile, []} ->
-            %% Top dir in archive
-            ArchiveFile = reverse(RevArchiveFile),
-            {archive, ArchiveFile, []};
-        {split, _RevArchiveBase, RevArchiveFile, [$/ | FileInArchive]} ->
-            %% File in archive
-            ArchiveFile = reverse(RevArchiveFile),
-            {archive, ArchiveFile, FileInArchive};
-        {split, _RevArchiveBase, _RevArchiveFile, _FileInArchive} ->
-	    %% False match. Assume plain file
-            {file, File}
-    end;
-do_name_split(ArchiveFile, File) ->
     %% Look first in primary archive
-    case string_match(real_path(File), ArchiveFile, []) of
+    File = absname(File0),
+    case string_match(real_path(File), ArchiveFile) of
         no_match ->
-            %% Archive or plain file
-            do_name_split(undefined, File);
-        {match, _RevPrimArchiveFile, FileInArchive} ->
+            %% Not in the primary archive
+            name_split(undefined, File);
+        {match, FileInArchive} ->
             %% Primary archive
 	    {archive, ArchiveFile, FileInArchive}
     end.
 
-string_match([Char | File], [Char | Archive], RevTop) ->
-    string_match(File, Archive, [Char | RevTop]);
-string_match([] = File, [], RevTop) ->
-    {match, RevTop, File};
-string_match([$/ | File], [], RevTop) ->
-    {match, RevTop, File};
-string_match(_File, _Archive, _RevTop) ->
+string_match([Char | File], [Char | Archive]) ->
+    string_match(File, Archive);
+string_match([] = File, []) ->
+    {match, File};
+string_match([$/ | File], []) ->
+    {match, File};
+string_match(_File, _Archive) ->
     no_match.
-
-string_split([Char | File], [Char | Ext] = FullExt, RevTop) ->
-    RevTop2 = [Char | RevTop],
-    string_split2(File, Ext, RevTop, RevTop2, File, FullExt, RevTop2);
-string_split([Char | File], Ext, RevTop) ->
-    string_split(File, Ext, [Char | RevTop]);
-string_split([], _Ext, _RevTop) ->
-    no_split.
-
-string_split2([Char | File], [Char | Ext], RevBase, RevTop, SaveFile, SaveExt, SaveTop) ->
-    string_split2(File, Ext, RevBase, [Char | RevTop], SaveFile, SaveExt, SaveTop);
-string_split2(File, [], RevBase, RevTop, _SaveFile, _SaveExt, _SaveTop) ->
-    {split, RevBase, RevTop, File};
-string_split2(_, _Ext, _RevBase, _RevTop, SaveFile, SaveExt, SaveTop) ->
-    string_split(SaveFile, SaveExt, SaveTop).
 
 %% Parse list of ipv4 addresses 
 ipv4_list([H | T]) ->
-    IPV = if is_atom(H) -> ipv4_address(atom_to_list(H));
-             is_list(H) -> ipv4_address(H);
-             true -> {error,einal}
-          end,
-    case IPV of
+    case ipv4_address(H) of
         {ok,IP} -> [IP | ipv4_list(T)];
         _ -> ipv4_list(T)
     end;
@@ -1415,8 +1504,6 @@ absname_vr([Drive, $\: | NameRest], _) ->
 %% Assumes normalized name
 pathtype(Name) when is_list(Name) -> 
     case erlang:system_info(os_type) of
-	{ose, _}  ->
-	    unix_pathtype(Name);
 	{unix, _}  -> 
 	    unix_pathtype(Name);
 	{win32, _} ->

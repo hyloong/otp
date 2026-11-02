@@ -1,6 +1,25 @@
-;; erlang-start.el --- Load this file to initialize the Erlang package.
+;;; erlang-start.el --- Load this file to initialize the Erlang package. -*- lexical-binding: t; -*-
 
-;; Copyright (C) 1998  Ericsson Telecom AB
+;; %CopyrightBegin%
+;;
+;; SPDX-License-Identifier: Apache-2.0
+;;
+;; Copyright Ericsson AB 1996-2025. All Rights Reserved.
+;;
+;; Licensed under the Apache License, Version 2.0 (the "License");
+;; you may not use this file except in compliance with the License.
+;; You may obtain a copy of the License at
+;;
+;;     http://www.apache.org/licenses/LICENSE-2.0
+;;
+;; Unless required by applicable law or agreed to in writing, software
+;; distributed under the License is distributed on an "AS IS" BASIS,
+;; WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+;; See the License for the specific language governing permissions and
+;; limitations under the License.
+;;
+;; %CopyrightEnd%
+
 
 ;; Author:   Anders Lindgren
 ;; Version:  2.3
@@ -39,7 +58,7 @@
 ;;
 ;; Please state as exactly as possible:
 ;;    - Version number of Erlang Mode (see the menu), Emacs, Erlang,
-;;	and of any other relevant software.
+;;      and of any other relevant software.
 ;;    - What the expected result was.
 ;;    - What you did, preferably in a repeatable step-by-step form.
 ;;    - A description of the unexpected result.
@@ -60,7 +79,7 @@
 ;;
 
 (autoload 'erlang-mode "erlang" "Major mode for editing Erlang code." t)
-(autoload 'erlang-version "erlang" 
+(autoload 'erlang-version "erlang"
   "Return the current version of Erlang mode." t)
 (autoload 'erlang-shell "erlang" "Start a new Erlang shell." t)
 (autoload 'run-erlang "erlang" "Start a new Erlang shell." t)
@@ -68,51 +87,50 @@
 (autoload 'erlang-compile "erlang"
   "Compile Erlang module in current buffer." t)
 
-(autoload 'erlang-man-module "erlang" 
+(autoload 'erlang-man-module "erlang"
   "Find manual page for MODULE." t)
 (autoload 'erlang-man-function "erlang"
   "Find manual page for NAME, where NAME is module:function." t)
 
-(autoload 'erlang-find-tag "erlang"
-  "Like `find-tag'.  Capable of retreiving Erlang modules.")
-(autoload 'erlang-find-tag-other-window "erlang"
-  "Like `find-tag-other-window'.  Capable of retreiving Erlang modules.")
+;;
+;; Declare functions in "erlang-edoc.el".
+;;
 
+(autoload 'erlang-edoc-mode "erlang-edoc" "Toggle Erlang-Edoc mode on or off." t)
+
+;;
+;; Declare functions in "erldoc.el".
+;;
+
+(autoload 'erldoc-browse "erldoc" "\n\n(fn MFA)" t nil)
+(autoload 'erldoc-browse-topic "erldoc" "\n\n(fn TOPIC)" t nil)
+(autoload 'erldoc-apropos "erldoc" "\n\n(fn PATTERN)" t nil)
+(autoload 'erldoc-eldoc-function "erldoc" "\
+A function suitable for `eldoc-documentation-function'.\n\n(fn)" nil nil)
 
 ;;
 ;; Associate files extensions ".erl" and ".hrl" with Erlang mode.
 ;;
 
 ;;;###autoload
-(let ((a '("\\.erl\\'" . erlang-mode))
-      (b '("\\.hrl\\'" . erlang-mode)))
-  (or (assoc (car a) auto-mode-alist)
-      (setq auto-mode-alist (cons a auto-mode-alist)))
-  (or (assoc (car b) auto-mode-alist)
-      (setq auto-mode-alist (cons b auto-mode-alist))))
+(add-to-list 'auto-mode-alist '("\\.erl\\'" . erlang-mode))
+;;;###autoload
+(add-to-list 'auto-mode-alist '("\\.hrl\\'" . erlang-mode))
 
 ;;
 ;; Associate files using interpreter "escript" with Erlang mode.
-;; 
+;;
 
 ;;;###autoload
 (add-to-list 'interpreter-mode-alist (cons "escript" 'erlang-mode))
 
 ;;
-;; Ignore files ending in ".jam", ".vee", and ".beam" when performing
-;; file completion.
+;; Ignore files ending in ".beam" when performing
+;; file completion and in dired omit mode.
 ;;
 
 ;;;###autoload
-(let ((erl-ext '(".jam" ".vee" ".beam")))
-  (while erl-ext
-    (let ((cie completion-ignored-extensions))
-      (while (and cie (not (string-equal (car cie) (car erl-ext))))
-	(setq cie (cdr cie)))
-      (if (null cie)
-	  (setq completion-ignored-extensions
-		(cons (car erl-ext) completion-ignored-extensions))))
-    (setq erl-ext (cdr erl-ext))))
+(add-to-list 'completion-ignored-extensions ".beam")
 
 
 ;;
@@ -120,5 +138,10 @@
 ;;
 
 (provide 'erlang-start)
+
+;; Local variables:
+;; coding: utf-8
+;; indent-tabs-mode: nil
+;; End:
 
 ;; erlang-start.el ends here.

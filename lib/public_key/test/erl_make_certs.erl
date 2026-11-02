@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2011-2014. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2011-2025. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -23,8 +25,10 @@
 -module(erl_make_certs).
 -include_lib("public_key/include/public_key.hrl").
 
--export([make_cert/1, gen_rsa/1, verify_signature/3, write_pem/3]).
--compile(export_all).
+-export([make_cert/1, gen_rsa/1, verify_signature/3, write_pem/3,
+         gen_dsa/2, gen_ec/1,
+         pem_to_der/1, der_to_pem/2
+        ]).
 
 %%--------------------------------------------------------------------
 %% @doc  Create and return a der encoded certificate
@@ -45,7 +49,7 @@
 %%      {title, Title}
 %%      {dnQualifer, DnQ}
 %%   issuer = {Issuer, IssuerKey}                   true (i.e. a ca cert is created) 
-%%                                                  (obs IssuerKey migth be {Key, Password}
+%%                                                  (obs IssuerKey might be {Key, Password}
 %%   key = KeyFile|KeyBin|rsa|dsa|ec                Subject PublicKey rsa, dsa or ec generates key
 %%   
 %%
@@ -109,6 +113,9 @@ gen_ec(Curve) when is_atom(Curve) ->
 verify_signature(DerEncodedCert, DerKey, _KeyParams) ->
     Key = decode_key(DerKey),
     case Key of 
+	{#'RSAPrivateKey'{modulus=Mod, publicExponent=Exp}, #'RSASSA-PSS-params'{}=P} ->
+	    public_key:pkix_verify(DerEncodedCert, 
+				   {#'RSAPublicKey'{modulus=Mod, publicExponent=Exp}, P});
 	#'RSAPrivateKey'{modulus=Mod, publicExponent=Exp} ->
 	    public_key:pkix_verify(DerEncodedCert, 
 				   #'RSAPublicKey'{modulus=Mod, publicExponent=Exp});
@@ -132,6 +139,8 @@ get_key(Opts) ->
 	    decode_key(Key, Password)
     end.
 
+decode_key({#'RSAPrivateKey'{},#'RSASSA-PSS-params'{}}=Key) ->
+	Key;
 decode_key({Key, Pw}) ->
     decode_key(Key, Pw);
 decode_key(Key) ->
@@ -141,6 +150,8 @@ decode_key(Key) ->
 decode_key(#'RSAPublicKey'{} = Key,_) ->
     Key;
 decode_key(#'RSAPrivateKey'{} = Key,_) ->
+    Key;
+decode_key({#'RSAPrivateKey'{},#'RSASSA-PSS-params'{}} = Key,_) ->
     Key;
 decode_key(#'DSAPrivateKey'{} = Key,_) ->
     Key;
@@ -153,13 +164,16 @@ decode_key(PemBin, Pw) ->
     decode_key(KeyInfo, Pw).
 
 encode_key(Key = #'RSAPrivateKey'{}) ->
-    {ok, Der} = 'OTP-PUB-KEY':encode('RSAPrivateKey', Key),
+    {ok, Der} = 'PKCS-1':encode('RSAPrivateKey', Key),
     {'RSAPrivateKey', Der, not_encrypted};
+encode_key(Key = {#'RSAPrivateKey'{},#'RSASSA-PSS-params'{}}) ->
+    Der = public_key:der_encode('PrivateKeyInfo', Key),
+    {'PrivateKeyInfo', Der, not_encrypted};
 encode_key(Key = #'DSAPrivateKey'{}) ->
-    {ok, Der} = 'OTP-PUB-KEY':encode('DSAPrivateKey', Key),
+    {ok, Der} = 'DSS':encode('DSAPrivateKey', Key),
     {'DSAPrivateKey', Der, not_encrypted};
 encode_key(Key = #'ECPrivateKey'{}) ->
-    {ok, Der} = 'OTP-PUB-KEY':encode('ECPrivateKey', Key),
+    {ok, Der} = 'ECPrivateKey':encode('ECPrivateKey', Key),
     {'ECPrivateKey', Der, not_encrypted}.
 
 make_tbs(SubjectKey, Opts) ->    
@@ -169,7 +183,7 @@ make_tbs(SubjectKey, Opts) ->
     {Issuer, IssuerKey}  = issuer(IssuerProp, Opts, SubjectKey),
 
     {Algo, Parameters} = sign_algorithm(IssuerKey, Opts),
-    
+
     SignAlgo = #'SignatureAlgorithm'{algorithm  = Algo,
 				     parameters = Parameters},    
     Subject = case IssuerProp of
@@ -178,8 +192,9 @@ make_tbs(SubjectKey, Opts) ->
 		  _ ->
 		      subject(proplists:get_value(subject, Opts),false)
 	      end,
-
-    {#'OTPTBSCertificate'{serialNumber = trunc(random:uniform()*100000000)*10000 + 1,
+    Rnd = rand:uniform( 1000000000000 ),
+    %% 1 =< Rnd < 1000000000001
+    {#'OTPTBSCertificate'{serialNumber = Rnd,
 			  signature    = SignAlgo,
 			  issuer       = Issuer,
 			  validity     = validity(Opts),
@@ -292,6 +307,11 @@ publickey(#'RSAPrivateKey'{modulus=N, publicExponent=E}) ->
     Algo = #'PublicKeyAlgorithm'{algorithm= ?rsaEncryption, parameters='NULL'},
     #'OTPSubjectPublicKeyInfo'{algorithm = Algo,
 			       subjectPublicKey = Public};
+publickey({#'RSAPrivateKey'{modulus=N, publicExponent=E},#'RSASSA-PSS-params'{}=P}) ->
+    Public = #'RSAPublicKey'{modulus=N, publicExponent=E},
+    Algo = #'PublicKeyAlgorithm'{algorithm= ?'id-RSASSA-PSS', parameters=P},
+    #'OTPSubjectPublicKeyInfo'{algorithm = Algo,
+			       subjectPublicKey = Public};
 publickey(#'DSAPrivateKey'{p=P, q=Q, g=G, y=Y}) ->
     Algo = #'PublicKeyAlgorithm'{algorithm= ?'id-dsa', 
 				 parameters={params, #'Dss-Parms'{p=P, q=Q, g=G}}},
@@ -322,6 +342,8 @@ sign_algorithm(#'RSAPrivateKey'{}, Opts) ->
 	       md2    -> ?'md2WithRSAEncryption'
 	   end,
     {Type, 'NULL'};
+sign_algorithm({#'RSAPrivateKey'{},#'RSASSA-PSS-params'{}=P}, _Opts) ->
+    {?'id-RSASSA-PSS', P};
 sign_algorithm(#'DSAPrivateKey'{p=P, q=Q, g=G}, _Opts) ->
     {?'id-dsa-with-sha1', {params,#'Dss-Parms'{p=P, q=Q, g=G}}};
 sign_algorithm(#'ECPrivateKey'{parameters = Parms}, Opts) ->
@@ -346,10 +368,22 @@ make_key(ec, _Opts) ->
 %% RSA key generation  (OBS: for testing only)
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
+gen_rsa2(Size) -> 
+    try
+        %% The numbers 2048,17 is chosen to not cause the cryptolib on
+        %% FIPS-enabled test machines be mad at us.
+        public_key:generate_key({rsa, 2048, 17})
+    catch
+        error:notsup ->
+            %% Disabled dirty_schedulers => crypto:generate_key not working
+            weak_gen_rsa2(Size)
+    end.
+
+
 -define(SMALL_PRIMES, [65537,97,89,83,79,73,71,67,61,59,53,
 		       47,43,41,37,31,29,23,19,17,13,11,7,5,3]).
 
-gen_rsa2(Size) ->
+weak_gen_rsa2(Size) ->
     P = prime(Size),
     Q = prime(Size),
     N = P*Q,
@@ -454,7 +488,8 @@ odd_rand(Size) ->
     odd_rand(Min, Max).
 
 odd_rand(Min,Max) ->
-    Rand = crypto:rand_uniform(Min,Max),
+    %% Odd random number N such that Min =< N =< Max
+    Rand = (Min-1) + rand:uniform(Max-Min), %  Min =< Rand < Max
     case Rand rem 2 of
 	0 -> 
 	    Rand + 1;

@@ -1,7 +1,9 @@
 #
 # %CopyrightBegin%
 #
-# Copyright Ericsson AB 2013. All Rights Reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Copyright Ericsson AB 2013-2025. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -24,13 +26,16 @@ include $(ERL_TOP)/make/target.mk
 include $(ERL_TOP)/make/$(TARGET)/otp.mk
 include ../../vsn.mk
 
-opt debug: etc
+$(TYPES): etc
 
 .PHONY: etc
 etc: etp-commands
 
 etp-commands: etp-commands.in
-	$(gen_verbose)sed 's:@ERL_TOP@:${ERL_TOP}:g' etp-commands.in > etp-commands
+	$(gen_verbose)sed \
+	-e 's:@ERL_TOP@:${ERL_TOP}:g' \
+	-e 's:@TARGET@:${TARGET}:g' \
+	etp-commands.in > etp-commands
 
 .PHONY: docs
 docs:

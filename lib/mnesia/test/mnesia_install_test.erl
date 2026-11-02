@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 1996-2011. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 1996-2025. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -21,8 +23,13 @@
 %%
 -module(mnesia_install_test).
 -author('hakan@erix.ericsson.se').
+-export([init_per_testcase/2, end_per_testcase/2,
+         init_per_group/2, end_per_group/2,
+         all/0, groups/0]).
 
--compile([export_all]).
+-export([silly_durability/1, silly_move/1, silly_upgrade/1, conflict/1, dist/1,
+         silly/0, silly2/1]).
+
 -include("mnesia_test_lib.hrl").
 
 init_per_testcase(Func, Conf) ->
@@ -284,7 +291,7 @@ transform_some_records(Tab1, _Tab2, Old) ->
     Filter = fun(Rec) when element(1, Rec) == Tab1 -> {true, Fun(Rec)};
 		(_) -> true
 	     end,
-    lists:sort(lists:zf(Filter, Old)).
+    lists:sort(lists:filtermap(Filter, Old)).
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 

@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2004-2010. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2004-2025. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -56,8 +58,6 @@ end_per_group(_GroupName, Config) ->
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
-init_per_suite(suite) -> [];
-init_per_suite(doc) -> [];
 init_per_suite(Config) when is_list(Config) ->
     case is_app(xmerl) of
 	{ok, AppFile} ->
@@ -78,18 +78,12 @@ is_app(App) ->
     end.
 
 
-end_per_suite(suite) -> [];
-end_per_suite(doc) -> [];
 end_per_suite(Config) when is_list(Config) ->
     Config.
 
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
-fields(suite) ->
-    [];
-fields(doc) ->
-    [];
 fields(Config) when is_list(Config) ->
     AppFile = key1search(app_file, Config),
     Fields = [vsn, description, modules, registered, applications],
@@ -117,10 +111,6 @@ check_field(Name, AppFile, Missing) ->
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
-modules(suite) ->
-    [];
-modules(doc) ->
-    [];
 modules(Config) when is_list(Config) ->
     AppFile  = key1search(app_file, Config),
     Mods     = key1search(modules, AppFile),
@@ -174,10 +164,6 @@ extra_modules(Mods, [Mod|Ebins], Extra) ->
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
 
-exportall(suite) ->
-    [];
-exportall(doc) ->
-    [];
 exportall(Config) when is_list(Config) ->
     AppFile = key1search(app_file, Config),
     Mods    = key1search(modules, AppFile),
@@ -207,24 +193,17 @@ check_export_all([Mod|Mods]) ->
 	    
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
-app_depend(suite) ->
-    [];
-app_depend(doc) ->
-    [];
 app_depend(Config) when is_list(Config) ->
     AppFile = key1search(app_file, Config),
     Apps    = key1search(applications, AppFile),
     check_apps(Apps).
 
 
-check_apps([]) ->
-    ok;
+check_apps([]) -> ok;
 check_apps([App|Apps]) ->
     case is_app(App) of
-	{ok, _} ->
-	    check_apps(Apps);
-	Error ->
-	    throw({error, {missing_app, {App, Error}}})
+	{ok, _} -> check_apps(Apps);
+	Error -> throw({error, {missing_app, {App, Error}}})
     end.
 
 

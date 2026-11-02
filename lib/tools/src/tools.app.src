@@ -1,8 +1,10 @@
 %%
 %% %CopyrightBegin%
-%% 
-%% Copyright Ericsson AB 1996-2015. All Rights Reserved.
-%% 
+%%
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 1996-2026. All Rights Reserved.
+%%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
 %% You may obtain a copy of the License at
@@ -14,19 +16,21 @@
 %% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 %% See the License for the specific language governing permissions and
 %% limitations under the License.
-%% 
+%%
 %% %CopyrightEnd%
 %%
 {application, tools,
  [{description, "DEVTOOLS  CXC 138 16"},
   {vsn, "%VSN%"},
   {modules, [cover,
-	     cover_web,
+	     cprof,
+	     crashdump,
 	     eprof,
 	     fprof,
-	     instrument,
+	     tprof,
 	     lcnt,
 	     make,
+	     tags,
 	     xref,
 	     xref_base,
 	     xref_compiler,
@@ -36,13 +40,17 @@
 	     xref_utils
 	    ]
   },
-  {registered,[webcover_server]},
+  {registered, []},
   {applications, [kernel, stdlib]},
   {env, [{file_util_search_methods,[{"", ""}, {"ebin", "esrc"}, {"ebin", "src"}]}
 	]
   },
-  {runtime_dependencies, ["webtool-0.8.10","stdlib-2.5","runtime_tools-1.8.14",
-			  "kernel-3.0","inets-5.10","erts-7.0",
-			  "compiler-5.0"]}
+  {runtime_dependencies, ["stdlib-6.0",
+                          "runtime_tools-2.1",
+			  "kernel-10.0",
+                          "erts-15.0",
+                          "compiler-8.5",
+                          "public_key-1.21",
+                          "crypto-5.9"]}
  ]
 }. 

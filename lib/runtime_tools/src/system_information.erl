@@ -1,7 +1,9 @@
 %% %CopyrightBegin%
-%% 
-%% Copyright Ericsson AB 2013. All Rights Reserved.
-%% 
+%%
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2013-2026. All Rights Reserved.
+%%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
 %% You may obtain a copy of the License at
@@ -13,7 +15,7 @@
 %% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 %% See the License for the specific language governing permissions and
 %% limitations under the License.
-%% 
+%%
 %% %CopyrightEnd%
 %%
 
@@ -25,34 +27,35 @@
 %% reported values. Functions will be added to this as time goes by.
 
 -module(system_information).
+-moduledoc "System Information".
+-moduledoc(#{since => "OTP 17.0"}).
+
+-compile([{nowarn_possibly_unsafe_function, {erlang, list_to_atom, 1}},
+          {nowarn_possibly_unsafe_function, {file, consult, 1}},
+          {nowarn_unsafe_function, {os, cmd, 1}}]).
+
 -behaviour(gen_server).
 
 %% API
--export([
-	report/0,
+-export([report/0,
 	from_file/1,
-	to_file/1
-    ]).
--export([
-	start/0, stop/0,
-	load_report/0, load_report/2,
-	applications/0, applications/1,
-	application/1, application/2,
-	environment/0, environment/1,
-	module/1, module/2,
-	modules/1,
-	sanity_check/0
-    ]).
+	to_file/1]).
+
+-export([start/0, stop/0,
+         load_report/0, load_report/2,
+         applications/0, applications/1,
+         application/1, application/2,
+         environment/0, environment/1,
+         module/1, module/2,
+         sanity_check/0]).
 
 %% gen_server callbacks
--export([
-	init/1,
-	handle_call/3,
-	handle_cast/2,
-	handle_info/2,
-	terminate/2,
-	code_change/3
-    ]).
+-export([init/1,
+         handle_call/3,
+         handle_cast/2,
+         handle_info/2,
+         terminate/2,
+         code_change/3]).
 
 -define(SERVER, ?MODULE).
 
@@ -67,77 +70,126 @@
 %% API
 %%===================================================================
 
+-doc false.
 start() ->
     gen_server:start({local, ?SERVER}, ?MODULE, [], []).
 
-stop() ->
-    gen_server:call(?SERVER, stop).
 
+-doc false.
+stop() ->
+    gen_server:call(?SERVER, stop, infinity).
+
+-doc false.
 load_report() -> load_report(data, report()).
 
+-doc false.
 load_report(file, File)   -> load_report(data, from_file(File));
 load_report(data, Report) ->
-    start(), gen_server:call(?SERVER, {load_report, Report}).
+    ok = start_internal(), gen_server:call(?SERVER, {load_report, Report}, infinity).
 
-report() -> [
-	{init_arguments,    init:get_arguments()},
-	{code_paths,        code:get_path()},
-	{code,              code()},
-	{system_info,       erlang_system_info()},
-	{erts_compile_info, erlang:system_info(compile_info)},
-	{beam_dynamic_libraries, get_dynamic_libraries()},
-	{environment_erts,  os_getenv_erts_specific()},
-	{environment,       [split_env(Env) || Env <- os:getenv()]},
-	{sanity_check,      sanity_check()}	     
-    ].
+-doc false.
+report() ->
+    %% This is ugly but beats having to maintain two distinct implementations,
+    %% and we don't really care about memory use since it's internal and
+    %% undocumented.
+    {ok, Fd} = file:open([], [ram, read, write]),
+    to_fd(Fd),
+    {ok, _} = file:position(Fd, bof),
+    from_fd(Fd).
 
+-doc """
+Writes miscellaneous system information to file. This information will typically
+be requested by the Erlang/OTP team at Ericsson AB when reporting an issue.
+""".
+-doc(#{since => <<"OTP 17.0">>}).
 -spec to_file(FileName) -> ok | {error, Reason} when
       FileName :: file:name_all(),
       Reason :: file:posix() | badarg | terminated | system_limit.
 
 to_file(File) ->
-    file:write_file(File, iolist_to_binary([
-		io_lib:format("{system_information_version, ~p}.~n", [
-			?REPORT_FILE_VSN
-		    ]),
-		io_lib:format("{system_information, ~p}.~n", [
-			report()
-		    ])
-	    ])).
-
-from_file(File) ->
-    case file:consult(File) of
-	{ok, Data} ->
-	    case get_value([system_information_version], Data) of
-		?REPORT_FILE_VSN ->
-		    get_value([system_information], Data);
-		Vsn ->
-		    erlang:error({unknown_version, Vsn})
-	    end;
-	_ ->
-	    erlang:error(bad_report_file)
+    case file:open(File, [raw, write, binary, delayed_write]) of
+        {ok, Fd} ->
+            try
+                to_fd(Fd)
+            after
+                file:close(Fd)
+            end;
+        {error, Reason} ->
+            {error, Reason}
     end.
 
+-doc false.
+from_file(File) ->
+    {ok, Fd} = file:open(File, [raw, read]),
+    try
+        from_fd(Fd)
+    after
+        file:close(Fd)
+    end.
+
+-doc false.
 applications() -> applications([]).
+-doc false.
 applications(Opts) when is_list(Opts) ->
-    gen_server:call(?SERVER, {applications, Opts}).
+    gen_server:call(?SERVER, {applications, Opts}, infinity).
 
+-doc false.
 application(App) when is_atom(App) -> application(App, []).
+-doc false.
 application(App, Opts) when is_atom(App), is_list(Opts) ->
-    gen_server:call(?SERVER, {application, App, Opts}).
+    gen_server:call(?SERVER, {application, App, Opts}, infinity).
 
+-doc false.
 environment() -> environment([]).
+-doc false.
 environment(Opts) when is_list(Opts) ->
-    gen_server:call(?SERVER, {environment, Opts}).
+    gen_server:call(?SERVER, {environment, Opts}, infinity).
 
+-doc false.
 module(M) when is_atom(M) -> module(M, []).
+-doc false.
 module(M, Opts) when is_atom(M), is_list(Opts) ->
-    gen_server:call(?SERVER, {module, M, Opts}).
+    gen_server:call(?SERVER, {module, M, Opts}, infinity).
 
-modules(Opt) when is_atom(Opt) ->
-    gen_server:call(?SERVER, {modules, Opt}).
+-doc """
+Performs a sanity check on the system.
 
+If no issues were found, `ok` is returned. If issues were found,
+`{failed, Failures}` is returned. All failures found will be part of
+the `Failures` list. Currently defined `Failure` elements in the
+`Failures` list:
 
+- **`InvalidAppFile`** - An application has an invalid `.app` file. The second
+  element identifies the application which has the invalid `.app` file.
+
+- **`InvalidApplicationVersion`** - An application has an invalid application
+  version. The second element identifies the application version that is
+  invalid.
+
+- **`MissingRuntimeDependencies`** - An application is missing
+  [runtime dependencies](`e:kernel:app.md#runtime_dependencies`). The second
+  element identifies the application (with version) that has missing
+  dependencies. The third element contains the missing dependencies.
+
+  Note that this check use application versions that are loaded, or will be
+  loaded when used. You might have application versions that satisfies all
+  dependencies installed in the system, but if those are not loaded this check
+  will fail. Of course, the system will also fail when used like this. This can
+  happen when you have multiple [branched versions](`e:system:versions.md`) of
+  the same application installed in the system, but there does not exist a
+  [boot script](`e:system:system_principles.md#BOOTSCRIPT`) identifying the
+  correct application version.
+
+Currently the sanity check is limited to verifying runtime dependencies found in
+the `.app` files of all applications. More checks will be introduced in the
+future. This implies that the return type _will_ change in the future.
+
+> #### Note {: .info }
+>
+> An `ok` return value only means that `sanity_check/0` did not find any issues,
+> _not_ that no issues exist.
+""".
+-doc(#{since => <<"OTP 17.0">>}).
 -spec sanity_check() -> ok | {failed, Failures} when
       Application :: atom(),
       ApplicationVersion :: string(),
@@ -162,9 +214,11 @@ sanity_check() ->
 %% gen_server callbacks
 %%===================================================================
 
+-doc false.
 init([]) ->
     {ok, #state{}}.
 
+-doc false.
 handle_call(stop, _From, S) ->
     {stop, normal, ok, S};
 
@@ -200,30 +254,35 @@ handle_call({module, M, Opts}, _From, #state{ report = Report } = S) ->
     print_modules_from_code(M, Mods, Opts),
     {reply, ok, S};
 
-handle_call({modules, native}, _From, #state{ report = Report } = S) ->
-    Codes = get_native_modules_from_code(get_value([code],Report)),
-    io:format("~p~n", [Codes]),
-    {reply, ok, S};
-
-
 handle_call(_Request, _From, State) ->
     {reply, ok, State}.
 
+-doc false.
 handle_cast(_Msg, State) ->
     {noreply, State}.
 
+-doc false.
 handle_info(_Info, State) ->
     {noreply, State}.
 
+-doc false.
 terminate(_Reason, _State) ->
     ok.
 
+-doc false.
 code_change(_OldVsn, State, _Extra) ->
     {ok, State}.
 
 %%===================================================================
 %% Internal functions
 %%===================================================================
+
+start_internal() ->
+    case start() of
+        {ok,_} -> ok;
+        {error, {already_started,_}} -> ok;
+        Error -> Error
+    end.
 
 %% handle report values
 
@@ -251,31 +310,6 @@ find_modules_from_code(_, []) -> [].
 find_modules(M, [{M, _}=Info|Ms]) -> [Info|find_modules(M,Ms)];
 find_modules(M, [_|Ms]) -> find_modules(M, Ms);
 find_modules(_, []) -> [].
-
-get_native_modules_from_code([{application, {App, Info}}|Cs]) ->
-    case get_native_modules(get_value([modules], Info)) of
-	[] -> get_native_modules_from_code(Cs);
-	Mods ->
-	    Path = get_value([path], Info),
-	    Vsn  = get_value([vsn], Info),
-	    [{App, Vsn, Path, Mods}|get_native_modules_from_code(Cs)]
-    end;
-get_native_modules_from_code([{code, Info}|Cs]) ->
-    case get_native_modules(get_value([modules], Info)) of
-	[] -> get_native_modules_from_code(Cs);
-	Mods ->
-	    Path = get_value([path], Info),
-	    [{Path, Mods}|get_native_modules_from_code(Cs)]
-    end;
-get_native_modules_from_code([]) -> [].
-
-get_native_modules([]) -> [];
-get_native_modules([{Mod, Info}|Ms]) ->
-    case proplists:get_value(native, Info) of
-	false -> get_native_modules(Ms);
-	_     -> [Mod|get_native_modules(Ms)]
-    end.
-
 
 %% print information
 
@@ -323,14 +357,12 @@ print_module_from_code(M, {Path, [{M,ModInfo}]}) ->
     io:format(" from path \"~ts\" (no application):~n", [Path]),
     io:format("     - compiler: ~s~n", [get_value([compiler], ModInfo)]),
     io:format("     -      md5: ~s~n", [get_value([md5], ModInfo)]),
-    io:format("     -   native: ~w~n", [get_value([native], ModInfo)]),
     io:format("     -   loaded: ~w~n", [get_value([loaded], ModInfo)]),
     ok;
 print_module_from_code(M, {App,Vsn,Path,[{M,ModInfo}]}) ->
     io:format(" from path \"~ts\" (~w-~s):~n", [Path,App,Vsn]),
     io:format("     - compiler: ~s~n", [get_value([compiler], ModInfo)]),
     io:format("     -      md5: ~s~n", [get_value([md5], ModInfo)]),
-    io:format("     -   native: ~w~n", [get_value([native], ModInfo)]),
     io:format("     -   loaded: ~w~n", [get_value([loaded], ModInfo)]),
     ok.
 
@@ -338,7 +370,6 @@ print_module({Mod, ModInfo}) ->
     io:format("   - ~w:~n", [Mod]),
     io:format("     - compiler: ~s~n", [get_value([compiler], ModInfo)]),
     io:format("     -      md5: ~s~n", [get_value([md5], ModInfo)]),
-    io:format("     -   native: ~w~n", [get_value([native], ModInfo)]),
     io:format("     -   loaded: ~w~n", [get_value([loaded], ModInfo)]),
     ok.
 
@@ -390,7 +421,6 @@ os_getenv_erts_specific() ->
     os_getenv_erts_specific([
 	    "BINDIR",
 	    "DIALYZER_EMULATOR",
-	    "CERL_DETACHED_PROG",
 	    "EMU",
 	    "ERL_CONSOLE_MODE",
 	    "ERL_CRASH_DUMP",
@@ -400,10 +430,8 @@ os_getenv_erts_specific() ->
 	    "ERL_EMULATOR_DLL",
 	    "ERL_FULLSWEEP_AFTER",
 	    "ERL_LIBS",
-	    "ERL_MALLOC_LIB",
 	    "ERL_MAX_PORTS",
 	    "ERL_MAX_ETS_TABLES",
-	    "ERL_NO_VFORK",
 	    "ERL_NO_KERNEL_POLL",
 	    "ERL_THREAD_POOL_SIZE",
 	    "ERLC_EMULATOR",
@@ -454,60 +482,148 @@ split_env([$=|Vs], Key) -> {lists:reverse(Key), Vs};
 split_env([I|Vs], Key)  -> split_env(Vs, [I|Key]);
 split_env([], KV)       -> lists:reverse(KV). % should not happen.
 
-%% get applications
-
-code() ->
-    % order is important
-    get_code_from_paths(code:get_path()).
-
-get_code_from_paths([]) -> [];
-get_code_from_paths([Path|Paths]) ->
-    case is_application_path(Path) of
-	true -> 
-	    [{application, get_application_from_path(Path)}|get_code_from_paths(Paths)];
-	false ->
-	    [{code, [
-			{path,    Path},
-			{modules, get_modules_from_path(Path)}
-		    ]}|get_code_from_paths(Paths)]
+from_fd(Fd) ->
+    try
+        [{system_information_version, "1.0"},
+         {system_information, Data}] = consult_fd(Fd),
+        Data
+    catch
+        _:_ -> erlang:error(bad_report_file)
     end.
+
+consult_fd(Fd) ->
+    consult_fd_1(Fd, [], {ok, []}).
+consult_fd_1(Fd, Cont0, ReadResult) ->
+    Data =
+        case ReadResult of
+            {ok, Characters} -> Characters;
+            eof -> eof
+        end,
+    case erl_scan:tokens(Cont0, Data, 1) of
+        {done, {ok, Tokens, _}, Next} ->
+            {ok, Term} = erl_parse:parse_term(Tokens),
+            [Term | consult_fd_1(Fd, [], {ok, Next})];
+        {more, Cont} ->
+            consult_fd_1(Fd, Cont, file:read(Fd, 1 bsl 20));
+        {done, {eof, _}, eof} -> []
+    end.
+
+%%
+%% Dumps a system_information tuple to the given Fd, writing the term in chunks
+%% to avoid eating too much memory on large systems.
+%%
+
+to_fd(Fd) ->
+    EmitChunk =
+        fun(Format, Args) ->
+            ok = file:write(Fd, io_lib:format(Format, Args))
+        end,
+
+    EmitChunk("{system_information_version, ~w}.~n"
+              "{system_information,["
+                  "{init_arguments,~w},"
+                  "{code_paths,~w},",
+        [?REPORT_FILE_VSN,
+         init:get_arguments(),
+         code:get_path()]),
+
+    emit_code_info(EmitChunk),
+
+    EmitChunk(    ","  %% Note the leading comma!
+                  "{system_info,~w},"
+                  "{erts_compile_info,~w},"
+                  "{beam_dynamic_libraries,~w},"
+                  "{environment_erts,~w},"
+                  "{environment,~w},"
+                  "{sanity_check,~w}"
+              "]}.~n",
+        [erlang_system_info(),
+         erlang:system_info(compile_info),
+         get_dynamic_libraries(),
+         os_getenv_erts_specific(),
+         [split_env(Env) || Env <- os:getenv()],
+         sanity_check()]).
+
+%% Emits all modules/applications in the *code path order*
+emit_code_info(EmitChunk) ->
+    EmitChunk("{code, [", []),
+    comma_separated_foreach(EmitChunk,
+        fun(Path) ->
+            case is_application_path(Path) of
+                true -> emit_application_info(EmitChunk, Path);
+                false -> emit_code_path_info(EmitChunk, Path)
+            end
+        end, code:get_path()),
+    EmitChunk("]}", []).
+
+emit_application_info(EmitChunk, Path) ->
+    [Appfile|_] = filelib:wildcard(filename:join(Path, "*.app")),
+    case file:consult(Appfile) of
+        {ok, [{application, App, Info}]} ->
+            RtDeps = proplists:get_value(runtime_dependencies, Info, []),
+            Description = proplists:get_value(description, Info, []),
+            Version = proplists:get_value(vsn, Info, []),
+
+            EmitChunk("{application, {~w,["
+                          "{description,~w},"
+                          "{vsn,~w},"
+                          "{path,~w},"
+                          "{runtime_dependencies,~w},",
+                [App, Description, Version, Path, RtDeps]),
+            emit_module_info_from_path(EmitChunk, Path),
+            EmitChunk("]}}", [])
+    end.
+
+emit_code_path_info(EmitChunk, Path) ->
+    EmitChunk("{code, ["
+                  "{path, ~w},", [Path]),
+    emit_module_info_from_path(EmitChunk, Path),
+    EmitChunk("]}", []).
+
+emit_module_info_from_path(EmitChunk, Path) ->
+    BeamFiles = filelib:wildcard(filename:join(Path, "*.beam")),
+
+    EmitChunk("{modules, [", []),
+    comma_separated_foreach(EmitChunk,
+        fun(Beam) ->
+            emit_module_info(EmitChunk, Beam)
+        end, BeamFiles),
+    EmitChunk("]}", []).
+
+emit_module_info(EmitChunk, Beam) ->
+    %% FIXME: The next three calls load *all* significant chunks onto the heap,
+    %% which may cause us to run out of memory if there's a huge module in the
+    %% code path.
+    {ok,{Mod, Md5}} = beam_lib:md5(Beam),
+
+    CompilerVersion = get_compiler_version(Beam),
+
+    Loaded = case code:is_loaded(Mod) of
+        false -> false;
+        _     -> true
+    end,
+
+    EmitChunk("{~w,["
+                  "{loaded,~w},"
+                  "{compiler,~w},"
+                  "{md5,~w}"
+              "]}",
+        [Mod, Loaded, CompilerVersion, hexstring(Md5)]).
+
+comma_separated_foreach(_EmitChunk, _Fun, []) ->
+    ok;
+comma_separated_foreach(_EmitChunk, Fun, [H]) ->
+    Fun(H);
+comma_separated_foreach(EmitChunk, Fun, [H | T]) ->
+    Fun(H),
+    EmitChunk(",", []),
+    comma_separated_foreach(EmitChunk, Fun, T).
 
 is_application_path(Path) ->
     case filelib:wildcard(filename:join(Path, "*.app")) of
 	[] -> false;
 	_  -> true
     end.
-
-get_application_from_path(Path) ->
-    [Appfile|_] = filelib:wildcard(filename:join(Path, "*.app")),
-    case file:consult(Appfile) of
-	{ok, [{application, App, Info}]} ->
-	    {App, [
-		    {description, proplists:get_value(description, Info, [])},
-		    {vsn,         proplists:get_value(vsn, Info, [])},
-		    {path,        Path},
-		    {runtime_dependencies,
-		     proplists:get_value(runtime_dependencies, Info, [])},
-		    {modules,     get_modules_from_path(Path)}
-		]}
-    end.
-
-get_modules_from_path(Path) ->
-    [ 
-	begin
-		{ok,{Mod, Md5}} = beam_lib:md5(Beam),
-		Loaded = case code:is_loaded(Mod) of
-		    false -> false;
-		    _     -> true
-		end,
-		{Mod, [
-			{loaded,   Loaded},
-			{native,   beam_is_native_compiled(Beam)},
-			{compiler, get_compiler_version(Beam)},
-			{md5,      hexstring(Md5)}
-		    ]}
-	end || Beam <- filelib:wildcard(filename:join(Path, "*.beam"))
-    ].
 
 hexstring(Bin) when is_binary(Bin) ->
     lists:flatten([io_lib:format("~2.16.0b", [V]) || <<V>> <= Bin]).
@@ -520,47 +636,6 @@ get_compiler_version(Beam) ->
 	    proplists:get_value(version, Info);
 	_ -> undefined
     end.
-
-%% we don't know the specific chunk names of native code
-%% we don't want to load the code to check it
-beam_is_native_compiled(Beam) ->
-    Chunks = get_value([chunks], beam_lib:info(Beam)),
-    case check_known_hipe_chunks(Chunks) of
-	[] -> false;
-	[Arch] -> {true, Arch};
-	Archs  -> {true, Archs}
-    end.
-
-
-check_known_hipe_chunks([{Tag,_,_}|Cs]) ->
-    case is_chunk_tag_hipe_arch(Tag) of
-	false -> check_known_hipe_chunks(Cs);
-	{true, Arch} -> [Arch|check_known_hipe_chunks(Cs)]
-    end;
-check_known_hipe_chunks([]) -> [].
-
-%% these values are taken from hipe_unified_loader
-%% perhaps these should be exported in that module?
-
--define(HS8P_TAG,"HS8P").
--define(HPPC_TAG,"HPPC").
--define(HP64_TAG,"HP64").
--define(HARM_TAG,"HARM").
--define(HX86_TAG,"HX86").
--define(HA64_TAG,"HA64").
-
-is_chunk_tag_hipe_arch(Tag) ->
-    case Tag of
-	?HA64_TAG -> {true, amd64};       %% HiPE, x86_64, (implicit: 64-bit, Unix)
-	?HARM_TAG -> {true, arm};         %% HiPE, arm, v5 (implicit: 32-bit, Linux)
-	?HPPC_TAG -> {true, powerpc};     %% HiPE, PowerPC (implicit: 32-bit, Linux)
-	?HP64_TAG -> {true, ppc64};       %% HiPE, ppc64 (implicit: 64-bit, Linux)
-	?HS8P_TAG -> {true, ultrasparc};  %% HiPE, SPARC, V8+ (implicit: 32-bit)
-	%% Future:     HSV9               %% HiPE, SPARC, V9 (implicit: 64-bit)
-	%%             HW32               %% HiPE, x86, Win32
-	_ -> false
-    end.
-
 
 get_dynamic_libraries() ->
     Beam = filename:join([os:getenv("BINDIR"),get_beam_name()]),
@@ -587,12 +662,12 @@ vsnstr2vsn(VsnStr) ->
     list_to_tuple(lists:map(fun (Part) ->
 				    list_to_integer(Part)
 			    end,
-			    string:tokens(VsnStr, "."))).
+			    string:lexemes(VsnStr, "."))).
 
 rtdepstrs2rtdeps([]) ->
     [];
 rtdepstrs2rtdeps([RTDep | RTDeps]) ->
-    [AppStr, VsnStr] = string:tokens(RTDep, "-"),
+    [AppStr, VsnStr] = string:lexemes(RTDep, "-"),
     [{list_to_atom(AppStr), vsnstr2vsn(VsnStr)} | rtdepstrs2rtdeps(RTDeps)].
 
 build_app_table([], AppTab) ->
@@ -806,7 +881,7 @@ get_apps([Path|Paths], Apps) ->
 	[AppFile] ->
 	    get_apps(Paths, [app_file_to_app(AppFile) | Apps]);
 	[_AppFile| _] = AppFiles ->
-	    %% Strange with multple .app files... Lets put them
+	    %% Strange with multiple .app files... Lets put them
 	    %% all in the list and see what we get...
 	    lists:map(fun (AF) ->
 			      app_file_to_app(AF)

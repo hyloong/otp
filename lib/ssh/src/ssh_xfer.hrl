@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2005-2013. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2005-2025. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -19,6 +21,10 @@
 %%
 
 %%
+
+
+-define(XFER_PACKET_SIZE, 65536).
+-define(XFER_WINDOW_SIZE, 20*?XFER_PACKET_SIZE).
 
 %%% Description: SFTP defines
 -define(SSH_SFTP_PROTOCOL_VERSION, 6).		
@@ -222,7 +228,7 @@
 
 -record(ssh_xfer_attr,
 	{
-	  type,    %% regular, dirctory, symlink, ...
+	  type,    %% regular, directory, symlink, ...
 	  size,
 	  owner,
 	  group,

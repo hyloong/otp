@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 1997-2015. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 1997-2026. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -19,12 +21,17 @@
 %%
 %%
 -module(mod_alias).
+-moduledoc """
+URL aliasing.
+
+Erlang web server internal API for handling of, for example, interaction data
+exported by module `mod_alias`.
+""".
 
 -export([do/1, 
 	 real_name/3,
 	 real_script_name/3,
 	 default_index/2,
-	 load/2,
 	 store/2,
 	 path/3]).
 
@@ -36,8 +43,8 @@
 
 %% do
 
+-doc false.
 do(#mod{data = Data} = Info) ->
-    ?hdrt("do", []),
     case proplists:get_value(status, Data) of
 	%% A status code has been generated!
 	{_StatusCode, _PhraseArgs, _Reason} ->
@@ -56,25 +63,16 @@ do(#mod{data = Data} = Info) ->
 
 do_alias(#mod{config_db   = ConfigDB, 
 	      request_uri = ReqURI,
-	      socket_type = SocketType,
 	      data        = Data}) ->
     {ShortPath, Path, AfterPath} = 
 	real_name(ConfigDB, ReqURI, which_alias(ConfigDB)),
-    ?hdrt("real name", 
-	  [{request_uri, ReqURI}, 
-	   {short_path,  ShortPath}, 
-	   {path,        Path}, 
-	   {after_path,  AfterPath}]),
     %% Relocate if a trailing slash is missing else proceed!
     LastChar = lists:last(ShortPath),
     case file:read_file_info(ShortPath) of 
 	{ok, FileInfo} when ((FileInfo#file_info.type =:= directory) andalso 
 			     (LastChar =/= $/)) ->
-	    ?hdrt("directory and last-char is a /", []),
-	    ServerName = which_server_name(ConfigDB), 
-	    Port = port_string(which_port(ConfigDB)),
-	    Protocol = get_protocol(SocketType),
-	    URL = Protocol ++ ServerName ++ Port ++ ReqURI ++ "/",
+            {ReqPath, ReqQuery} = httpd_util:split_path(ReqURI),
+            URL = ReqPath ++ "/" ++ ["?" ++ ReqQuery || [] /= ReqQuery],
 	    ReasonPhrase = httpd_util:reason_phrase(301),
 	    Message = httpd_util:message(301, URL, ConfigDB),
 	    {proceed,
@@ -92,81 +90,137 @@ do_alias(#mod{config_db   = ConfigDB,
 	    {proceed, [{real_name, {Path, AfterPath}} | Data]}
     end.
 
-port_string(80) ->
-    "";
-port_string(Port) ->
-    ":" ++ integer_to_list(Port).
-
-get_protocol(ip_comm) ->
-    "http://";
-get_protocol(_) ->
-    %% Should clean up to have only one ssl type essl vs ssl is not relevant any more
-    "https://".
-
 %% real_name
 
+-doc """
+`real_name/3` traverses `Aliases`, typically extracted from
+`ConfigDB`, and matches each `FakeName` with `RequestURI`. If a match is found,
+`FakeName` is replaced with `RealName` in the match. The resulting path is split
+into two parts, `ShortPath` and `AfterPath`, as defined in
+`httpd_util:split_path/1`. `Path` is generated from `ShortPath`, that is, the
+result from `default_index/2` with `ShortPath` as
+an argument. `config_db()` is the server config file in ETS table format as
+described in [Inets User's Guide](http_server.md).
+""".
+-spec real_name(ConfigDB, RequestURI, Aliases) -> ReturnPath when
+      ConfigDB :: ets:tid(),
+      RequestURI :: string(),
+      Aliases :: [{FakeName, RealName}],
+      ReturnPath :: {ShortPath, Path, AfterPath},
+      FakeName :: re:mp() | iodata() | unicode:charlist() | string(),
+      RealName :: string(),
+      ShortPath :: string(),
+      Path :: string(),
+      AfterPath :: string().
 real_name(ConfigDB, RequestURI, []) ->
-    DocumentRoot = which_document_root(ConfigDB), 
+    {Prefix, DocumentRoot} = which_document_root(ConfigDB), 
     RealName = DocumentRoot ++ RequestURI,
     {ShortPath, _AfterPath} = httpd_util:split_path(RealName),
     {Path, AfterPath} = 
 	httpd_util:split_path(default_index(ConfigDB, RealName)),
-    {ShortPath, Path, AfterPath};
-
-real_name(ConfigDB, RequestURI, [{MP,Replacement}|Rest])
+    {Prefix ++ ShortPath, Prefix ++ Path, AfterPath};
+real_name(ConfigDB, RequestURI, [{MP,Replacement}| _] = Aliases)
   when element(1, MP) =:= re_pattern ->
-    case re:run(RequestURI, MP, [{capture,[]}]) of
-	match ->
+    case longest_match(Aliases, RequestURI) of
+	{match, {MP, Replacement}} ->
 	    NewURI = re:replace(RequestURI, MP, Replacement, [{return,list}]),
 	    {ShortPath,_} = httpd_util:split_path(NewURI),
 	    {Path,AfterPath} =
 		httpd_util:split_path(default_index(ConfigDB, NewURI)),
 	    {ShortPath, Path, AfterPath};
 	nomatch ->
-	    real_name(ConfigDB, RequestURI, Rest)
+	    real_name(ConfigDB, RequestURI, [])
     end;
 
-real_name(ConfigDB, RequestURI, [{FakeName,RealName}|Rest]) ->
-     case inets_regexp:match(RequestURI, "^" ++ FakeName) of
-	{match, _, _} ->
-	    {ok, ActualName, _} = inets_regexp:sub(RequestURI,
-					     "^" ++ FakeName, RealName),
+real_name(ConfigDB, RequestURI,  [{_,_}|_] = Aliases) ->
+    case longest_match(Aliases, RequestURI) of
+	{match, {FakeName, RealName}} ->
+	    ActualName = re:replace(RequestURI, FakeName, RealName, [{return,list}]),
  	    {ShortPath, _AfterPath} = httpd_util:split_path(ActualName),
 	    {Path, AfterPath} =
-	       httpd_util:split_path(default_index(ConfigDB, ActualName)),
+		httpd_util:split_path(default_index(ConfigDB, ActualName)),
 	    {ShortPath, Path, AfterPath};
-	 nomatch ->
-	     real_name(ConfigDB, RequestURI, Rest)
+	nomatch ->
+	    real_name(ConfigDB, RequestURI, [])
     end.
+
+longest_match(Aliases, RequestURI) ->
+    longest_match(Aliases, RequestURI, _LongestNo = 0, _LongestAlias = undefined).
+
+longest_match([{FakeName, RealName} | Rest], RequestURI, LongestNo, LongestAlias) ->
+    case re:run(RequestURI, FakeName, [{capture, first}]) of
+	{match, [{_, Length}]} ->
+	    if
+		Length > LongestNo ->
+		    longest_match(Rest, RequestURI, Length, {FakeName, RealName});
+		true ->
+		    longest_match(Rest, RequestURI, LongestNo, LongestAlias)
+	    end;
+	nomatch ->
+	    longest_match(Rest, RequestURI, LongestNo, LongestAlias)
+    end;
+longest_match([], _RequestURI, 0, _LongestAlias) ->
+    nomatch;
+longest_match([], _RequestURI, _LongestNo, LongestAlias) ->
+    {match, LongestAlias}.
 
 %% real_script_name
 
+-doc """
+`real_script_name/3` traverses `ScriptAliases`,
+typically extracted from `ConfigDB`, and matches each `FakeName` with
+`RequestURI`. If a match is found, `FakeName` is replaced with `RealName` in the
+match. If the resulting match is not an executable script, `not_a_script` is
+returned. If it is a script, the resulting script path is in two parts,
+`ShortPath` and `AfterPath`, as defined in `httpd_util:split_script_path/1`.
+`config_db()` is the server config file in ETS table format as described in
+[Inets User's Guide](http_server.md).
+""".
+-spec real_script_name(ConfigDB, RequestURI, ScriptAliases) -> ReturnPath | not_a_script when
+      ConfigDB :: ets:tid(),
+      RequestURI :: string(),
+      ScriptAliases :: list() | [{FakeName, RealName}],
+      ReturnPath :: {ShortPath, AfterPath},
+      FakeName :: re:mp() | iodata() | unicode:charlist() | string(),
+      RealName :: string(),
+      ShortPath :: string(),
+      AfterPath :: term().
 real_script_name(_ConfigDB, _RequestURI, []) ->
     not_a_script;
-
-real_script_name(ConfigDB, RequestURI, [{MP,Replacement} | Rest])
-  when element(1, MP) =:= re_pattern ->
-    case re:run(RequestURI, MP, [{capture,[]}]) of
-	match ->
-	    ActualName =
-		re:replace(RequestURI, MP, Replacement, [{return,list}]),
-	    httpd_util:split_script_path(default_index(ConfigDB, ActualName));
-	nomatch ->
-	    real_script_name(ConfigDB, RequestURI, Rest)
-    end;
-
 real_script_name(ConfigDB, RequestURI, [{FakeName,RealName} | Rest]) ->
-    case inets_regexp:match(RequestURI, "^" ++ FakeName) of
-	{match,_,_} ->
-	    {ok, ActualName, _} = 
-		inets_regexp:sub(RequestURI, "^" ++ FakeName, RealName),
+    case re:run(RequestURI, FakeName, [{capture, none}]) of
+	match ->
+	    ActualName0 =
+		re:replace(RequestURI, FakeName, RealName,  [{return,list}]),
+            ActualName = abs_script_path(ConfigDB, ActualName0),
 	    httpd_util:split_script_path(default_index(ConfigDB, ActualName));
 	nomatch ->
 	    real_script_name(ConfigDB, RequestURI, Rest)
     end.
 
+%% ERL-574: relative path in script_alias property results in malformed url
+abs_script_path(ConfigDB, [$.|_] = RelPath) ->
+    Root = httpd_util:lookup(ConfigDB, server_root),
+    Root ++ "/" ++ RelPath;
+abs_script_path(_, RelPath) ->
+    RelPath.
+
 %% default_index
 
+-doc """
+If `Path` is a directory, `default_index/2`, it starts
+searching for resources or files that are specified in the config directive
+`DirectoryIndex`. If an appropriate resource or file is found, it is appended to
+the end of `Path` and then returned. `Path` is returned unaltered if no
+appropriate file is found or if `Path` is not a directory. `config_db()` is the
+server config file in ETS table format as described in
+[Inets User's Guide](http_server.md).
+
+""".
+-spec default_index(ConfigDB, Path) -> NewPath when
+      ConfigDB :: ets:tid(),
+      Path :: string(),
+      NewPath :: string().
 default_index(ConfigDB, Path) ->
     case file:read_file_info(Path) of
 	{ok, FileInfo} when FileInfo#file_info.type =:= directory ->
@@ -188,64 +242,48 @@ append_index(RealName, [Index | Rest]) ->
 
 %% path
 
-path(Data, ConfigDB, RequestURI) ->
+-doc """
+`path/3` returns the file `Path` in the `RequestURI` (see
+[RFC 1945](https://www.ietf.org/rfc/rfc1945.txt)). If the interaction data
+`{real_name, {Path, AfterPath}}` has been exported by `mod_alias`, `Path` is
+returned. If no interaction data has been exported, `ServerRoot` is used to
+generate a file `Path`. `config_db()` and `interaction_data()` are as defined in
+[Inets User's Guide](http_server.md).
+""".
+-spec path(Data, ConfigDB, RequestURI) -> Path when
+      Data :: [{real_name, {Path, AfterPath}}],
+      ConfigDB :: ets:tid(),
+      RequestURI :: string(),
+      AfterPath :: string(),
+      Path :: string().
+path(Data, ConfigDB, RequestURI0) ->
     case proplists:get_value(real_name, Data) of
 	undefined ->
-	    DocumentRoot = which_document_root(ConfigDB), 
-	    {Path, _AfterPath} = 
-		httpd_util:split_path(DocumentRoot ++ RequestURI),
-	    Path;
+            {Prefix, DocumentRoot} = which_document_root(ConfigDB),
+            RequestURI = percent_decode_path(RequestURI0),
+            {Path, _AfterPath} =    
+                httpd_util:split_path(DocumentRoot ++ RequestURI),
+            Prefix ++ Path;
 	{Path, _AfterPath} ->
 	    Path
     end.
 
+percent_decode_path(InitPath) ->
+    case uri_string:percent_decode(InitPath) of
+        {error, _} ->
+            InitPath;
+        Path0 -> %% Protect against vulnerabilities
+            case uri_string:normalize(Path0) of
+                {error, _, _} ->
+                    InitPath;
+                Path ->
+                    httpd_util:collapse_slashes(Path)
+            end
+    end.
 %%
 %% Configuration
 %%
-
-%% load
-
-load("DirectoryIndex " ++ DirectoryIndex, []) ->
-    {ok, DirectoryIndexes} = inets_regexp:split(DirectoryIndex," "),
-    {ok,[], {directory_index, DirectoryIndexes}};
-load("Alias " ++ Alias, []) ->
-    case inets_regexp:split(Alias," ") of
-	{ok, [FakeName, RealName]} ->
-	    {ok,[],{alias,{FakeName,RealName}}};
-	{ok, _} ->
-	    {error,?NICE(string:strip(Alias)++" is an invalid Alias")}
-    end;
-load("ReWrite " ++ Rule, Acc) ->
-    load_re_write(Rule, Acc, "ReWrite", re_write);
-load("ScriptAlias " ++ ScriptAlias, []) ->
-    case inets_regexp:split(ScriptAlias, " ") of
-	{ok, [FakeName, RealName]} ->
-	    %% Make sure the path always has a trailing slash..
-	    RealName1 = filename:join(filename:split(RealName)),
-	    {ok, [], {script_alias, {FakeName, RealName1++"/"}}};
-	{ok, _} ->
-	    {error, ?NICE(string:strip(ScriptAlias)++
-			  " is an invalid ScriptAlias")}
-    end;
-load("ScriptReWrite " ++ Rule, Acc) ->
-    load_re_write(Rule, Acc, "ScriptReWrite", script_re_write).
-
-load_re_write(Rule0, Acc, Type, Tag) ->
-    case lists:dropwhile(
-	   fun ($\s) -> true; ($\t) -> true; (_) -> false end,
-	   Rule0) of
-	"" ->
-	    {error, ?NICE(string:strip(Rule0)++" is an invalid "++Type)};
-	Rule ->
-	    case string:chr(Rule, $\s) of
-		0 ->
-		    {ok, Acc, {Tag, {Rule, ""}}};
-		N ->
-		    {Re, [_|Replacement]} = lists:split(N-1, Rule),
-		    {ok, Acc, {Tag, {Re, Replacement}}}
-	    end
-    end.
-
+-doc false.
 store({directory_index, Value} = Conf, _) when is_list(Value) ->
     case is_directory_index_list(Value) of
 	true ->
@@ -255,14 +293,17 @@ store({directory_index, Value} = Conf, _) when is_list(Value) ->
     end;
 store({directory_index, Value}, _) ->
     {error, {wrong_type, {directory_index, Value}}};
-store({alias, {Fake, Real}} = Conf, _)
+store({alias, {Fake, Real}}, _)
   when is_list(Fake), is_list(Real) ->
+    {ok, {alias,{"^"++Fake,Real}}};
+store({alias, {MP, _}} = Conf, _)
+  when element(1, MP) =:= re_pattern ->
     {ok, Conf};
 store({alias, Value}, _) ->
     {error, {wrong_type, {alias, Value}}};
 store({re_write, {Re, Replacement}} = Conf, _)
   when is_list(Re), is_list(Replacement) ->
-    case re:compile(Re) of
+    case re:compile("^"++Re) of
 	{ok, MP} ->
 	    {ok, {alias, {MP, Replacement}}};
 	{error,_} ->
@@ -270,14 +311,24 @@ store({re_write, {Re, Replacement}} = Conf, _)
     end;
 store({re_write, _} = Conf, _) ->
     {error, {wrong_type, Conf}};
-store({script_alias, {Fake, Real}} = Conf, _) 
+
+% When `script_alias` is used in conjunction with `m:mod_auth` for directory-based
+% access control, authentication rules are evaluated against the actual filesystem
+% path where scripts reside, not the aliased URL path. This ensures that CGI scripts
+% mapped outside the document root are properly protected by directory authentication
+% directives.
+
+store({script_alias, {Fake, Real}}, _)
   when is_list(Fake), is_list(Real) ->
+    {ok, {script_alias,{"^"++Fake,Real}}};
+store({script_alias, {MP, _}} = Conf, _)
+  when element(1, MP) =:= re_pattern ->
     {ok, Conf};
 store({script_alias, Value}, _) ->
     {error, {wrong_type, {script_alias, Value}}};
 store({script_re_write, {Re, Replacement}} = Conf, _)
   when is_list(Re), is_list(Replacement) ->
-    case re:compile(Re) of
+    case re:compile("^"++Re) of
 	{ok, MP} ->
 	    {ok, {script_alias, {MP, Replacement}}};
 	{error,_} ->
@@ -297,16 +348,17 @@ is_directory_index_list(_) ->
 %% ---------------------------------------------------------------------
 
 which_alias(ConfigDB) ->
-    httpd_util:multi_lookup(ConfigDB, alias). 
-
-which_server_name(ConfigDB) ->
-    httpd_util:lookup(ConfigDB, server_name).
-
-which_port(ConfigDB) ->
-    httpd_util:lookup(ConfigDB, port, 80). 
+    httpd_util:multi_lookup(ConfigDB, alias) ++
+        httpd_util:multi_lookup(ConfigDB, script_alias).
 
 which_document_root(ConfigDB) ->
-    httpd_util:lookup(ConfigDB, document_root, "").
+    Root = httpd_util:lookup(ConfigDB, document_root, ""),
+    case string:tokens(Root, ":") of 
+        [Prefix, Path] ->
+            {Prefix ++ ":", Path};
+        [Path] ->
+            {"", Path}
+    end.
 
 which_directory_index(ConfigDB) ->
     httpd_util:lookup(ConfigDB, directory_index, []).

@@ -1,7 +1,9 @@
 /*
  * %CopyrightBegin%
  *
- * Copyright Ericsson AB 2010-2011. All Rights Reserved.
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Copyright Ericsson AB 2010-2026. All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -30,15 +32,9 @@
 #define ETHR_CHILD_WAIT_SPIN_COUNT 4000
 
 #include <stdio.h>
-#ifdef ETHR_TIME_WITH_SYS_TIME
-#  include <time.h>
+#include <time.h>
+#ifdef ETHR_HAVE_SYS_TIME_H
 #  include <sys/time.h>
-#else
-#  ifdef ETHR_HAVE_SYS_TIME_H
-#    include <sys/time.h>
-#  else
-#    include <time.h>
-#  endif
 #endif
 #include <sys/types.h>
 #include <unistd.h>
@@ -46,6 +42,10 @@
 #include <string.h>
 
 #include <limits.h>
+
+#if defined (__HAIKU__)
+#include <os/kernel/OS.h>
+#endif
 
 #define ETHR_INLINE_FUNC_NAME_(X) X ## __
 #define ETHREAD_IMPL__
@@ -81,20 +81,24 @@ typedef struct {
     void *(*thr_func)(void *);
     void *arg;
     void *prep_func_res;
+    size_t stacksize;
     char *name;
-    char name_buff[16];
+    char name_buff[ETHR_THR_NAME_MAX + 1];
 } ethr_thr_wrap_data__;
 
 static void *thr_wrapper(void *vtwd)
 {
     ethr_sint32_t result;
+    char c;
     void *res;
     ethr_thr_wrap_data__ *twd = (ethr_thr_wrap_data__ *) vtwd;
     void *(*thr_func)(void *) = twd->thr_func;
     void *arg = twd->arg;
     ethr_ts_event *tsep = NULL;
 
-    result = (ethr_sint32_t) ethr_make_ts_event__(&tsep);
+    ethr_set_stacklimit__(&c, twd->stacksize);
+
+    result = (ethr_sint32_t) ethr_make_ts_event__(&tsep, 0);
 
     if (result == 0) {
 	tsep->iflgs |= ETHR_TS_EV_ETHREAD;
@@ -144,7 +148,7 @@ ppc_init__(void)
 {
     int pid;
 
-    /* If anything what so ever failes we assume no lwsync for safety */
+    /* If anything what so ever fails we assume no lwsync for safety */
     ethr_runtime__.conf.have_lwsync = 0;
 
     /*
@@ -204,9 +208,9 @@ ethr_x86_cpuid__(int *eax, int *ebx, int *ecx, int *edx)
              "popl %%eax\n\t"
              "movl $0x0, %0\n\t"
              "xorl %%ecx, %%eax\n\t"
-             "jz no_cpuid\n\t"
+             "jz 1f\n\t"
 	     "movl $0x1, %0\n\t"
-             "no_cpuid:\n\t"
+             "1:\n\t"
              : "=r"(have_cpuid)
              :
              : "%eax", "%ecx", "cc");
@@ -217,7 +221,7 @@ ethr_x86_cpuid__(int *eax, int *ebx, int *ecx, int *edx)
 #endif
 #if ETHR_SIZEOF_PTR == 4 && defined(__PIC__) && __PIC__
     /*
-     * When position independet code is used in 32-bit mode, the B register
+     * When position independent code is used in 32-bit mode, the B register
      * is used for storage of global offset table address, and we may not
      * use it as input or output in an asm. We need to save and restore the
      * B register explicitly (for some reason gcc doesn't provide this
@@ -327,12 +331,14 @@ ethr_thr_create(ethr_tid *tid, void * (*func)(void *), void *arg,
 #endif
 
     ethr_atomic32_init(&twd.result, (ethr_sint32_t) -1);
-    twd.tse = ethr_get_ts_event();
     twd.thr_func = func;
     twd.arg = arg;
+    twd.stacksize = 0;
 
     if (opts && opts->name) {
-        snprintf(twd.name_buff, 16, "%s", opts->name);
+	if (strlen(opts->name) >= sizeof(twd.name_buff))
+	    return EINVAL;
+	strcpy(twd.name_buff, opts->name);
 	twd.name = twd.name_buff;
     } else
         twd.name = NULL;
@@ -340,6 +346,8 @@ ethr_thr_create(ethr_tid *tid, void * (*func)(void *), void *arg,
     res = pthread_attr_init(&attr);
     if (res != 0)
 	return res;
+
+    twd.tse = ethr_get_ts_event();
 
     /* Error cleanup needed after this point */
 
@@ -354,18 +362,24 @@ ethr_thr_create(ethr_tid *tid, void * (*func)(void *), void *arg,
 #ifdef ETHR_DEBUG
 	suggested_stack_size /= 2; /* Make sure we got margin */
 #endif
+        stack_size = ETHR_KW2B(suggested_stack_size);
+        stack_size = ETHR_PAGE_ALIGN(stack_size);
+        stack_size += ethr_pagesize__; /* For possible system usage */
 #ifdef ETHR_STACK_GUARD_SIZE
 	/* The guard is at least on some platforms included in the stack size
 	   passed when creating threads */
-	suggested_stack_size += ETHR_B2KW(ETHR_STACK_GUARD_SIZE);
+	stack_size += ETHR_STACK_GUARD_SIZE;
 #endif
-	if (suggested_stack_size < ethr_min_stack_size__)
-	    stack_size = ETHR_KW2B(ethr_min_stack_size__);
-	else if (suggested_stack_size > ethr_max_stack_size__)
-	    stack_size = ETHR_KW2B(ethr_max_stack_size__);
-	else
-	    stack_size = ETHR_PAGE_ALIGN(ETHR_KW2B(suggested_stack_size));
+	if (stack_size < ethr_min_stack_size__)
+	    stack_size = ethr_min_stack_size__;
+	else if (stack_size > ethr_max_stack_size__)
+	    stack_size = ethr_max_stack_size__;
 	(void) pthread_attr_setstacksize(&attr, stack_size);
+        twd.stacksize = stack_size;
+        twd.stacksize -= ethr_pagesize__; /* For possible system usage */
+#ifdef ETHR_STACK_GUARD_SIZE
+        twd.stacksize -= ETHR_STACK_GUARD_SIZE;
+#endif
     }
 
 #ifdef ETHR_STACK_GUARD_SIZE
@@ -415,6 +429,7 @@ ethr_thr_create(ethr_tid *tid, void * (*func)(void *), void *arg,
     /* Cleanup... */
 
  error:
+    ethr_leave_ts_event(twd.tse);
     dres = pthread_attr_destroy(&attr);
     if (res == 0)
 	res = dres;
@@ -481,12 +496,24 @@ ethr_getname(ethr_tid tid, char *buf, size_t len)
 void
 ethr_setname(char *name)
 {
+    if (strlen(name) > ETHR_THR_NAME_MAX)
+        return;
 #if defined(ETHR_HAVE_PTHREAD_SETNAME_NP_2) 
     pthread_setname_np(ethr_self(), name);
 #elif defined(ETHR_HAVE_PTHREAD_SET_NAME_NP_2)
     pthread_set_name_np(ethr_self(), name);
 #elif defined(ETHR_HAVE_PTHREAD_SETNAME_NP_1)
     pthread_setname_np(name);
+#elif defined(ETHR_HAVE_PTHREAD_SETNAME_NP_3)
+    pthread_setname_np(ethr_self(), "%s", name);
+#elif defined(__HAIKU__)
+    thread_id haiku_tid;
+    haiku_tid = get_pthread_thread_id(ethr_self());
+    if (!name) {
+        rename_thread (haiku_tid, "");
+    } else {
+        rename_thread (haiku_tid, name);
+    }
 #endif
 }
 
@@ -496,10 +523,33 @@ ethr_equal_tids(ethr_tid tid1, ethr_tid tid2)
     return pthread_equal((pthread_t) tid1, (pthread_t) tid2);
 }
 
-
 /*
  * Thread specific events
  */
+
+ethr_ts_event *
+ethr_lookup_ts_event__(int busy_dup)
+{
+    return ethr_lookup_ts_event____(busy_dup);
+}
+
+ethr_ts_event *
+ethr_peek_ts_event(void)
+{
+    return ethr_peek_ts_event__();
+}
+
+void
+ethr_unpeek_ts_event(ethr_ts_event *tsep)
+{
+    ethr_unpeek_ts_event__(tsep);
+}
+
+ethr_ts_event *
+ethr_use_ts_event(ethr_ts_event *tsep)
+{
+    return ethr_use_ts_event__(tsep);
+}
 
 ethr_ts_event *
 ethr_get_ts_event(void)

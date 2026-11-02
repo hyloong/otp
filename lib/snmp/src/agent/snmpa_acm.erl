@@ -1,8 +1,10 @@
 %%
 %% %CopyrightBegin%
-%% 
-%% Copyright Ericsson AB 1997-2011. All Rights Reserved.
-%% 
+%%
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 1997-2025. All Rights Reserved.
+%%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
 %% You may obtain a copy of the License at
@@ -14,10 +16,11 @@
 %% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 %% See the License for the specific language governing permissions and
 %% limitations under the License.
-%% 
+%%
 %% %CopyrightEnd%
 %%
 -module(snmpa_acm).
+-moduledoc false.
 
 -behaviour(snmpa_authentication_service).
 
@@ -234,7 +237,7 @@ invalidate_ca_cache() ->
 
 %%-----------------------------------------------------------------
 %% NOTE: The do_get MUST be executed in the Master agents's 
-%%       context. Therefor, force master-agent to do a GET to 
+%%       context. Therefore, force master-agent to do a GET to 
 %%       retrieve the value for snmpEnableAuthenTraps.  
 %%       A user may have another impl. than default for this 
 %%       variable.
@@ -280,7 +283,7 @@ validate_mib_view(Oid, MibView) ->
     end.
 
 get_largest_family([{SubTree, Mask, Type} | T], Oid, Res) ->
-    case check_mask(Oid, SubTree, Mask) of
+    case check_mask(Oid, SubTree, snmp_view_based_acm_mib:emask2imask(Mask)) of
 	true -> get_largest_family(T, Oid, add_res(length(SubTree), SubTree,
 						   Type, Res));
 	false -> get_largest_family(T, Oid, Res)
@@ -345,7 +348,7 @@ validate_all_mib_view([], _MibView) ->
 %% intelligent.
 %%-----------------------------------------------------------------
 is_definitely_not_in_mib_view(Oid, [{SubTree, Mask,?view_included}|T]) ->
-    case check_maybe_mask(Oid, SubTree, Mask) of
+    case check_maybe_mask(Oid, SubTree, snmp_view_based_acm_mib:emask2imask(Mask)) of
 	true -> false;
 	false -> is_definitely_not_in_mib_view(Oid, T)
     end;

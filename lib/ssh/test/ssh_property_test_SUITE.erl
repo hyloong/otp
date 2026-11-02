@@ -1,8 +1,10 @@
 %%
 %% %CopyrightBegin%
-%% 
-%% Copyright Ericsson AB 2004-2014. All Rights Reserved.
-%% 
+%%
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2004-2026. All Rights Reserved.
+%%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
 %% You may obtain a copy of the License at
@@ -14,7 +16,7 @@
 %% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 %% See the License for the specific language governing permissions and
 %% limitations under the License.
-%% 
+%%
 %% %CopyrightEnd%
 %%
 %%
@@ -22,22 +24,34 @@
 %%% Run like this:
 %%%  ct:run_test([{suite,"ssh_property_test_SUITE"}, {logdir,"/ldisk/OTP/LOG"}]).
 
-%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-%%%                                                             %%%
-%%%                       WARNING                               %%%
-%%%                                                             %%%
-%%% This is experimental code which may be changed or removed   %%%
-%%%               anytime without any warning.                  %%%
-%%%                                                             %%%
-%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-
 -module(ssh_property_test_SUITE).
 
--compile(export_all).
+-export([
+         all/0,
+         groups/0,
+         init_per_suite/1,
+         end_per_suite/1,
+         init_per_group/2,
+         end_per_group/2,
+         init_per_testcase/2,
+         end_per_testcase/2
+        ]).
+
+-export([
+         client_sends_info_timing/1,
+         client_server_parallel/1,
+         client_server_parallel_multi/1,
+         client_server_sequential/1,
+         decode/1,
+         decode_encode/1
+        ]).
 
 -include_lib("common_test/include/ct.hrl").
+-include("ssh_test_lib.hrl").
+
 
 all() -> [{group, messages},
+	  client_sends_info_timing,
 	  {group, client_server}
 	 ].
 
@@ -45,21 +59,25 @@ groups() ->
     [{messages, [], [decode,
 		     decode_encode]},
      {client_server, [], [client_server_sequential,
-			  client_server_parallel,
-			  client_server_parallel_multi]}
+                          client_server_parallel
+			  %% client_server_parallel_multi
+                         ]}
     ].
 
 
 %%% First prepare Config and compile the property tests for the found tool:
 init_per_suite(Config) ->
-    ct_property_test:init_per_suite(Config).
+    ?CHECK_CRYPTO(
+       ct_property_test:init_per_suite(Config)
+      ).
 
-%%% One group in this suite happens to support only QuickCheck, so skip it
-%%% if we run proper.
+end_per_suite(_Config) ->
+    ok.
+
 init_per_group(client_server, Config) ->
-    case ?config(property_test_tool,Config) of
-	eqc -> Config;
-	X -> {skip, lists:concat([X," is not supported"])}
+    case proplists:get_value(property_test_tool,Config) of
+        triq -> {skip, "triq does not support statem"};
+        _ -> Config
     end;
 init_per_group(_, Config) ->
     Config.
@@ -67,9 +85,6 @@ init_per_group(_, Config) ->
 end_per_group(_, Config) ->
     Config.
 
-%%% Always skip the testcase that is not quite in phase with the
-%%% ssh_message.erl code
-init_per_testcase(decode_encode, _) -> {skip, "Fails - testcase is not ok"};
 init_per_testcase(_TestCase, Config) -> Config.
     
 end_per_testcase(_TestCase, Config) -> Config.
@@ -104,5 +119,11 @@ client_server_parallel(Config) ->
 client_server_parallel_multi(Config) ->
     ct_property_test:quickcheck(
       ssh_eqc_client_server:prop_parallel_multi(Config),
+      Config
+     ).
+
+client_sends_info_timing(Config) ->
+    ct_property_test:quickcheck(
+      ssh_eqc_client_info_timing:prop_seq(Config),
       Config
      ).

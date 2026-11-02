@@ -1,21 +1,36 @@
 %% =====================================================================
-%% This library is free software; you can redistribute it and/or modify
-%% it under the terms of the GNU Lesser General Public License as
-%% published by the Free Software Foundation; either version 2 of the
-%% License, or (at your option) any later version.
+%% %CopyrightBegin%
 %%
-%% This library is distributed in the hope that it will be useful, but
-%% WITHOUT ANY WARRANTY; without even the implied warranty of
-%% MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
-%% Lesser General Public License for more details.
+%% SPDX-License-Identifier: Apache-2.0 OR LGPL-2.1-or-later
 %%
-%% You should have received a copy of the GNU Lesser General Public
-%% License along with this library; if not, write to the Free Software
-%% Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307
-%% USA
+%% Copyright Ericsson AB 2009-2026. All Rights Reserved.
+%% Copyright 2001-2005 Richard Carlsson
+%%
+%% Licensed under the Apache License, Version 2.0 (the "License");
+%% you may not use this file except in compliance with the License.
+%% You may obtain a copy of the License at
+%%
+%%     http://www.apache.org/licenses/LICENSE-2.0
+%%
+%% Unless required by applicable law or agreed to in writing, software
+%% distributed under the License is distributed on an "AS IS" BASIS,
+%% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+%% See the License for the specific language governing permissions and
+%% limitations under the License.
+%%
+%% Alternatively, you may use this file under the terms of the GNU Lesser
+%% General Public License (the "LGPL") as published by the Free Software
+%% Foundation; either version 2.1, or (at your option) any later version.
+%% If you wish to allow use of your version of this file only under the
+%% terms of the LGPL, you should delete the provisions above and replace
+%% them with the notice and other provisions required by the LGPL; see
+%% <http://www.gnu.org/licenses/>. If you do not delete the provisions
+%% above, a recipient may use your version of this file under the terms of
+%% either the Apache License or the LGPL.
+%%
+%% %CopyrightEnd%
 %%
 %% @private
-%% @copyright 2001-2005 Richard Carlsson
 %% @author Richard Carlsson <carlsson.richard@gmail.com>
 %% @see edoc
 %% @end
@@ -25,9 +40,10 @@
 
 -module(edoc_macros).
 
--export([expand_tags/3, std_macros/1, check_defs/1]).
+-compile([{nowarn_possibly_unsafe_function, {erlang, list_to_atom, 1}},
+          nowarn_deprecated_catch]).
 
--import(edoc_report, [report/2, error/3, warning/4]).
+-export([expand_tags/3, std_macros/1, check_defs/1]).
 
 -include("edoc.hrl").
 -include("edoc_types.hrl").
@@ -53,8 +69,10 @@ std_macros(Env) ->
 
 check_defs([{K, D} | Ds]) when is_atom(K), is_list(D) ->
     check_defs(Ds);
+check_defs([{K, D} | Ds]) when is_atom(K), is_function(D, 3) ->
+    check_defs(Ds);
 check_defs([X | _Ds]) ->
-    report("bad macro definition: ~P.", [X, 10]),
+    edoc_report:report("bad macro definition: ~P.", [X, 10]),
     exit(error);
 check_defs([]) ->
     ok.
@@ -64,7 +82,7 @@ check_defs([]) ->
 %% together with the file name etc. The expanded text must be flat!
 
 date_macro(_S, _Line, _Env) ->
-    edoc_lib:datestr(date()).    
+    edoc_lib:datestr(date()).
 
 time_macro(_S, _Line, _Env) ->
     edoc_lib:timestr(time()).
@@ -76,6 +94,7 @@ version_macro(S, Line, Env) ->
 link_macro(S, Line, Env) ->
     {S1, S2} = edoc_lib:split_at_stop(S),
     Ref = edoc_parser:parse_ref(S1, Line),
+    {DocgenRel, DocgenURI} = edoc_refs:get_docgen_link(Ref),
     URI = edoc_refs:get_uri(Ref, Env),
     Txt = if S2 =:= [] -> "<code>" ++ S1 ++ "</code>";
 	     true -> S2
@@ -84,8 +103,8 @@ link_macro(S, Line, Env) ->
 		 true -> " target=\"_top\""; % note the initial space
 		 false -> ""
 	     end,
-    lists:flatten(io_lib:fwrite("<a href=\"~ts\"~ts>~ts</a>",
-				[URI, Target, Txt])).
+    lists:flatten(io_lib:fwrite("<a docgen-rel=\"~ts\" docgen-href=\"~ts\" href=\"~ts\"~ts>~ts</a>",
+				[DocgenRel, DocgenURI, URI, Target, Txt])).
 
 section_macro(S, _Line, _Env) ->
     S1 = lists:reverse(edoc_lib:strip_space(
@@ -97,7 +116,7 @@ type_macro(S, Line, Env) ->
     S1 = "t()=" ++ S,
     Def = edoc_parser:parse_typedef(S1, Line),
     {#t_typedef{type = T}, _} = Def,
-    Txt = edoc_layout:type(edoc_data:type(T, Env)),
+    Txt = edoc_layout:type(edoc_data:type(T, Env, [])),
     lists:flatten(io_lib:fwrite("<code>~ts</code>", [Txt])).
 
 
@@ -122,7 +141,7 @@ expand_tag(Cs, L, Defs, Env, Where) ->
  	{'EXIT', R} ->
 	    exit(R);
 	{error, L1, Error} ->
-	    error(L1, Where, Error),
+	    edoc_report:error(L1, Where, Error),
 	    exit(error);
 	Other ->
 	    throw(Other)
@@ -197,8 +216,8 @@ expand_macro_def(M, Arg, L, Defs, St, As) ->
 			  end,
 		    expand(Txt, L, Defs1, St1, As);
 		error ->
-		    warning(L, St1#state.where,
-			    "undefined macro {@~s}.", [M]),
+		    edoc_report:warning(L, St1#state.where,
+					"undefined macro {@~s}.", [M]),
 		    "??"
 	    end
     end.

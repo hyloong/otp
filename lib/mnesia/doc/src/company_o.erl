@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 1999-2012. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 1999-2025. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -19,7 +21,11 @@
 %%
 
 -module(company_o).
--compile(export_all).
+
+-export([sinit/0, init/0,insert_emp/3,females/0,
+         female_bosses/0, raise_females/1, over_write/2, raise/2,
+         bad_raise/2, get_emps/2, get_emps2/2]).
+
 
 -import(mnesia, [transaction/1]).
 
@@ -40,50 +46,50 @@ init() ->
                         [{attributes, record_info(fields, project)}]).
 
 %0
-    
+
 
 
 %1
 
 insert_emp(Emp, DeptId, ProjNames) ->
     Fun = fun() ->
-                  mnesia:write(Emp#employee{dept = DeptId, 
-					    projects = ProjNames})
+                  mnesia:write(Emp#employee{dept = DeptId,
+                                            projects = ProjNames})
           end,
     mnesia:transaction(Fun).
 
 
 %1
- 
+
 %2
 females() ->
     F = fun() ->
-		Q = qlc:q([E#employee.name || E <- mnesia:table(employee),
-					      E#employee.sex == female]),
-		qlc:e(Q)
-	end,
+                Q = qlc:q([E#employee.name || E <- mnesia:table(employee),
+                                              E#employee.sex == female]),
+                qlc:e(Q)
+        end,
     mnesia:transaction(F).
 %2
 
 %3
 female_bosses() ->
-    F = fun() -> qlc:e(qlc:q( 
-			 [{E#employee.name, Boss#employee.name} ||
-			     E <- mnesia:table(employee),
-			     Boss <- mnesia:table(employee),
-			     Boss#employee.emp_no == E#employee.manager,
-			     E#employee.sex == female]
-			))
+    F = fun() -> qlc:e(qlc:q(
+                         [{E#employee.name, Boss#employee.name} ||
+                             E <- mnesia:table(employee),
+                             Boss <- mnesia:table(employee),
+                             Boss#employee.emp_no == E#employee.manager,
+                             E#employee.sex == female]
+                        ))
         end,
     mnesia:transaction(F).
 
-                    
+
 %4
 raise_females(Amount) ->
     F = fun() ->
-		Q = qlc:q([E || E <- mnesia:table(employee),
+                Q = qlc:q([E || E <- mnesia:table(employee),
                                 E#employee.sex == female]),
-		Fs = qlc:e(Q),
+                Fs = qlc:e(Q),
                 over_write(Fs, Amount)
         end,
     mnesia:transaction(F).
@@ -120,14 +126,14 @@ bad_raise(Eno, Raise) ->
         end,
     mnesia:transaction(F).
 %6
-                       
+
 %9
 get_emps(Salary, Dep) ->
-    Q = qlc:q( 
+    Q = qlc:q(
           [E || E <- mnesia:table(employee),
                 E#employee.salary > Salary,
                 E#employee.dept == Dep]
-	 ),
+         ),
     F = fun() -> qlc:e(Q) end,
     transaction(F).
 %9
@@ -138,10 +144,10 @@ get_emps2(Salary, Dep) ->
     Epat = Epat0#employee{dept = Dep},
     F = fun() ->
                 All = mnesia:match_object(Epat),
-		[E || E <-All, E#employee.salary > Salary ]
-	end,
+                [E || E <-All, E#employee.salary > Salary ]
+        end,
     mnesia:transaction(F).
-                
+
 
 %10
 

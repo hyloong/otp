@@ -1,8 +1,10 @@
 %%
 %% %CopyrightBegin%
-%% 
-%% Copyright Ericsson AB 2003-2011. All Rights Reserved.
-%% 
+%%
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2003-2026. All Rights Reserved.
+%%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
 %% You may obtain a copy of the License at
@@ -14,7 +16,7 @@
 %% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 %% See the License for the specific language governing permissions and
 %% limitations under the License.
-%% 
+%%
 %% %CopyrightEnd%
 %%
 
@@ -45,7 +47,9 @@
 %%%----------------------------------------------------------------------
 
 -module(xmerl_xpath_scan).
+-moduledoc false.
 
+-compile([{nowarn_possibly_unsafe_function, {erlang, list_to_atom, 1}}]).
 
 %% main API
 -export([tokens/1]).
@@ -286,13 +290,13 @@ strip_ws(T) ->
     T.
 
 
-special_token('@') -> true;
+%% special_token('@') -> true;
 special_token('::') -> true;
 special_token(',') -> true;
 special_token('(') -> true;
 special_token('[') -> true;
 special_token('/') -> true;
-special_token('//') -> true;
+%% special_token('//') -> true;
 special_token('|') -> true;
 special_token('+') -> true;
 special_token('-') -> true;
@@ -306,5 +310,4 @@ special_token('and') -> true;
 special_token('or') -> true;
 special_token('mod') -> true;
 special_token('div') -> true;
-special_token(_) ->
-    false.
+special_token(_) -> false.

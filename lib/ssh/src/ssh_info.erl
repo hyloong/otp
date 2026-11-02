@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2008-2015. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2008-2025. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -20,146 +22,290 @@
 
 %%
 %%----------------------------------------------------------------------
-%% Purpose: Print some info of a running ssh aplication.
+%% Purpose: Print some info of a running ssh application.
 %%----------------------------------------------------------------------
 
 -module(ssh_info).
+-moduledoc false.
 
--compile(export_all).
+-compile([{nowarn_deprecated_function, [{erlang,exit,2}]}]).
+
+-export([print/0,
+	 print/1,
+	 string/0,
+         get_subs_tree/1
+	]).
+
+-include("ssh.hrl").
+-include("ssh_connect.hrl").
 
 print() ->
-    print(user).
+    print(fun io:format/2).
 
+print(F) when is_function(F,2) ->
+    F("~s", [string()]);
+print(File) when is_list(File) ->
+    {ok,D} = file:open(File, [write]),
+    print(D),
+    file:close(D);
 print(D) ->
+    io:format(D, "~s", [string()]).
+
+string() ->
     try supervisor:which_children(ssh_sup)
     of
 	_ ->
-	    io:nl(D),
-	    print_general(D),
-	    io:nl(D),
-	    underline(D, "Client part", $=),
-	    print_clients(D),
-	    io:nl(D),
-	    underline(D, "Server part", $=),
-	    print_servers(D),
-	    io:nl(D),
-	    %% case os:type() of
-	    %% 	{unix,_} ->
-	    %% 	    io:nl(),
-	    %% 	    underline("Linux part", $=),
-	    %% 	    underline("Listening"),
-	    %% 	    catch io:format(os:cmd("netstat -tpln")),
-	    %% 	    io:nl(),
-	    %% 	    underline("Other"),
-	    %% 	    catch io:format(os:cmd("netstat -tpn"));
-	    %% 	_ -> ok
-	    %% end,
-	    underline(D, "Supervisors", $=),
-	    walk_sups(D, ssh_sup),
-	    io:nl(D)
+	    [io_lib:nl(),
+	     print_general(),
+	     io_lib:nl(),
+	     underline("Client(s)", $-),
+	     print_sups(client, sshc_sup),
+	     io_lib:nl(),
+	     underline("Daemon(s)", $-),
+	     print_sups(server, sshd_sup),
+	     io_lib:nl()]
     catch
 	_:_ ->
-	    io:format(D,"Ssh not found~n",[])
+	    io_lib:format("Ssh not found~n",[])
     end.
 
-%%%================================================================
-print_general(D) ->
-    {_Name, Slogan, Ver} = lists:keyfind(ssh,1,application:which_applications()),
-    underline(D, io_lib:format("~s  ~s", [Slogan, Ver]), $=),
-    io:format(D, 'This printout is generated ~s. ~n',[datetime()]).
+get_subs_tree(StartPid) ->
+    lists:foldl(fun({Id,_,worker,_}=C, Acc) -> [{C,chspec(StartPid,Id)}|Acc];
+                   ({Id,Pid,supervisor,_}=C, Acc) -> [{C,chspec(StartPid,Id),get_subs_tree(Pid)}|Acc]
+                end, [], children(StartPid)).
 
-%%%================================================================
-print_clients(D) ->
-    PrintClient = fun(X) -> print_client(D,X) end,
-    try
-	lists:foreach(PrintClient, supervisor:which_children(sshc_sup))
-    catch
-	C:E ->
-	    io:format(D, '***FAILED: ~p:~p~n',[C,E])
-    end.
-
-print_client(D, {undefined,Pid,supervisor,[ssh_connection_handler]}) ->
-    {{Local,Remote},_Str} = ssh_connection_handler:get_print_info(Pid),
-    io:format(D, "    Local=~s  Remote=~s  ConnectionRef=~p~n",[fmt_host_port(Local),fmt_host_port(Remote),Pid]);
-print_client(D, Other) ->
-    io:format(D, "    [[Other 1: ~p]]~n",[Other]).
-
-
-%%%================================================================
-print_servers(D) ->
-    PrintServer = fun(X) -> print_server(D,X) end,
-    try
-	lists:foreach(PrintServer, supervisor:which_children(sshd_sup))
-    catch
-	C:E ->
-	    io:format(D, '***FAILED: ~p:~p~n',[C,E])
-    end.
-
-print_server(D, {{server,ssh_system_sup,LocalHost,LocalPort},Pid,supervisor,[ssh_system_sup]}) when is_pid(Pid) ->
-    io:format(D, 'Local=~s (~p children)~n',[fmt_host_port({LocalHost,LocalPort}),
-					     ssh_acceptor:number_of_connections(Pid)]),
-    PrintSystemSup = fun(X) -> print_system_sup(D,X) end,
-    lists:foreach(PrintSystemSup, supervisor:which_children(Pid));
-print_server(D, Other) ->
-    io:format(D, "    [[Other 2: ~p]]~n",[Other]).
-    
-print_system_sup(D, {Ref,Pid,supervisor,[ssh_subsystem_sup]}) when is_reference(Ref),
-								is_pid(Pid) ->
-    PrintChannels =  fun(X) -> print_channels(D,X) end,
-    lists:foreach(PrintChannels, supervisor:which_children(Pid));
-print_system_sup(D, {{ssh_acceptor_sup,LocalHost,LocalPort}, Pid,supervisor, [ssh_acceptor_sup]}) when is_pid(Pid) ->
-    io:format(D, "    [Acceptor for ~s]~n",[fmt_host_port({LocalHost,LocalPort})]);
-print_system_sup(D, Other) -> 
-    io:format(D, "    [[Other 3: ~p]]~n",[Other]).
-
-print_channels(D, {{server,ssh_channel_sup,_,_},Pid,supervisor,[ssh_channel_sup]}) when is_pid(Pid) ->
-    PrintChannel =  fun(X) -> print_channel(D,X) end,
-    lists:foreach(PrintChannel, supervisor:which_children(Pid));
-print_channels(D, Other) -> 
-    io:format(D, "    [[Other 4: ~p]]~n",[Other]).
-
-
-print_channel(D, {Ref,Pid,worker,[ssh_channel]}) when is_reference(Ref), 
-						      is_pid(Pid)  ->
-    {{ConnManager,ChannelID}, Str} = ssh_channel:get_print_info(Pid),
-    {{Local,Remote},StrM} = ssh_connection_handler:get_print_info(ConnManager),
-    io:format(D, '    ch ~p: ~s ~s',[ChannelID, StrM, Str]),
-    io:format(D, "    Local=~s Remote=~s~n",[fmt_host_port(Local),fmt_host_port(Remote)]);
-print_channel(D, Other) -> 
-    io:format(D, "    [[Other 5: ~p]]~n",[Other]).
-	      
 %%%================================================================
 -define(inc(N), (N+4)).
 
-walk_sups(D, StartPid) ->
-    io:format(D, "Start at ~p, ~s.~n",[StartPid,dead_or_alive(StartPid)]),
-    walk_sups(D, children(StartPid), _Indent=?inc(0)).
+-define(INDENT, "    ").
 
-walk_sups(D, [H={_,Pid,_,_}|T], Indent) ->
-    indent(D, Indent), io:format(D, '~200p  ~p is ~s~n',[H,Pid,dead_or_alive(Pid)]),
-    case H of
-	{_,_,supervisor,[ssh_connection_handler]} -> ok;
-	{_,Pid,supervisor,_} -> walk_sups(D, children(Pid), ?inc(Indent));
-	_ -> ok
-    end,
-    walk_sups(D, T, Indent);
-walk_sups(_D, [], _) ->
-    ok.
+print_general() ->
+    {_Name, Slogan, Ver} = lists:keyfind(ssh,1,application:which_applications()),
+    [underline(io_lib:format("~s  ~s", [Slogan, Ver]), $=),
+     io_lib:format('This printout is generated ~s. ~n',[datetime()])
+    ].
+
+print_sups(Role, StartPid) ->
+    walk_tree(Role, get_subs_tree(StartPid)).
+
+%%%================================================================
+
+chspec(Sup, Id) ->
+    try supervisor:get_childspec(Sup, Id)
+    of
+        {ok,Spec} -> Spec;
+        {error,_} -> undefined
+    catch _:_ -> undefined
+    end.
+    
+%%%----------------------------------------------------------------
+walk_tree(Role, Tree) ->
+    walk_tree(Role, Tree, _Indent=?inc(0)).
+ 
+walk_tree(Role, [{{_,_,supervisor,_},_,_}=H|T], Indent) ->
+    [io_lib:format('~s',[format_sup(Role,H,Indent)]) |
+     walk_tree(Role, T, Indent)
+    ];
+walk_tree(Role, [{{_,_,worker,_},_}=H|T], Indent) ->
+    [io_lib:format('~s',[format_wrk(Role,H,Indent)]) |
+     walk_tree(Role, T, Indent)
+    ];
+walk_tree(_Role, [], _) ->
+    "".
+
+
+format_sup(server,
+           {{{ssh_system_sup,LocalAddress},Pid,supervisor,[ssh_system_sup]}, _Spec,
+            [{{{ssh_acceptor_sup,Address},AccSupPid,supervisor,[ssh_acceptor_sup]}, _AccSupSpec,
+              [{{{ssh_acceptor_sup,Address},AccPid,worker,[ssh_acceptor]}, _AccSpec}]}
+             | Children]
+           }, Indent) ->
+   [indent(Indent),
+    io_lib:format("Local listen: ~s, Daemon_ref = ~s~n"
+                  "~ssys_sup=~s, acc_sup=~s, acc=~s~n",
+                  [format_address(LocalAddress),print_pid(Pid),
+                   indent(Indent),print_pid(Pid),print_pid(AccSupPid),print_pid(AccPid)]),
+    walk_tree(server, Children, ?inc(Indent)),
+    io_lib:nl() % Separate system supervisors by an empty line
+   ];
+format_sup(server, {{{ssh_system_sup,LocalAddress},Pid,supervisor,[ssh_system_sup]}, _Spec, Children}, Indent) ->
+    [indent(Indent),
+     io_lib:format("Local listen: none (was: ~s), Daemon_ref = ~s~n"
+                   "~ssys_sup=~s~n",
+                   [format_address(LocalAddress),print_pid(Pid),
+                    indent(Indent),print_pid(Pid)]),
+     walk_tree(server, Children, ?inc(Indent)),
+     io_lib:nl() % Separate system supervisors by an empty line
+    ];
+format_sup(client,
+           {{Ref,ConnSup,supervisor,[ssh_connection_sup]}, _ConnSupSpec,
+            [{{connection,ConnPid,worker,[ssh_connection_handler]}, _ConnSpec}
+             | Children]
+           },
+           Indent) when is_reference(Ref) ->
+    [io_lib:format("~sLocal: ~s~n"
+                   "~sRemote: ~s (Version: ~s)~n"
+                   "~sConnectionRef=~s, connection_sup=~s~n",
+                   [indent(Indent), local_addr(ConnPid),
+                    indent(Indent), peer_addr(ConnPid), peer_version(client,ConnPid),
+                    indent(Indent), print_pid(ConnPid), print_pid(ConnSup)
+                   ]),
+     walk_tree(client,
+               [{H,{connref,ConnPid},Cs} || {H,_,Cs} <- Children],
+               ?inc(Indent)),
+     io_lib:nl() % Separate sub system supervisors by an empty line
+    ];
+format_sup(server,
+           {{Ref,ConnSup,supervisor,[ssh_connection_sup]}, _ConnSupSpec,
+            [{{connection,ConnPid,worker,[ssh_connection_handler]}, _ConnSpec}
+             | Children]
+           },
+           Indent) when is_reference(Ref) ->
+    [io_lib:format("~sRemote: ~s (Version: ~s)~n"
+                   "~sConnectionRef=~s, connection_sup=~s~n",
+                   [indent(Indent), peer_addr(ConnPid), peer_version(server,ConnPid),
+                    indent(Indent), print_pid(ConnPid), print_pid(ConnSup)
+                   ]),
+     walk_tree(server,
+               [{H,{connref,ConnPid},Cs} || {H,_,Cs} <- Children],
+               ?inc(Indent)),
+     io_lib:nl() % Separate sub system supervisors by an empty line
+    ];
+format_sup(Role, {{channel_sup,Pid,supervisor,[ssh_channel_sup]}, {connref,ConnPid}, Children}, Indent) ->
+    [indent(Indent),
+     case Children of
+         [] ->
+             io_lib:format("No open channels (chan_sup=~s).~n",[print_pid(Pid)]);
+         _ ->
+             Cinfo = try
+                         {ok,L} = ssh_connection_handler:info(ConnPid),
+                         L
+                     catch
+                         _:_ -> []
+                     end,
+             [io_lib:format("Open channels (chan_sup=~s):~n",[print_pid(Pid)]),
+              walk_tree(Role,
+                        [{ChH, lists:keyfind(ChPid,#channel.user,Cinfo)} || {ChH={_,ChPid,_,_},_} <- Children],
+                        ?inc(Indent))
+             ]
+     end
+    ];
+format_sup(Role, {{tcpip_forward_acceptor_sup,Pid,supervisor,[ssh_tcpip_forward_acceptor_sup]}, {connref,_ConnPid}, Children}, Indent) ->
+    [indent(Indent),
+     case Children of
+         [] ->
+             io_lib:format("TCP/IP forwarding not started (fwd_sup=~s)~n", [print_pid(Pid)]);
+         _ ->
+             [io_lib:format("TCP/IP forwarding (fwd_sup=~s):~n", [print_pid(Pid)]),
+              walk_tree(Role, Children, ?inc(Indent))
+             ]
+     end
+    ];
+format_sup(Role, {H, Spec, Children}, Indent) ->
+    [indent(Indent),
+     io_lib:format("?: ~200p ~s ~n", [H,print_spec(Spec)]),
+     walk_tree(Role, Children, ?inc(Indent))
+    ].
+
+
+format_wrk(_Role, {{{ssh_acceptor_sup,Address},Pid,worker,[ssh_acceptor]}, _Spec}, Indent) ->
+    [indent(Indent),
+     io_lib:format("acceptor: ~s ~s~n", [format_address(Address),print_pid(Pid)])
+    ];
+format_wrk(_Role, {{{From,To},Pid,worker,[ssh_tcpip_forward_acceptor]}, _Spec}, Indent) ->
+    io_lib:format("~sssh_tcpip_forward_acceptor ~s From: ~s, To: ~s~n", [indent(Indent),print_pid(Pid),
+                                                                         format_address(From), format_address(To)]);
+format_wrk(_Role, {{Ref,Pid,worker,[Cb]}, C}, Indent) when is_reference(Ref) ->
+    Str =
+        try io_lib:format("~p: (remote ~p)~s~s", [C#channel.local_id, C#channel.remote_id,
+                                          if_true(C#channel.sent_close, " sent_close"),
+                                          if_true(C#channel.recv_close, " recv_close")
+                                         ])
+        catch
+            _:_ -> "?:"
+        end,
+    ChCb = try
+               case Cb of
+                   ssh_server_channel -> io_lib:format(" ~s", [Cb:get_print_info(Pid, channel_cb)]);
+                   ssh_client_channel -> io_lib:format(" ~s", [Cb:get_print_info(Pid, channel_cb)]);
+                   _ -> ""
+               end
+           catch _:_ -> ""
+           end,
+    [indent(Indent),
+     io_lib:format("ch ~s ~p~s ~s~n", [Str, Cb, ChCb, print_pid(Pid)])
+    ];
+format_wrk(_Role, {H,Spec}, Indent) ->
+    [indent(Indent),
+     io_lib:format("?: ~200p ~s~n", [H,print_spec(Spec)])
+    ].
+
+
+
+if_true(true, Str) -> Str;
+if_true(_, _) -> "".
+    
+
+peer_version(Role, Pid) ->
+    try
+        Key =
+            case Role of
+                client -> server_version;
+                server -> client_version
+            end,
+        [{Key, {{_,_},V}}] =
+             ssh_connection_handler:connection_info(Pid, [Key]),
+        V
+    catch
+        _:_ -> "?"
+    end.
+
+peer_addr(Pid) ->
+    try
+        [{peer,{_,AddrPort}}] =
+            ssh_connection_handler:connection_info(Pid, [peer]),
+        ssh_lib:format_address_port(AddrPort)
+    catch
+        _:_ -> "?"
+    end.
+
+local_addr(Pid) ->
+    try
+        [{socket,Socket}] =
+            ssh_connection_handler:connection_info(Pid, [socket]),
+        {ok, AddrPort} = inet:sockname(Socket),
+        ssh_lib:format_address_port(AddrPort)
+    catch
+        _:_ -> "?"
+    end.
+
+
+format_address(#address{address=Addr, port=Port, profile=Prof}) ->
+    io_lib:format("~s (profile ~p)", [ssh_lib:format_address_port({Addr,Port}),Prof]);
+format_address(A) ->
+    io_lib:format("~p",[A]).
+
+
+print_pid(Pid) ->
+    io_lib:format("~p~s",[Pid, dead_or_alive(Pid)]).
 
 dead_or_alive(Name) when is_atom(Name) ->
     case whereis(Name) of
-	undefined -> 
-	    "**UNDEFINED**";
-	Pid -> 
+	undefined ->
+	    " **UNDEFINED**";
+	Pid ->
 	    dead_or_alive(Pid)
     end;
 dead_or_alive(Pid) when is_pid(Pid) ->
-    case process_info(Pid) of
-	undefined -> "**DEAD**";
-	_ -> "alive"
+    case process_info(Pid,message_queue_len) of
+	undefined -> " ***DEAD***";
+        {message_queue_len,N} when N>10 -> io_lib:format(" ***msg_queue_len: ~p***",[N]);
+        {message_queue_len,N} when N>0 -> io_lib:format(" (msg_queue_len: ~p)",[N]);
+	_ -> ""
     end.
 
-indent(D, I) -> io:format(D,'~*c',[I,$ ]). 
+indent(I) -> io_lib:format('~*c',[I,$ ]).
+
 
 children(Pid) ->
     Parent = self(),
@@ -170,34 +316,25 @@ children(Pid) ->
 	{Helper,L} when is_list(L) ->
 	    L
     after
-	2000 -> 
+	2000 ->
 	    catch exit(Helper, kill),
 	    []
     end.
 
 %%%================================================================
-underline(D, Str) ->
-    underline(D, Str, $-).
+print_spec(_Spec) -> "".
 
-underline(D, Str, LineChar) ->
-    Len = lists:flatlength(Str),
-    io:format(D, '~s~n',[Str]),
-    line(D,Len,LineChar).
+%%%================================================================
+underline(Str, LineChar) ->
+    io_lib:format('~s~n~*c~n',[Str, lists:flatlength(Str), LineChar]).
 
-line(D, Len, Char) ->
-    io:format(D, '~*c~n', [Len,Char]).
-	    
 
 datetime() ->
     {{YYYY,MM,DD}, {H,M,S}} = calendar:now_to_universal_time(erlang:timestamp()),
     lists:flatten(io_lib:format('~4w-~2..0w-~2..0w ~2..0w:~2..0w:~2..0w UTC',[YYYY,MM,DD, H,M,S])).
 
 
-fmt_host_port({{A,B,C,D},Port}) -> io_lib:format('~p.~p.~p.~p:~p',[A,B,C,D,Port]);
-fmt_host_port({Host,Port}) -> io_lib:format('~s:~p',[Host,Port]).
+%%%================================================================
 
-
-
-nyi(D) ->
-    io:format(D,'Not yet implemented~n',[]),
-    nyi.
+%% ?wr_record(address);
+%% wr_record(R) -> io_lib:format('~p~n',[R]).

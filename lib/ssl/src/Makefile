@@ -1,7 +1,9 @@
 #
 # %CopyrightBegin%
 #
-# Copyright Ericsson AB 1999-2015. All Rights Reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Copyright Ericsson AB 1999-2025. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -39,52 +41,107 @@ RELSYSDIR = $(RELEASE_PATH)/lib/ssl-$(VSN)
 # ----------------------------------------------------
 
 BEHAVIOUR_MODULES= \
-        ssl_session_cache_api \
-	ssl_crl_cache_api
+	ssl_trace \
+	ssl_crl_cache_api \
+	ssl_session_cache_api
+
 
 MODULES= \
+	dtls_server_connection \
+        dtls_client_connection \
+	dtls_connection_sup \
+	dtls_handshake \
+	dtls_gen_connection \
+	dtls_listener_sup \
+	dtls_packet_demux \
+	dtls_record \
+	dtls_server_sup\
+	dtls_server_session_cache_sup\
+	dtls_sup \
+	dtls_socket \
+	dtls_v1 \
+	inet_epmd_tls_socket \
+	inet_tls_dist \
+	inet6_tls_dist \
 	ssl \
-	tls \
-	dtls \
+	ssl_admin_sup \
 	ssl_alert \
 	ssl_app \
-	ssl_dist_sup\
-	ssl_sup \
-	inet_tls_dist \
-	ssl_certificate\
-	ssl_pkix_db\
+	ssl_certificate \
 	ssl_cipher \
-	ssl_srp_primes \
-	tls_connection \
-	dtls_connection \
+	ssl_cipher_format \
+	ssl_client_session_cache_db \
 	ssl_config \
-	ssl_connection \
-	tls_connection_sup \
-	dtls_connection_sup \
-	tls_handshake \
-	dtls_handshake\
-	ssl_handshake\
-	ssl_manager \
-	ssl_session \
-	ssl_session_cache \
-	ssl_crl\
+	ssl_connection_sup \
+	ssl_crl \
 	ssl_crl_cache \
-	ssl_socket \
+	ssl_crl_hash_dir \
+	ssl_dh_groups \
+	ssl_dist_admin_sup \
+	ssl_dist_connection_sup \
+	ssl_dist_sup \
+        ssl_gen_statem \
+	ssl_handshake \
 	ssl_listen_tracker_sup \
-	tls_record \
-	dtls_record \
+	ssl_logger \
+	ssl_manager \
+	ssl_pem_cache \
+	ssl_pkix_db \
 	ssl_record \
-	ssl_v2 \
-	ssl_v3 \
-	tls_v1 \
-	dtls_v1 \
-	ssl_tls_dist_proxy
+	ssl_server_session_cache \
+	ssl_server_session_cache_db \
+	ssl_server_session_cache_sup \
+	ssl_upgrade_server_session_cache_sup \
+	ssl_session \
+	ssl_srp_primes \
+	ssl_sup \
+	tls_bloom_filter \
+	tls_dtls_client_connection \
+	tls_dtls_server_connection \
+	tls_dtls_gen_connection \
+	tls_server_connection \
+	tls_client_connection \
+	tls_connection_sup \
+	tls_server_connection_1_3 \
+	tls_client_connection_1_3 \
+	tls_gen_connection_1_3 \
+        tls_gen_connection \
+	tls_handshake \
+	tls_handshake_1_3 \
+	tls_record \
+	tls_record_1_3 \
+	tls_client_ticket_store \
+	tls_dist_sup \
+	tls_dist_server_sup \
+	tls_dyn_connection_sup\
+	tls_sender \
+	tls_server_session_ticket\
+	tls_server_session_ticket_sup\
+	tls_server_sup\
+	tls_socket \
+	tls_socket_tcp \
+	tls_sup \
+	tls_v1
+
 
 INTERNAL_HRL_FILES = \
-	ssl_alert.hrl ssl_cipher.hrl \
-	tls_connection.hrl dtls_connection.hrl ssl_connection.hrl \
-        ssl_handshake.hrl tls_handshake.hrl dtls_handshake.hrl ssl_api.hrl ssl_internal.hrl \
-        ssl_record.hrl tls_record.hrl dtls_record.hrl ssl_srp.hrl
+	dtls_connection.hrl \
+	dtls_handshake.hrl \
+	dtls_record.hrl \
+	ssl_alert.hrl \
+	ssl_api.hrl \
+	ssl_cipher.hrl \
+	ssl_connection.hrl \
+	ssl_handshake.hrl \
+	ssl_internal.hrl \
+	ssl_record.hrl \
+	ssl_srp.hrl \
+	tls_connection.hrl \
+	tls_handshake.hrl \
+	tls_handshake_1_3.hrl \
+	tls_record.hrl \
+	tls_record_1_3.hrl
+
 
 ERL_FILES= \
 	$(MODULES:%=%.erl) \
@@ -106,24 +163,24 @@ APPUP_TARGET= $(EBIN)/$(APPUP_FILE)
 # ----------------------------------------------------
 # FLAGS
 # ----------------------------------------------------
-EXTRA_ERLC_FLAGS = +warn_unused_vars
+EXTRA_ERLC_FLAGS = +warn_unused_vars -Werror +nowarn_deprecated_callback +warn_obsolete_bool_op +nowarn_deprecated_catch
 ERL_COMPILE_FLAGS += -I$(ERL_TOP)/lib/kernel/src \
 	-pz $(EBIN) \
 	-pz $(ERL_TOP)/lib/public_key/ebin \
-	$(EXTRA_ERLC_FLAGS) -DVSN=\"$(VSN)\"
-
+	$(EXTRA_ERLC_FLAGS) -DVSN=\"$(VSN)\" 
 
 # ----------------------------------------------------
 # Targets
 # ----------------------------------------------------
 
-$(TARGET_FILES): $(BEHAVIOUR_TARGET_FILES)
+$(TYPES): $(TARGET_FILES) $(APP_TARGET) $(APPUP_TARGET)
 
-debug opt: $(TARGET_FILES) $(APP_TARGET) $(APPUP_TARGET) 
+$(TARGET_FILES): $(BEHAVIOUR_TARGET_FILES)
 
 clean:
 	rm -f $(TARGET_FILES) $(APP_TARGET) $(APPUP_TARGET) $(BEHAVIOUR_TARGET_FILES) 
 	rm -f errs core *~
+	rm -rf $(DEPDIR)
 
 $(APP_TARGET):	$(APP_SRC) ../vsn.mk
 	$(vsn_verbose)sed -e 's;%VSN%;$(VSN);' $< > $@
@@ -132,7 +189,6 @@ $(APPUP_TARGET):	$(APPUP_SRC) ../vsn.mk
 	$(vsn_verbose)sed -e 's;%VSN%;$(VSN);' $< > $@
 
 docs:
-
 
 # ----------------------------------------------------
 # Release Target
@@ -151,22 +207,4 @@ release_docs_spec:
 # ----------------------------------------------------
 # Dependencies
 # ----------------------------------------------------
-$(EBIN)/inet_tls_dist.$(EMULATOR): ../../kernel/include/net_address.hrl  ../../kernel/include/dist.hrl  ../../kernel/include/dist_util.hrl
-$(EBIN)/tls.$(EMULATOR): ssl_internal.hrl ssl_record.hrl ssl_cipher.hrl ssl_handshake.hrl ../../public_key/include/public_key.hrl
-$(EBIN)/ssl_alert.$(EMULATOR): ssl_alert.hrl ssl_record.hrl  
-$(EBIN)/ssl_certificate.$(EMULATOR): ssl_internal.hrl ssl_alert.hrl ssl_handshake.hrl ../../public_key/include/public_key.hrl
-$(EBIN)/ssl_certificate_db.$(EMULATOR): ssl_internal.hrl ../../public_key/include/public_key.hrl ../../kernel/include/file.hrl
-$(EBIN)/ssl_cipher.$(EMULATOR): ssl_internal.hrl ssl_record.hrl ssl_cipher.hrl ssl_handshake.hrl ssl_alert.hrl ../../public_key/include/public_key.hrl
-$(EBIN)/tls_connection.$(EMULATOR): ssl_internal.hrl tls_connection.hrl tls_record.hrl ssl_cipher.hrl tls_handshake.hrl ssl_alert.hrl ../../public_key/include/public_key.hrl
-$(EBIN)/dtls_connection.$(EMULATOR): ssl_internal.hrl dtls_connection.hrl dtls_record.hrl ssl_cipher.hrl dtls_handshake.hrl ssl_alert.hrl ../../public_key/include/public_key.hrl
-$(EBIN)/tls_handshake.$(EMULATOR): ssl_internal.hrl tls_record.hrl ssl_cipher.hrl tls_handshake.hrl ssl_alert.hrl ../../public_key/include/public_key.hrl
-$(EBIN)/tls_handshake.$(EMULATOR): ssl_internal.hrl ssl_connection.hrl ssl_record.hrl ssl_cipher.hrl ssl_handshake.hrl ssl_alert.hrl ../../public_key/include/public_key.hrl
-$(EBIN)/ssl_manager.$(EMULATOR): ssl_internal.hrl ssl_handshake.hrl ../../kernel/include/file.hrl
-$(EBIN)/ssl_record.$(EMULATOR):  ssl_internal.hrl ssl_record.hrl ssl_cipher.hrl ssl_handshake.hrl ssl_alert.hrl
-$(EBIN)/ssl_session.$(EMULATOR):  ssl_internal.hrl ssl_handshake.hrl
-$(EBIN)/ssl_session_cache.$(EMULATOR):  ssl_internal.hrl ssl_handshake.hrl
-$(EBIN)/ssl_session_cache_api.$(EMULATOR):  ssl_internal.hrl ssl_handshake.hrl
-$(EBIN)/ssl_ssl3.$(EMULATOR): ssl_internal.hrl ssl_record.hrl ssl_cipher.hrl
-$(EBIN)/ssl_tls1.$(EMULATOR): ssl_internal.hrl ssl_record.hrl ssl_cipher.hrl
-$(EBIN)/ssl_cache.$(EMULATOR): ssl_cache.erl ssl_internal.hrl ../../public_key/include/public_key.hrl
-
+-include $(ERL_TOP)/make/dep.mk

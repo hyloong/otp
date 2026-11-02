@@ -1,8 +1,10 @@
 %%
 %% %CopyrightBegin%
-%% 
-%% Copyright Ericsson AB 1996-2014. All Rights Reserved.
-%% 
+%%
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 1996-2025. All Rights Reserved.
+%%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
 %% You may obtain a copy of the License at
@@ -14,17 +16,21 @@
 %% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 %% See the License for the specific language governing permissions and
 %% limitations under the License.
-%% 
+%%
 %% %CopyrightEnd%
 %%
 -module(application_master).
+-moduledoc false.
+
+-compile(nowarn_deprecated_catch).
+-compile([{nowarn_deprecated_function, [{erlang,exit,2}]}]).
 
 %% External exports
 -export([start_link/2, start_type/0, stop/1]).
 -export([get_child/1]).
 
 %% Internal exports
--export([init/4, start_it/4]).
+-export([init/3, start_it/4]).
 
 -include("application_master.hrl").
 
@@ -39,9 +45,8 @@
 %% Returns: {ok, Pid} | {error, Reason} (Pid is unregistered)
 %%-----------------------------------------------------------------
 start_link(ApplData, Type) ->
-    Parent = whereis(application_controller),
     proc_lib:start_link(application_master, init,
-			[Parent, self(), ApplData, Type]).
+			[self(), ApplData, Type]).
 
 start_type() ->
     group_leader() ! {start_type, self()},
@@ -75,7 +80,7 @@ call(AppMaster, Req) ->
     AppMaster ! {Req, Tag, self()},
     receive 
 	{'DOWN', Ref, process, _, _Info} ->
-	    ok;
+	    error;
 	{Tag, Res} ->
 	    erlang:demonitor(Ref, [flush]),
 	    Res
@@ -114,10 +119,19 @@ call(AppMaster, Req) ->
 %%%-----------------------------------------------------------------
 %%% Internal functions
 %%%-----------------------------------------------------------------
-init(Parent, Starter, ApplData, Type) ->
-    link(Parent),
+init(Parent, ApplData, Type) ->
+    %% Unblock the parent process as soon as possible
+    proc_lib:init_ack(Parent, {ok, self()}),
     process_flag(trap_exit, true),
-    OldGleader = group_leader(),
+    OldGleader =
+        case group_leader() == whereis(init) of
+            true -> init;
+            false -> group_leader()
+        end,
+    %% We become the group leader, but forward all I/O to OldGleader.
+    %% This is just a way to identify processes that belong to the
+    %% application. Used for example to find ourselves from any
+    %% process, or, reciprocally, to kill them all when we terminate.
     group_leader(self(), self()),
     %% Insert ourselves as master for the process.  This ensures that
     %% the processes in the application can use get_env/1 at startup.
@@ -127,12 +141,13 @@ init(Parent, Starter, ApplData, Type) ->
     case start_it(State, Type) of
 	{ok, Pid} ->          % apply(M,F,A) returned ok
 	    ok = set_timer(ApplData#appl_data.maxT),
-	    unlink(Starter),
-	    proc_lib:init_ack(Starter, {ok,self()}),
+	    gen_server:cast(Parent, {application_started, Name, {ok, self()}}),
 	    main_loop(Parent, State#state{child = Pid});
 	{error, Reason} ->    % apply(M,F,A) returned error
+	    gen_server:cast(Parent, {application_started, Name, {error, Reason}}),
 	    exit(Reason);
 	Else ->               % apply(M,F,A) returned erroneous
+	    gen_server:cast(Parent, {application_started, Name, {error, Else}}),
 	    exit(Else)
     end.
 
@@ -154,7 +169,7 @@ start_it(State, Type) ->
 init_loop(Pid, Tag, State, Type) ->
     receive
  	IoReq when element(1, IoReq) =:= io_request ->
-	    State#state.gleader ! IoReq,
+            _ = relay_to_group_leader(IoReq, State),
 	    init_loop(Pid, Tag, State, Type);
 	{Tag, Res} ->
 	    Res;
@@ -171,7 +186,7 @@ init_loop(Pid, Tag, State, Type) ->
 main_loop(Parent, State) ->
     receive
 	IoReq when element(1, IoReq) =:= io_request ->
-	    State#state.gleader ! IoReq,
+            _ = relay_to_group_leader(IoReq, State),
 	    main_loop(Parent, State);
 	{'EXIT', Parent, Reason} ->
 	    terminate(Reason, State);
@@ -194,7 +209,7 @@ main_loop(Parent, State) ->
 terminate_loop(Child, State) ->
     receive
  	IoReq when element(1, IoReq) =:= io_request ->
-	    State#state.gleader ! IoReq,
+            _ = relay_to_group_leader(IoReq, State),
 	    terminate_loop(Child, State);
 	{'EXIT', Child, _} ->
 	    ok;
@@ -227,8 +242,20 @@ terminate(Reason, State = #state{child=Child, children=Children, req=Reqs}) ->
     kill_children(Children),
     exit(Reason).
 
-
-
+%% If the group_leader is the `init` process, the message is meant to
+%% end up in `user` so we send it there directly.
+relay_to_group_leader(IoReq, State) ->
+    if
+        State#state.gleader =:= init ->
+            case whereis(user) of
+                undefined ->
+                    State#state.gleader ! IoReq;
+                User ->
+                    User ! IoReq
+            end;
+        true ->
+            State#state.gleader ! IoReq
+    end.
 
 %%======================================================================
 %%======================================================================
@@ -361,10 +388,10 @@ loop_it(Parent, Child, Mod, AppState) ->
 	    NewAppState = prep_stop(Mod, AppState),
 	    exit(Child, Reason),
 	    receive
-		{'EXIT', Child, Reason2} ->
-		    exit(Reason2)
+		{'EXIT', Child, _} -> ok
 	    end,
-	    catch Mod:stop(NewAppState);
+	    catch Mod:stop(NewAppState),
+	    exit(Reason);
 	{'EXIT', Child, Reason} -> % forward *all* exit reasons (inc. normal)
 	    NewAppState = prep_stop(Mod, AppState),
 	    catch Mod:stop(NewAppState),

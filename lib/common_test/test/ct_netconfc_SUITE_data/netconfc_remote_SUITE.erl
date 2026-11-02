@@ -1,7 +1,9 @@
 %%--------------------------------------------------------------------
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2014. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2014-2025. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -26,16 +28,11 @@
 -compile(export_all).
 
 suite() ->
-    [{ct_hooks, [{cth_conn_log,[{ct_netconfc,[{log_type,html}]}]}]}].
+    [{timetrap,?default_timeout},
+     {ct_hooks, [{cth_conn_log,[{ct_netconfc,[{log_type,html}]}]}]}].
 
 all() ->
-    case os:find_executable("ssh") of
-	false ->
-	    {skip, "SSH not installed on host"};
-	_ ->
-	    [remote_crash
-	    ]
-    end.
+    [remote_crash].
 
 groups() ->
     [].
@@ -48,13 +45,10 @@ end_per_group(_GroupName, Config) ->
 
 init_per_testcase(Case, Config) ->
     stop_node(Case),
-    Dog = test_server:timetrap(?default_timeout),
-    [{watchdog, Dog}|Config].
+    Config.
 
-end_per_testcase(Case, Config) ->
+end_per_testcase(Case, _Config) ->
     stop_node(Case),
-    Dog=?config(watchdog, Config),
-    test_server:timetrap_cancel(Dog),
     ok.
 
 stop_node(Case) ->
@@ -64,40 +58,46 @@ stop_node(Case) ->
 
 
 init_per_suite(Config) ->
-    case {crypto:start(),ssh:start()} of
-	{ok,ok} ->
-	    {ok, _} =  netconfc_test_lib:get_id_keys(Config),
-	    netconfc_test_lib:make_dsa_files(Config),
-	    Config;
-	_ ->
-	    {skip, "Crypto and/or SSH could not be started locally!"}
+    code:ensure_loaded(crypto),
+    case {ssh:start(),code:is_loaded(crypto)} of
+	{Ok,{file,_}} when Ok==ok; Ok=={error,{already_started,ssh}} ->
+	    ct:log("SSH started locally",[]),
+	    SshDir = filename:join(filename:dirname(code:which(?MODULE)),
+				   "ssh_dir"),
+	    [{ssh_dir,SshDir}|Config];
+	Other ->
+	    ct:log("could not start ssh or load crypto locally: ~p",[Other]),
+	    {skip, "SSH could not be started locally!"}
     end.
 
 end_per_suite(Config) ->
     ssh:stop(),
-    crypto:stop(),
-    netconfc_test_lib:remove_id_keys(Config),
+    application:stop(crypto),
     Config.
 
 %% This test case is related to seq12645
 %% Running the netconf server in a remote node, test that the client
 %% process terminates if the remote node goes down.
 remote_crash(Config) ->
-    {ok,Node} = ct_slave:start(nc_remote_crash),
+    {ok,Node} = ct_slave:start(nc_remote_crash,[{boot_timeout,15},
+						{init_timeout,15},
+						{startup_timeout,15}]),
     Pa = filename:dirname(code:which(?NS)),
     true = rpc:call(Node,code,add_patha,[Pa]),
-    
-    case {rpc:call(Node,crypto,start,[]),rpc:call(Node,ssh,start,[])} of
-	{ok,ok} ->
-	    Server = rpc:call(Node,?NS,start,[?config(data_dir,Config)]),
+    rpc:call(Node,code,load_file,[crypto]),
+    case {rpc:call(Node,ssh,start,[]),rpc:call(Node,code,is_loaded,[crypto])} of
+	{Ok,{file,_}} when Ok==ok; Ok=={error,{already_started,ssh}} ->
+	    ct:log("SSH started remote",[]),
+	    ns(Node,start,[?config(ssh_dir,Config)]),
+	    ct:log("netconf server started remote",[]),
 	    remote_crash(Node,Config);
-	_ ->
-	    {skip, "Crypto and/or SSH could not be started remote!"}
+	Other ->
+	    ct:log("could not start ssh or load crypto remote: ~p",[Other]),
+	    {skip, "SSH could not be started remote!"}
     end.
 
 remote_crash(Node,Config) ->
-    DataDir = ?config(data_dir,Config),
-    {ok,Client} = open_success(Node,DataDir),
+    {ok,Client} = open_success(Node,?config(ssh_dir,Config)),
 
     ns(Node,expect_reply,[{'create-subscription',[stream]},ok]),
     ?ok = ct_netconfc:create_subscription(Client),
@@ -122,7 +122,7 @@ open_success(Node,Dir) ->
     open_success(Node,Dir,[]).
 
 %% Open a netconf session which is not specified in a config file, and
-%% give som extra options in addition to the test defaults.
+%% give some extra options in addition to the test defaults.
 open_success(Node,Dir,ExtraOpts) when is_list(Dir), is_list(ExtraOpts) ->
     ns(Node,hello,[1]), % tell server to send hello with session id 1
     ns(Node,expect,[hello]), % tell server to expect a hello message from client

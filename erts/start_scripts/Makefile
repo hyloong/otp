@@ -1,7 +1,9 @@
 #
 # %CopyrightBegin%
 #
-# Copyright Ericsson AB 1997-2013. All Rights Reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Copyright Ericsson AB 1997-2025. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -17,6 +19,9 @@
 #
 # %CopyrightEnd%
 #
+
+.NOTPARALLEL:
+
 include $(ERL_TOP)/make/target.mk
 include $(ERL_TOP)/make/$(TARGET)/otp.mk
 
@@ -65,11 +70,11 @@ include $(LIBPATH)/stdlib/vsn.mk
 
 ##############################################################################
 
-debug opt script: rel $(INSTALL_SCRIPTS) $(RELEASES_SRC)
+debug opt lcnt script: rel $(INSTALL_SCRIPTS) $(RELEASES_SRC)
 
 rel:	$(REL_SCRIPTS)
 
-RELEASES.src:
+RELEASES.src: $(SS_ROOT)/start_sasl.rel
 	$(gen_verbose)$(INSTALL_DIR) $(SS_TMP)
 	$(V_at)( cd $(SS_TMP) && \
 	$(ERL) -noinput +B -eval 'release_handler:create_RELEASES("%ERL_ROOT%", "$(SS_ROOT)", "$(SS_ROOT)/start_sasl.rel", []), halt()')
@@ -168,16 +173,19 @@ $(ERL_TOP)/bin/no_dot_erlang.script:
 	  $(ERLC) $(SCRIPT_PATH) +no_warn_sasl +otp_build +no_dot_erlang -o $@ $(SS_ROOT)/no_dot_erlang.rel )
 
 ## Special target used from system/build/Makefile for source code release bootstrap.
-## Add no_dot_erlang after next release
-bootstrap_scripts: $(SS_ROOT)/start_clean.rel
+bootstrap_scripts: $(SS_ROOT)/start_clean.rel $(SS_ROOT)/no_dot_erlang.rel
 	$(V_at)$(INSTALL_DIR) $(TESTROOT)/bin
 	$(V_at)$(INSTALL_DIR) $(SS_TMP)
 	$(V_at)( cd $(SS_TMP) && \
-	  $(ERLC) $(BOOTSTRAP_SCRIPT_PATH) +otp_build +no_module_tests \
+	  $(ERLC) $(BOOTSTRAP_SCRIPT_PATH) +otp_build +no_module_tests +no_warn_sasl \
 	    -o $(TESTROOT)/bin/start.script $(SS_ROOT)/start_clean.rel )
 	$(V_at)( cd $(SS_TMP) && \
-	  $(ERLC) $(BOOTSTRAP_SCRIPT_PATH) +otp_build +no_module_tests \
+	  $(ERLC) $(BOOTSTRAP_SCRIPT_PATH) +otp_build +no_module_tests +no_warn_sasl \
 	    -o $(TESTROOT)/bin/start_clean.script $(SS_ROOT)/start_clean.rel )
+	$(V_at)( cd $(SS_TMP) && \
+	  $(ERLC) $(BOOTSTRAP_SCRIPT_PATH) +otp_build +no_module_tests +no_warn_sasl +no_dot_erlang \
+	    -o $(TESTROOT)/bin/no_dot_erlang.script $(SS_ROOT)/no_dot_erlang.rel )
+
 
 clean:
 	$(V_at)$(RM) $(REL_SCRIPTS) $(INSTALL_SCRIPTS)

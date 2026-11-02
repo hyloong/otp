@@ -1,8 +1,10 @@
 %%
 %% %CopyrightBegin%
-%% 
-%% Copyright Ericsson AB 2005-2009. All Rights Reserved.
-%% 
+%%
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2005-2025. All Rights Reserved.
+%%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
 %% You may obtain a copy of the License at
@@ -14,7 +16,7 @@
 %% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 %% See the License for the specific language governing permissions and
 %% limitations under the License.
-%% 
+%%
 %% %CopyrightEnd%
 %%
 -module(opt_crash).
@@ -33,7 +35,7 @@ test() ->
                {userinfo,nil},
                fun() -> nil end},
             nil},
-         {'query',nil}}},
+         {query,nil}}},
 
    {absoluteURI,
       {scheme,_},
@@ -43,9 +45,9 @@ test() ->
                {userinfo,nil},
                HostportBefore},
             nil},
-         {'query',nil}}} = URI_Before,
+         {query,nil}}} = URI_Before,
 
-   %% ... some funky code ommitted, not relevant ...
+   %% ... some funky code omitted, not relevant ...
 
    {absoluteURI,
       {scheme,_},
@@ -55,7 +57,7 @@ test() ->
                {userinfo,nil},
                HostportAfter},
             nil},
-         {'query',nil}}} = URI_Before,
+         {query,nil}}} = URI_Before,
    %% NOTE: I intended to write URI_After instead of URI_Before
    %% but the accident revealed that when you add the line below,
    %% it causes internal error in v3_codegen on compilation

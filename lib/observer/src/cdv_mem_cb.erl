@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2011-2013. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2011-2025. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -17,6 +19,7 @@
 %%
 %% %CopyrightEnd%
 -module(cdv_mem_cb).
+-moduledoc false.
 
 -export([get_info/0]).
 
@@ -49,9 +52,7 @@ gen_mem_info_fields([]) ->
     [].
 
 upper(Key) ->
-    string:join([string:to_upper([H]) ++ T || 
-		    [H|T] <- string:tokens(Key,"_")]," ").
-
+    lists:join(" ", [string:titlecase(Word) || Word <- string:split(Key, "_", all)]).
 
 %%%-----------------------------------------------------------------
 %%% Allocated areas page
@@ -77,9 +78,13 @@ fix_alloc([{Title,Columns,Data}|Tables]) ->
      fix_alloc(Tables)];
 fix_alloc([{Title,[{_,V}|_]=Data}|Tables]) ->
     fix_alloc([{Title,lists:duplicate(length(V),[]),Data}|Tables]);
+fix_alloc([{"",[]}|Tables]) -> % no name and no data, probably truncated dump
+    fix_alloc(Tables);
+fix_alloc([{Title,[]=Data}|Tables]) -> % no data, probably truncated dump
+    fix_alloc([{Title,[],Data}|Tables]);
 fix_alloc([]) ->
     [].
 
 alloc_columns(Columns) ->
-    [{"",   ?wxLIST_FORMAT_LEFT,  180} |
+    [{"", ?wxLIST_FORMAT_LEFT, 240} |
      [{Column, ?wxLIST_FORMAT_RIGHT, 140} || Column <- Columns]].

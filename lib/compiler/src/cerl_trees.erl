@@ -1,7 +1,10 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2001-2010. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright 1999-2002 Richard Carlsson
+%% Copyright Ericsson AB 2010-2026. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -16,18 +19,27 @@
 %% limitations under the License.
 %%
 %% %CopyrightEnd%
-
-%% @doc Basic functions on Core Erlang abstract syntax trees.
 %%
-%% <p>Syntax trees are defined in the module <a
-%% href="cerl"><code>cerl</code></a>.</p>
-%%
-%% @type cerl() = cerl:cerl()
+%% @author Richard Carlsson <carlsson.richard@gmail.com>
 
 -module(cerl_trees).
+-moduledoc """
+Basic functions on Core Erlang abstract syntax trees.
+
+> #### Note {: .info }
+>
+> The public interface of the Erlang compiler can be found in
+> module `m:compile`.
+>
+> This module is an internal part of the compiler. Its API is not guaranteed
+> to remain compatible between releases.
+
+Syntax trees are defined in the module `m:cerl`.
+""".
 
 -export([depth/1, fold/3, free_variables/1, get_label/1, label/1, label/2, 
-	 map/2, mapfold/3, size/1, variables/1]).
+	 map/2, mapfold/3, mapfold/4, next_free_variable_name/1,
+         size/1, variables/1]).
 
 -import(cerl, [alias_pat/1, alias_var/1, ann_c_alias/3, ann_c_apply/3,
 	       ann_c_binary/2, ann_c_bitstr/6, ann_c_call/4,
@@ -61,21 +73,31 @@
 	       map_arg/1, map_es/1,
 	       ann_c_map/3,
 	       update_c_map/3,
+	       is_c_map_pattern/1, ann_c_map_pattern/2,
 	       map_pair_key/1,map_pair_val/1,map_pair_op/1,
 	       ann_c_map_pair/4,
-	       update_c_map_pair/4
+	       update_c_map_pair/4,
+
+               ann_c_record/4, record_arg/1, record_id/1, record_es/1,
+               update_c_record/4,
+               ann_c_record_pair/3,
+               record_es/1,
+               record_pair_key/1, record_pair_val/1,
+               update_c_record_pair/3
 	   ]).
 
+-type cerl() :: cerl:cerl().
 
 %% ---------------------------------------------------------------------
 
-%% @spec depth(Tree::cerl()) -> integer()
-%%
-%% @doc Returns the length of the longest path in the tree.  A leaf
-%% node has depth zero, the tree representing "<code>{foo,
-%% bar}</code>" has depth one, etc.
+-doc """
+Returns the length of the longest path in the tree.
 
--spec depth(cerl:cerl()) -> non_neg_integer().
+A leaf node has depth zero, the tree representing "`{foo, bar}`" has
+depth one, and so on.
+""".
+-spec depth(Tree :: cerl()) ->
+          non_neg_integer().
 
 depth(T) ->
     case subtrees(T) of
@@ -90,11 +112,8 @@ depth_1(Ts) ->
 
 
 
-%% @spec size(Tree::cerl()) -> integer()
-%%
-%% @doc Returns the number of nodes in <code>Tree</code>.
-
--spec size(cerl:cerl()) -> non_neg_integer().
+-doc "Returns the number of nodes in `Tree`.".
+-spec size(Tree :: cerl()) -> non_neg_integer().
 
 size(T) ->
     fold(fun (_, S) -> S + 1 end, 0, T).
@@ -102,17 +121,15 @@ size(T) ->
 
 %% ---------------------------------------------------------------------
 
-%% @spec map(Function, Tree::cerl()) -> cerl()
-%%
-%%	   Function = (cerl()) -> cerl()
-%%	   
-%% @doc Maps a function onto the nodes of a tree. This replaces each
-%% node in the tree by the result of applying the given function on
-%% the original node, bottom-up.
-%%
-%% @see mapfold/3
+-doc """
+Maps a function onto the nodes of a tree.
 
--spec map(fun((cerl:cerl()) -> cerl:cerl()), cerl:cerl()) -> cerl:cerl().
+This replaces each node in the tree by the result of applying the
+given function on the original node, bottom-up.
+
+_See also: _`mapfold/3`.
+""".
+-spec map(Function :: fun((cerl()) -> cerl()), Tree :: cerl()) -> cerl().
 
 map(F, T) ->
     F(map_1(F, T)).
@@ -144,6 +161,12 @@ map_1(F, T) ->
 	    update_c_map_pair(T, map(F, map_pair_op(T)),
                                  map(F, map_pair_key(T)),
                                  map(F, map_pair_val(T)));
+	record ->
+            update_c_record(T, map(F, record_arg(T)), map(F, record_id(T)),
+                            map_list(F, record_es(T)));
+	record_pair ->
+            update_c_record_pair(T, map(F, record_pair_key(T)),
+                                 map(F, record_pair_val(T)));
  	'let' ->
 	    update_c_let(T, map_list(F, let_vars(T)),
 			 map(F, let_arg(T)),
@@ -201,7 +224,9 @@ map_1(F, T) ->
 	    update_c_module(T, map(F, module_name(T)),
 			    map_list(F, module_exports(T)),
 			    map_pairs(F, module_attrs(T)),
-			    map_pairs(F, module_defs(T)))
+			    map_pairs(F, module_defs(T)));
+        opaque ->
+            T
     end.
 
 map_list(F, [T | Ts]) ->
@@ -215,18 +240,17 @@ map_pairs(_, []) ->
     [].
 
 
-%% @spec fold(Function, Unit::term(), Tree::cerl()) -> term()
-%%
-%%    Function = (cerl(), term()) -> term()
-%%
-%% @doc Does a fold operation over the nodes of the tree. The result
-%% is the value of <code>Function(X1, Function(X2, ... Function(Xn,
-%% Unit) ... ))</code>, where <code>X1, ..., Xn</code> are the nodes
-%% of <code>Tree</code> in a post-order traversal.
-%%
-%% @see mapfold/3
+-doc """
+Does a fold operation over the nodes of the tree.
 
--spec fold(fun((cerl:cerl(), term()) -> term()), term(), cerl:cerl()) -> term().
+The result is the value of `Function(X1, Function(X2, ... Function(Xn,
+Unit) ... ))`, where `X1, ..., Xn` are the nodes of `Tree` in a
+post-order traversal.
+
+_See also: _`mapfold/3`.
+""".
+-spec fold(Function :: fun((cerl(), term()) -> term()),
+           Unit :: term(), Term :: cerl()) -> term().
 
 fold(F, S, T) ->
     F(T, fold_1(F, S, T)).
@@ -248,6 +272,10 @@ fold_1(F, S, T) ->
  	    fold_list(F, S, values_es(T));
 	cons ->
 	    fold(F, fold(F, S, cons_hd(T)), cons_tl(T));
+        record ->
+            fold_list(F, S, record_es(T));
+        record_pair ->
+            fold(F, fold(F, S, record_pair_key(T)), record_pair_val(T));
 	tuple ->
 	    fold_list(F, S, tuple_es(T));
 	map ->
@@ -309,13 +337,15 @@ fold_1(F, S, T) ->
 	letrec ->
 	    fold(F, fold_pairs(F, S, letrec_defs(T)), letrec_body(T));
 	module ->
-	    fold_pairs(F, 
-		       fold_pairs(F, 
-				  fold_list(F,
+            fold_pairs(F,
+		       fold_pairs(F,
+                                  fold_list(F,
 					    fold(F, S, module_name(T)),
 					    module_exports(T)),
 				  module_attrs(T)),
-		       module_defs(T))
+		       module_defs(T));
+        opaque ->
+            S
     end.
 
 fold_list(F, S, [T | Ts]) ->
@@ -329,177 +359,213 @@ fold_pairs(_, S, []) ->
     S.
 
 
-%% @spec mapfold(Function, Initial::term(), Tree::cerl()) ->
-%%           {cerl(), term()}
-%%
-%%    Function = (cerl(), term()) -> {cerl(), term()}
-%%
-%% @doc Does a combined map/fold operation on the nodes of the
-%% tree. This is similar to <code>map/2</code>, but also propagates a
-%% value from each application of <code>Function</code> to the next,
-%% starting with the given value <code>Initial</code>, while doing a
-%% post-order traversal of the tree, much like <code>fold/3</code>.
-%%
-%% @see map/2
-%% @see fold/3
+-doc """
+Does a combined map/fold operation on the nodes of the tree.
 
--spec mapfold(fun((cerl:cerl(), term()) -> {cerl:cerl(), term()}),
-	      term(), cerl:cerl()) -> {cerl:cerl(), term()}.
+This is similar to [`map/2`](`map/2`), but also propagates a value
+from each application of `Function` to the next, starting with the
+given value `Initial`, while doing a post-order traversal of the tree,
+much like [`fold/3`](`fold/3`).
+
+This is equivalent to `mapfold/4` with an identity function as the
+pre-operation.
+
+_See also:_ `fold/3`, `map/2`, `mapfold/4`.
+""".
+-spec mapfold(Function :: fun((cerl(), term()) -> {cerl(), term()}),
+	      Initial :: term(),
+              Tree :: cerl()) -> {cerl(), term()}.
 
 mapfold(F, S0, T) ->
-    case type(T) of
- 	literal ->
-	    case concrete(T) of
-		[_ | _] ->
-		    {T1, S1} = mapfold(F, S0, cons_hd(T)),
-		    {T2, S2} = mapfold(F, S1, cons_tl(T)),
-		    F(update_c_cons(T, T1, T2), S2);
-		V when tuple_size(V) > 0 ->
-		    {Ts, S1} = mapfold_list(F, S0, tuple_es(T)),
-		    F(update_c_tuple(T, Ts), S1);
-		_ ->
-		    F(T, S0)
+  mapfold(fun(T0, A) -> {T0, A} end, F, S0, T).
+
+
+-doc """
+Does a combined map/fold operation on the nodes of the tree.
+
+It begins by calling `Pre` on the tree, using the `Initial`
+value. `Pre` must either return a tree with an updated accumulator or
+the atom `skip`.
+
+If a tree is returned, this function deconstructs the top node of the returned
+tree and recurses on the children, using the returned value as the new initial
+and carrying the returned values from one call to the next. Finally it
+reassembles the top node from the children, calls `Post` on it and returns the
+result.
+
+If `skip` is returned, it returns the tree and accumulator as is.
+""".
+-spec mapfold(Pre :: fun((cerl(), term()) -> {cerl(), term()} | skip),
+              Post :: fun((cerl(), term()) -> {cerl(), term()}),
+	      Initial :: term(),
+              Tree :: cerl()) ->
+          {cerl(), term()}.
+
+mapfold(Pre, Post, S00, T0) ->
+    case Pre(T0, S00) of
+	{T, S0} ->
+	    case type(T) of
+		literal ->
+		    case concrete(T) of
+			[_ | _] ->
+			    {T1, S1} = mapfold(Pre, Post, S0, cons_hd(T)),
+			    {T2, S2} = mapfold(Pre, Post, S1, cons_tl(T)),
+			    Post(update_c_cons(T, T1, T2), S2);
+			V when tuple_size(V) > 0 ->
+			    {Ts, S1} = mapfold_list(Pre, Post, S0, tuple_es(T)),
+			    Post(update_c_tuple(T, Ts), S1);
+			_ ->
+			    Post(T, S0)
+		    end;
+		var ->
+		    Post(T, S0);
+		values ->
+		    {Ts, S1} = mapfold_list(Pre, Post, S0, values_es(T)),
+		    Post(update_c_values(T, Ts), S1);
+		cons ->
+		    {T1, S1} = mapfold(Pre, Post, S0, cons_hd(T)),
+		    {T2, S2} = mapfold(Pre, Post, S1, cons_tl(T)),
+		    Post(update_c_cons_skel(T, T1, T2), S2);
+		tuple ->
+		    {Ts, S1} = mapfold_list(Pre, Post, S0, tuple_es(T)),
+		    Post(update_c_tuple_skel(T, Ts), S1);
+		map ->
+		    {M , S1} = mapfold(Pre, Post, S0, map_arg(T)),
+		    {Ts, S2} = mapfold_list(Pre, Post, S1, map_es(T)),
+		    Post(update_c_map(T, M, Ts), S2);
+		map_pair ->
+		    {Op,  S1} = mapfold(Pre, Post, S0, map_pair_op(T)),
+		    {Key, S2} = mapfold(Pre, Post, S1, map_pair_key(T)),
+		    {Val, S3} = mapfold(Pre, Post, S2, map_pair_val(T)),
+		    Post(update_c_map_pair(T,Op,Key,Val), S3);
+                record ->
+                    {Arg, S1} = mapfold(Pre, Post, S0, record_arg(T)),
+                    {Id, S2} = mapfold(Pre, Post, S1, record_id(T)),
+                    {Ts, S3} = mapfold_list(Pre, Post, S2, record_es(T)),
+                    Post(update_c_record(T, Arg, Id, Ts), S3);
+                record_pair ->
+                    {Key, S1} = mapfold(Pre, Post, S0, record_pair_key(T)),
+                    {Val, S2} = mapfold(Pre, Post, S1, record_pair_val(T)),
+                    Post(update_c_record_pair(T, Key, Val), S2);
+		'let' ->
+		    {Vs, S1} = mapfold_list(Pre, Post, S0, let_vars(T)),
+		    {A, S2} = mapfold(Pre, Post, S1, let_arg(T)),
+		    {B, S3} = mapfold(Pre, Post, S2, let_body(T)),
+		    Post(update_c_let(T, Vs, A, B), S3);
+		seq ->
+		    {A, S1} = mapfold(Pre, Post, S0, seq_arg(T)),
+		    {B, S2} = mapfold(Pre, Post, S1, seq_body(T)),
+		    Post(update_c_seq(T, A, B), S2);
+		apply ->
+		    {E, S1} = mapfold(Pre, Post, S0, apply_op(T)),
+		    {As, S2} = mapfold_list(Pre, Post, S1, apply_args(T)),
+		    Post(update_c_apply(T, E, As), S2);
+		call ->
+		    {M, S1} = mapfold(Pre, Post, S0, call_module(T)),
+		    {N, S2} = mapfold(Pre, Post, S1, call_name(T)),
+		    {As, S3} = mapfold_list(Pre, Post, S2, call_args(T)),
+		    Post(update_c_call(T, M, N, As), S3);
+		primop ->
+		    {N, S1} = mapfold(Pre, Post, S0, primop_name(T)),
+		    {As, S2} = mapfold_list(Pre, Post, S1, primop_args(T)),
+		    Post(update_c_primop(T, N, As), S2);
+		'case' ->
+		    {A, S1} = mapfold(Pre, Post, S0, case_arg(T)),
+		    {Cs, S2} = mapfold_list(Pre, Post, S1, case_clauses(T)),
+		    Post(update_c_case(T, A, Cs), S2);
+		clause ->
+		    {Ps, S1} = mapfold_list(Pre, Post, S0, clause_pats(T)),
+		    {G, S2} = mapfold(Pre, Post, S1, clause_guard(T)),
+		    {B, S3} = mapfold(Pre, Post, S2, clause_body(T)),
+		    Post(update_c_clause(T, Ps, G, B), S3);
+		alias ->
+		    {V, S1} = mapfold(Pre, Post, S0, alias_var(T)),
+		    {P, S2} = mapfold(Pre, Post, S1, alias_pat(T)),
+		    Post(update_c_alias(T, V, P), S2);
+		'fun' ->
+		    {Vs, S1} = mapfold_list(Pre, Post, S0, fun_vars(T)),
+		    {B, S2} = mapfold(Pre, Post, S1, fun_body(T)),
+		    Post(update_c_fun(T, Vs, B), S2);
+		'receive' ->
+		    {Cs, S1} = mapfold_list(Pre, Post, S0, receive_clauses(T)),
+		    {E, S2} = mapfold(Pre, Post, S1, receive_timeout(T)),
+		    {A, S3} = mapfold(Pre, Post, S2, receive_action(T)),
+		    Post(update_c_receive(T, Cs, E, A), S3);
+		'try' ->
+		    {E, S1} = mapfold(Pre, Post, S0, try_arg(T)),
+		    {Vs, S2} = mapfold_list(Pre, Post, S1, try_vars(T)),
+		    {B, S3} = mapfold(Pre, Post, S2, try_body(T)),
+		    {Evs, S4} = mapfold_list(Pre, Post, S3, try_evars(T)),
+		    {H, S5} = mapfold(Pre, Post, S4, try_handler(T)),
+		    Post(update_c_try(T, E, Vs, B, Evs, H), S5);
+		'catch' ->
+		    {B, S1} = mapfold(Pre, Post, S0, catch_body(T)),
+		    Post(update_c_catch(T, B), S1);
+		binary ->
+		    {Ds, S1} = mapfold_list(Pre, Post, S0, binary_segments(T)),
+		    Post(update_c_binary(T, Ds), S1);
+		bitstr ->
+		    {Val, S1} = mapfold(Pre, Post, S0, bitstr_val(T)),
+		    {Size, S2} = mapfold(Pre, Post, S1, bitstr_size(T)),
+		    {Unit, S3} = mapfold(Pre, Post, S2, bitstr_unit(T)),
+		    {Type, S4} = mapfold(Pre, Post, S3, bitstr_type(T)),
+		    {Flags, S5} = mapfold(Pre, Post, S4, bitstr_flags(T)),
+		    Post(update_c_bitstr(T, Val, Size, Unit, Type, Flags), S5);
+		letrec ->
+		    {Ds, S1} = mapfold_pairs(Pre, Post, S0, letrec_defs(T)),
+		    {B, S2} = mapfold(Pre, Post, S1, letrec_body(T)),
+		    Post(update_c_letrec(T, Ds, B), S2);
+		module ->
+		    {N, S1} = mapfold(Pre, Post, S0, module_name(T)),
+		    {Es, S2} = mapfold_list(Pre, Post, S1, module_exports(T)),
+		    {As, S3} = mapfold_pairs(Pre, Post, S2, module_attrs(T)),
+		    {Ds, S4} = mapfold_pairs(Pre, Post, S3, module_defs(T)),
+		    Post(update_c_module(T, N, Es, As, Ds), S4);
+                opaque ->
+                    Post(T, S0)
 	    end;
- 	var ->
- 	    F(T, S0);
-	values ->
-	    {Ts, S1} = mapfold_list(F, S0, values_es(T)),
- 	    F(update_c_values(T, Ts), S1);
-	cons ->
-	    {T1, S1} = mapfold(F, S0, cons_hd(T)),
-	    {T2, S2} = mapfold(F, S1, cons_tl(T)),
-	    F(update_c_cons_skel(T, T1, T2), S2);
- 	tuple ->
-	    {Ts, S1} = mapfold_list(F, S0, tuple_es(T)),
-	    F(update_c_tuple_skel(T, Ts), S1);
-	map ->
-	    {M , S1} = mapfold(F, S0, map_arg(T)),
-	    {Ts, S2} = mapfold_list(F, S1, map_es(T)),
-	    F(update_c_map(T, M, Ts), S2);
-	map_pair ->
-	    {Op,  S1} = mapfold(F, S0, map_pair_op(T)),
-	    {Key, S2} = mapfold(F, S1, map_pair_key(T)),
-	    {Val, S3} = mapfold(F, S2, map_pair_val(T)),
-	    F(update_c_map_pair(T,Op,Key,Val), S3);
- 	'let' ->
-	    {Vs, S1} = mapfold_list(F, S0, let_vars(T)),
-	    {A, S2} = mapfold(F, S1, let_arg(T)),
-	    {B, S3} = mapfold(F, S2, let_body(T)),
-	    F(update_c_let(T, Vs, A, B), S3);
-	seq ->
-	    {A, S1} = mapfold(F, S0, seq_arg(T)),
-	    {B, S2} = mapfold(F, S1, seq_body(T)),
- 	    F(update_c_seq(T, A, B), S2);
- 	apply ->
-	    {E, S1} = mapfold(F, S0, apply_op(T)),
-	    {As, S2} = mapfold_list(F, S1, apply_args(T)),
-	    F(update_c_apply(T, E, As), S2);
- 	call ->
-	    {M, S1} = mapfold(F, S0, call_module(T)),
-	    {N, S2} = mapfold(F, S1, call_name(T)),
-	    {As, S3} = mapfold_list(F, S2, call_args(T)),
- 	    F(update_c_call(T, M, N, As), S3);
- 	primop ->
-	    {N, S1} = mapfold(F, S0, primop_name(T)),
-	    {As, S2} = mapfold_list(F, S1, primop_args(T)),
-	    F(update_c_primop(T, N, As), S2);
- 	'case' ->
-	    {A, S1} = mapfold(F, S0, case_arg(T)),
-	    {Cs, S2} = mapfold_list(F, S1, case_clauses(T)),
- 	    F(update_c_case(T, A, Cs), S2);
- 	clause ->
-	    {Ps, S1} = mapfold_list(F, S0, clause_pats(T)),
-	    {G, S2} = mapfold(F, S1, clause_guard(T)),
-	    {B, S3} = mapfold(F, S2, clause_body(T)),
-	    F(update_c_clause(T, Ps, G, B), S3);
- 	alias ->
-	    {V, S1} = mapfold(F, S0, alias_var(T)),
-	    {P, S2} = mapfold(F, S1, alias_pat(T)),
-	    F(update_c_alias(T, V, P), S2);
- 	'fun' ->
-	    {Vs, S1} = mapfold_list(F, S0, fun_vars(T)),
-	    {B, S2} = mapfold(F, S1, fun_body(T)),
-	    F(update_c_fun(T, Vs, B), S2);
- 	'receive' ->
-	    {Cs, S1} = mapfold_list(F, S0, receive_clauses(T)),
-	    {E, S2} = mapfold(F, S1, receive_timeout(T)),
-	    {A, S3} = mapfold(F, S2, receive_action(T)),
-	    F(update_c_receive(T, Cs, E, A), S3);
- 	'try' ->
-	    {E, S1} = mapfold(F, S0, try_arg(T)),
-	    {Vs, S2} = mapfold_list(F, S1, try_vars(T)),
-	    {B, S3} = mapfold(F, S2, try_body(T)),
-	    {Evs, S4} = mapfold_list(F, S3, try_evars(T)),
-	    {H, S5} = mapfold(F, S4, try_handler(T)),
-	    F(update_c_try(T, E, Vs, B, Evs, H), S5);
- 	'catch' ->
-	    {B, S1} = mapfold(F, S0, catch_body(T)),
-	    F(update_c_catch(T, B), S1);
-	binary ->
-	    {Ds, S1} = mapfold_list(F, S0, binary_segments(T)),
-	    F(update_c_binary(T, Ds), S1);
-	bitstr ->
-	    {Val, S1} = mapfold(F, S0, bitstr_val(T)),
-	    {Size, S2} = mapfold(F, S1, bitstr_size(T)),
-	    {Unit, S3} = mapfold(F, S2, bitstr_unit(T)),
-	    {Type, S4} = mapfold(F, S3, bitstr_type(T)),
-	    {Flags, S5} = mapfold(F, S4, bitstr_flags(T)),
-	    F(update_c_bitstr(T, Val, Size, Unit, Type, Flags), S5);
-	letrec ->
-	    {Ds, S1} = mapfold_pairs(F, S0, letrec_defs(T)),
-	    {B, S2} = mapfold(F, S1, letrec_body(T)),
-	    F(update_c_letrec(T, Ds, B), S2);
-	module ->
-	    {N, S1} = mapfold(F, S0, module_name(T)),
-	    {Es, S2} = mapfold_list(F, S1, module_exports(T)),
-	    {As, S3} = mapfold_pairs(F, S2, module_attrs(T)),
-	    {Ds, S4} = mapfold_pairs(F, S3, module_defs(T)),
-	    F(update_c_module(T, N, Es, As, Ds), S4)
+	skip ->
+	    {T0, S00}
     end.
 
-mapfold_list(F, S0, [T | Ts]) ->
-    {T1, S1} = mapfold(F, S0, T),
-    {Ts1, S2} = mapfold_list(F, S1, Ts),
+mapfold_list(Pre, Post, S0, [T | Ts]) ->
+    {T1, S1} = mapfold(Pre, Post, S0, T),
+    {Ts1, S2} = mapfold_list(Pre, Post, S1, Ts),
     {[T1 | Ts1], S2};
-mapfold_list(_, S, []) ->
+mapfold_list(_, _, S, []) ->
     {[], S}.
 
-mapfold_pairs(F, S0, [{T1, T2} | Ps]) ->
-    {T3, S1} = mapfold(F, S0, T1),
-    {T4, S2} = mapfold(F, S1, T2),
-    {Ps1, S3} = mapfold_pairs(F, S2, Ps),
+mapfold_pairs(Pre, Post, S0, [{T1, T2} | Ps]) ->
+    {T3, S1} = mapfold(Pre, Post, S0, T1),
+    {T4, S2} = mapfold(Pre, Post, S1, T2),
+    {Ps1, S3} = mapfold_pairs(Pre, Post, S2, Ps),
     {[{T3, T4} | Ps1], S3};
-mapfold_pairs(_, S, []) ->
+mapfold_pairs(_, _, S, []) ->
     {[], S}.
 
 
-%% ---------------------------------------------------------------------
+-doc """
+Returns an ordered-set list of the names of all variables in the syntax tree
+(including function-name variables.)
 
-%% @spec variables(Tree::cerl()) -> [var_name()]
-%%
-%%	    var_name() = integer() | atom() | {atom(), integer()}
-%%
-%% @doc Returns an ordered-set list of the names of all variables in
-%% the syntax tree. (This includes function name variables.) An
-%% exception is thrown if <code>Tree</code> does not represent a
-%% well-formed Core Erlang syntax tree.
-%%
-%% @see free_variables/1
+An exception is thrown if `Tree` does not represent a well-formed Core
+Erlang syntax tree.
 
--spec variables(cerl:cerl()) -> [cerl:var_name()].
+_See also: _`free_variables/1`, `next_free_variable_name/1`.
+""".
+-spec variables(Tree :: cerl()) -> [cerl:var_name()].
 
 variables(T) ->
     variables(T, false).
 
 
-%% @spec free_variables(Tree::cerl()) -> [var_name()]
-%%
-%% @doc Like <code>variables/1</code>, but only includes variables
-%% that are free in the tree.
-%%
-%% @see variables/1
+-doc """
+Like [`variables/1`](`variables/1`), but only includes variables that are free
+in the tree.
 
--spec free_variables(cerl:cerl()) -> [cerl:var_name()].
+_See also: _`next_free_variable_name/1`, `variables/1`.
+""".
+-spec free_variables(Tree :: cerl()) -> [cerl:var_name()].
 
 free_variables(T) ->
     variables(T, true).
@@ -524,6 +590,10 @@ variables(T, S) ->
 	    vars_in_list([map_arg(T)|map_es(T)], S);
 	map_pair ->
 	    vars_in_list([map_pair_op(T),map_pair_key(T),map_pair_val(T)], S);
+        record ->
+            vars_in_list(record_es(T), S);
+        record_pair ->
+            variables(record_pair_val(T), S);
 	'let' ->
 	    Vs = variables(let_body(T), S),
 	    Vs1 = var_list_names(let_vars(T)),
@@ -623,7 +693,9 @@ variables(T, S) ->
 		    ordsets:subtract(Vs1, Vs2);
 		false ->
 		    ordsets:union(Vs1, Vs2)
-	    end
+	    end;
+        opaque ->
+            []
     end.
 
 vars_in_list(Ts, S) ->
@@ -640,8 +712,8 @@ vars_in_list([], _, A) ->
 vars_in_defs(Ds, S) ->
     vars_in_defs(Ds, S, []).
 
-vars_in_defs([{_, F} | Ds], S, A) ->
-    vars_in_defs(Ds, S, ordsets:union(variables(F, S), A));
+vars_in_defs([{_, Post} | Ds], S, A) ->
+    vars_in_defs(Ds, S, ordsets:union(variables(Post, S), A));
 vars_in_defs([], _, A) ->
     A.
 
@@ -656,6 +728,114 @@ var_list_names([V | Vs], A) ->
 var_list_names([], A) ->
     A.
 
+%% ---------------------------------------------------------------------
+
+-doc """
+Returns a integer variable name higher than any other integer variable name in
+the syntax tree.
+
+An exception is thrown if `Tree` does not represent a well-formed Core
+Erlang syntax tree.
+
+_See also: _`free_variables/1`, `variables/1`.
+""".
+-spec next_free_variable_name(Tree :: cerl()) -> integer().
+
+next_free_variable_name(T) ->
+    1 + next_free(T, -1).
+
+next_free(T, Max) ->
+    case type(T) of
+        literal ->
+            Max;
+        var ->
+            case var_name(T) of
+                Int when is_integer(Int) ->
+                    max(Int, Max);
+                _ ->
+                    Max
+            end;
+        values ->
+            next_free_in_list(values_es(T), Max);
+        cons ->
+            next_free(cons_hd(T), next_free(cons_tl(T), Max));
+        tuple ->
+            next_free_in_list(tuple_es(T), Max);
+        map ->
+            next_free_in_list([map_arg(T)|map_es(T)], Max);
+        map_pair ->
+            next_free_in_list([map_pair_op(T),map_pair_key(T),
+                               map_pair_val(T)], Max);
+        record ->
+            next_free_in_list([record_arg(T)|record_es(T)], Max);
+        record_pair ->
+            next_free_in_list([record_pair_key(T),
+                               record_pair_val(T)], Max);
+        'let' ->
+            Max1 = next_free(let_body(T), Max),
+            Max2 = next_free_in_list(let_vars(T), Max1),
+            next_free(let_arg(T), Max2);
+        seq ->
+            next_free(seq_arg(T),
+                      next_free(seq_body(T), Max));
+        apply ->
+            next_free(apply_op(T),
+                      next_free_in_list(apply_args(T), Max));
+        call ->
+            next_free(call_module(T),
+                      next_free(call_name(T),
+                                next_free_in_list(
+                                  call_args(T), Max)));
+        primop ->
+            next_free_in_list(primop_args(T), Max);
+        'case' ->
+            next_free(case_arg(T),
+                      next_free_in_list(case_clauses(T), Max));
+        clause ->
+            Max1 = next_free(clause_guard(T),
+                             next_free(clause_body(T), Max)),
+            next_free_in_list(clause_pats(T), Max1);
+        alias ->
+            next_free(alias_var(T),
+                      next_free(alias_pat(T), Max));
+        'fun' ->
+            next_free(fun_body(T),
+                      next_free_in_list(fun_vars(T), Max));
+        'receive' ->
+            Max1 = next_free_in_list(receive_clauses(T),
+                                     next_free(receive_timeout(T), Max)),
+            next_free(receive_action(T), Max1);
+        'try' ->
+            Max1 = next_free(try_body(T), Max),
+            Max2 = next_free_in_list(try_vars(T), Max1),
+            Max3 = next_free(try_handler(T), Max2),
+            Max4 = next_free_in_list(try_evars(T), Max3),
+            next_free(try_arg(T), Max4);
+        'catch' ->
+            next_free(catch_body(T), Max);
+        binary ->
+            next_free_in_list(binary_segments(T), Max);
+        bitstr ->
+            next_free(bitstr_val(T), next_free(bitstr_size(T), Max));
+        letrec ->
+            Max1 = next_free_in_defs(letrec_defs(T), Max),
+            Max2 = next_free(letrec_body(T), Max1),
+            next_free_in_list(letrec_vars(T), Max2);
+        module ->
+            next_free_in_defs(module_defs(T), Max);
+        opaque ->
+            Max
+    end.
+
+next_free_in_list([H | T], Max) ->
+    next_free_in_list(T, next_free(H, Max));
+next_free_in_list([], Max) ->
+    Max.
+
+next_free_in_defs([{_, Post} | Ds], Max) ->
+    next_free_in_defs(Ds, next_free(Post, Max));
+next_free_in_defs([], Max) ->
+    Max.
 
 %% ---------------------------------------------------------------------
 
@@ -663,39 +843,37 @@ var_list_names([], A) ->
 %%
 %% @equiv label(Tree, 0)
 
--spec label(cerl:cerl()) -> {cerl:cerl(), integer()}.
+-doc "Equivalent to [label(Tree, 0)](`label/2`).".
+-spec label(cerl()) -> {cerl(), integer()}.
 
 label(T) ->
     label(T, 0).
 
-%% @spec label(Tree::cerl(), N::integer()) -> {cerl(), integer()}
-%%
-%% @doc Labels each expression in the tree. A term <code>{label,
-%% L}</code> is prefixed to the annotation list of each expression node,
-%% where L is a unique number for every node, except for variables (and
-%% function name variables) which get the same label if they represent
-%% the same variable. Constant literal nodes are not labeled.
-%%
-%% <p>The returned value is a tuple <code>{NewTree, Max}</code>, where
-%% <code>NewTree</code> is the labeled tree and <code>Max</code> is 1
-%% plus the largest label value used. All previous annotation terms on
-%% the form <code>{label, X}</code> are deleted.</p>
-%%
-%% <p>The values of L used in the tree is a dense range from
-%% <code>N</code> to <code>Max - 1</code>, where <code>N =&lt; Max
-%% =&lt; N + size(Tree)</code>. Note that it is possible that no
-%% labels are used at all, i.e., <code>N = Max</code>.</p>
-%%
-%% <p>Note: All instances of free variables will be given distinct
-%% labels.</p>
-%%
-%% @see label/1
-%% @see size/1
+-doc """
+Labels each expression in the tree.
 
--spec label(cerl:cerl(), integer()) -> {cerl:cerl(), integer()}.
+A term `{label, L}` is prefixed to the annotation list of each
+expression node, where L is a unique number for every node, except for
+variables (and function name variables) which get the same label if
+they represent the same variable. Constant literal nodes are not
+labeled.
+
+The returned value is a tuple `{NewTree, Max}`, where `NewTree` is the labeled
+tree and `Max` is 1 plus the largest label value used. All previous annotation
+terms of the form `{label, X}` are deleted.
+
+The values of L used in the tree is a dense range from `N` to `Max - 1`, where
+`N =< Max =< N + size(Tree)`. Note that it is possible that no labels are used
+at all, i.e., `N = Max`.
+
+Note: All instances of free variables will be given distinct labels.
+
+_See also: _`label/1`, `size/1`.
+""".
+-spec label(Tree :: cerl(), N :: integer()) -> {cerl(), integer()}.
 
 label(T, N) ->
-    label(T, N, dict:new()).
+    label(T, N, #{}).
 
 label(T, N, Env) ->
     case type(T) of
@@ -703,13 +881,15 @@ label(T, N, Env) ->
 	    %% Constant literals are not labeled.
 	    {T, N};
 	var ->
-	    case dict:find(var_name(T), Env) of
-		{ok, L} ->
-		    {As, _} = label_ann(T, L),
-		    N1 = N;
-		error ->
-		    {As, N1} = label_ann(T, N)
-	    end,
+            VarName = var_name(T),
+            {As, N1} =
+                case Env of
+                    #{VarName := L} ->
+		        {A, _} = label_ann(T, L),
+		        {A, N};
+                    #{} ->
+		        label_ann(T, N)
+                end,
 	    {set_ann(T, As), N1};
 	values ->
 	    {Ts, N1} = label_list(values_es(T), N, Env),
@@ -725,16 +905,34 @@ label(T, N, Env) ->
 	    {As, N2} = label_ann(T, N1),
 	    {ann_c_tuple_skel(As, Ts), N2};
  	map ->
-	    {M,  N1} = label(map_arg(T), N, Env),
-	    {Ts, N2} = label_list(map_es(T), N1, Env),
-	    {As, N3} = label_ann(T, N2),
-	    {ann_c_map(As, M, Ts), N3};
+	    case is_c_map_pattern(T) of
+		false ->
+		    {M,  N1} = label(map_arg(T), N, Env),
+		    {Ts, N2} = label_list(map_es(T), N1, Env),
+		    {As, N3} = label_ann(T, N2),
+		    {ann_c_map(As, M, Ts), N3};
+		true ->
+		    {Ts, N1} = label_list(map_es(T), N, Env),
+		    {As, N2} = label_ann(T, N1),
+		    {ann_c_map_pattern(As, Ts), N2}
+	    end;
 	map_pair ->
 	    {Op,  N1} = label(map_pair_op(T), N, Env),
-	    {Val, N2} = label(map_pair_key(T), N1, Env),
-	    {Key, N3} = label(map_pair_val(T), N2, Env),
+	    {Key, N2} = label(map_pair_key(T), N1, Env),
+	    {Val, N3} = label(map_pair_val(T), N2, Env),
 	    {As,  N4} = label_ann(T, N3),
 	    {ann_c_map_pair(As,Op,Key,Val), N4};
+        record ->
+            {Arg, N1} = label(record_arg(T), N, Env),
+            {Id, N2} = label(record_id(T), N1, Env),
+            {Ts, N3} = label_list(record_es(T), N2, Env),
+            {As, N4} = label_ann(T, N3),
+            {ann_c_record(As, Arg, Id, Ts), N4};
+        record_pair ->
+            {Key, N1} = label(record_pair_key(T), N, Env),
+            {Val, N2} = label(record_pair_val(T), N1, Env),
+            {As,  N3} = label_ann(T, N2),
+            {ann_c_record_pair(As, Key, Val), N3};
  	'let' ->
 	    {A, N1} = label(let_arg(T), N, Env),
 	    {Vs, N2, Env1} = label_vars(let_vars(T), N1, Env),
@@ -827,7 +1025,10 @@ label(T, N, Env) ->
 	    {Ds, N3} = label_defs(module_defs(T), N2, Env1),
 	    {Es, N4} = label_list(module_exports(T), N3, Env1),
 	    {As, N5} = label_ann(T, N4),
-	    {ann_c_module(As, module_name(T), Es, Ts, Ds), N5}
+	    {ann_c_module(As, module_name(T), Es, Ts, Ds), N5};
+        opaque ->
+	    %% Not labeled.
+	    {T, N}
     end.
 
 label_list([T | Ts], N, Env) ->
@@ -838,7 +1039,7 @@ label_list([], N, _Env) ->
     {[], N}.
 
 label_vars([T | Ts], N, Env) ->
-    Env1 = dict:store(var_name(T), N, Env),
+    Env1 = Env#{var_name(T) => N},
     {As, N1} = label_ann(T, N),
     T1 = set_ann(T, As),
     {Ts1, N2, Env2} = label_vars(Ts, N1, Env1),
@@ -864,7 +1065,14 @@ filter_labels([A | As]) ->
 filter_labels([]) ->
     [].
 
--spec get_label(cerl:cerl()) -> 'top' | integer().
+-doc """
+Retrieves the label for `Tree`.
+
+An exception is thrown if `Tree` does not have a label, or if `Tree`
+does not represent a well-formed Core Erlang syntax tree.
+""".
+
+-spec get_label(Tree :: cerl()) -> 'top' | integer().
 
 get_label(T) ->
     case get_ann(T) of

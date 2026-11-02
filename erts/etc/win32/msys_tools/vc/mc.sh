@@ -2,9 +2,11 @@
 # set -x
 # 
 # %CopyrightBegin%
-# 
-# Copyright Ericsson AB 2002-2011. All Rights Reserved.
-# 
+#
+# SPDX-License-Identifier: Apache-2.0
+#
+# Copyright Ericsson AB 2002-2025. All Rights Reserved.
+#
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
 # You may obtain a copy of the License at
@@ -16,7 +18,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-# 
+#
 # %CopyrightEnd%
 # 
 # Save the command line for debug outputs
@@ -80,9 +82,14 @@ if [ -n "$OUTPUT_DIRNAME" ]; then
 	exit $RES
     fi
 fi
+# MSYS2 (currently) converts the paths wrong, avoid it
+export MSYS2_ARG_CONV_EXCL=
 eval $MCC "$CMD"  >/tmp/mc.exe.${p}.1 2>/tmp/mc.exe.${p}.2
 RES=$?
-tail +2 /tmp/mc.exe.${p}.2 >&2
+if [ $RES != 0 ]; then
+    echo Failed: $MCC "$CMD" 
+fi
+tail -n +2 /tmp/mc.exe.${p}.2 >&2
 cat /tmp/mc.exe.${p}.1
 rm -f /tmp/mc.exe.${p}.2 /tmp/mc.exe.${p}.1
 exit $RES

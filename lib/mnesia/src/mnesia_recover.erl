@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 1997-2014. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 1997-2025. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -20,6 +22,7 @@
 
 %%
 -module(mnesia_recover).
+-moduledoc false.
 
 -behaviour(gen_server).
 
@@ -130,7 +133,7 @@ allow_garb() ->
     cast(allow_garb).
 
 
-%% The transaction log has either been swiched (latest -> previous) or
+%% The transaction log has either been switched (latest -> previous) or
 %% there is nothing to be dumped. This means that the previous
 %% transaction log only may contain commit records which refers to
 %% transactions noted in the last two of the 'Prev' tables. All other
@@ -177,10 +180,10 @@ disconnect(Node) ->
 log_decision(D) ->
     cast({log_decision, D}).
 
+%% Local function in order to avoid external function call
 val(Var) ->
-    case ?catch_val(Var) of
-	{'EXIT', _Reason} ->
-	    mnesia_lib:other_val(Var);
+    case ?catch_val_and_stack(Var) of
+	{'EXIT', Stacktrace} -> mnesia_lib:other_val(Var, Stacktrace);
 	Value -> Value
     end.
 
@@ -220,15 +223,15 @@ note_decision(Tid, Outcome) ->
     ?ets_insert(Tab, #transient_decision{tid = Tid, outcome = Outcome}).
 
 note_up(Node, _Date, _Time) ->
-    ?ets_delete(mnesia_decision, Node).
+    ?ets_delete(mnesia_decision, {node, Node}).
     
 note_down(Node, Date, Time) ->
-    ?ets_insert(mnesia_decision, {mnesia_down, Node, Date, Time}).
+    ?ets_insert(mnesia_decision, {mnesia_down, {node, Node}, Date, Time}).
     
 note_master_nodes(Tab, []) ->
-    ?ets_delete(mnesia_decision, Tab);
+    ?ets_delete(mnesia_decision, {tab, Tab});
 note_master_nodes(Tab, Nodes) when is_list(Nodes) ->
-    Master = {master_nodes, Tab, Nodes},
+    Master = {master_nodes, {tab, Tab}, Nodes},
     ?ets_insert(mnesia_decision, Master).
 
 note_outcome(D) when D#decision.disc_nodes == [] ->
@@ -292,12 +295,12 @@ get_mnesia_downs() ->
     Tab = mnesia_decision,
     Pat = {mnesia_down, '_', '_', '_'},
     Downs = ?ets_match_object(Tab, Pat),
-    [Node || {mnesia_down, Node, _Date, _Time} <- Downs].
+    [Node || {mnesia_down, {node, Node}, _Date, _Time} <- Downs].
 
 %% Check if we have got a mnesia_down from Node
 has_mnesia_down(Node) ->
-    case ?ets_lookup(mnesia_decision, Node) of
-	[{mnesia_down, Node, _Date, _Time}] ->
+    case ?ets_lookup(mnesia_decision, {node, Node}) of
+	[{mnesia_down, {node, Node}, _Date, _Time}] ->
 	    true;
 	[] ->
 	    false
@@ -377,10 +380,10 @@ get_master_node_info() ->
 
 get_master_node_tables() ->
     Masters = get_master_node_info(),
-    [Tab || {master_nodes, Tab, _Nodes} <- Masters].
+    [Tab || {master_nodes, {tab, Tab}, _Nodes} <- Masters].
 
 get_master_nodes(Tab) ->
-    try ?ets_lookup_element(mnesia_decision, Tab, 3)
+    try ?ets_lookup_element(mnesia_decision, {tab, Tab}, 3)
     catch error:_ -> []
     end.
 
@@ -428,7 +431,7 @@ check_what_happened([H | T], Aborts, Commits) ->
 check_what_happened([], Aborts, Commits) ->
     if
 	Aborts == 0, Commits == 0 -> aborted;  % None of the active nodes knows
-	Aborts > 0 -> aborted;                 % Someody has aborted
+	Aborts > 0 -> aborted;                 % Somebody has aborted
 	Aborts == 0, Commits > 0 -> committed  % All has committed
     end.
 
@@ -449,6 +452,9 @@ wait_for_decision(D, InitBy, N) ->
     if 
 	Outcome =:= committed -> {Tid, committed};
 	Outcome =:= aborted   -> {Tid, aborted};
+	InitBy == startup ->
+	    {ok, Res} = call({wait_for_decision, D}),
+	    {Tid, Res};
 	Outcome =:= presume_abort -> 
 	    case N > Max of
 		true -> {Tid, aborted};
@@ -460,10 +466,7 @@ wait_for_decision(D, InitBy, N) ->
 	    %% Wait a while for active transactions
 	    %% to end and try again
 	    timer:sleep(100), 
-	    wait_for_decision(D, InitBy, N);
-	InitBy == startup ->
-	    {ok, Res} = call({wait_for_decision, D}),
-	    {Tid, Res}
+	    wait_for_decision(D, InitBy, N)
     end.
 
 still_pending([Tid | Pending]) ->
@@ -492,7 +495,7 @@ load_decision_tab(Cont, InitBy) ->
 %% From now on all decisions are logged in the transaction log file
 convert_old() ->
     HasOldStuff = 
-	mnesia_lib:exists(mnesia_log:previous_decision_log_file()) or
+	mnesia_lib:exists(mnesia_log:previous_decision_log_file()) orelse
 	mnesia_lib:exists(mnesia_log:decision_log_file()),
     case HasOldStuff of
 	true ->
@@ -529,7 +532,15 @@ confirm_decision_log_dump() ->
 dump_decision_tab() ->
     Tab = mnesia_decision,
     All = mnesia_lib:db_match_object(ram_copies,Tab, '_'),
-    mnesia_log:save_decision_tab({decision_list, All}).
+    Converted = lists:map(fun convert_decision_to_disk_format/1, All),
+    mnesia_log:save_decision_tab({decision_list, Converted}).
+
+convert_decision_to_disk_format({mnesia_down, {node, Node}, Date, Time}) ->
+    {mnesia_down, Node, Date, Time};
+convert_decision_to_disk_format({master_nodes, {tab, Tab}, Nodes}) ->
+    {master_nodes, Tab, Nodes};
+convert_decision_to_disk_format(Decision) ->
+    Decision.
 
 note_log_decisions([What | Tail], InitBy) ->
     note_log_decision(What, InitBy),
@@ -674,7 +685,7 @@ handle_call({connect_nodes, Ns}, From, State) ->
 	    erlang:send_after(2, self(), {connect_nodes,Ns,From}),
 	    {noreply, State};
 	[] ->
-	    %% No good noodes to connect to!
+	    %% No good nodes to connect to!
 	    %% We can't use reply here because this function can be
 	    %% called from handle_info
 	    gen_server:reply(From, {[], AlreadyConnected}),
@@ -762,11 +773,12 @@ handle_call(sync, _From, State) ->
     {reply, ok, State};
 
 handle_call(Msg, _From, State) ->
-    error("~p got unexpected call: ~p~n", [?MODULE, Msg]),
+    error("~p got unexpected call: ~tp~n", [?MODULE, Msg]),
     {noreply, State}.
 
 do_log_mnesia_up(Node) ->
-    Yoyo = {mnesia_up, Node, Date = date(), Time = time()},
+    {Date, Time} = erlang:localtime(),
+    Yoyo = {mnesia_up, Node, Date, Time},
     case mnesia_monitor:use_dir() of
 	true ->
 	    mnesia_log:append(latest_log, Yoyo),
@@ -777,7 +789,8 @@ do_log_mnesia_up(Node) ->
     note_up(Node, Date, Time).
 
 do_log_mnesia_down(Node) ->
-    Yoyo = {mnesia_down, Node, Date = date(), Time = time()},
+    {Date, Time} = erlang:localtime(),
+    Yoyo = {mnesia_down, Node, Date, Time},
     case mnesia_monitor:use_dir() of
 	true ->
 	    mnesia_log:append(latest_log, Yoyo),
@@ -881,7 +894,7 @@ handle_cast({log_dump_overload, Flag}, State) when is_boolean(Flag) ->
     {noreply, State#state{log_dump_overload = Flag}};
 
 handle_cast(Msg, State) ->
-    error("~p got unexpected cast: ~p~n", [?MODULE, Msg]),
+    error("~p got unexpected cast: ~tp~n", [?MODULE, Msg]),
     {noreply, State}.
 
 %%----------------------------------------------------------------------
@@ -927,11 +940,11 @@ handle_info({force_decision, Tid}, State) ->
     end;
 
 handle_info({'EXIT', Pid, R}, State) when Pid == State#state.supervisor ->
-    mnesia_lib:dbg_out("~p was ~p~n",[?MODULE, R]),
+    mnesia_lib:dbg_out("~p was ~tp~n",[?MODULE, R]),
     {stop, shutdown, State};
 
 handle_info(Msg, State) ->
-    error("~p got unexpected info: ~p~n", [?MODULE, Msg]),
+    error("~p got unexpected info: ~tp~n", [?MODULE, Msg]),
     {noreply, State}.
 
 %%----------------------------------------------------------------------
@@ -1083,7 +1096,7 @@ merge_decisions(Node, D, NewD0) ->
 		NewD#decision.outcome == aborted ->
 		    %% Interesting! We have already committed,
 		    %% but someone else has aborted. Now we
-		    %% have a nice little inconcistency. The
+		    %% have a nice little inconsistency. The
 		    %% other guy (or some one else) has 
 		    %% enforced a recovery decision when
 		    %% max_wait_for_decision was exceeded.
@@ -1096,11 +1109,11 @@ merge_decisions(Node, D, NewD0) ->
 		    OldD#decision{outcome = aborted};
 
 		OldD#decision.outcome == aborted ->
-		    %% aborted overrrides anything
+		    %% aborted overrides anything
 		    OldD#decision{outcome = aborted};
 
 		NewD#decision.outcome == aborted ->
-		    %% aborted overrrides anything
+		    %% aborted overrides anything
 		    OldD#decision{outcome = aborted};
 
 		OldD#decision.outcome == committed,
@@ -1161,7 +1174,7 @@ add_remote_decision(Node, NewD, State) ->
 	Outcome == unclear ->
 	    ignore;
 	true ->
-	    case lists:member(node(), NewD#decision.disc_nodes) or
+	    case lists:member(node(), NewD#decision.disc_nodes) orelse
 		 lists:member(node(), NewD#decision.ram_nodes) of
 		true ->
 		    tell_im_certain([Node], D);
@@ -1223,8 +1236,8 @@ send_decisions([]) ->
     ok.
 
 arrange([To | ToNodes], D, Acc, ForceSend) when is_record(D, decision) ->
-    NeedsAdd = (ForceSend or
-		lists:member(To, D#decision.disc_nodes) or
+    NeedsAdd = (ForceSend orelse
+		lists:member(To, D#decision.disc_nodes) orelse
 		lists:member(To, D#decision.ram_nodes)),
     case NeedsAdd of
 	true ->
@@ -1236,7 +1249,7 @@ arrange([To | ToNodes], D, Acc, ForceSend) when is_record(D, decision) ->
 
 arrange([To | ToNodes], {trans_tid, serial, Serial}, Acc, ForceSend) ->
     %% Do the lamport thing plus release the others
-    %% from uncertainity.
+    %% from uncertainty.
     Acc2 = add_decision(To, {trans_tid, serial, Serial}, Acc),
     arrange(ToNodes, {trans_tid, serial, Serial}, Acc2, ForceSend);
 
