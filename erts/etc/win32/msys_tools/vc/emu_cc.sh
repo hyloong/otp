@@ -1,9 +1,11 @@
 #! /bin/sh
 # 
 # %CopyrightBegin%
-# 
-# Copyright Ericsson AB 2002-2011. All Rights Reserved.
-# 
+#
+# SPDX-License-Identifier: Apache-2.0
+#
+# Copyright Ericsson AB 2002-2025. All Rights Reserved.
+#
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
 # You may obtain a copy of the License at
@@ -15,7 +17,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-# 
+#
 # %CopyrightEnd%
 # 
 if [ X"$CONFIG_SUBTYPE" = X"win64" ]; then
@@ -29,6 +31,7 @@ WTOOLDIR0=`win2msys_path.sh "$TOOLDIR"`
 WTOOLDIR=`cmd //C echo $WTOOLDIR0`
 # Do primitive 'make'
 newer_exe=`find $TOOLDIR -newer $COFFIX.c -name coffix.exe -print`
+export MSYS2_ARG_CONV_EXCL="-FeC"
 if [ -z $newer_exe ]; then
     echo recompiling $COFFIX.exe
     cl.exe -Fe${WTOOLDIR}/coffix.exe ${WTOOLDIR}/coffix.c

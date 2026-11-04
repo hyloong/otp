@@ -1,3 +1,25 @@
+<!--
+%% %CopyrightBegin%
+%%
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2013-2025. All Rights Reserved.
+%%
+%% Licensed under the Apache License, Version 2.0 (the "License");
+%% you may not use this file except in compliance with the License.
+%% You may obtain a copy of the License at
+%%
+%%     http://www.apache.org/licenses/LICENSE-2.0
+%%
+%% Unless required by applicable law or agreed to in writing, software
+%% distributed under the License is distributed on an "AS IS" BASIS,
+%% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+%% See the License for the specific language governing permissions and
+%% limitations under the License.
+%%
+%% %CopyrightEnd%
+-->
+
 Thread Progress
 ===============
 
@@ -60,7 +82,7 @@ threads are managed threads.
 ### Thread Progress Events ###
 
 Any thread in the system may use the thread progress functionality in
-order to determine when the following events have occured at least
+order to determine when the following events have occurred at least
 once in all managed threads:
 
 1.  The thread has returned from other code to a known state in the
@@ -78,7 +100,7 @@ thread progress operation has been initiated, and at least once
 ordered using communication via memory which makes it possible to draw
 conclusion about the memory state after the thread progress operation
 has completed. Lets call the progress made from initiation to
-comletion for "thread progress".
+completion for "thread progress".
 
 Assuming that the thread progress functionality is efficient, a lot of
 algorithms can both be simplified and made more efficient than using
@@ -120,7 +142,7 @@ communication.
 
 We also want threads to be able to determine when thread progress has
 been made relatively fast. That is we need to have some balance
-between comunication overhead and time to complete the operation.
+between communication overhead and time to complete the operation.
 
 ### API ###
 
@@ -160,7 +182,7 @@ calling the following functions:
 *   `int erts_thr_progress_leader_update(ErtsSchedulerData *esdp)` -
     Leader update thread progress.
 
-Unmanaged threads can delay thread progress beeing made:
+Unmanaged threads can delay thread progress being made:
 
 *   `ErtsThrPrgrDelayHandle erts_thr_progress_unmanaged_delay(void)` -
     Delay thread progress.
@@ -222,7 +244,7 @@ current global value plus one at the time when we call
 confirmed global value plus two at this time.
 
 The above described implementation more or less minimizes the
-comunication needed before we can increment the global counter. The
+communication needed before we can increment the global counter. The
 amount of communication in the system due to the thread progress
 functionality however also depend on the frequency with which managed
 threads call `erts_thr_progress_update()`. Today each scheduler thread
@@ -251,7 +273,7 @@ doing so. If not zero, the leader isn't allowed to increment the
 global counter, and needs to wait before it can do this. When it is
 zero, it swaps the `waiting` and `current` counters before increasing
 the global counter. From now on the new `waiting` counter will
-decrease, so that it eventualy will reach zero, making it possible to
+decrease, so that it eventually will reach zero, making it possible to
 increment the global counter the next time. If we only used one
 reference counter it would potentially be held above zero for ever by
 different unmanaged threads.
@@ -261,7 +283,7 @@ prevent the next increment of the global counter, but instead the
 increment after that. This is sufficient since the global counter
 needs to be incremented two times before thread progress has been
 made. It is also desirable not to prevent the first increment, since
-the likelyhood increases that the delay is withdrawn before any
+the likelihood increases that the delay is withdrawn before any
 increment of the global counter is delayed. That is, the operation
 will cause as little disruption as possible.
 

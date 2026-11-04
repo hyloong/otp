@@ -1,7 +1,9 @@
 /*
  * %CopyrightBegin%
  *
- * Copyright Ericsson AB 2010-2011. All Rights Reserved.
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Copyright Ericsson AB 2010-2025. All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -98,7 +100,7 @@ void LeaveCriticalSection(CRITICAL_SECTION *);
 #if 0
 #  define ETHR_MTX_Q_LOCK_SPINLOCK__
 #  define ETHR_MTX_QLOCK_TYPE__ ethr_spinlock_t
-#elif defined(ETHR_PTHREADS) || defined(ETHR_OSE_THREADS)
+#elif defined(ETHR_PTHREADS)
 #  define ETHR_MTX_Q_LOCK_PTHREAD_MUTEX__
 #  define ETHR_MTX_QLOCK_TYPE__ pthread_mutex_t
 #elif defined(ETHR_WIN32_THREADS)
@@ -108,13 +110,13 @@ void LeaveCriticalSection(CRITICAL_SECTION *);
 #  error Need a qlock implementation
 #endif
 
-#define ETHR_RWMTX_W_FLG__		(((ethr_sint32_t) 1) << 31)
-#define ETHR_RWMTX_W_WAIT_FLG__		(((ethr_sint32_t) 1) << 30)
-#define ETHR_RWMTX_R_WAIT_FLG__		(((ethr_sint32_t) 1) << 29)
+#define ETHR_RWMTX_W_FLG__              ((ethr_sint32_t) (1U << 31))
+#define ETHR_RWMTX_W_WAIT_FLG__	        ((ethr_sint32_t) (1U << 30))
+#define ETHR_RWMTX_R_WAIT_FLG__	        ((ethr_sint32_t) (1U << 29))
 
 /* frequent read kind */
-#define ETHR_RWMTX_R_FLG__		(((ethr_sint32_t) 1) << 28)
-#define ETHR_RWMTX_R_ABRT_UNLCK_FLG__	(((ethr_sint32_t) 1) << 27)
+#define ETHR_RWMTX_R_FLG__              ((ethr_sint32_t) (1U << 28))
+#define ETHR_RWMTX_R_ABRT_UNLCK_FLG__   ((ethr_sint32_t) (1U << 27))
 #define ETHR_RWMTX_R_PEND_UNLCK_MASK__	(ETHR_RWMTX_R_ABRT_UNLCK_FLG__ - 1)
 
 /* normal kind */
@@ -211,7 +213,7 @@ struct ethr_cond_ {
 #endif
 };
 
-#elif (defined(ETHR_PTHREADS) || defined(ETHR_OSE_THREADS)) && !defined(ETHR_DBG_WIN_MTX_WITH_PTHREADS)
+#elif defined(ETHR_PTHREADS) && !defined(ETHR_DBG_WIN_MTX_WITH_PTHREADS)
 
 typedef struct ethr_mutex_ ethr_mutex;
 struct ethr_mutex_ {
@@ -341,6 +343,7 @@ struct ethr_rwmutex_ {
 int ethr_rwmutex_set_reader_group(int);
 int ethr_rwmutex_init_opt(ethr_rwmutex *, ethr_rwmutex_opt *);
 int ethr_rwmutex_init(ethr_rwmutex *);
+size_t ethr_rwmutex_size(ethr_rwmutex *);
 int ethr_rwmutex_destroy(ethr_rwmutex *);
 #if defined(ETHR_USE_OWN_RWMTX_IMPL__) \
     || !defined(ETHR_TRY_INLINE_FUNCS) \
@@ -355,7 +358,7 @@ void ethr_rwmutex_rwunlock(ethr_rwmutex *);
 
 #ifdef ETHR_MTX_HARD_DEBUG
 #define ETHR_MTX_HARD_ASSERT(A) \
-  ((void) ((A) ? 1 : ethr_assert_failed(__FILE__, __LINE__, __func__,#A)))
+  ((void) ((A) ? 1 : ethr_assert_failed(__FILE__, __LINE__, __func__, #A)))
 #else
 #define ETHR_MTX_HARD_ASSERT(A) ((void) 1)
 #endif
@@ -634,7 +637,7 @@ ETHR_INLINE_MTX_FUNC_NAME_(ethr_mutex_unlock)(ethr_mutex *mtx)
 
 #endif /* ETHR_TRY_INLINE_FUNCS */
 
-#elif (defined(ETHR_PTHREADS) || defined(ETHR_OSE_THREADS)) && !defined(ETHR_DBG_WIN_MTX_WITH_PTHREADS)
+#elif defined(ETHR_PTHREADS) && !defined(ETHR_DBG_WIN_MTX_WITH_PTHREADS)
 
 #if defined(ETHR_TRY_INLINE_FUNCS) || defined(ETHR_MUTEX_IMPL__)
 

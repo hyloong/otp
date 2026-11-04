@@ -1,8 +1,10 @@
 %%
 %% %CopyrightBegin%
-%% 
-%% Copyright Ericsson AB 1997-2011. All Rights Reserved.
-%% 
+%%
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 1997-2026. All Rights Reserved.
+%%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
 %% You may obtain a copy of the License at
@@ -14,17 +16,21 @@
 %% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 %% See the License for the specific language governing permissions and
 %% limitations under the License.
-%% 
+%%
 %% %CopyrightEnd%
 %%
 -module(big_SUITE).
 
 
--export([all/0, suite/0,groups/0,init_per_suite/1, end_per_suite/1, 
-	 init_per_group/2,end_per_group/2]).
--export([t_div/1, eq_28/1, eq_32/1, eq_big/1, eq_math/1, big_literals/1,
-	 borders/1, negative/1, big_float_1/1, big_float_2/1,
-	 shift_limit_1/1, powmod/1, system_limit/1, toobig/1, otp_6692/1]).
+-export([all/0, suite/0, groups/0]).
+
+-export([t_div/1, eq_28/1, eq_32/1, eq_big/1, eq_math/1, eq_big_mul_div/1,
+         eq_big_rem/1,
+         big_literals/1, borders/1, negative/1, karatsuba/1,
+         big_float_1/1, big_float_2/1, big_float_3/1,
+         bxor_2pow/1, band_2pow/1,
+         shift_limit_1/1, powmod/1, system_limit/1, toobig/1, otp_6692/1,
+         properties/1, reductions/1]).
 
 %% Internal exports.
 -export([eval/1]).
@@ -32,40 +38,25 @@
 
 -export([fac/1, fib/1, pow/2, gcd/2, lcm/2]).
 
--export([init_per_testcase/2, end_per_testcase/2]).
 
--include_lib("test_server/include/test_server.hrl").
+-include_lib("common_test/include/ct.hrl").
+-include_lib("stdlib/include/assert.hrl").
 
-suite() -> [{ct_hooks,[ts_install_cth]}].
+suite() ->
+    [{ct_hooks,[ts_install_cth]},
+     {timetrap, {minutes, 3}}].
 
 all() -> 
-    [t_div, eq_28, eq_32, eq_big, eq_math, big_literals,
-     borders, negative, {group, big_float}, shift_limit_1,
-     powmod, system_limit, toobig, otp_6692].
+    [t_div, eq_28, eq_32, eq_big, eq_math, eq_big_mul_div,
+     eq_big_rem,
+     big_literals, borders, negative, karatsuba,
+     {group, big_float}, shift_limit_1,
+     bxor_2pow, band_2pow,
+     powmod, system_limit, toobig, otp_6692,
+     properties, reductions].
 
 groups() -> 
-    [{big_float, [], [big_float_1, big_float_2]}].
-
-init_per_suite(Config) ->
-    Config.
-
-end_per_suite(_Config) ->
-    ok.
-
-init_per_group(_GroupName, Config) ->
-    Config.
-
-end_per_group(_GroupName, Config) ->
-    Config.
-
-
-init_per_testcase(Func, Config) when is_atom(Func), is_list(Config) ->
-    Dog=?t:timetrap(?t:minutes(3)),
-    [{watchdog, Dog}|Config].
-
-end_per_testcase(_Func, Config) ->
-    Dog=?config(watchdog, Config),
-    ?t:timetrap_cancel(Dog).
+    [{big_float, [], [big_float_1, big_float_2, big_float_3]}].
 
 %%
 %% Syntax of data files:
@@ -79,36 +70,47 @@ end_per_testcase(_Func, Config) ->
 %% lcm(Q, R)
 %%
 eq_28(Config) when is_list(Config) ->
-    TestFile = test_file(Config, "eq_28.dat"),
+    TestFile = test_file(Config, ?FUNCTION_NAME),
     test(TestFile).
 
 eq_32(Config) when is_list(Config) ->
-    TestFile = test_file(Config, "eq_32.dat"),
+    TestFile = test_file(Config, ?FUNCTION_NAME),
     test(TestFile).
 
 eq_big(Config) when is_list(Config) ->
-    TestFile = test_file(Config, "eq_big.dat"),
+    TestFile = test_file(Config, ?FUNCTION_NAME),
     test(TestFile).
 
 eq_math(Config) when is_list(Config) ->
-    TestFile = test_file(Config, "eq_math.dat"),
+    TestFile = test_file(Config, ?FUNCTION_NAME),
     test(TestFile).
 
+eq_big_mul_div(Config) when is_list(Config) ->
+    TestFile = test_file(Config, ?FUNCTION_NAME),
+    test(TestFile).
 
-borders(doc) -> "Tests border cases between small/big.";
+eq_big_rem(Config) when is_list(Config) ->
+    TestFile = test_file(Config, ?FUNCTION_NAME),
+    test(TestFile).
+
+%% Tests border cases between small/big.
 borders(Config) when is_list(Config) ->
-    TestFile = test_file(Config, "borders.dat"),
+    TestFile = test_file(Config, ?FUNCTION_NAME),
     test(TestFile).
 
 negative(Config) when is_list(Config) ->
-    TestFile = test_file(Config, "negative.dat"),
+    TestFile = test_file(Config, ?FUNCTION_NAME),
     test(TestFile).
-    
+
+karatsuba(Config) when is_list(Config) ->
+    TestFile = test_file(Config, ?FUNCTION_NAME),
+    test(TestFile).
+
 
 %% Find test file
 test_file(Config, Name) ->
-    DataDir = ?config(data_dir, Config),
-    filename:join(DataDir, Name).
+    DataDir = proplists:get_value(data_dir, Config),
+    filename:join(DataDir, Name) ++ ".dat".
 
 %%
 %%
@@ -119,12 +121,12 @@ test(File) ->
     test(File, [node()]).
 
 test(File, Nodes) ->
-    ?line {ok,Fd} = file:open(File, [read]),
+    {ok,Fd} = file:open(File, [read]),
     Res = test(File, Fd, Nodes),
     file:close(Fd),
     case Res of
 	{0,Cases} -> {comment, integer_to_list(Cases) ++ " cases"};
-	{_,_} -> test_server:fail()
+	{_,_} -> ct:fail("failed")
     end.
 
 test(File, Fd, Ns) ->
@@ -156,7 +158,7 @@ multi_match(Ns, Expr) ->
     multi_match(Ns, Expr, []).
 
 multi_match([Node|Ns], Expr, Rs) ->
-    ?line X = rpc:call(Node, big_SUITE, eval, [Expr]),
+    X = rpc:call(Node, big_SUITE, eval, [Expr]),
     if X == 0 -> multi_match(Ns, Expr, Rs);
        true -> multi_match(Ns, Expr, [{Node,X}|Rs])
     end;
@@ -184,9 +186,14 @@ eval({op,_,Op,A0}, LFH) ->
 eval({op,_,Op,A0,B0}, LFH) ->
     [A,B] = eval_list([A0,B0], LFH),
     Res = eval_op(Op, A, B),
+    ok = eval_op_guard(Op, A, B, Res),
     erlang:garbage_collect(),
     Res;
-eval({integer,_,I}, _) -> I;
+eval({integer,_,I}, _) ->
+    %% "Parasitic" ("symbiotic"?) test of squaring all numbers
+    %% found in the test data.
+    test_squaring(I),
+    I;
 eval({call,_,{atom,_,Local},Args0}, LFH) ->
     Args = eval_list(Args0, LFH),
     LFH(Local, Args).
@@ -208,7 +215,37 @@ eval_op('band', A, B) -> A band B;
 eval_op('bor', A, B) -> A bor B;
 eval_op('bxor', A, B) -> A bxor B;
 eval_op('bsl', A, B) -> A bsl B;
-eval_op('bsr', A, B) -> A bsr B.
+eval_op('bsr', A, B) -> A bsr B;
+eval_op(madd, A, B) -> A * B + 1.
+
+eval_op_guard('-', A, Res) when Res =:= -A -> ok;
+eval_op_guard('+', A, Res) when Res =:= +A -> ok;
+eval_op_guard('bnot', A, Res) when Res =:= bnot A -> ok.
+
+eval_op_guard('-', A, B, Res) when Res =:= A - B -> ok;
+eval_op_guard('+', A, B, Res) when Res =:= A + B -> ok;
+eval_op_guard('*', A, B, Res) when Res =:= A * B -> ok;
+eval_op_guard('div', A, B, Res) when Res =:= A div B -> ok;
+eval_op_guard('rem', A, B, Res) when Res =:= A rem B -> ok;
+eval_op_guard('band', A, B, Res) when Res =:= A band B -> ok;
+eval_op_guard('bor', A, B, Res) when Res =:= A bor B -> ok;
+eval_op_guard('bxor', A, B, Res) when Res =:= A bxor B -> ok;
+eval_op_guard('bsl', A, B, Res) when Res =:= A bsl B -> ok;
+eval_op_guard('bsr', A, B, Res) when Res =:= A bsr B -> ok;
+eval_op_guard(madd, A, B, Res) when Res =:= A * B + 1-> ok;
+eval_op_guard(Op, A, B, Res) -> {error,{Op,A,B,Res}}.
+
+test_squaring(I) ->
+    %% Multiplying an integer by itself is specially optimized, so we
+    %% should take special care to test squaring.  The optimization
+    %% will kick in when the two operands have the same address.
+    Sqr = I * I,
+
+    %% This expression will be multiplied in the usual way, because
+    %% the two operands for '*' are stored at different addresses.
+    Sqr = I * ((I + id(1)) - id(1)),
+
+    ok.
 
 %% Built in test functions
 
@@ -248,10 +285,10 @@ lcm(Q, R) ->
 %% Test case t_div cut in from R2D test suite.
 
 t_div(Config) when is_list(Config) ->
-    ?line 'try'(fun() -> 98765432101234 div 98765432101235 end, 0),
+    'try'(fun() -> 98765432101234 div 98765432101235 end, 0),
 
     % Big remainder, small quotient.
-    ?line 'try'(fun() -> 339254531512 div 68719476736 end, 4),
+    'try'(fun() -> 339254531512 div 68719476736 end, 4),
     ok.
 
 'try'(Fun, Result) ->
@@ -265,65 +302,122 @@ t_div(Config) when is_list(Config) ->
 	{result, Result} ->
 	    'try'(Iter-1, Fun, Result, [0|Filler]);
 	{result, Other} ->
-	    io:format("Expected ~p; got ~p~n", [Result, Other]),
-	    test_server:fail()
+	    ct:fail("Expected ~p; got ~p~n", [Result, Other])
     end.
 
 init(ReplyTo, Fun, _Filler) ->
     ReplyTo ! {result, Fun()}.
 
-big_literals(doc) ->
-    "Tests that big-number literals work correctly.";
+%% Tests that big-number literals work correctly.
 big_literals(Config) when is_list(Config) ->
     %% Note: The literal test cannot be compiler on a pre-R4 Beam emulator,
     %% so we compile it now.
-    ?line DataDir = ?config(data_dir, Config),
-    ?line Test = filename:join(DataDir, "literal_test"),
-    ?line {ok, Mod, Bin} = compile:file(Test, [binary]),
-    ?line {module, Mod} = code:load_binary(Mod, Mod, Bin),
-    ?line ok = Mod:t(),
+    DataDir = proplists:get_value(data_dir, Config),
+    Test = filename:join(DataDir, "literal_test"),
+    {ok, Mod, Bin} = compile:file(Test, [binary]),
+    {module, Mod} = code:load_binary(Mod, Mod, Bin),
+    ok = Mod:t(),
     ok.
 
 
-big_float_1(doc) ->
-    ["OTP-2436, part 1"];
+%% OTP-2436, part 1
 big_float_1(Config) when is_list(Config) ->
     %% F is a number very close to a maximum float.
-    ?line F = id(1.7e308),
-    ?line I = trunc(F),
-    ?line true = (I == F),
-    ?line false = (I /= F),
-    ?line true = (I > F/2),
-    ?line false = (I =< F/2),
-    ?line true = (I*2 >= F),
-    ?line false = (I*2 < F),
-    ?line true = (I*I > F),
-    ?line false = (I*I =< F),
+    F = id(1.7e308),
+    I = trunc(F),
+    true = (I == F),
+    false = (I /= F),
+    true = (I > F/2),
+    false = (I =< F/2),
+    true = (I*2 >= F),
+    false = (I*2 < F),
+    true = (I*I > F),
+    false = (I*I =< F),
 
-    ?line true = (F == I),
-    ?line false = (F /= I),
-    ?line false = (F/2 > I),
-    ?line true = (F/2 =< I),
-    ?line false = (F >= I*2),
-    ?line true = (F < I*2),
-    ?line false = (F > I*I),
-    ?line true = (F =< I*I),
+    true = (F == I),
+    false = (F /= I),
+    false = (F/2 > I),
+    true = (F/2 =< I),
+    false = (F >= I*2),
+    true = (F < I*2),
+    false = (F > I*I),
+    true = (F =< I*I),
     ok.
 
-big_float_2(doc) ->
-    ["OTP-2436, part 2"];
+%% "OTP-2436, part 2
 big_float_2(Config) when is_list(Config) ->
-    ?line F = id(1.7e308),
-    ?line I = trunc(F),
-    ?line {'EXIT', _} = (catch 1/(2*I)),
-    ?line _Ignore = 2/I,
-    ?line {'EXIT', _} = (catch 4/(2*I)),
+    F = id(1.7e308),
+    I = trunc(F),
+    {'EXIT', _} = (catch 1/(2*I)),
+    _Ignore = 2/I,
+    {'EXIT', _} = (catch 4/(2*I)),
     ok.
 
-shift_limit_1(doc) ->
-    ["OTP-3256"];
+%% Converting a bignum to a float must give the nearest representable
+%% double, ties to even. Accumulating digit by digit rounds once per digit
+%% and compounds the error, which lands on the wrong side of the true value
+%% for some values wider than one digit.
+big_float_3(Config) when is_list(Config) ->
+    rand_seed(),
+    %% Each of these converted to the second-nearest double when the
+    %% conversion rounded per digit.
+    [begin
+         Nearest = correctly_rounded(I),
+         Nearest = float(I),
+         Nearest = 1.0 * I,
+         NegNearest = -Nearest,
+         NegNearest = float(-I)
+     end
+     || I <- [428654966685883400000,
+              38409289721754710000,
+              34784104853086640000,
+              385269108828434300000,
+              96874578115970900000,
+              252558769001389900000,
+              26465126867694860000]],
+
+    %% Widths on both sides of the single-digit boundary, where the
+    %% per-digit accumulation starts to compound.
+    for(50, 300,
+        fun(Bits) ->
+                for(1, 200,
+                    fun(_) ->
+                            I = rand:uniform(1 bsl Bits),
+                            Nearest = correctly_rounded(I),
+                            Nearest = float(I)
+                    end)
+        end),
+
+    %% 2-pows and neighbours
+    [begin
+         I = (1 bsl E) + Diff,
+         Nearest = correctly_rounded(I),
+         Nearest = float(I)
+     end
+     || E <- lists:seq(0, 1023), Diff <- lists:seq(-2,2)],
+
+    %% Mantissa rounding edge cases
+    [begin
+         Mant = (1 bsl 52) + Odd,
+         I = (Mant bsl Exp) + (Half bsl (Exp-1)) + (1 bsl Low),
+         Nearest = correctly_rounded(I),
+         Nearest = float(I)
+     end
+     || Exp <- lists:seq(1, 1023-53),
+        Odd <- [0,1],
+        Half <- [1],
+        Low <- [-1 | lists:seq(0, Exp-2, 8)]],
+
+    ok.
+
+%% The platform's decimal parser is correctly rounded, so it serves as the
+%% oracle for what float/1 must return.
+correctly_rounded(I) ->
+    binary_to_float(iolist_to_binary([integer_to_list(I), ".0"])).
+
+%% OTP-3256
 shift_limit_1(Config) when is_list(Config) ->
-    ?line case catch (id(1) bsl 100000000) of
+    case catch (id(1) bsl 100000000) of
 	      {'EXIT', {system_limit, _}} ->
 		  ok
 	  end,
@@ -352,27 +446,47 @@ powmod(A, B, C) ->
     end.
 
 system_limit(Config) when is_list(Config) ->
-    ?line Maxbig = maxbig(),
-    ?line {'EXIT',{system_limit,_}} = (catch Maxbig+1),
-    ?line {'EXIT',{system_limit,_}} = (catch -Maxbig-1),
-    ?line {'EXIT',{system_limit,_}} = (catch 2*Maxbig),
-    ?line {'EXIT',{system_limit,_}} = (catch bnot Maxbig),
-    ?line {'EXIT',{system_limit,_}} = (catch apply(erlang, id('bnot'), [Maxbig])),
-    ?line {'EXIT',{system_limit,_}} = (catch Maxbig bsl 2),
-    ?line {'EXIT',{system_limit,_}} = (catch apply(erlang, id('bsl'), [Maxbig,2])),
-    ?line {'EXIT',{system_limit,_}} = (catch id(1) bsl (1 bsl 45)),
-    ?line {'EXIT',{system_limit,_}} = (catch id(1) bsl (1 bsl 69)),
+    Maxbig = maxbig(),
+    {'EXIT',{system_limit,_}} = (catch Maxbig+1),
+    {'EXIT',{system_limit,_}} = (catch -Maxbig-1),
+    {'EXIT',{system_limit,_}} = (catch 2*Maxbig),
+    {'EXIT',{system_limit,_}} = (catch bnot Maxbig),
+    {'EXIT',{system_limit,_}} = (catch apply(erlang, id('bnot'), [Maxbig])),
+    {'EXIT',{system_limit,_}} = (catch Maxbig bsl 2),
+    {'EXIT',{system_limit,_}} = (catch apply(erlang, id('bsl'), [Maxbig,2])),
+    {'EXIT',{system_limit,_}} = (catch id(1) bsl (1 bsl 45)),
+    {'EXIT',{system_limit,_}} = (catch id(1) bsl (1 bsl 69)),
+
+    ?assertError(system_limit, Maxbig bxor -1),
+    ?assertError(system_limit, apply(erlang, id('bxor'), [Maxbig,-1])),
+    if
+        is_integer(Maxbig bxor -1) -> error(should_fail);
+        true -> ok
+    end,
+
+    %% bnot -Maxbig should not raise an exception.
+    MaxMinusOne = Maxbig - 1,
+    MinusMaxbig = -Maxbig,
+    MaxMinusOne = bnot MinusMaxbig,
+    MaxMinusOne = apply(erlang, id('bnot'), [MinusMaxbig]),
+
+    %% -Maxbig bxor -1 should not raise an exception.
+    MaxMinusOne = MinusMaxbig bxor -1,
+    MaxMinusOne = apply(erlang, id('bxor'), [MinusMaxbig,-1]),
+
+    %% There should be no system_limit exception when shifting a zero.
+    0 = id(0) bsl (1 bsl 128),
+    0 = id(0) bsr -(1 bsl 128),
+    Erlang = id(erlang),
+    0 = Erlang:'bsl'(id(0), 1 bsl 128),
+    0 = Erlang:'bsr'(id(0), -(1 bsl 128)),
     ok.
 
 maxbig() ->
-    %% We assume that the maximum arity is (1 bsl 19) - 1.
-    Ws = erlang:system_info(wordsize),
-    (((1 bsl ((16777184 * (Ws div 4))-1)) - 1) bsl 1) + 1.
-
-id(I) -> I.
+    erlang:system_info(max_integer).
 
 toobig(Config) when is_list(Config) ->
-    ?line {'EXIT',{{badmatch,_},_}} = (catch toobig()),
+    {'EXIT',{{badmatch,_},_}} = (catch toobig()),
     ok.
 
 toobig() ->
@@ -381,12 +495,9 @@ toobig() ->
     <<ANr:ASize>> = A, % should fail
     ANr band ANr.
 
-otp_6692(suite) ->
-    [];
-otp_6692(doc) ->
-    ["Tests for DIV/REM bug reported in OTP-6692"];
+%% Tests for DIV/REM bug reported in OTP-6692
 otp_6692(Config) when is_list(Config)->
-    ?line loop1(1,1000).
+    loop1(1,1000).
 
 fact(N) ->
      fact(N,1).
@@ -424,3 +535,276 @@ loop2(X,Y,N,M) ->
     end,
     loop2(X,Y,N+1,M).
     
+
+%% ERL-450
+bxor_2pow(_Config) ->
+    IL = lists:seq(8*3, 8*16, 4),
+    JL = lists:seq(0, 64),
+    [bxor_2pow_1((1 bsl I), (1 bsl J))
+     || I <- IL, J <- JL],
+    ok.
+
+bxor_2pow_1(A, B) ->
+    for(-1,1, fun(Ad) ->
+                      for(-1,1, fun(Bd) ->
+                                        bxor_2pow_2(A+Ad, B+Bd),
+                                        bxor_2pow_2(-A+Ad, B+Bd),
+                                        bxor_2pow_2(A+Ad, -B+Bd),
+                                        bxor_2pow_2(-A+Ad, -B+Bd)
+                                end)
+              end).
+
+for(From, To, _Fun) when From > To ->
+    ok;
+for(From, To, Fun) ->
+    Fun(From),
+    for(From+1, To, Fun).
+
+bxor_2pow_2(A, B) ->
+    Correct = my_bxor(A, B),
+    case A bxor B of
+        Correct -> ok;
+        Wrong ->
+            io:format("~.16b bxor ~.16b\n", [A,B]),
+            io:format("Expected ~.16b\n", [Correct]),
+            io:format("Got      ~.16b\n", [Wrong]),
+            ct:fail({failed, 'bxor'})
+
+    end.
+
+%% Implement bxor without bxor
+my_bxor(A, B) ->
+    my_bxor(A, B, 0, 0).
+
+my_bxor(0, 0, _, Acc) -> Acc;
+my_bxor(-1, -1, _, Acc) -> Acc;
+my_bxor(-1, 0, N, Acc) -> (-1 bsl N) bor Acc; % sign extension
+my_bxor(0, -1, N, Acc) -> (-1 bsl N) bor Acc; % sign extension
+my_bxor(A, B, N, Acc0) ->
+    Acc1 = case (A band 1) =:= (B band 1) of
+               true -> Acc0;
+               false -> Acc0 bor (1 bsl N)
+          end,
+    my_bxor(A bsr 1, B bsr 1, N+1, Acc1).
+
+
+%% ERL-804
+band_2pow(_Config) ->
+    IL = lists:seq(8*3, 8*16, 4),
+    JL = lists:seq(0, 64),
+    [band_2pow_1((1 bsl I), (1 bsl J))
+     || I <- IL, J <- JL],
+    ok.
+
+band_2pow_1(A, B) ->
+    for(-1,1, fun(Ad) ->
+                      for(-1,1, fun(Bd) ->
+                                        band_2pow_2(A+Ad, B+Bd),
+                                        band_2pow_2(-A+Ad, B+Bd),
+                                        band_2pow_2(A+Ad, -B+Bd),
+                                        band_2pow_2(-A+Ad, -B+Bd)
+                                end)
+              end).
+
+band_2pow_2(A, B) ->
+    Correct = my_band(A, B),
+    case A band B of
+        Correct -> ok;
+        Wrong ->
+            io:format("~.16# band ~.16#\n", [A,B]),
+            io:format("Expected ~.16#\n", [Correct]),
+            io:format("Got      ~.16#\n", [Wrong]),
+            ct:fail({failed, 'band'})
+
+    end.
+
+%% Implement band without band
+my_band(A, B) ->
+    bnot ((bnot A) bor (bnot B)).
+
+properties(_Config) ->
+    rand_seed(),
+    _ = [begin
+             A = id(rand_int()),
+             B = id(rand_int()),
+             C = id(rand_int()),
+             io:format("~.36#\n~.36#\n~.36#\n", [A,B,C]),
+             test_properties(A, B, C)
+         end || _ <- lists:seq(1, 1000)],
+    ok.
+
+test_properties(A, B, C) ->
+    SquaredA = id(A * A),
+    SquaredB = id(B * B),
+
+    P = id(A * B),
+    P = id(B * A),
+    A = id(P div B),
+    B = id(P div A),
+    A = SquaredA div A,
+    B = SquaredB div B,
+    0 = P rem A,
+    0 = P rem B,
+
+    Sum = id(A + B),
+    Sum = id(B + A),
+    A = id(Sum - B),
+    B = id(Sum - A),
+    0 = Sum - A - B,
+    C = id(A + B + C) - Sum,
+
+    PS = id(A * B + C),
+    PS = P + C,
+    ok = test_mul_add_guard(A, B, C, PS),
+
+    NegA = id(-A),
+    A = -NegA,
+    NegB = id(-B),
+    B = -NegB,
+
+    Diff = id(A - B),
+    Diff = -id(B - A),
+    Diff = id(A + NegB),
+    Diff = -id(NegA + B),
+
+    SquaredSum = id(Sum * Sum),
+    SquaredSum = Sum * id(A + B),
+    SquaredSum = SquaredA + SquaredB + 2*P,
+
+    SumTimesDiff = id(Sum * Diff),
+    SumTimesDiff = SquaredA - SquaredB,
+
+    ok.
+
+test_mul_add_guard(A, B, C, Res) when Res =:= A * B + C -> ok.
+
+rand_int() ->
+    Sz = max(floor(rand:normal() * 512 + 256), 7),
+    <<Int:Sz/signed-unit:8>> = rand:bytes(Sz),
+    Int.
+
+reductions(_Config) ->
+    MaxInt = erlang:system_info(max_integer),
+
+    %% Ensure that each arithmetic operation increments
+    %% the reuduction count with a reasonable amount.
+    %%
+    %% Assumptions:
+    %%   * We have 4000 reductions after a context switch.
+    %%   * One reduction can handle 16 bignum words.
+    %%   * `*`, `div`, and `rem` are conservatively assumed
+    %%     to be quadratic.
+    %%   * All the others are linear.
+    %%
+    %%     {Op, Args, MinReds}
+    Ops = [{'*', [id(1) bsl 64, 7], 1},
+           {'*', [id(1) bsl (64*20), 7], 2},
+           {'*', [id(1) bsl (64*100), id(1) bsl (64*50)], 322},
+           {'*', [MaxInt div 8, 8], 3900},
+
+           {madd, [id(1) bsl 64, 7], 1},
+           {madd, [id(1) bsl (64*20), 7], 2},
+           {madd, [id(1) bsl (64*100), id(1) bsl (64*50)], 322},
+           {madd, [MaxInt div 8, 8], 3900},
+
+           {'div', [id(1) bsl 64, 7], 1},
+           {'div', [id(1) bsl (64*100), 7], 7},
+           {'div', [id(1) bsl (64*100), id(1) bsl (64*50)], 4},
+           {'div', [MaxInt, 7], 3900},
+
+           {'rem', [id(1) bsl 64, 7], 1},
+           {'rem', [id(1) bsl (64*100), 7], 7},
+           {'rem', [id(1) bsl (64*100), id(1) bsl (64*50)], 4},
+           {'rem', [MaxInt, 7], 3900},
+
+           {'+', [id(1) bsl (64*100), id(1) bsl (64*75)], 7},
+           {'+', [id(1) bsl (64*1000), id(1) bsl (64*75)], 63},
+
+           {'-', [id(1) bsl (64*100), id(1) bsl (64*75)], 7},
+           {'-', [id(1) bsl (64*1000), id(1) bsl (64*120)], 63},
+
+           {'-', [id(1) bsl (64*100)], 7},
+           {'-', [id(1) bsl (64*1000)], 63},
+
+           {'band', [id(1) bsl (64*100), id(1) bsl (64*75)], 7},
+           {'band', [id(1) bsl (64*1000), id(1) bsl (64*75)], 63},
+
+           {'bor', [id(1) bsl (64*100), id(1) bsl (64*75)], 7},
+           {'bor', [id(1) bsl (64*1000), id(1) bsl (64*75)], 63},
+
+           {'bxor', [id(1) bsl (64*100), id(1) bsl (64*75)], 7},
+           {'bxor', [id(1) bsl (64*1000), id(1) bsl (64*75)], 63},
+
+           {'bnot', [id(1) bsl (64*100)], 7},
+           {'bnot', [id(1) bsl (64*1000)], 63},
+
+           {'bsl', [id(1) bsl (64*100), 1], 7},
+           {'bsl', [id(1) bsl (64*1000), 1], 63},
+
+           {'bsr', [id(1) bsl (64*100), 1], 7},
+           {'bsr', [id(1) bsl (64*1000), 1], 63}
+          ],
+    lists:foreach(fun red_eval/1, Ops),
+    ok.
+
+red_eval({Op, Args, MinReds})
+  when is_atom(Op), is_list(Args), is_integer(MinReds) ->
+    erlang:yield(),
+    case Args of
+        [Arg1,Arg2] ->
+            {reductions,Reds0} = process_info(self(), reductions),
+            Res = eval_op(Op, Arg1, Arg2),
+            {reductions,Reds1} = process_info(self(), reductions),
+            check_reds(Op, Args, Reds0, Reds1, MinReds),
+
+            {reductions,Reds2} = process_info(self(), reductions),
+            eval_op_guard(Op, Arg1, Arg2, Res),
+            {reductions,Reds3} = process_info(self(), reductions),
+            check_reds(Op, Args, Reds2, Reds3, MinReds),
+
+            case Op of
+                madd -> ok;
+                _ ->
+                    {reductions,Reds4} = process_info(self(), reductions),
+                    _ = erlang:Op(Arg1, Arg2),
+                    {reductions,Reds5} = process_info(self(), reductions),
+                    check_reds(Op, Args, Reds4, Reds5, MinReds)
+            end;
+        [Arg1] ->
+            {reductions,Reds0} = process_info(self(), reductions),
+            Res = eval_op(Op, Arg1),
+            {reductions,Reds1} = process_info(self(), reductions),
+            check_reds(Op, Args, Reds0, Reds1, MinReds),
+
+            {reductions,Reds2} = process_info(self(), reductions),
+            eval_op_guard(Op, Arg1, Res),
+            {reductions,Reds3} = process_info(self(), reductions),
+            check_reds(Op, Args, Reds2, Reds3, MinReds),
+
+            {reductions,Reds4} = process_info(self(), reductions),
+            _ = erlang:Op(Arg1),
+            {reductions,Reds5} = process_info(self(), reductions),
+            check_reds(Op, Args, Reds4, Reds5, MinReds)
+    end.
+
+check_reds(Op, _Args, Reds0, Reds1, MinReds) ->
+    Reds = Reds1 - Reds0 - 1,
+    if
+        Reds >= MinReds ->
+            ok;
+        true ->
+            io:format("~p: expected at least ~p reductions; "
+                      "got only ~p", [Op, MinReds, Reds]),
+            error(failed)
+    end.
+
+%%%
+%%% Common utilities.
+%%%
+
+rand_seed() ->
+    rand:seed(default),
+    io:format("\n*** rand:export_seed() = ~w\n\n", [rand:export_seed()]),
+    ok.
+
+id(I) -> I.

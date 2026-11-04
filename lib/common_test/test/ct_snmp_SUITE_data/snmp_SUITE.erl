@@ -1,7 +1,9 @@
 %%--------------------------------------------------------------------
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2012-2014. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2012-2025. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -23,9 +25,7 @@
 %% Description:
 %%    This file contains the test cases for the ct_snmp API.
 %%
-%% @author Support
-%% @doc Test  of SNMP support in common_test
-%% @end
+%% Test  of SNMP support in common_test
 %%----------------------------------------------------------------------
 %%----------------------------------------------------------------------
 -module(snmp_SUITE).
@@ -37,7 +37,7 @@
 -compile(export_all).
 
 %% Default timetrap timeout (set in init_per_testcase).
--define(default_timeout, ?t:minutes(1)).
+-define(default_timeout, test_server:minutes(1)).
 
 -define(AGENT_UDP, 4000).
 

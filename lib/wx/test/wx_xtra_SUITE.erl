@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2009-2013. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2009-2025. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -28,7 +30,8 @@
 	 init_per_suite/1, end_per_suite/1, 
 	 init_per_testcase/2, end_per_testcase/2]).
 
--compile(export_all).
+-export([destroy_app/1, destroy_app2/1, multiple_add_in_sizer/1, app_dies/1,
+         menu_item_debug/1]).
 
 -include("wx_test_lib.hrl").
 
@@ -45,10 +48,10 @@ end_per_testcase(Func,Config) ->
     wx_test_lib:end_per_testcase(Func,Config).
 
 %% SUITE specification
-suite() -> [{ct_hooks,[ts_install_cth]}].
+suite() -> [{ct_hooks,[ts_install_cth]}, {timetrap,{minutes,2}}].
 
 all() -> 
-    [destroy_app, multiple_add_in_sizer, app_dies,
+    [destroy_app, destroy_app2, multiple_add_in_sizer, app_dies,
      menu_item_debug].
 
 groups() -> 
@@ -67,7 +70,7 @@ end_per_group(_GroupName, Config) ->
 %%  before wx:destroy is called.
 destroy_app(TestInfo) when is_atom(TestInfo) -> wx_test_lib:tc_info(TestInfo);
 destroy_app(_Config) ->
-    %% This is timing releated but we test a couple of times
+    %% This is timing related but we test a couple of times
     wx_test_lib:flush(),
     ?m(ok, destroy_app_test(15)).
 
@@ -87,8 +90,21 @@ destroy_app_test(_) ->
     after 1000 ->  ok
     end.
 
+destroy_app2(_Config) ->
+    Wx = wx:new(),
+    F = wxFrame:new(Wx, 1, "Destroy"),
+    Env = wx:get_env(),
+    spawn(fun() ->
+                  wx:set_env(Env),
+                  wx:destroy()
+          end),
+    timer:sleep(50),
+    wxFrame:destroy(F),
+    timer:sleep(500),
+    ok.
 
-%% This should work, and does but not when run automaticly on windows 
+
+%% This should work, and does but not when run automatically on windows 
 %% for some strange reason (it just hangs), run it last.
 app_dies(TestInfo) when is_atom(TestInfo) -> wx_test_lib:tc_info(TestInfo);
 app_dies(_Config) ->
@@ -146,7 +162,7 @@ oops(Die, Line) when (Die =:= last) orelse (Die =< Line) ->
 oops(_,_) -> ok.
 
 
-%% This have happend often enough that I have special code to handle 
+%% This have happened often enough that I have special code to handle 
 %% this user error (i.e. using the a window twice in an sizer).
 multiple_add_in_sizer(TestInfo) when is_atom(TestInfo) -> wx_test_lib:tc_info(TestInfo);
 multiple_add_in_sizer(Config) ->
@@ -201,7 +217,7 @@ menu_item_debug(Config) ->
     wxWindow:show(Frame),
     N = wxMenuBar:getMenuCount(MenuBar),
     io:format("No of menus ~p~n",[N]),
-    [io:format("Menu ~p ~p~n",[Id, wxMenuBar:getLabelTop(MenuBar, Id)]) 
+    [io:format("Menu ~p ~p~n",[Id, wxMenuBar:getMenuLabelText(MenuBar, Id)])
      || Id <- lists:seq(0, N-1)],
     wx_test_lib:wx_destroy(Frame,Config).
 

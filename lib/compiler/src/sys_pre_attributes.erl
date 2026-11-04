@@ -1,8 +1,10 @@
 %%
 %% %CopyrightBegin%
-%% 
-%% Copyright Ericsson AB 1998-2009. All Rights Reserved.
-%% 
+%%
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 1998-2026. All Rights Reserved.
+%%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
 %% You may obtain a copy of the License at
@@ -14,21 +16,22 @@
 %% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 %% See the License for the specific language governing permissions and
 %% limitations under the License.
-%% 
+%%
 %% %CopyrightEnd%
 %%
 %% Purpose : Transform Erlang compiler attributes
 
 -module(sys_pre_attributes).
+-moduledoc false.
 
 -export([parse_transform/2]).
 
 -define(OPTION_TAG, attributes).
 
--record(state, {forms,
-		pre_ops = [],
-		post_ops = [],
-		options}).
+-record(state, {forms :: [form()],
+		pre_ops = [] :: [op()],
+		post_ops = [] :: [op()],
+                options :: [option()]}).
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %% Inserts, deletes and replaces Erlang compiler attributes.
@@ -59,9 +62,23 @@
 %% due to that the pre_transform pass did not find the attribute plus
 %% all insert operations.
 
+-type attribute() :: atom().
+-type value() :: term().
+-type form() :: {function, integer(), atom(), arity(), _}
+              | {attribute, integer(), attribute(), _}.
+-type option() :: compile:option()
+                | {'attribute', 'insert', attribute(), value()}
+                | {'attribute', 'replace', attribute(), value()}
+                | {'attribute', 'delete', attribute()}.
+-type op() :: {'insert', attribute(), value()}
+            | {'replace', attribute(), value()}
+            | {'delete', attribute()}.
+
+-spec parse_transform([form()], [option()]) -> [form()].
+
 parse_transform(Forms, Options) ->
     S = #state{forms = Forms, options = Options},
-    S2 = init_transform(S),
+    S2 = init_transform(Options, S),
     report_verbose("Pre  options: ~p~n", [S2#state.pre_ops], S2),
     report_verbose("Post options: ~p~n", [S2#state.post_ops], S2),
     S3 = pre_transform(S2),
@@ -71,13 +88,6 @@ parse_transform(Forms, Options) ->
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %% Computes the lists of pre_ops and post_ops that are 
 %% used in the real transformation.
-init_transform(S) ->
-    case S#state.options of
-	Options when is_list(Options) ->
-	    init_transform(Options, S);
-	Option ->
-	    init_transform([Option], S)
-    end.
 
 init_transform([{attribute, insert, Name, Val} | Tail], S) ->
     Op = {insert, Name, Val},
@@ -92,12 +102,9 @@ init_transform([{attribute, delete, Name} | Tail], S) ->
     Op = {delete, Name},
     PreOps = [Op | S#state.pre_ops],
     init_transform(Tail, S#state{pre_ops = PreOps});
-init_transform([], S) ->
-    S;
 init_transform([_ | T], S) ->
     init_transform(T, S);
-init_transform(BadOpt, S) ->
-    report_error("Illegal option (ignored): ~p~n", [BadOpt], S),
+init_transform([], S) ->
     S.
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
@@ -110,7 +117,7 @@ pre_transform(S) ->
 
 pre_transform([H | T], Acc, S) ->
     case H of
-	{attribute, Line, Name, Val} ->
+	{attribute, Anno, Name, Val} ->
 	    case lists:keyfind(Name, 2, S#state.pre_ops) of
 		false ->
 		    pre_transform(T, [H | Acc], S);
@@ -119,7 +126,7 @@ pre_transform([H | T], Acc, S) ->
 		    report_warning("Replace attribute ~p: ~p -> ~p~n",
 				   [Name, Val, NewVal],
 				   S),
-		    New = {attribute, Line, Name, NewVal},
+		    New = {attribute, Anno, Name, NewVal},
 		    Pre = lists:keydelete(Name, 2, S#state.pre_ops),
 		    Post = lists:keydelete(Name, 2, S#state.post_ops),
 		    S2 = S#state{pre_ops = Pre, post_ops = Post},
@@ -154,9 +161,9 @@ post_transform(S) ->
 
 post_transform([H | T], Acc, S) ->
     case H of
-	{attribute, Line, module, _Val} = Attribute ->
+	{attribute, Anno, module, _Val} = Attribute ->
 	    Acc2 = lists:reverse([Attribute | Acc]),
-	    Forms = Acc2 ++ attrs(S#state.post_ops, Line, S) ++ T,
+	    Forms = Acc2 ++ attrs(S#state.post_ops, Anno, S) ++ T,
 	    S#state{forms = Forms, post_ops = []};
 	_Any ->
 	    post_transform(T, [H | Acc], S)
@@ -164,30 +171,21 @@ post_transform([H | T], Acc, S) ->
 post_transform([], Acc, S) ->
     S#state{forms = lists:reverse(Acc)}.
 
-attrs([{replace, Name, NewVal} | T], Line, S) ->
+attrs([{replace, Name, NewVal} | T], Anno, S) ->
     report_verbose("Insert attribute ~p: ~p~n", [Name, NewVal], S),
-    [{attribute, Line, Name, NewVal} | attrs(T, Line, S)];
-attrs([{insert, Name, NewVal} | T], Line, S) ->
+    [{attribute, Anno, Name, NewVal} | attrs(T, Anno, S)];
+attrs([{insert, Name, NewVal} | T], Anno, S) ->
     report_verbose("Insert attribute ~p: ~p~n", [Name, NewVal], S),
-    [{attribute, Line, Name, NewVal} | attrs(T, Line, S)];
+    [{attribute, Anno, Name, NewVal} | attrs(T, Anno, S)];
 attrs([], _, _) ->
     [].
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %% Report functions.
 %%
-%% Errors messages are controlled with the 'report_errors' compiler option
 %% Warning messages are controlled with the 'report_warnings' compiler option
 %% Verbose messages are controlled with the 'verbose' compiler option
 
-report_error(Format, Args, S) -> 
-    case is_error(S) of
-	true ->
-	    io:format("~p: * ERROR * " ++ Format, [?MODULE | Args]);
-	false ->
-	    ok
-    end.
-    
 report_warning(Format, Args, S) -> 
     case is_warning(S) of
 	true ->
@@ -204,11 +202,8 @@ report_verbose(Format, Args, S) ->
 	    ok
     end.
 
-is_error(S) ->
-    lists:member(report_errors, S#state.options) or is_verbose(S).
-
 is_warning(S) ->
-    lists:member(report_warnings, S#state.options) or is_verbose(S).
+    lists:member(report_warnings, S#state.options) orelse is_verbose(S).
 
 is_verbose(S) ->
     lists:member(verbose, S#state.options).

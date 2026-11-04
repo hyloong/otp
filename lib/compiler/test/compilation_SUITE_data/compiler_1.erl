@@ -1,8 +1,10 @@
 %%
 %% %CopyrightBegin%
-%% 
-%% Copyright Ericsson AB 1997-2009. All Rights Reserved.
-%% 
+%%
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 1997-2025. All Rights Reserved.
+%%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
 %% You may obtain a copy of the License at
@@ -14,7 +16,7 @@
 %% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 %% See the License for the specific language governing permissions and
 %% limitations under the License.
-%% 
+%%
 %% %CopyrightEnd%
 %%
 -module(compiler_1).
@@ -116,13 +118,13 @@ compiler_1() -> ok.
 %%% test/0
 %%% 
 %%%    Run the complete test suite.
-%%%    Reads Nodes from nodes.profile and starts them if neccessary.
+%%%    Reads Nodes from nodes.profile and starts them if necessary.
 %%%    Kills Mnesia and wipes out the Mnesia directories as a starter.
 %%%
 %%% test/1
 %%%
 %%%    Run parts of the test suite.
-%%%    Reads Nodes from nodes.profile and starts them if neccessary.
+%%%    Reads Nodes from nodes.profile and starts them if necessary.
 %%%    Kills Mnesia and wipes out the Mnesia directories as a starter.
 %%%
 %%% test/2
@@ -615,7 +617,7 @@ replica_management(Nodes) ->
     done.
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-%% Add and drop indecies
+%% Add and drop indices
 
 index_lifecycle(suite) ->
     [ add_table_index, create_live_table_index, del_table_index ].
@@ -689,7 +691,7 @@ del_table_index(Nodes) ->
     done.
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-%% Syncronize table with log or disc
+%% Synchronize table with log or disc
 %% 
 table_sync(suite) -> 
     [ dump_tables, dump_log, change_dump_log_config, wait_for_tables, force_load_table ].

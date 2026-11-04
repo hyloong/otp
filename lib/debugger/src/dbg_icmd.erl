@@ -1,8 +1,10 @@
 %%
 %% %CopyrightBegin%
-%% 
-%% Copyright Ericsson AB 1998-2015. All Rights Reserved.
-%% 
+%%
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 1998-2025. All Rights Reserved.
+%%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
 %% You may obtain a copy of the License at
@@ -14,10 +16,11 @@
 %% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 %% See the License for the specific language governing permissions and
 %% limitations under the License.
-%% 
+%%
 %% %CopyrightEnd%
 %%
 -module(dbg_icmd).
+-moduledoc false.
 
 %% Internal command receiver/handler
 -export([cmd/3]).
@@ -171,10 +174,10 @@ handle_cmd(Bs, Status, Ieval) ->
 %% User control of process execution and settings
 %%====================================================================
 
-step(Meta) ->     Meta ! {user, {cmd, step}}.
-next(Meta) ->     Meta ! {user, {cmd, next}}.
-continue(Meta) -> Meta ! {user, {cmd, continue}}.
-finish(Meta) ->   Meta ! {user, {cmd, finish}}.
+step(Meta) ->     Meta ! {user, {cmd, step}}, ok.
+next(Meta) ->     Meta ! {user, {cmd, next}}, ok.
+continue(Meta) -> Meta ! {user, {cmd, continue}}, ok.
+finish(Meta) ->   Meta ! {user, {cmd, finish}}, ok.
 skip(Meta) ->     Meta ! {user, {cmd, skip}}.
 
 timeout(Meta) ->  Meta ! {user, timeout}.
@@ -248,7 +251,7 @@ handle_int_msg({attached, AttPid}, Status, _Bs,
 	    tell_attached({attached, M, Line, get(trace)}),
 
 	    %% Give info about status and call level as well
-	    %% In this case, Status can not be exit_at
+	    %% In this case, Status cannot be exit_at
 	    Msg = case Status of
 		      idle -> {func_at,M,Line,Le};
 		      break -> {break_at,M,Line,Le};
@@ -267,7 +270,7 @@ handle_int_msg({old_code,Mod}, Status, Bs,
 	       #ieval{level=Le,module=M}=Ieval) ->
     if
 	Status =:= idle, Le =:= 1 ->
-	    erase([Mod|db]),
+	    erase(?DB_REF_KEY(Mod)),
 	    put(cache, []);
 	true ->
 	    case dbg_istk:in_use_p(Mod, M) of
@@ -277,7 +280,7 @@ handle_int_msg({old_code,Mod}, Status, Bs,
 		    exit(get(self), kill),
 		    dbg_ieval:exception(exit, old_code, Bs, Ieval);
 		false ->
-		    erase([Mod|db]),
+		    erase(?DB_REF_KEY(Mod)),
 		    put(cache, [])
 	    end
     end;
@@ -291,7 +294,8 @@ handle_int_msg({break_options, Break}, _Status, _Bs, _Ieval) ->
 handle_int_msg(no_break, _Status, _Bs, _Ieval) ->
     put(breakpoints, []);
 handle_int_msg({no_break,M}, _Status, _Bs, _Ieval) ->
-    put(breakpoints, [ML || {Mod,_L}=ML <- get(breakpoints), Mod=/=M]);
+    put(breakpoints, [B || {{Mod,_L},_Flags}=B <- get(breakpoints),
+                           Mod =/= M]);
 handle_int_msg(stop, exit_at, _Bs, _Ieval) ->
     erlang:exit(normal).
 
@@ -406,7 +410,7 @@ eval_nonrestricted({From, _Mod, Cmd, _SP}, Bs,
 	    Bs;
 	Forms ->
 	    mark_running(Line, Le),
-	    {Res, Bs2} =
+	    {Res, Bs1} =
 		lists:foldl(fun(Expr, {_Res, Bs0}) ->
 				    eval_nonrestricted_1(Expr,Bs0,Ieval)
 			    end,
@@ -414,12 +418,11 @@ eval_nonrestricted({From, _Mod, Cmd, _SP}, Bs,
 			    Forms),
 	    mark_break(M, Line, Le),
 	    From ! {self(), {eval_rsp, Res}},
-	    Bs2
+	    Bs1
     end.
 
 eval_nonrestricted_1({match,_,{var,_,Var},Expr}, Bs, Ieval) ->
-    {value,Res,Bs2} = 
-	dbg_ieval:eval_expr(Expr, Bs, Ieval#ieval{top=false}),
+    {Res,Bs2} = eval_expr(Expr, Bs, Ieval),
     Bs3 = case lists:keyfind(Var, 1, Bs) of
 	      {Var,_Value} ->
 		  lists:keyreplace(Var, 1, Bs2, {Var,Res});
@@ -433,8 +436,11 @@ eval_nonrestricted_1({var,_,Var}, Bs, _Ieval) ->
 	  end,
     {Res,Bs};
 eval_nonrestricted_1(Expr, Bs, Ieval) ->
-    {value,Res,Bs2} = 
-	dbg_ieval:eval_expr(Expr, Bs, Ieval#ieval{top=false}),
+    eval_expr(Expr, Bs, Ieval).
+
+eval_expr(Expr, Bs, Ieval) ->
+    {value,Res,Bs2} =
+        dbg_ieval:eval_expr(Expr, Bs, Ieval#ieval{top=false}),
     {Res,Bs2}.
 
 mark_running(LineNo, Le) ->
@@ -450,8 +456,8 @@ mark_break(Cm, LineNo, Le) ->
     dbg_iserver:cast(get(int), {set_status,self(),break,{Cm,LineNo}}).
 
 parse_cmd(Cmd, LineNo) ->
-    {ok,Tokens,_} = erl_scan:string(Cmd, LineNo),
-    {ok,Forms} = erl_parse:parse_exprs(Tokens),
+    {ok,Tokens,_} = erl_scan:string(Cmd, LineNo, [text]),
+    {ok,Forms} = erl_eval:extended_parse_exprs(Tokens),
     Forms.
 
 %%====================================================================

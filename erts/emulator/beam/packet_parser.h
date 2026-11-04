@@ -1,8 +1,10 @@
 /*
  * %CopyrightBegin%
- * 
- * Copyright Ericsson AB 2008-2009. All Rights Reserved.
- * 
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Copyright Ericsson AB 2008-2025. All Rights Reserved.
+ *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
@@ -14,7 +16,7 @@
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  * See the License for the specific language governing permissions and
  * limitations under the License.
- * 
+ *
  * %CopyrightEnd%
  */
 
@@ -77,8 +79,10 @@ typedef int HttpResponseMessageFn(void* arg, int major, int minor, int status,
 typedef int HttpRequestMessageFn(void* arg, const http_atom_t* meth, const char* meth_ptr,
 				 int meth_len, const PacketHttpURI*, int major, int minor);
 typedef int HttpEohMessageFn(void *arg);
-typedef int HttpHeaderMessageFn(void* arg, const http_atom_t* name, const char* name_ptr,
-				int name_len, const char* value_ptr, int value_len);
+typedef int HttpHeaderMessageFn(void* arg, const http_atom_t* name,
+				const char* name_ptr, int name_len,
+				const char* oname_ptr, int oname_len,
+				const char* value_ptr, int value_len);
 typedef int HttpErrorMessageFn(void* arg, const char* buf, int len);
 typedef int SslTlsFn(void* arg, unsigned type, unsigned major, unsigned minor,
                      const char* data, int len, const char* prefix, int plen);
@@ -105,7 +109,8 @@ int packet_get_length(enum PacketParseType htype,
 		      const char* ptr, unsigned n,  /* Bytes read so far */
 		      unsigned max_plen,      /* Packet max length, 0=no limit */
 		      unsigned trunc_len,     /* Truncate (lines) if longer, 0=no limit */
-		      int* statep);           /* Internal protocol state */
+		      char     delimiter,     /* Line delimiting character */
+		      int*     statep);       /* Internal protocol state */
 
 ERTS_GLB_INLINE
 void packet_get_body(enum PacketParseType htype,

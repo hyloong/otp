@@ -1,8 +1,10 @@
 %%
 %% %CopyrightBegin%
-%% 
-%% Copyright Ericsson AB 1997-2009. All Rights Reserved.
-%% 
+%%
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 1997-2025. All Rights Reserved.
+%%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
 %% You may obtain a copy of the License at
@@ -14,12 +16,13 @@
 %% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 %% See the License for the specific language governing permissions and
 %% limitations under the License.
-%% 
+%%
 %% %CopyrightEnd%
 %%
 
 %%
 -module(mnesia_kernel_sup).
+-moduledoc false.
 
 -behaviour(supervisor).
 
@@ -42,8 +45,8 @@ init([]) ->
 	       worker_spec(mnesia_locker, timer:seconds(3), ProcLib),
 	       worker_spec(mnesia_recover, timer:minutes(3), [gen_server]),
 	       worker_spec(mnesia_tm, timer:seconds(30), ProcLib),
+	       worker_spec(mnesia_rpc, timer:seconds(3), [gen_server]),
 	       supervisor_spec(mnesia_checkpoint_sup),
-	       supervisor_spec(mnesia_snmp_sup),
 	       worker_spec(mnesia_controller, timer:seconds(3), [gen_server]),
 	       worker_spec(mnesia_late_loader, timer:seconds(3), ProcLib)
 	      ],

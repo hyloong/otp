@@ -1,7 +1,9 @@
 /*
  * %CopyrightBegin%
  *
- * Copyright Ericsson AB 2005-2013. All Rights Reserved.
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Copyright Ericsson AB 2005-2026. All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -33,18 +35,19 @@
 #  include "config.h"
 #endif
 
-/* Needed for VxWorks va_arg */
-#include "sys.h"
-
 #ifdef ERTS_ENABLE_LOCK_CHECK
 
+#include "sys.h"
 #include "erl_lock_check.h"
 #include "erl_term.h"
 #include "erl_threads.h"
+#include "erl_atom_table.h"
+#include "erl_utils.h"
 
 typedef struct {
-    char *name;
-    char *internal_order;
+    const char * const name;
+    const char * const internal_order;
+    Sint16 level;
 } erts_lc_lock_order_t;
 
 /*
@@ -59,7 +62,7 @@ typedef struct {
  * on initialization. Locks with small immediate Erlang terms should
  * be locked before locks with large immediate Erlang terms, and
  * locks with small addresses should be locked before locks with
- * large addresses. The immediate terms and adresses (boxed pointers)
+ * large addresses. The immediate terms and addresses (boxed pointers)
  * are compared as unsigned integers not as Erlang terms.
  *
  * Once a spinlock or rw(spin)lock has been locked, the thread is not
@@ -67,7 +70,19 @@ typedef struct {
  * spinlocks and rwlocks have been unlocked. This restriction is not
  * reflected by the lock order below, but the lock checker will still
  * check for violations of this restriction.
+ *
+ * OTP 28: Lock order LEVELs. Different named locks within the same level
+ * cannot be locked at the same time. Levels are separated by the macro LEVEL.
+ * This will hopefully make it easier to edit the lock order while also
+ * enforce that intentionally unordered locks are not locked together.
+ *
+ * For an even better understanding use erts_debug:lc_graph()
+ * to dump the actual recorded locking order to a file which can be converted
+ * to a nice viewable graph. Some of our test suites already calls
+ * erts_debug:lc_graph() before the beam exists. Search for files "lc_graph.*".
  */
+#define LEVEL {NULL,NULL}
+
 static erts_lc_lock_order_t erts_lock_order[] = {
     /*
      *	"Lock name"				"Internal lock order
@@ -75,398 +90,409 @@ static erts_lc_lock_order_t erts_lock_order[] = {
      *						 if only one lock use
      *						 the lock name)"
      */
-#ifdef ERTS_SMP
-    {	"driver_lock",				"driver_name"		},
-    {	"port_lock",				"port_id"		},
-#endif
-    {	"port_data_lock",			"address"		},
-#ifdef ERTS_SMP
-    {	"bif_timers",				NULL			},
-    {	"reg_tab",				NULL			},
-    {	"proc_main",				"pid"			},
-    {   "old_code",                             "address"               },
-#ifdef HIPE
-    {	"hipe_mfait_lock",			NULL			},
-#endif
-    {	"nodes_monitors",			NULL			},
-    {   "driver_list",                          NULL                    },
-    {	"proc_link",				"pid"			},
-    {	"proc_msgq",				"pid"			},
-    {	"proc_btm",				"pid"			},
-    {	"dist_entry",				"address"		},
-    {	"dist_entry_links",			"address"		},
-    {   "code_write_permission",                NULL                    },
-    {	"proc_status",				"pid"			},
-    {   "ports_snapshot",                       NULL                    },
-    {	"meta_name_tab",	         	"address"		},
-    {	"meta_main_tab_slot",			"address"		},
-    {	"db_tab",				"address"		},
-    {	"db_tab_fix",				"address"		},
-    {	"meta_main_tab_main",			NULL 			},
-    {	"db_hash_slot",				"address"		},
-    {	"node_table",				NULL			},
-    {	"dist_table",				NULL			},
-    {	"sys_tracers",				NULL			},
-    {	"module_tab",				NULL			},
-    {	"export_tab",				NULL			},
-    {	"fun_tab",				NULL			},
-    {	"environ",				NULL			},
-#endif
-    {	"efile_drv",				"address"		},
-#if defined(ENABLE_CHILD_WAITER_THREAD) || defined(ERTS_SMP)
-    {	"child_status",				NULL			},
-#endif
-    {	"drv_ev_state_grow",			NULL,   		},
-    {	"drv_ev_state",				"address"		},
-    {	"safe_hash",				"address"		},
-    {   "pollset_rm_list",                      NULL                    },
-    {   "removed_fd_pre_alloc_lock",            "address"               },
-    {   "state_prealloc",                       NULL                    },
-    {	"schdlr_sspnd",				NULL			},
-    {	"migration_info_update",		NULL			},
-    {	"run_queue",				"address"		},
-#ifdef ERTS_DIRTY_SCHEDULERS
-    {   "dirty_run_queue_sleep_list",		"address"		},
-#endif
-    {	"process_table",			NULL			},
-    {	"cpu_info",				NULL			},
-    {	"pollset",				"address"		},
+    {"NO LOCK",                                 NULL},
+    LEVEL,
+    {"driver_lock",				"driver_name"},
+    {"port_lock",				"port_id"},
+    {"async_enq_mtx",			        NULL},
+    LEVEL,
+    {"port_data_lock",			        "address"},
+    {"reg_tab",				        NULL},
+    LEVEL,
+    {"proc_main",				"pid"},
+    LEVEL,
+    {"old_code",                                "address"},
+    {"nif_call_tab",                            NULL},
+    {"nodes_monitors",			        NULL},
+    {"debugger",			        NULL},
+    {"meta_name_tab",	         	        "address"},
+    {"resource_monitors",			"address"},
+    {"driver_list",                             NULL},
+    {"dist_entry",				"address"},
+    {"update_persistent_term_permission",       NULL},
+    {"persistent_term_delete_permission",       NULL},
+    {"code_stage_permission",                   NULL},
+    {"code_mod_permission",                     NULL},
+    {"trace_cleaner",                           NULL},
+    {"export_staging_lock",                     NULL},
+    {"release_literal_areas",		        NULL},
+    {"drv_ev_state_grow",			NULL},
+    {"schdlr_sspnd",			        NULL},
+    {"dirty_gc_info",			        NULL},
+    {"dirty_break_point_index",		        NULL},
+    {"cpu_info",				NULL},
+    {"block_poll_thread",                       "index"},
+    {"alcu_init_atoms",			        NULL},
+    {"mseg_init_atoms",			        NULL},
+    {"mmap_init_atoms",			        NULL},
+    {"port_table",                              NULL},
+    LEVEL,
+    {"db_tab",				        "address"},
+    {"proc_msgq",				"pid"},
+    {"dist_entry_links",			"address"},
+    {"dist_entry_out_queue",		        "address"},
+    {"nif_load",                                NULL},
+    {"purge_state",		                NULL},
+    {"environ",				        NULL},
+    {"drv_ev_state",			        "address"},
+    {"migration_info_update",		        NULL},
+    {"drv_tsd",				        NULL},
+    {"msacc_list_mutex",                        NULL},
+    {"on_halt",                                 NULL},
+    LEVEL,
+    {"db_tab_fix",				"address"},
+    {"db_hash_slot",			        "address"},
+    {"erl_db_catree_base_node",		        NULL},
+    {"proc_btm",				"pid"},
+    {"safe_hash",				"address"},
+    {"pollset",				        "address"},
+    LEVEL,
+    {"erl_db_catree_route_node",		"index"},
+    {"proc_status",				"pid"},
+    {"node_table",				NULL},
+    LEVEL,
+    {"proc_trace",				"pid"},
+    {"dist_table",				NULL},
+    LEVEL,
+    {"trace_session_list",                      NULL},
+    {"run_queue",				"address"},
+    {"magic_ref_table",			         "address"},
+    {"proc_sig_queue_buffer",		        "address"},
+    LEVEL,
+    {"sys_tracers",				NULL},
+    {"dirty_run_queue_sleep_list",		"address"},
+    {"process_table",			        NULL},
+    {"port_sched_lock",			        "port_id"},
+    {"msacc_unmanaged_mutex",                   NULL},
+    LEVEL,
 #ifdef __WIN32__
-    {	"pollwaiter",				"address"		},
-    {   "break_waiter_lock",                    NULL                    },
+    {"pollwaiter",				"address"},
+    {"break_waiter_lock",                       NULL},
 #endif /* __WIN32__ */
-    {	"alcu_init_atoms",			NULL			},
-    {	"mseg_init_atoms",			NULL			},
-    {	"mmap_init_atoms",			NULL			},
-    {	"drv_tsd",				NULL			},
-    {	"async_enq_mtx",			NULL			},
-#ifdef ERTS_SMP
-    {	"atom_tab",				NULL			},
-    {	"misc_op_list_pre_alloc_lock",		"address"		},
-    {	"message_pre_alloc_lock",		"address"		},
-    {	"ptimer_pre_alloc_lock",		"address",		},
-    {	"btm_pre_alloc_lock",			NULL,			},
-    {	"dist_entry_out_queue",			"address"		},
-    {	"port_sched_lock",			"port_id"		},
-    {	"sys_msg_q", 				NULL			},
-    {   "port_table",                           NULL                    },
+    {"tracer_mtx", 				NULL},
+    {"sys_msg_q", 				NULL},
+    {"fun_staging_lock",                        NULL},
+    {"atom_tab",				NULL},
+    LEVEL,
+    {"record_staging_lock",                     NULL},
+    {"global_literals",                         NULL},
+    {"errno_table",                             NULL},
+    LEVEL,
+    {"alcu_allocator",			        "index"},
+    LEVEL,
+    {"mseg",				        NULL},
+    {"perf", 				        NULL},
+    {"get_time",				NULL},
+    LEVEL,
+    {"runtime",				        NULL},
+    LEVEL,
+    {"get_corrected_time",			NULL},
+    {"pix_lock",				"address"},
+    {"async_init_mtx",			        NULL},
+#if defined(__WIN32__) && defined(DEBUG)
+    {"save_ops_lock",                           NULL},
 #endif
-    {	"mtrace_op",				NULL			},
-    {	"instr_x",				NULL			},
-    {	"instr",				NULL			},
-    {	"alcu_allocator",			"index"			},
-    {	"mseg",					NULL			},
-#if HALFWORD_HEAP
-    {	"pmmap",				NULL			},
+    {"os_monotonic_time",			NULL},
+    {"erts_alloc_hard_debug",		        NULL},
+    {"hard_dbg_mseg",		                NULL},
+    {"jit_debug_descriptor",		        NULL},
+    {"erts_mmap",				NULL},
+#ifdef ERTS_ENSURE_OS_MONOTONIC_TIME
+    {"ensure_os_monotonic_time",                NULL},
 #endif
-#ifdef ERTS_SMP
-    {	"port_task_pre_alloc_lock",		"address"		},
-    {	"proclist_pre_alloc_lock",		"address"		},
-    {	"xports_list_pre_alloc_lock",		"address"		},
-    {	"inet_buffer_stack_lock",		NULL			},
-    {	"gc_info",				NULL			},
-    {	"io_wake",				NULL			},
-    {	"timer_wheel",				NULL			},
-    {	"system_block",				NULL			},
-    {	"timeofday",				NULL			},
-    {	"get_time",				NULL			},
-    {	"get_corrected_time",			NULL			},
-    {	"breakpoints",				NULL			},
-    {	"pollsets_lock",			NULL			},
-    {	"pix_lock",				"address"		},
-    {	"run_queues_lists",			NULL			},
-    {	"sched_stat",				NULL			},
-#endif
-    {	"async_init_mtx",			NULL			},
-#ifdef __WIN32__
-#ifdef DEBUG
-    {   "save_ops_lock",                        NULL                    },
-#endif
-#endif
-#ifdef	USE_VM_PROBES
-    {   "efile_drv dtrace mutex",               NULL                    },
-#endif
-    {	"mtrace_buf",				NULL			},
-#ifdef ERTS_SMP
-    {	"os_monotonic_time",			NULL			},
-#endif
-    {	"erts_alloc_hard_debug",		NULL			},
-    {	"hard_dbg_mseg",		        NULL	                },
-    {	"erts_mmap",				NULL			}
+    {"dyn_lock_check",                          NULL},
+    LEVEL,
+    /* spin locks */
+    {"state_prealloc",                          NULL},
+    {"sched_stat",				NULL}
 };
 
 #define ERTS_LOCK_ORDER_SIZE \
   (sizeof(erts_lock_order)/sizeof(erts_lc_lock_order_t))
 
-#define LOCK_IS_TYPE_ORDER_VIOLATION(LCK_FLG, LCKD_FLG)			\
-  (((LCKD_FLG) & (ERTS_LC_FLG_LT_SPINLOCK|ERTS_LC_FLG_LT_RWSPINLOCK))	\
-   && ((LCK_FLG)							\
-       & ERTS_LC_FLG_LT_ALL						\
-       & ~(ERTS_LC_FLG_LT_SPINLOCK|ERTS_LC_FLG_LT_RWSPINLOCK)))
+#define LOCK_IS_TYPE_ORDER_VIOLATION(LCK_FLG, LCKD_FLG) \
+    (((LCKD_FLG) & ERTS_LOCK_FLAGS_MASK_TYPE) == ERTS_LOCK_FLAGS_TYPE_SPINLOCK \
+        && \
+     ((LCK_FLG) & ERTS_LOCK_FLAGS_MASK_TYPE) != ERTS_LOCK_FLAGS_TYPE_SPINLOCK)
 
-static __decl_noreturn void  __noreturn lc_abort(void);
+static __decl_noreturn void __noreturn lc_abort(void);
 
-static char *
-lock_type(Uint16 flags)
+static const char *rw_op_str(erts_lock_options_t options)
 {
-    switch (flags & ERTS_LC_FLG_LT_ALL) {
-    case ERTS_LC_FLG_LT_SPINLOCK:	return "[spinlock]";
-    case ERTS_LC_FLG_LT_RWSPINLOCK:	return "[rw(spin)lock]";
-    case ERTS_LC_FLG_LT_MUTEX:		return "[mutex]";
-    case ERTS_LC_FLG_LT_RWMUTEX:	return "[rwmutex]";
-    case ERTS_LC_FLG_LT_PROCLOCK:	return "[proclock]";
-    default:				return "";
+    if(options == ERTS_LOCK_OPTIONS_WRITE) {
+        ERTS_INTERNAL_ERROR("Only write flag present");
     }
+
+    return erts_lock_options_get_short_desc(options);
 }
 
-static char *
-rw_op_str(Uint16 flags)
-{
-    switch (flags & ERTS_LC_FLG_LO_READ_WRITE) {
-    case ERTS_LC_FLG_LO_READ_WRITE:
-	return " (rw)";
-    case ERTS_LC_FLG_LO_READ:
-	return " (r)";
-    case ERTS_LC_FLG_LO_WRITE:
-	ERTS_INTERNAL_ERROR("Only write flag present");
-    default:
-	break;
-    }
-    return "";
-}
-
-typedef struct erts_lc_locked_lock_t_ erts_lc_locked_lock_t;
-struct erts_lc_locked_lock_t_ {
-    erts_lc_locked_lock_t *next;
-    erts_lc_locked_lock_t *prev;
+typedef struct lc_locked_lock_t_ lc_locked_lock_t;
+struct lc_locked_lock_t_ {
+    lc_locked_lock_t *next;
+    lc_locked_lock_t *prev;
     UWord extra;
     Sint16 id;
-    char *file;
+    const char *file;
     unsigned int line;
-    Uint16 flags;
+    erts_lock_flags_t flags;
+    erts_lock_options_t taken_options;
+    /*
+     * Pointer back to the lock instance if it exists or NULL for proc locks.
+     * If set, we use it to allow trylock of other lock instance
+     * but with identical lock order as an already locked lock.
+     */
+    erts_lc_lock_t *lck;
 };
 
 typedef struct {
-    erts_lc_locked_lock_t *first;
-    erts_lc_locked_lock_t *last;
-} erts_lc_locked_lock_list_t;
+    lc_locked_lock_t *first;
+    lc_locked_lock_t *last;
+} lc_locked_lock_list_t;
 
-typedef struct erts_lc_locked_locks_t_ erts_lc_locked_locks_t;
-struct erts_lc_locked_locks_t_ {
+typedef union lc_free_block_t_ lc_free_block_t;
+union lc_free_block_t_ {
+    lc_free_block_t *next;
+    lc_locked_lock_t lock;
+};
+
+#define DIRECT_AFTER 1
+#define INDIRECT_AFTER 2
+
+typedef struct {
+    /*
+     * m[X][Y] & DIRECT_AFTER if we locked X directly after Y was locked.
+     * m[X][Y] & INDIRECT_AFTER if we locked X indirectly after Y was locked.
+     * m[X][0] = DIRECT_AFTER if we locked X when nothing else was locked.
+     * m[0][] is unused as it would represent locking "NO LOCK"
+     */
+    char m[ERTS_LOCK_ORDER_SIZE][ERTS_LOCK_ORDER_SIZE];
+
+} lc_matrix_t;
+
+static lc_matrix_t tot_lc_matrix;
+
+#define ERTS_LC_FB_CHUNK_SIZE 10
+
+typedef struct lc_alloc_chunk_t_ lc_alloc_chunk_t;
+struct lc_alloc_chunk_t_ {
+    lc_alloc_chunk_t* next;
+    lc_free_block_t array[ERTS_LC_FB_CHUNK_SIZE];
+};
+
+typedef struct lc_thread_t_ lc_thread_t;
+struct lc_thread_t_ {
     char *thread_name;
     int emu_thread;
     erts_tid_t tid;
-    erts_lc_locked_locks_t *next;
-    erts_lc_locked_locks_t *prev;
-    erts_lc_locked_lock_list_t locked;
-    erts_lc_locked_lock_list_t required;
-};
-
-typedef union erts_lc_free_block_t_ erts_lc_free_block_t;
-union erts_lc_free_block_t_ {
-    erts_lc_free_block_t *next;
-    erts_lc_locked_lock_t lock;
+    lc_thread_t *next;
+    lc_thread_t *prev;
+    lc_locked_lock_list_t locked;
+    lc_locked_lock_list_t required;
+    lc_free_block_t *free_blocks;
+    lc_alloc_chunk_t *chunks;
+    lc_matrix_t matrix;
 };
 
 static ethr_tsd_key locks_key;
 
-static erts_lc_locked_locks_t *erts_locked_locks = NULL;
-
-static erts_lc_free_block_t *free_blocks = NULL;
-
-#ifdef ERTS_LC_STATIC_ALLOC
-#define ERTS_LC_FB_CHUNK_SIZE 10000
-#else
-#define ERTS_LC_FB_CHUNK_SIZE 10
-#endif
-
-static ethr_spinlock_t free_blocks_lock;
+static lc_thread_t *lc_threads = NULL;
+static ethr_spinlock_t lc_threads_lock;
 
 static ERTS_INLINE void
-lc_lock(void)
+lc_lock_threads(void)
 {
-    ethr_spin_lock(&free_blocks_lock);
+    ethr_spin_lock(&lc_threads_lock);
 }
 
 static ERTS_INLINE void
-lc_unlock(void)
+lc_unlock_threads(void)
 {
-    ethr_spin_unlock(&free_blocks_lock);
+    ethr_spin_unlock(&lc_threads_lock);
 }
 
-static ERTS_INLINE void lc_free(void *p)
+static ERTS_INLINE void lc_free(lc_thread_t* thr, lc_locked_lock_t *p)
 {
-    erts_lc_free_block_t *fb = (erts_lc_free_block_t *) p;
+    lc_free_block_t *fb = (lc_free_block_t *) p;
 #ifdef DEBUG
-    memset((void *) p, 0xdf, sizeof(erts_lc_free_block_t));
+    sys_memset((void *) p, 0xdf, sizeof(lc_free_block_t));
 #endif
-    lc_lock();
-    fb->next = free_blocks;
-    free_blocks = fb;
-    lc_unlock();   
+    fb->next = thr->free_blocks;
+    thr->free_blocks = fb;
 }
 
-#ifdef ERTS_LC_STATIC_ALLOC
-
-static void *lc_core_alloc(void)
-{
-    lc_unlock();
-    ERTS_INTERNAL_ERROR("Lock checker out of memory!\n");
-}
-
-#else
-
-static void *lc_core_alloc(void)
+static lc_locked_lock_t *lc_core_alloc(lc_thread_t* thr)
 {
     int i;
-    erts_lc_free_block_t *fbs;
-    lc_unlock();
-    fbs = (erts_lc_free_block_t *) malloc(sizeof(erts_lc_free_block_t)
-					  * ERTS_LC_FB_CHUNK_SIZE);
-    if (!fbs) {
+    lc_alloc_chunk_t* chunk;
+    lc_free_block_t* fbs;
+    chunk = (lc_alloc_chunk_t*) malloc(sizeof(lc_alloc_chunk_t));
+    if (!chunk) {
         ERTS_INTERNAL_ERROR("Lock checker failed to allocate memory!");
     }
+    chunk->next = thr->chunks;
+    thr->chunks = chunk;
+
+    fbs = chunk->array;
     for (i = 1; i < ERTS_LC_FB_CHUNK_SIZE - 1; i++) {
 #ifdef DEBUG
-	memset((void *) &fbs[i], 0xdf, sizeof(erts_lc_free_block_t));
+	sys_memset((void *) &fbs[i], 0xdf, sizeof(lc_free_block_t));
 #endif
 	fbs[i].next = &fbs[i+1];
     }
 #ifdef DEBUG
-    memset((void *) &fbs[ERTS_LC_FB_CHUNK_SIZE-1],
-	   0xdf, sizeof(erts_lc_free_block_t));
+    sys_memset((void *) &fbs[ERTS_LC_FB_CHUNK_SIZE-1],
+	   0xdf, sizeof(lc_free_block_t));
 #endif
-    lc_lock();
-    fbs[ERTS_LC_FB_CHUNK_SIZE-1].next = free_blocks;
-    free_blocks = &fbs[1];
-    return (void *) &fbs[0];
+    fbs[ERTS_LC_FB_CHUNK_SIZE-1].next = thr->free_blocks;
+    thr->free_blocks = &fbs[1];
+    return &fbs[0].lock;
 }
 
-#endif
-
-static ERTS_INLINE void *lc_alloc(void)
+static ERTS_INLINE lc_locked_lock_t *lc_alloc(lc_thread_t* thr)
 {
-    void *res;
-    lc_lock();
-    if (!free_blocks)
-	res = lc_core_alloc();
+    lc_locked_lock_t *res;
+    if (!thr->free_blocks)
+	res = lc_core_alloc(thr);
     else {
-	res = (void *) free_blocks;
-	free_blocks = free_blocks->next;
+	res = &thr->free_blocks->lock;
+	thr->free_blocks = thr->free_blocks->next;
     }
-    lc_unlock();
     return res;
 }
 
 
-static erts_lc_locked_locks_t *
-create_locked_locks(char *thread_name)
+static lc_thread_t *
+create_thread_data(char *thread_name)
 {
-    erts_lc_locked_locks_t *l_lcks = malloc(sizeof(erts_lc_locked_locks_t));
-    if (!l_lcks)
+    lc_thread_t *thr = malloc(sizeof(lc_thread_t));
+    if (!thr)
 	ERTS_INTERNAL_ERROR("Lock checker failed to allocate memory!");
 
-    l_lcks->thread_name = strdup(thread_name ? thread_name : "unknown");
-    if (!l_lcks->thread_name)
+    thr->thread_name = strdup(thread_name ? thread_name : "unknown");
+    if (!thr->thread_name)
 	ERTS_INTERNAL_ERROR("Lock checker failed to allocate memory!");
 
-    l_lcks->emu_thread = 0;
-    l_lcks->tid = erts_thr_self();
-    l_lcks->required.first = NULL;
-    l_lcks->required.last = NULL;
-    l_lcks->locked.first = NULL;
-    l_lcks->locked.last = NULL;
-    l_lcks->prev = NULL;
-    lc_lock();
-    l_lcks->next = erts_locked_locks;
-    if (erts_locked_locks)
-	erts_locked_locks->prev = l_lcks;
-    erts_locked_locks = l_lcks;
-    lc_unlock();
-    erts_tsd_set(locks_key, (void *) l_lcks);
-    return l_lcks;
+    thr->emu_thread = 0;
+    thr->tid = erts_thr_self();
+    thr->required.first = NULL;
+    thr->required.last = NULL;
+    thr->locked.first = NULL;
+    thr->locked.last = NULL;
+    thr->prev = NULL;
+    thr->free_blocks = NULL;
+    thr->chunks = NULL;
+    sys_memzero(&thr->matrix, sizeof(thr->matrix));
+
+    lc_lock_threads();
+    thr->next = lc_threads;
+    if (lc_threads)
+	lc_threads->prev = thr;
+    lc_threads = thr;
+    lc_unlock_threads();
+    erts_tsd_set(locks_key, (void *) thr);
+    return thr;
 }
+
+static void collect_matrix(lc_matrix_t*);
 
 static void
-destroy_locked_locks(erts_lc_locked_locks_t *l_lcks)
+destroy_thread_data(lc_thread_t *thr)
 {
-    ASSERT(l_lcks->thread_name);
-    free((void *) l_lcks->thread_name);
-    ASSERT(l_lcks->required.first == NULL);
-    ASSERT(l_lcks->required.last == NULL);
-    ASSERT(l_lcks->locked.first == NULL);
-    ASSERT(l_lcks->locked.last == NULL);
+    ASSERT(thr->thread_name);
+    free((void *) thr->thread_name);
+    ASSERT(thr->required.first == NULL);
+    ASSERT(thr->required.last == NULL);
+    ASSERT(thr->locked.first == NULL);
+    ASSERT(thr->locked.last == NULL);
 
-    lc_lock();
-    if (l_lcks->prev)
-	l_lcks->prev->next = l_lcks->next;
+    lc_lock_threads();
+    if (thr->prev)
+	thr->prev->next = thr->next;
     else {
-	ASSERT(erts_locked_locks == l_lcks);
-	erts_locked_locks = l_lcks->next;
+	ASSERT(lc_threads == thr);
+	lc_threads = thr->next;
+    }
+    if (thr->next)
+	thr->next->prev = thr->prev;
+
+    collect_matrix(&thr->matrix);
+
+    lc_unlock_threads();
+
+    while (thr->chunks) {
+        lc_alloc_chunk_t* free_me = thr->chunks;
+        thr->chunks = thr->chunks->next;
+        free(free_me);
     }
 
-    if (l_lcks->next)
-	l_lcks->next->prev = l_lcks->prev;
-    lc_unlock();
-
-    free((void *) l_lcks);
-
+    free((void *) thr);
 }
 
-static ERTS_INLINE erts_lc_locked_locks_t *
+static ERTS_INLINE lc_thread_t *
 get_my_locked_locks(void)
 {
     return erts_tsd_get(locks_key);
 }
 
-static ERTS_INLINE erts_lc_locked_locks_t *
+static ERTS_INLINE lc_thread_t *
 make_my_locked_locks(void)
 {
-    erts_lc_locked_locks_t *l_lcks = get_my_locked_locks();
-    if (l_lcks)
-	return l_lcks;
+    lc_thread_t *thr = get_my_locked_locks();
+    if (thr)
+	return thr;
     else
-	return create_locked_locks(NULL);
+	return create_thread_data(NULL);
 }
 
-static ERTS_INLINE erts_lc_locked_lock_t *
-new_locked_lock(erts_lc_lock_t *lck, Uint16 op_flags,
-		char *file, unsigned int line)
+static ERTS_INLINE lc_locked_lock_t *
+new_locked_lock(lc_thread_t* thr,
+                erts_lc_lock_t *lck, erts_lock_options_t options,
+		const char *file, unsigned int line)
 {
-    erts_lc_locked_lock_t *l_lck = (erts_lc_locked_lock_t *) lc_alloc();
-    l_lck->next = NULL;
-    l_lck->prev = NULL;
-    l_lck->id = lck->id;
-    l_lck->extra = lck->extra;
-    l_lck->file = file;
-    l_lck->line = line;
-    l_lck->flags = lck->flags | op_flags;
-    return l_lck;
+    lc_locked_lock_t *ll = lc_alloc(thr);
+    ll->next = NULL;
+    ll->prev = NULL;
+    ll->id = lck->id;
+    ll->extra = lck->extra;
+    ll->file = file;
+    ll->line = line;
+    ll->flags = lck->flags;
+    ll->taken_options = options;
+    if ((lck->flags & ERTS_LOCK_FLAGS_MASK_TYPE) == ERTS_LOCK_FLAGS_TYPE_PROCLOCK)
+        ll->lck = NULL;
+    else
+        ll->lck = lck;
+    return ll;
 }
 
 static void
-raw_print_lock(char *prefix, Sint16 id, Wterm extra, Uint16 flags,
-	       char* file, unsigned int line, char *suffix)
+raw_print_lock(char *prefix, Sint16 id, Eterm extra, erts_lock_flags_t flags,
+	       const char* file, unsigned int line, char *suffix)
 {
-    char *lname = (0 <= id && id < ERTS_LOCK_ORDER_SIZE
-		   ? erts_lock_order[id].name
-		   : "unknown");
-    erts_fprintf(stderr,"%s'%s:",prefix,lname);
+    if (1 <= id && id < ERTS_LOCK_ORDER_SIZE
+        && erts_lock_order[id].name) {
+        erts_fprintf(stderr, "%s'%d.%s:", prefix,
+                     erts_lock_order[id].level,
+                     erts_lock_order[id].name);
+    }
+    else {
+        erts_fprintf(stderr, "%s'unknown(%d):", prefix, id);
+    }
 
     if (is_not_immed(extra))
       erts_fprintf(stderr,"%p",_unchecked_boxed_val(extra));
     else
       erts_fprintf(stderr,"%T",extra);
-    erts_fprintf(stderr,"%s",lock_type(flags));
+    erts_fprintf(stderr,"[%s]",erts_lock_flags_get_type_name(flags));
 
     if (file)
       erts_fprintf(stderr,"(%s:%d)",file,line);
 
-    erts_fprintf(stderr,"'%s%s",rw_op_str(flags),suffix);
+    erts_fprintf(stderr,"'(%s)%s",rw_op_str(flags),suffix);
 }
 
 static void
-print_lock2(char *prefix, Sint16 id, Wterm extra, Uint16 flags, char *suffix)
+print_lock2(char *prefix, Sint16 id, Eterm extra, erts_lock_flags_t flags, char *suffix)
 {
   raw_print_lock(prefix, id, extra, flags, NULL, 0, suffix);
 }
@@ -478,20 +504,20 @@ print_lock(char *prefix, erts_lc_lock_t *lck, char *suffix)
 }
 
 static void
-print_curr_locks(erts_lc_locked_locks_t *l_lcks)
+print_curr_locks(lc_thread_t *thr)
 {
-    erts_lc_locked_lock_t *l_lck;
-    if (!l_lcks || !l_lcks->locked.first)
+    lc_locked_lock_t *ll;
+    if (!thr || !thr->locked.first)
 	erts_fprintf(stderr,
 		     "Currently no locks are locked by the %s thread.\n",
-		     l_lcks->thread_name);
+		     thr ? thr->thread_name : "unknown");
     else {
 	erts_fprintf(stderr,
 		     "Currently these locks are locked by the %s thread:\n",
-		     l_lcks->thread_name);
-	for (l_lck = l_lcks->locked.first; l_lck; l_lck = l_lck->next)
-	  raw_print_lock("  ", l_lck->id, l_lck->extra, l_lck->flags,
-			 l_lck->file, l_lck->line, "\n");
+		     thr->thread_name);
+	for (ll = thr->locked.first; ll; ll = ll->next)
+	  raw_print_lock("  ", ll->id, ll->extra, ll->flags,
+			 ll->file, ll->line, "\n");
     }
 }
 
@@ -501,13 +527,19 @@ print_lock_order(void)
     int i;
     erts_fprintf(stderr, "Lock order:\n");
     for (i = 1; i < ERTS_LOCK_ORDER_SIZE; i++) {
+        if (!erts_lock_order[i].name) {
+            continue;
+        }
 	if (erts_lock_order[i].internal_order)
 	    erts_fprintf(stderr,
-			 "  %s:%s\n",
+			 " %2d.%s:%s\n",
+                         erts_lock_order[i].level,
 			 erts_lock_order[i].name,
 			 erts_lock_order[i].internal_order);
 	else
-	    erts_fprintf(stderr, "  %s\n", erts_lock_order[i].name);
+	    erts_fprintf(stderr, " %2d.%s\n",
+                         erts_lock_order[i].level,
+                         erts_lock_order[i].name);
     }
 }
 
@@ -520,55 +552,55 @@ uninitialized_lock(void)
 }
 
 static void
-lock_twice(char *prefix, erts_lc_locked_locks_t *l_lcks, erts_lc_lock_t *lck,
-	   Uint16 op_flags)
+lock_twice(char *prefix, lc_thread_t *thr, erts_lc_lock_t *lck,
+	   erts_lock_options_t options)
 {
-    erts_fprintf(stderr, "%s%s", prefix, rw_op_str(op_flags));
+    erts_fprintf(stderr, "%s (%s)", prefix, rw_op_str(options));
     print_lock(" ", lck, " lock which is already locked by thread!\n");
-    print_curr_locks(l_lcks);
+    print_curr_locks(thr);
     lc_abort();
 }
 
 static void
-unlock_op_mismatch(erts_lc_locked_locks_t *l_lcks, erts_lc_lock_t *lck,
-		   Uint16 op_flags)
+unlock_op_mismatch(lc_thread_t *thr, erts_lc_lock_t *lck,
+		   erts_lock_options_t options)
 {
-    erts_fprintf(stderr, "Unlocking%s ", rw_op_str(op_flags));
+    erts_fprintf(stderr, "Unlocking (%s) ", rw_op_str(options));
     print_lock("", lck, " lock which mismatch previous lock operation!\n");
-    print_curr_locks(l_lcks);
+    print_curr_locks(thr);
     lc_abort();
 }
 
 static void
-unlock_of_not_locked(erts_lc_locked_locks_t *l_lcks, erts_lc_lock_t *lck)
+unlock_of_not_locked(lc_thread_t *thr, erts_lc_lock_t *lck)
 {
     print_lock("Unlocking ", lck, " lock which is not locked by thread!\n");
-    print_curr_locks(l_lcks);
+    print_curr_locks(thr);
     lc_abort();
 }
 
 static void
-lock_order_violation(erts_lc_locked_locks_t *l_lcks, erts_lc_lock_t *lck)
+lock_order_violation(lc_thread_t *thr, erts_lc_lock_t *lck)
 {
-    print_lock("Lock order violation occured when locking ", lck, "!\n");
-    print_curr_locks(l_lcks);
+    print_lock("Lock order violation occurred when locking ", lck, "!\n");
+    print_curr_locks(thr);
     print_lock_order();
     lc_abort();
 }
 
 static void
-type_order_violation(char *op, erts_lc_locked_locks_t *l_lcks,
+type_order_violation(char *op, lc_thread_t *thr,
 		     erts_lc_lock_t *lck)
 {
-    erts_fprintf(stderr, "Lock type order violation occured when ");
+    erts_fprintf(stderr, "Lock type order violation occurred when ");
     print_lock(op, lck, "!\n");
-    ASSERT(l_lcks);
-    print_curr_locks(l_lcks);
+    ASSERT(thr);
+    print_curr_locks(thr);
     lc_abort();
 }
 
-static void
-lock_mismatch(erts_lc_locked_locks_t *l_lcks, int exact,
+static void __noreturn
+lock_mismatch(lc_thread_t *thr, int exact,
 	      int failed_have, erts_lc_lock_t *have, int have_len,
 	      int failed_have_not, erts_lc_lock_t *have_not, int have_not_len)
 {
@@ -615,39 +647,39 @@ lock_mismatch(erts_lc_locked_locks_t *l_lcks, int exact,
 		print_lock2("  ", have_not[i].id, have_not[i].extra, 0, "\n");
 	}
     }
-    print_curr_locks(l_lcks);
+    print_curr_locks(thr);
     lc_abort();
 }
 
 static void
-unlock_of_required_lock(erts_lc_locked_locks_t *l_lcks, erts_lc_lock_t *lck)
+unlock_of_required_lock(lc_thread_t *thr, erts_lc_lock_t *lck)
 {
     print_lock("Unlocking required ", lck, " lock!\n");
-    print_curr_locks(l_lcks);
+    print_curr_locks(thr);
     lc_abort();
 }
 
 static void
-unrequire_of_not_required_lock(erts_lc_locked_locks_t *l_lcks, erts_lc_lock_t *lck)
+unrequire_of_not_required_lock(lc_thread_t *thr, erts_lc_lock_t *lck)
 {
     print_lock("Unrequire on ", lck, " lock not required!\n");
-    print_curr_locks(l_lcks);
+    print_curr_locks(thr);
     lc_abort();
 }
 
 static void
-require_twice(erts_lc_locked_locks_t *l_lcks, erts_lc_lock_t *lck)
+require_twice(lc_thread_t *thr, erts_lc_lock_t *lck)
 {
     print_lock("Require on ", lck, " lock already required!\n");
-    print_curr_locks(l_lcks);
+    print_curr_locks(thr);
     lc_abort();
 }
 
 static void
-required_not_locked(erts_lc_locked_locks_t *l_lcks, erts_lc_lock_t *lck)
+required_not_locked(lc_thread_t *thr, erts_lc_lock_t *lck)
 {
     print_lock("Required ", lck, " lock not locked!\n");
-    print_curr_locks(l_lcks);
+    print_curr_locks(thr);
     lc_abort();
 }
 
@@ -655,20 +687,20 @@ required_not_locked(erts_lc_locked_locks_t *l_lcks, erts_lc_lock_t *lck)
 static void
 thread_exit_handler(void)
 {
-    erts_lc_locked_locks_t *l_lcks = get_my_locked_locks();
-    if (l_lcks) {
-	if (l_lcks->locked.first) {
+    lc_thread_t *thr = get_my_locked_locks();
+    if (thr) {
+	if (thr->locked.first) {
 	    erts_fprintf(stderr,
 			 "Thread exiting while having locked locks!\n");
-	    print_curr_locks(l_lcks);
+	    print_curr_locks(thr);
 	    lc_abort();
 	}
-	destroy_locked_locks(l_lcks);
+	destroy_thread_data(thr);
 	/* erts_tsd_set(locks_key, NULL); */
     }
 }
 
-static __decl_noreturn void
+static __decl_noreturn void __noreturn
 lc_abort(void)
 {
 #ifdef __WIN32__
@@ -681,34 +713,33 @@ lc_abort(void)
 void
 erts_lc_set_thread_name(char *thread_name)
 {
-    erts_lc_locked_locks_t *l_lcks = get_my_locked_locks();
-    if (!l_lcks)
-	l_lcks = create_locked_locks(thread_name);
+    lc_thread_t *thr = get_my_locked_locks();
+    if (!thr)
+	thr = create_thread_data(thread_name);
     else {
-	ASSERT(l_lcks->thread_name);
-	free((void *) l_lcks->thread_name);
-	l_lcks->thread_name = strdup(thread_name ? thread_name : "unknown");
-	if (!l_lcks->thread_name)
+	ASSERT(thr->thread_name);
+	free((void *) thr->thread_name);
+	thr->thread_name = strdup(thread_name ? thread_name : "unknown");
+	if (!thr->thread_name)
 	    ERTS_INTERNAL_ERROR("strdup failed");
     }
-    l_lcks->emu_thread = 1;
+    thr->emu_thread = 1;
 }
 
 int
 erts_lc_is_emu_thr(void)
 {
-    erts_lc_locked_locks_t *l_lcks = get_my_locked_locks();
-    return l_lcks->emu_thread;
+    lc_thread_t *thr = get_my_locked_locks();
+    return thr->emu_thread;
 }
 
 int
-erts_lc_assert_failed(char *file, int line, char *assertion)
+erts_lc_assert_failed(const char *file, int line, const char *assertion)
 {
     erts_fprintf(stderr, "%s:%d: Lock check assertion \"%s\" failed!\n",
 		 file, line, assertion);
     print_curr_locks(get_my_locked_locks());
     lc_abort();
-    return 0;
 }
 
 void erts_lc_fail(char *fmt, ...)
@@ -725,16 +756,18 @@ void erts_lc_fail(char *fmt, ...)
 
 
 Sint16
-erts_lc_get_lock_order_id(char *name)
+erts_lc_get_lock_order_id(const char *name)
 {
     int i;
 
     if (!name || name[0] == '\0')
 	erts_fprintf(stderr, "Missing lock name\n");
     else {
-	for (i = 0; i < ERTS_LOCK_ORDER_SIZE; i++)
-	    if (strcmp(erts_lock_order[i].name, name) == 0)
-		return i;
+        for (i = 0; i < ERTS_LOCK_ORDER_SIZE; i++) {
+            if (erts_lock_order[i].name
+                && sys_strcmp(erts_lock_order[i].name, name) == 0)
+                return i;
+        }
 	erts_fprintf(stderr,
 		     "Lock name '%s' missing in lock order "
 		     "(update erl_lock_check.c)\n",
@@ -744,115 +777,203 @@ erts_lc_get_lock_order_id(char *name)
     return (Sint16) -1;
 }
 
-
 static int
-find_lock(erts_lc_locked_lock_t **l_lcks, erts_lc_lock_t *lck)
+lc_is_term_order(Sint16 id)
 {
-    erts_lc_locked_lock_t *l_lck = *l_lcks;
+    return erts_lock_order[id].internal_order != NULL
+        && sys_strcmp(erts_lock_order[id].internal_order, "term") == 0;
+}
 
-    if (l_lck) {
-	if (l_lck->id == lck->id && l_lck->extra == lck->extra) {
-	    if ((l_lck->flags & lck->flags) == lck->flags)
-		return 1;
-	    return 0;
-	}
-	else if (l_lck->id < lck->id
-		 || (l_lck->id == lck->id
-		     && l_lck->extra < lck->extra)) {
-	    for (l_lck = l_lck->next; l_lck; l_lck = l_lck->next) {
-		if (l_lck->id > lck->id
-		    || (l_lck->id == lck->id
-			&& l_lck->extra >= lck->extra)) {
-		    *l_lcks = l_lck;
-		    if (l_lck->id == lck->id
-			&& l_lck->extra == lck->extra
-			&& ((l_lck->flags & lck->flags) == lck->flags))
-			    return 1;
-		    return 0;
-		}
-	    }
-	}
-	else {
-	    for (l_lck = l_lck->prev; l_lck; l_lck = l_lck->prev) {
-		if (l_lck->id < lck->id
-		    || (l_lck->id == lck->id
-			&& l_lck->extra <= lck->extra)) {
-		    *l_lcks = l_lck;
-		    if (l_lck->id == lck->id
-			&& l_lck->extra == lck->extra
-			&& ((l_lck->flags & lck->flags) == lck->flags))
-			return 1;
-		    return 0;
-		}
-	    }
-	}
+
+static int compare_same_lock_id_extra(lc_locked_lock_t *, erts_lc_lock_t *);
+
+static int compare_lock_order(lc_locked_lock_t *locked_lock,
+                              erts_lc_lock_t *want_lock)
+{
+    const Sint16 ll_level = erts_lock_order[locked_lock->id].level;
+    const Sint16 wl_level = erts_lock_order[want_lock->id].level;
+
+    if (wl_level > ll_level) {
+        /* Want lock in higher level, ok */
+        return -1;
+    } else if (wl_level < ll_level) {
+        /* Want lock in lower level, not ok*/
+        return 1;
+    } else if (locked_lock->id != want_lock->id) {
+        /* Want different lock id in same level, not ok */
+        return 1;
+    }
+
+    /* Same lock id */
+    return compare_same_lock_id_extra(locked_lock, want_lock);
+}
+
+static int compare_locked_by_id(lc_locked_lock_t *locked_lock, erts_lc_lock_t *comparand)
+{
+    if(locked_lock->id < comparand->id) {
+        return -1;
+    } else if(locked_lock->id > comparand->id) {
+        return 1;
+    }
+
+    return 0;
+}
+
+static int compare_locked_by_id_extra(lc_locked_lock_t *ll, erts_lc_lock_t *comparand)
+{
+    int order = compare_locked_by_id(ll, comparand);
+
+    if(order) {
+        return order;
+    }
+
+    return compare_same_lock_id_extra(ll, comparand);
+}
+
+static int compare_same_lock_id_extra(lc_locked_lock_t *ll, erts_lc_lock_t *comparand)
+{
+    ASSERT(ll->id == comparand->id);
+
+    if (ll->flags & ERTS_LOCK_FLAGS_PROPERTY_TERM_ORDER) {
+        ASSERT(!is_header(ll->extra) && !is_header(comparand->extra));
+        return CMP(ll->extra, comparand->extra);
+    }
+
+    if(ll->extra < comparand->extra) {
+        return -1;
+    } else if(ll->extra > comparand->extra) {
+        return 1;
     }
     return 0;
 }
 
-static int
-find_id(erts_lc_locked_lock_t **l_lcks, Sint16 id)
-{
-    erts_lc_locked_lock_t *l_lck = *l_lcks;
+typedef int (*locked_compare_func)(lc_locked_lock_t *, erts_lc_lock_t *);
 
-    if (l_lck) {
-	if (l_lck->id == id)
-	    return 1;
-	else if (l_lck->id < id) {
-	    for (l_lck = l_lck->next; l_lck; l_lck = l_lck->next) {
-		if (l_lck->id >= id) {
-		    *l_lcks = l_lck;
-		    if (l_lck->id == id)
-			return 1;
-		    return 0;
-		}
-	    }
-	}
-	else {
-	    for (l_lck = l_lck->prev; l_lck; l_lck = l_lck->prev) {
-		if (l_lck->id <= id) {
-		    *l_lcks = l_lck;
-		    if (l_lck->id == id)
-			return 1;
-		    return 0;
-		}
-	    }
-	}
+/* Searches through a list of taken locks, bailing when it hits an entry whose
+ * order relative to the search template is the opposite of the one at the
+ * start of the search. (*closest_neighbor) is either set to the exact match,
+ * or the one closest to it in the sort order. */
+static int search_locked_list(locked_compare_func compare,
+                              lc_locked_lock_t *locked_locks,
+                              erts_lc_lock_t *search_template,
+                              lc_locked_lock_t **closest_neighbor)
+{
+    lc_locked_lock_t *iterator = locked_locks;
+
+    (*closest_neighbor) = iterator;
+
+    if(iterator) {
+        int relative_order = compare(iterator, search_template);
+
+        if(relative_order < 0) {
+            while((iterator = iterator->next) != NULL) {
+                relative_order = compare(iterator, search_template);
+
+                if(relative_order >= 0) {
+                    (*closest_neighbor) = iterator;
+                    break;
+                }
+            }
+        } else if(relative_order > 0) {
+            while((iterator = iterator->prev) != NULL) {
+                relative_order = compare(iterator, search_template);
+
+                if(relative_order <= 0) {
+                    (*closest_neighbor) = iterator;
+                    break;
+                }
+            }
+        }
+
+        return relative_order == 0;
     }
+
     return 0;
+}
+
+/* Searches for a lock in the given list that matches search_template, and sets
+ * (*locked_locks) to the closest lock in the sort order. */
+static int
+find_lock(lc_locked_lock_t **locked_locks, erts_lc_lock_t *search_template)
+{
+    lc_locked_lock_t *closest_neighbor;
+    int found_lock;
+
+    found_lock = search_locked_list(compare_locked_by_id_extra,
+                                    (*locked_locks),
+                                    search_template,
+                                    &closest_neighbor);
+
+    (*locked_locks) = closest_neighbor;
+
+    if(found_lock) {
+        erts_lock_options_t relevant_options;
+        erts_lock_flags_t relevant_flags;
+
+        /* We only care about the options and flags that are set in the
+         * template. */
+        relevant_options = (closest_neighbor->taken_options & search_template->taken_options);
+        relevant_flags = (closest_neighbor->flags & search_template->flags);
+
+        return search_template->taken_options == relevant_options &&
+               search_template->flags == relevant_flags;
+    }
+
+    return 0;
+}
+
+/* Searches for a lock in the given list by id, and sets (*locked_locks) to the
+ * closest lock in the sort order. */
+static int
+find_id(lc_locked_lock_t **locked_locks, Sint16 id)
+{
+    lc_locked_lock_t *closest_neighbor;
+    erts_lc_lock_t search_template;
+    int found_lock;
+
+    search_template.id = id;
+
+    found_lock = search_locked_list(compare_locked_by_id,
+                                    (*locked_locks),
+                                    &search_template,
+                                    &closest_neighbor);
+
+    (*locked_locks) = closest_neighbor;
+
+    return found_lock;
 }
 
 void
 erts_lc_have_locks(int *resv, erts_lc_lock_t *locks, int len)
 {
-    erts_lc_locked_locks_t *l_lcks = get_my_locked_locks();
+    lc_thread_t *thr = get_my_locked_locks();
     int i;
 
-    if (!l_lcks) {
+    if (!thr) {
 	for (i = 0; i < len; i++)
 	    resv[i] = 0;
     }
     else {
-	erts_lc_locked_lock_t *l_lck = l_lcks->locked.first;
+	lc_locked_lock_t *ll = thr->locked.first;
 	for (i = 0; i < len; i++)
-	    resv[i] = find_lock(&l_lck, &locks[i]);
+	    resv[i] = find_lock(&ll, &locks[i]);
     }
 }
 
 void
 erts_lc_have_lock_ids(int *resv, int *ids, int len)
 {
-    erts_lc_locked_locks_t *l_lcks = get_my_locked_locks();
+    lc_thread_t *thr = get_my_locked_locks();
     int i;
 
-    if (!l_lcks) {
+    if (!thr) {
 	for (i = 0; i < len; i++)
 	    resv[i] = 0;
     }
     else {
-	erts_lc_locked_lock_t *l_lck = l_lcks->locked.first;
+	lc_locked_lock_t *ll = thr->locked.first;
 	for (i = 0; i < len; i++)
-	    resv[i] = find_id(&l_lck, ids[i]);
+	    resv[i] = find_id(&ll, ids[i]);
     }
 }
 
@@ -861,27 +982,27 @@ erts_lc_check(erts_lc_lock_t *have, int have_len,
 	      erts_lc_lock_t *have_not, int have_not_len)
 {
     int i;
-    erts_lc_locked_locks_t *l_lcks = get_my_locked_locks();
-    erts_lc_locked_lock_t *l_lck;
+    lc_thread_t *thr = get_my_locked_locks();
+    lc_locked_lock_t *ll;
     
     if (have && have_len > 0) {
-	if (!l_lcks)
+	if (!thr)
 	    lock_mismatch(NULL, 0,
 			  -1, have, have_len,
 			  -1, have_not, have_not_len);
-	l_lck = l_lcks->locked.first;
+	ll = thr->locked.first;
 	for (i = 0; i < have_len; i++) {
-	    if (!find_lock(&l_lck, &have[i]))
-		lock_mismatch(l_lcks, 0,
+	    if (!find_lock(&ll, &have[i]))
+		lock_mismatch(thr, 0,
 			      i, have, have_len,
 			      -1, have_not, have_not_len);
 	}
     }
-    if (have_not && have_not_len > 0 && l_lcks) {
-	l_lck = l_lcks->locked.first;
+    if (have_not && have_not_len > 0 && thr) {
+	ll = thr->locked.first;
 	for (i = 0; i < have_not_len; i++) {
-	    if (find_lock(&l_lck, &have_not[i]))
-		lock_mismatch(l_lcks, 0,
+	    if (find_lock(&ll, &have_not[i]))
+		lock_mismatch(thr, 0,
 			      -1, have, have_len,
 			      i, have_not, have_not_len);
 	}
@@ -891,8 +1012,8 @@ erts_lc_check(erts_lc_lock_t *have, int have_len,
 void
 erts_lc_check_exact(erts_lc_lock_t *have, int have_len)
 {
-    erts_lc_locked_locks_t *l_lcks = get_my_locked_locks();
-    if (!l_lcks) {
+    lc_thread_t *thr = get_my_locked_locks();
+    if (!thr) {
 	if (have && have_len > 0)
 	    lock_mismatch(NULL, 1,
 			  -1, have, have_len,
@@ -900,35 +1021,35 @@ erts_lc_check_exact(erts_lc_lock_t *have, int have_len)
     }
     else {
 	int i;
-	erts_lc_locked_lock_t *l_lck = l_lcks->locked.first;
+	lc_locked_lock_t *ll = thr->locked.first;
 	for (i = 0; i < have_len; i++) {
-	    if (!find_lock(&l_lck, &have[i]))
-		lock_mismatch(l_lcks, 1,
+	    if (!find_lock(&ll, &have[i]))
+		lock_mismatch(thr, 1,
 			      i, have, have_len,
 			      -1, NULL, 0);
 	}
-	for (i = 0, l_lck = l_lcks->locked.first; l_lck; l_lck = l_lck->next)
+	for (i = 0, ll = thr->locked.first; ll; ll = ll->next)
 	    i++;
 	if (i != have_len)
-	    lock_mismatch(l_lcks, 1,
+	    lock_mismatch(thr, 1,
 			  -1, have, have_len,
 			  -1, NULL, 0);
     }
 }
 
 void
-erts_lc_check_no_locked_of_type(Uint16 flags)
+erts_lc_check_no_locked_of_type(erts_lock_flags_t type)
 {
-    erts_lc_locked_locks_t *l_lcks = get_my_locked_locks();
-    if (l_lcks) {
-	erts_lc_locked_lock_t *l_lck = l_lcks->locked.first;
-	for (l_lck = l_lcks->locked.first; l_lck; l_lck = l_lck->next) {
-	    if (l_lck->flags & flags) {
+    lc_thread_t *thr = get_my_locked_locks();
+    if (thr) {
+	lc_locked_lock_t *ll = thr->locked.first;
+	for (ll = thr->locked.first; ll; ll = ll->next) {
+	    if ((ll->flags & ERTS_LOCK_FLAGS_MASK_TYPE) == type) {
 		erts_fprintf(stderr,
 			     "Locked lock of type %s found which isn't "
 			     "allowed here!\n",
-			     lock_type(l_lck->flags));
-		print_curr_locks(l_lcks);
+			     erts_lock_flags_get_type_name(ll->flags));
+		print_curr_locks(thr);
 		lc_abort();
 	    }
 	}
@@ -936,7 +1057,7 @@ erts_lc_check_no_locked_of_type(Uint16 flags)
 }
 
 int
-erts_lc_trylock_force_busy_flg(erts_lc_lock_t *lck, Uint16 op_flags)
+erts_lc_trylock_force_busy_flg(erts_lc_lock_t *lck, erts_lock_options_t options)
 {
 #ifdef ERTS_LC_DO_NOT_FORCE_BUSY_TRYLOCK_ON_LOCK_ORDER_VIOLATION
     return 0;
@@ -946,7 +1067,7 @@ erts_lc_trylock_force_busy_flg(erts_lc_lock_t *lck, Uint16 op_flags)
      * This in order to make sure that caller can handle
      * the situation without causing a lock order violation.
      */
-    erts_lc_locked_locks_t *l_lcks;
+    lc_thread_t *thr;
 
     if (lck->inited != ERTS_LC_INITITALIZED)
 	uninitialized_lock();
@@ -954,41 +1075,42 @@ erts_lc_trylock_force_busy_flg(erts_lc_lock_t *lck, Uint16 op_flags)
     if (lck->id < 0)
 	return 0;
 
-    l_lcks = get_my_locked_locks();
+    thr = get_my_locked_locks();
 
-    if (!l_lcks || !l_lcks->locked.first) {
-	ASSERT(!l_lcks || !l_lcks->locked.last);
+    if (!thr || !thr->locked.first) {
+	ASSERT(!thr || !thr->locked.last);
 	return 0;
     }
     else {
-	erts_lc_locked_lock_t *tl_lck;
+        lc_locked_lock_t *ll;
+        int order;
 
-	ASSERT(l_lcks->locked.last);
+	ASSERT(thr->locked.last);
 
 #if 0 /* Ok when trylocking I guess... */
-	if (LOCK_IS_TYPE_ORDER_VIOLATION(lck->flags, l_lcks->locked.last->flags))
-	    type_order_violation("trylocking ", l_lcks, lck);
+	if (LOCK_IS_TYPE_ORDER_VIOLATION(lck->flags, thr->locked.last->flags))
+	    type_order_violation("trylocking ", thr, lck);
 #endif
 
-	if (l_lcks->locked.last->id < lck->id
-	    || (l_lcks->locked.last->id == lck->id
-		&& l_lcks->locked.last->extra < lck->extra))
-	    return 0;
+        ll = thr->locked.last;
+        order = compare_lock_order(ll, lck);
+
+	if (order < 0)
+            return 0;
 
 	/*
-	 * Lock order violation
+	 * TryLock order violation
 	 */
 
-
-	/* Check that we are not trying to lock this lock twice */
-	for (tl_lck = l_lcks->locked.last; tl_lck; tl_lck = tl_lck->prev) {
-	    if (tl_lck->id < lck->id
-		|| (tl_lck->id == lck->id && tl_lck->extra <= lck->extra)) {
-		if (tl_lck->id == lck->id && tl_lck->extra == lck->extra)
-		    lock_twice("Trylocking", l_lcks, lck, op_flags);
-		break;
-	    }
-	}
+        /* Check that we are not trying to lock this lock twice */
+        do {
+            if (order == 0 && (ll->lck == lck || !ll->lck))
+                lock_twice("Trylocking", thr, lck, options);
+            ll = ll->prev;
+            if (!ll)
+                break;
+            order = compare_lock_order(ll, lck);
+        } while (order >= 0);
 
 #ifndef ERTS_LC_ALLWAYS_FORCE_BUSY_TRYLOCK_ON_LOCK_ORDER_VIOLATION
 	/* We only force busy if a lock order violation would occur
@@ -1007,11 +1129,11 @@ erts_lc_trylock_force_busy_flg(erts_lc_lock_t *lck, Uint16 op_flags)
 #endif
 }
 
-void erts_lc_trylock_flg_x(int locked, erts_lc_lock_t *lck, Uint16 op_flags,
-			   char *file, unsigned int line)
+void erts_lc_trylock_flg_x(int locked, erts_lc_lock_t *lck, erts_lock_options_t options,
+			   const char *file, unsigned int line)
 {
-    erts_lc_locked_locks_t *l_lcks;
-    erts_lc_locked_lock_t *l_lck;
+    lc_thread_t *thr;
+    lc_locked_lock_t *ll;
 
     if (lck->inited != ERTS_LC_INITITALIZED)
 	uninitialized_lock();
@@ -1019,128 +1141,129 @@ void erts_lc_trylock_flg_x(int locked, erts_lc_lock_t *lck, Uint16 op_flags,
     if (lck->id < 0)
 	return;
 
-    l_lcks = make_my_locked_locks();
-    l_lck = locked ? new_locked_lock(lck, op_flags, file, line) : NULL;
+    thr = make_my_locked_locks();
+    ll = locked ? new_locked_lock(thr, lck, options, file, line) : NULL;
 
-    if (!l_lcks->locked.last) {
-	ASSERT(!l_lcks->locked.first);
+    if (!thr->locked.last) {
+	ASSERT(!thr->locked.first);
 	if (locked)
-	    l_lcks->locked.first = l_lcks->locked.last = l_lck;
+	    thr->locked.first = thr->locked.last = ll;
     }
     else {
-	erts_lc_locked_lock_t *tl_lck;
+	lc_locked_lock_t *tl_lck;
 #if 0 /* Ok when trylocking I guess... */
-	if (LOCK_IS_TYPE_ORDER_VIOLATION(lck->flags, l_lcks->locked.last->flags))
-	    type_order_violation("trylocking ", l_lcks, lck);
+	if (LOCK_IS_TYPE_ORDER_VIOLATION(lck->flags, thr->locked.last->flags))
+	    type_order_violation("trylocking ", thr, lck);
 #endif
 
-	for (tl_lck = l_lcks->locked.last; tl_lck; tl_lck = tl_lck->prev) {
-	    if (tl_lck->id < lck->id
-		|| (tl_lck->id == lck->id && tl_lck->extra <= lck->extra)) {
-		if (tl_lck->id == lck->id && tl_lck->extra == lck->extra)
-		    lock_twice("Trylocking", l_lcks, lck, op_flags);
+	for (tl_lck = thr->locked.last; tl_lck; tl_lck = tl_lck->prev) {
+            int order = compare_lock_order(tl_lck, lck);
+	    if (order <= 0) {
+                if (order == 0 && (tl_lck->lck == lck || !tl_lck->lck))
+                    lock_twice("Trylocking", thr, lck, options);
 		if (locked) {
-		    l_lck->next = tl_lck->next;
-		    l_lck->prev = tl_lck;
+		    ll->next = tl_lck->next;
+		    ll->prev = tl_lck;
 		    if (tl_lck->next)
-			tl_lck->next->prev = l_lck;
+			tl_lck->next->prev = ll;
 		    else
-			l_lcks->locked.last = l_lck;
-		    tl_lck->next = l_lck;
+			thr->locked.last = ll;
+		    tl_lck->next = ll;
 		}
 		return;
 	    }
 	}
 
 	if (locked) {
-	    l_lck->next = l_lcks->locked.first;
-	    l_lcks->locked.first->prev = l_lck;
-	    l_lcks->locked.first = l_lck;
+	    ll->next = thr->locked.first;
+	    thr->locked.first->prev = ll;
+	    thr->locked.first = ll;
 	}
     }
 
 }
 
-void erts_lc_require_lock_flg(erts_lc_lock_t *lck, Uint16 op_flags,
-			      char *file, unsigned int line)
+void erts_lc_require_lock_flg(erts_lc_lock_t *lck, erts_lock_options_t options,
+			      const char *file, unsigned int line)
 {
-    erts_lc_locked_locks_t *l_lcks = make_my_locked_locks();
-    erts_lc_locked_lock_t *l_lck = l_lcks->locked.first;
-    if (!find_lock(&l_lck, lck))
-	required_not_locked(l_lcks, lck);
-    l_lck = new_locked_lock(lck, op_flags, file, line);
-    if (!l_lcks->required.last) {
-	ASSERT(!l_lcks->required.first);
-	l_lck->next = l_lck->prev = NULL;
-	l_lcks->required.first = l_lcks->required.last = l_lck;
+    lc_thread_t *thr = make_my_locked_locks();
+    lc_locked_lock_t *ll = thr->locked.first;
+    if (!find_lock(&ll, lck))
+	required_not_locked(thr, lck);
+    ll = new_locked_lock(thr, lck, options, file, line);
+    if (!thr->required.last) {
+	ASSERT(!thr->required.first);
+	ll->next = ll->prev = NULL;
+	thr->required.first = thr->required.last = ll;
     }
     else {
-	erts_lc_locked_lock_t *l_lck2;
-	ASSERT(l_lcks->required.first);
-	for (l_lck2 = l_lcks->required.last;
+	lc_locked_lock_t *l_lck2;
+	ASSERT(thr->required.first);
+	for (l_lck2 = thr->required.last;
 	     l_lck2;
 	     l_lck2 = l_lck2->prev) {
-	    if (l_lck2->id < lck->id
-		|| (l_lck2->id == lck->id && l_lck2->extra < lck->extra))
+            int order = compare_locked_by_id_extra(l_lck2, lck);
+	    if (order < 0)
 		break;
-	    else if (l_lck2->id == lck->id && l_lck2->extra == lck->extra)
-		require_twice(l_lcks, lck);
+	    if (order == 0)
+		require_twice(thr, lck);
 	}
 	if (!l_lck2) {
-	    l_lck->next = l_lcks->required.first;
-	    l_lck->prev = NULL;
-	    l_lcks->required.first->prev = l_lck;
-	    l_lcks->required.first = l_lck;
+	    ll->next = thr->required.first;
+	    ll->prev = NULL;
+	    thr->required.first->prev = ll;
+	    thr->required.first = ll;
 	}
 	else {
-	    l_lck->next = l_lck2->next;
-	    if (l_lck->next) {
-		ASSERT(l_lcks->required.last != l_lck2);
-		l_lck->next->prev = l_lck;
+	    ll->next = l_lck2->next;
+	    if (ll->next) {
+		ASSERT(thr->required.last != l_lck2);
+		ll->next->prev = ll;
 	    }
 	    else {
-		ASSERT(l_lcks->required.last == l_lck2);
-		l_lcks->required.last = l_lck;
+		ASSERT(thr->required.last == l_lck2);
+		thr->required.last = ll;
 	    }
-	    l_lck->prev = l_lck2;
-	    l_lck2->next = l_lck;		
+	    ll->prev = l_lck2;
+	    l_lck2->next = ll;
 	}
     }
 }
 
-void erts_lc_unrequire_lock_flg(erts_lc_lock_t *lck, Uint16 op_flags)
+void erts_lc_unrequire_lock_flg(erts_lc_lock_t *lck, erts_lock_options_t options)
 {
-    erts_lc_locked_locks_t *l_lcks = make_my_locked_locks();
-    erts_lc_locked_lock_t *l_lck = l_lcks->locked.first;
-    if (!find_lock(&l_lck, lck))
-	required_not_locked(l_lcks, lck);
-    l_lck = l_lcks->required.first;
-    if (!find_lock(&l_lck, lck))
-	unrequire_of_not_required_lock(l_lcks, lck);
-    if (l_lck->prev) {
-	ASSERT(l_lcks->required.first != l_lck);
-	l_lck->prev->next = l_lck->next;
+    lc_thread_t *thr = make_my_locked_locks();
+    lc_locked_lock_t *ll = thr->locked.first;
+    if (!find_lock(&ll, lck))
+	required_not_locked(thr, lck);
+    ll = thr->required.first;
+    if (!find_lock(&ll, lck))
+	unrequire_of_not_required_lock(thr, lck);
+    if (ll->prev) {
+	ASSERT(thr->required.first != ll);
+	ll->prev->next = ll->next;
     }
     else {
-	ASSERT(l_lcks->required.first == l_lck);
-	l_lcks->required.first = l_lck->next;
+	ASSERT(thr->required.first == ll);
+	thr->required.first = ll->next;
     }
-    if (l_lck->next) {
-	ASSERT(l_lcks->required.last != l_lck);
-	l_lck->next->prev = l_lck->prev;
+    if (ll->next) {
+	ASSERT(thr->required.last != ll);
+	ll->next->prev = ll->prev;
     }
     else {
-	ASSERT(l_lcks->required.last == l_lck);
-	l_lcks->required.last = l_lck->prev;
+	ASSERT(thr->required.last == ll);
+	thr->required.last = ll->prev;
     }
-    lc_free((void *) l_lck);
+    lc_free(thr, ll);
 }
 
-void erts_lc_lock_flg_x(erts_lc_lock_t *lck, Uint16 op_flags,
-			char *file, unsigned int line)
+void erts_lc_lock_flg_x(erts_lc_lock_t *lck, erts_lock_options_t options,
+			const char *file, unsigned int line)
 {
-    erts_lc_locked_locks_t *l_lcks;
-    erts_lc_locked_lock_t *l_lck;
+    lc_thread_t *thr;
+    lc_locked_lock_t *new_ll;
+    int order;
 
     if (lck->inited != ERTS_LC_INITITALIZED)
 	uninitialized_lock();
@@ -1148,32 +1271,45 @@ void erts_lc_lock_flg_x(erts_lc_lock_t *lck, Uint16 op_flags,
     if (lck->id < 0)
 	return;
 
-    l_lcks = make_my_locked_locks();
-    l_lck = new_locked_lock(lck, op_flags, file, line);
+    thr = make_my_locked_locks();
+    new_ll = new_locked_lock(thr, lck, options, file, line);
 
-    if (!l_lcks->locked.last) {
-	ASSERT(!l_lcks->locked.first);
-	l_lcks->locked.last = l_lcks->locked.first = l_lck;
+    if (!thr->locked.last) {
+	ASSERT(!thr->locked.first);
+	thr->locked.last = thr->locked.first = new_ll;
+        ASSERT(0 < lck->id && lck->id < ERTS_LOCK_ORDER_SIZE);
+        thr->matrix.m[lck->id][0] = DIRECT_AFTER;
+        return;
     }
-    else if (l_lcks->locked.last->id < lck->id
-	     || (l_lcks->locked.last->id == lck->id
-		 && l_lcks->locked.last->extra < lck->extra)) {
-	if (LOCK_IS_TYPE_ORDER_VIOLATION(lck->flags, l_lcks->locked.last->flags))
-	    type_order_violation("locking ", l_lcks, lck);
-	l_lck->prev = l_lcks->locked.last;
-	l_lcks->locked.last->next = l_lck;
-	l_lcks->locked.last = l_lck;
+    order = compare_lock_order(thr->locked.last, lck);
+    if (order < 0) {
+        lc_locked_lock_t* ll;
+	if (LOCK_IS_TYPE_ORDER_VIOLATION(lck->flags, thr->locked.last->flags)) {
+	    type_order_violation("locking ", thr, lck);
+        }
+
+        ASSERT(0 < lck->id && lck->id < ERTS_LOCK_ORDER_SIZE);
+        ll = thr->locked.last;
+        thr->matrix.m[lck->id][ll->id] |= DIRECT_AFTER;
+        for (ll = ll->prev; ll; ll = ll->prev) {
+            ASSERT(0 < ll->id && ll->id < ERTS_LOCK_ORDER_SIZE);
+            thr->matrix.m[lck->id][ll->id] |= INDIRECT_AFTER;
+        }
+
+	new_ll->prev = thr->locked.last;
+	thr->locked.last->next = new_ll;
+	thr->locked.last = new_ll;
     }
-    else if (l_lcks->locked.last->id == lck->id && l_lcks->locked.last->extra == lck->extra)
-	lock_twice("Locking", l_lcks, lck, op_flags);
+    else if (order == 0)
+	lock_twice("Locking", thr, lck, options);
     else
-	lock_order_violation(l_lcks, lck);
+	lock_order_violation(thr, lck);
 }
 
-void erts_lc_unlock_flg(erts_lc_lock_t *lck, Uint16 op_flags)
+void erts_lc_unlock_flg(erts_lc_lock_t *lck, erts_lock_options_t options)
 {
-    erts_lc_locked_locks_t *l_lcks;
-    erts_lc_locked_lock_t *l_lck;
+    lc_thread_t *thr;
+    lc_locked_lock_t *ll;
 
     if (lck->inited != ERTS_LC_INITITALIZED)
 	uninitialized_lock();
@@ -1181,38 +1317,38 @@ void erts_lc_unlock_flg(erts_lc_lock_t *lck, Uint16 op_flags)
     if (lck->id < 0)
 	return;
 
-    l_lcks = get_my_locked_locks();
+    thr = get_my_locked_locks();
 
-    if (l_lcks) {
-	l_lck = l_lcks->required.first;
-	if (find_lock(&l_lck, lck))
-	    unlock_of_required_lock(l_lcks, lck);
+    if (thr) {
+	ll = thr->required.first;
+	if (find_lock(&ll, lck))
+	    unlock_of_required_lock(thr, lck);
     }
 
-    for (l_lck = l_lcks ? l_lcks->locked.last : NULL; l_lck; l_lck = l_lck->prev) {
-	if (l_lck->id == lck->id && l_lck->extra == lck->extra) {
-	    if ((l_lck->flags & ERTS_LC_FLG_LO_ALL) != op_flags)
-		unlock_op_mismatch(l_lcks, lck, op_flags);
-	    if (l_lck->prev)
-		l_lck->prev->next = l_lck->next;
+    for (ll = thr ? thr->locked.last : NULL; ll; ll = ll->prev) {
+	if (ll->id == lck->id && ll->extra == lck->extra) {
+	    if ((ll->taken_options & ERTS_LOCK_OPTIONS_RDWR) != options)
+		unlock_op_mismatch(thr, lck, options);
+	    if (ll->prev)
+		ll->prev->next = ll->next;
 	    else
-		l_lcks->locked.first = l_lck->next;
-	    if (l_lck->next)
-		l_lck->next->prev = l_lck->prev;
+		thr->locked.first = ll->next;
+	    if (ll->next)
+		ll->next->prev = ll->prev;
 	    else
-		l_lcks->locked.last = l_lck->prev;
-	    lc_free((void *) l_lck);
+		thr->locked.last = ll->prev;
+	    lc_free(thr, ll);
 	    return;
 	}
     }
     
-    unlock_of_not_locked(l_lcks, lck);
+    unlock_of_not_locked(thr, lck);
 }
 
-void erts_lc_might_unlock_flg(erts_lc_lock_t *lck, Uint16 op_flags)
+void erts_lc_might_unlock_flg(erts_lc_lock_t *lck, erts_lock_options_t options)
 {
-    erts_lc_locked_locks_t *l_lcks;
-    erts_lc_locked_lock_t *l_lck;
+    lc_thread_t *thr;
+    lc_locked_lock_t *ll;
 
     if (lck->inited != ERTS_LC_INITITALIZED)
 	uninitialized_lock();
@@ -1220,17 +1356,17 @@ void erts_lc_might_unlock_flg(erts_lc_lock_t *lck, Uint16 op_flags)
     if (lck->id < 0)
 	return;
 
-    l_lcks = get_my_locked_locks();
+    thr = get_my_locked_locks();
 
-    if (l_lcks) {
-	l_lck = l_lcks->required.first;
-	if (find_lock(&l_lck, lck))
-	    unlock_of_required_lock(l_lcks, lck);
+    if (thr) {
+	ll = thr->required.first;
+	if (find_lock(&ll, lck))
+	    unlock_of_required_lock(thr, lck);
+
+        ll = thr->locked.first;
+        if (!find_lock(&ll, lck))
+            unlock_of_not_locked(thr, lck);
     }
-
-    l_lck = l_lcks->locked.first;
-    if (!find_lock(&l_lck, lck))
-	unlock_of_not_locked(l_lcks, lck);
 }
 
 int
@@ -1240,13 +1376,13 @@ erts_lc_trylock_force_busy(erts_lc_lock_t *lck)
 }
 
 void
-erts_lc_trylock_x(int locked, erts_lc_lock_t *lck, char *file, unsigned int line)
+erts_lc_trylock_x(int locked, erts_lc_lock_t *lck, const char *file, unsigned int line)
 {
     erts_lc_trylock_flg_x(locked, lck, 0, file, line);
 }
 
 void
-erts_lc_lock_x(erts_lc_lock_t *lck, char *file, unsigned int line)
+erts_lc_lock_x(erts_lc_lock_t *lck, const char *file, unsigned int line)
 {
     erts_lc_lock_flg_x(lck, 0, file, line);
 }
@@ -1262,7 +1398,7 @@ void erts_lc_might_unlock(erts_lc_lock_t *lck)
     erts_lc_might_unlock_flg(lck, 0);
 }
 
-void erts_lc_require_lock(erts_lc_lock_t *lck, char *file, unsigned int line)
+void erts_lc_require_lock(erts_lc_lock_t *lck, const char *file, unsigned int line)
 {
     erts_lc_require_lock_flg(lck, 0, file, line);
 }
@@ -1273,23 +1409,29 @@ void erts_lc_unrequire_lock(erts_lc_lock_t *lck)
 }
 
 void
-erts_lc_init_lock(erts_lc_lock_t *lck, char *name, Uint16 flags)
+erts_lc_init_lock(erts_lc_lock_t *lck, const char *name, erts_lock_flags_t flags)
 {
     lck->id = erts_lc_get_lock_order_id(name);
-
     lck->extra = (UWord) &lck->extra;
     ASSERT(is_not_immed(lck->extra));
     lck->flags = flags;
+    lck->taken_options = 0;
     lck->inited = ERTS_LC_INITITALIZED;
 }
 
 void
-erts_lc_init_lock_x(erts_lc_lock_t *lck, char *name, Uint16 flags, Eterm extra)
+erts_lc_init_lock_x(erts_lc_lock_t *lck, const char *name, erts_lock_flags_t flags, Eterm extra)
 {
     lck->id = erts_lc_get_lock_order_id(name);
     lck->extra = extra;
-    ASSERT(is_immed(lck->extra));
     lck->flags = flags;
+    if (lc_is_term_order(lck->id)) {
+        lck->flags |= ERTS_LOCK_FLAGS_PROPERTY_TERM_ORDER;
+        ASSERT(!is_header(lck->extra));
+    }
+    else
+        ASSERT(is_immed(lck->extra));
+    lck->taken_options = 0;
     lck->inited = ERTS_LC_INITITALIZED;
 }
 
@@ -1303,34 +1445,43 @@ erts_lc_destroy_lock(erts_lc_lock_t *lck)
     lck->id = -1;
     lck->extra = THE_NON_VALUE;
     lck->flags = 0;
+    lck->taken_options = 0;
 }
 
 void
 erts_lc_init(void)
 {
-#ifdef ERTS_LC_STATIC_ALLOC
-    int i;
-    static erts_lc_free_block_t fbs[ERTS_LC_FB_CHUNK_SIZE];
-    for (i = 0; i < ERTS_LC_FB_CHUNK_SIZE - 1; i++) {
-#ifdef DEBUG
-	memset((void *) &fbs[i], 0xdf, sizeof(erts_lc_free_block_t));
-#endif
-	fbs[i].next = &fbs[i+1];
-    }
-#ifdef DEBUG
-    memset((void *) &fbs[ERTS_LC_FB_CHUNK_SIZE-1],
-	   0xdf, sizeof(erts_lc_free_block_t));
-#endif
-    fbs[ERTS_LC_FB_CHUNK_SIZE-1].next = NULL;
-    free_blocks = &fbs[0]; 
-#else /* #ifdef ERTS_LC_STATIC_ALLOC */
-    free_blocks = NULL;
-#endif /* #ifdef ERTS_LC_STATIC_ALLOC */
-
-    if (ethr_spinlock_init(&free_blocks_lock) != 0)
+    int i, j, level;
+    if (ethr_spinlock_init(&lc_threads_lock) != 0)
 	ERTS_INTERNAL_ERROR("spinlock_init failed");
 
     erts_tsd_key_create(&locks_key,"erts_lock_check_key");
+
+    /* Assert no duplicate lock names */
+    for (i=0; i < ERTS_LOCK_ORDER_SIZE; i++) {
+        if (erts_lock_order[i].name) {
+            for (j = i + 1; j < ERTS_LOCK_ORDER_SIZE; j++) {
+                if (erts_lock_order[j].name) {
+                    ERTS_ASSERT(sys_strcmp(erts_lock_order[i].name,
+                                           erts_lock_order[j].name)
+                                != 0);
+                }
+            }
+        }
+    }
+
+    /* Initialize lock levels */
+    level = 0;
+    for (i = 0; i < ERTS_LOCK_ORDER_SIZE; i++) {
+        if (erts_lock_order[i].name) {
+            erts_lock_order[i].level = level;
+        }
+        else {
+            /* level separator */
+            ASSERT(erts_lock_order[i].internal_order == NULL);
+            ++level;
+        }
+    }
 }
 
 void
@@ -1349,5 +1500,94 @@ erts_lc_pll(void)
     print_curr_locks(get_my_locked_locks());
 }
 
+static void collect_matrix(lc_matrix_t* matrix)
+{
+    int i, j;
+    for (i = 1; i < ERTS_LOCK_ORDER_SIZE; i++) {
+        for (j = 0; j <= i; j++) {
+            tot_lc_matrix.m[i][j] |= matrix->m[i][j];
+        }
+#ifdef DEBUG
+        for ( ; j < ERTS_LOCK_ORDER_SIZE; j++) {
+            ASSERT(matrix->m[i][j] == 0);
+        }
+#endif
+    }
+}
+
+Eterm
+erts_lc_dump_graph(void)
+{
+    static const char comment[] =
+        "% This file was generated by erts_debug:lc_graph()\n"
+        "% It contains the recorded locking order from a running beam.\n"
+        "% Example to merge several files and generate a viewable graph:\n"
+        "%\n"
+        "% 1> erts_debug:lc_graph_merge(\"lc_graph\", \"lc_graph.*\").\n"
+        "% 2> erts_debug:lc_graph_to_dot(\"lc_graph.dot\", \"lc_graph\").\n"
+        "%\n"
+        "% $> dot -Tsvg -Nshape=box -Grankdir=LR -Granksep=2 lc_graph.dot > lc_graph.svg\n"
+        "\n";
+    const char* basename = "lc_graph.";
+    char filename[40];
+    lc_matrix_t* tot = &tot_lc_matrix;
+    lc_thread_t* thr;
+    int i, j, name_max = 0;
+    FILE* ff;
+
+    lc_lock_threads();
+    for (thr = lc_threads; thr; thr = thr->next) {
+        collect_matrix(&thr->matrix);
+    }
+    lc_unlock_threads();
+
+    sys_strcpy(filename, basename);
+    sys_get_pid(filename + strlen(basename),
+                sizeof(filename) - strlen(basename));
+    ff = fopen(filename, "w");
+    if (!ff)
+        return am_error;
+
+    for (i = 1; i < ERTS_LOCK_ORDER_SIZE; i++) {
+        int len;
+        if (!erts_lock_order[i].name)
+            continue;
+
+        len = strlen(erts_lock_order[i].name);
+        if (name_max < len)
+            name_max = len;
+    }
+    fputs(comment, ff);
+
+
+    fputs("%{ThisLockName, ThisLockId, LockedDirectlyBeforeThis, LockedIndirectlyBeforeThis}\n", ff);
+    fprintf(ff, "[{%*s, %2d}", name_max, "\"NO LOCK\"", 0);
+    for (i = 1; i < ERTS_LOCK_ORDER_SIZE; i++) {
+        char* delim = "";
+        if (!erts_lock_order[i].name)
+            continue;
+        fprintf(ff, ",\n {%*s, %2d, [", name_max, erts_lock_order[i].name, i);
+        for (j = 0; j < ERTS_LOCK_ORDER_SIZE; j++) {
+            if (tot->m[i][j] & DIRECT_AFTER) {
+                fprintf(ff, "%s%d", delim, j);
+                delim = ",";
+            }
+        }
+        fprintf(ff, "], [");
+        delim = "";
+        for (j = 0; j < ERTS_LOCK_ORDER_SIZE; j++) {
+            if (tot->m[i][j] == INDIRECT_AFTER) {
+                fprintf(ff, "%s%d", delim, j);
+                delim = ",";
+            }
+        }
+        fputs("]}", ff);
+    }
+    fputs("].", ff);
+    fclose(ff);
+    erts_fprintf(stderr, "Created file '%s' in current working directory\n",
+                 filename);
+    return am_ok;
+}
 
 #endif /* #ifdef ERTS_ENABLE_LOCK_CHECK */

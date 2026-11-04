@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2008-2013. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0 AND LicenseRef-scancode-wxwindows-free-doc-3
+%%
+%% Copyright Ericsson AB 2008-2026. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -15,144 +17,231 @@
 %% See the License for the specific language governing permissions and
 %% limitations under the License.
 %%
+%% For documentation, wxWindow Free Documentation License, Version 3 applies.
+%% wxWindows Free Documentation Licence, Version 3, as follows.
+%% ===============================================
+%%
+%% Everyone is permitted to copy and distribute verbatim copies
+%% of this licence document, but changing it is not allowed.
+%%
+%%                  WXWINDOWS FREE DOCUMENTATION LICENCE
+%%    TERMS AND CONDITIONS FOR COPYING, DISTRIBUTION AND MODIFICATION
+%%
+%% 1. Permission is granted to make and distribute verbatim copies of this
+%% manual or piece of documentation provided any copyright notice and this
+%% permission notice are preserved on all copies.
+%%
+%% 2. Permission is granted to process this file or document through a
+%% document processing system and, at your option and the option of any third
+%% party, print the results, provided a printed document carries a copying
+%% permission notice identical to this one.
+%%
+%% 3. Permission is granted to copy and distribute modified versions of this
+%% manual or piece of documentation under the conditions for verbatim copying,
+%% provided also that any sections describing licensing conditions for this
+%% manual, such as, in particular, the GNU General Public Licence, the GNU
+%% Library General Public Licence, and any wxWindows Licence are included
+%% exactly as in the original, and provided that the entire resulting derived
+%% work is distributed under the terms of a permission notice identical to
+%% this one.
+%%
+%% 4. Permission is granted to copy and distribute translations of this manual
+%% or piece of documentation into another language, under the above conditions
+%% for modified versions, except that sections related to licensing, including
+%% this paragraph, may also be included in translations approved by the
+%% copyright holders of the respective licence documents in addition to the
+%% original English.
+%%
 %% %CopyrightEnd%
 %% This file is generated DO NOT EDIT
 
-%% @doc See external documentation: <a href="http://www.wxwidgets.org/manuals/2.8.12/wx_wxgraphicsrenderer.html">wxGraphicsRenderer</a>.
-%% @type wxGraphicsRenderer().  An object reference, The representation is internal
-%% and can be changed without notice. It can't be used for comparsion
-%% stored on disc or distributed for use on other nodes.
-
 -module(wxGraphicsRenderer).
+-moduledoc """
+A `m:wxGraphicsRenderer` is the instance corresponding to the rendering engine used.
+
+There may be multiple instances on a system, if there are different rendering engines
+present, but there is always only one instance per engine. This instance is pointed back
+to by all objects created by it (`m:wxGraphicsContext`, `m:wxGraphicsPath` etc.) and can
+be retrieved through their `wxGraphicsObject:getRenderer/1` method. Therefore you can create an additional instance of a
+path etc. by calling `wxGraphicsObject:getRenderer/1` and then using the appropriate CreateXXX() function of that renderer.
+
+wxWidgets docs: [wxGraphicsRenderer](https://docs.wxwidgets.org/3.2/classwx_graphics_renderer.html)
+""".
 -include("wxe.hrl").
--export([createBrush/2,createContext/2,createFont/2,createFont/3,createLinearGradientBrush/7,
-  createMatrix/1,createMatrix/2,createPath/1,createPen/2,createRadialGradientBrush/8,
-  getDefaultRenderer/0]).
+-export([createBrush/2,createContext/2,createFont/2,createFont/3,createFont/4,
+  createLinearGradientBrush/6,createMatrix/1,createMatrix/2,createPath/1,
+  createRadialGradientBrush/7,getDefaultRenderer/0]).
 
 %% inherited exports
 -export([parent_class/1]).
 
+-type wxGraphicsRenderer() :: wx:wx_object().
 -export_type([wxGraphicsRenderer/0]).
--deprecated([createLinearGradientBrush/7,createRadialGradientBrush/8]).
-
-%% @hidden
+-doc false.
 parent_class(_Class) -> erlang:error({badtype, ?MODULE}).
 
--type wxGraphicsRenderer() :: wx:wx_object().
-%% @doc See <a href="http://www.wxwidgets.org/manuals/2.8.12/wx_wxgraphicsrenderer.html#wxgraphicsrenderergetdefaultrenderer">external documentation</a>.
+-doc """
+Returns the default renderer on this platform.
+
+On macOS this is the Core Graphics (a.k.a. Quartz 2D) renderer, on MSW the GDIPlus
+renderer, and on GTK we currently default to the Cairo renderer.
+""".
 -spec getDefaultRenderer() -> wxGraphicsRenderer().
 getDefaultRenderer() ->
-  wxe_util:call(?wxGraphicsRenderer_GetDefaultRenderer,
-  <<>>).
+  wxe_util:queue_cmd(?get_env(), ?wxGraphicsRenderer_GetDefaultRenderer),
+  wxe_util:rec(?wxGraphicsRenderer_GetDefaultRenderer).
 
-%% @doc See <a href="http://www.wxwidgets.org/manuals/2.8.12/wx_wxgraphicsrenderer.html#wxgraphicsrenderercreatecontext">external documentation</a>.
--spec createContext(This, Dc) -> wxGraphicsContext:wxGraphicsContext() when
-	This::wxGraphicsRenderer(), Dc::wxWindowDC:wxWindowDC() | wxWindow:wxWindow().
-createContext(#wx_ref{type=ThisT,ref=ThisRef},#wx_ref{type=DcT,ref=DcRef}) ->
+-doc "Creates a `m:wxGraphicsContext` from a `m:wxWindowDC`.".
+-spec createContext(This, WindowDC) -> wxGraphicsContext:wxGraphicsContext() when
+        This::wxGraphicsRenderer(), WindowDC::wxWindowDC:wxWindowDC() | wxWindow:wxWindow() | wxMemoryDC:wxMemoryDC().
+createContext(#wx_ref{type=ThisT}=This,#wx_ref{type=WindowDCT}=WindowDC) ->
   ?CLASS(ThisT,wxGraphicsRenderer),
-  DcOP = case ?CLASS_T(DcT,wxWindowDC) of
-     true ->
-       ?wxGraphicsRenderer_CreateContext_1_1;
-     _ -> ?CLASS(DcT,wxWindow),
-       ?wxGraphicsRenderer_CreateContext_1_0
-     end,
-  wxe_util:call(DcOP,
-  <<ThisRef:32/?UI,DcRef:32/?UI>>).
+  IswxWindowDC = ?CLASS_T(WindowDCT,wxWindowDC),
+  IswxWindow = ?CLASS_T(WindowDCT,wxWindow),
+  IswxMemoryDC = ?CLASS_T(WindowDCT,wxMemoryDC),
+  WindowDCType = if
+    IswxWindowDC ->   wxWindowDC;
+    IswxWindow ->   wxWindow;
+    IswxMemoryDC ->   wxMemoryDC;
+    true -> error({badarg, WindowDCT})
+  end,
+  wxe_util:queue_cmd(This,wx:typeCast(WindowDC, WindowDCType),?get_env(),?wxGraphicsRenderer_CreateContext),
+  wxe_util:rec(?wxGraphicsRenderer_CreateContext).
 
-%% @doc See <a href="http://www.wxwidgets.org/manuals/2.8.12/wx_wxgraphicsrenderer.html#wxgraphicsrenderercreatepen">external documentation</a>.
--spec createPen(This, Pen) -> wxGraphicsPen:wxGraphicsPen() when
-	This::wxGraphicsRenderer(), Pen::wxPen:wxPen().
-createPen(#wx_ref{type=ThisT,ref=ThisRef},#wx_ref{type=PenT,ref=PenRef}) ->
-  ?CLASS(ThisT,wxGraphicsRenderer),
-  ?CLASS(PenT,wxPen),
-  wxe_util:call(?wxGraphicsRenderer_CreatePen,
-  <<ThisRef:32/?UI,PenRef:32/?UI>>).
-
-%% @doc See <a href="http://www.wxwidgets.org/manuals/2.8.12/wx_wxgraphicsrenderer.html#wxgraphicsrenderercreatebrush">external documentation</a>.
+-doc "Creates a native brush from a `m:wxBrush`.".
 -spec createBrush(This, Brush) -> wxGraphicsBrush:wxGraphicsBrush() when
-	This::wxGraphicsRenderer(), Brush::wxBrush:wxBrush().
-createBrush(#wx_ref{type=ThisT,ref=ThisRef},#wx_ref{type=BrushT,ref=BrushRef}) ->
+        This::wxGraphicsRenderer(), Brush::wxBrush:wxBrush().
+createBrush(#wx_ref{type=ThisT}=This,#wx_ref{type=BrushT}=Brush) ->
   ?CLASS(ThisT,wxGraphicsRenderer),
   ?CLASS(BrushT,wxBrush),
-  wxe_util:call(?wxGraphicsRenderer_CreateBrush,
-  <<ThisRef:32/?UI,BrushRef:32/?UI>>).
+  wxe_util:queue_cmd(This,Brush,?get_env(),?wxGraphicsRenderer_CreateBrush),
+  wxe_util:rec(?wxGraphicsRenderer_CreateBrush).
 
-%% @doc See <a href="http://www.wxwidgets.org/manuals/2.8.12/wx_wxgraphicsrenderer.html#wxgraphicsrenderercreatelineargradientbrush">external documentation</a>.
--spec createLinearGradientBrush(This, X1, Y1, X2, Y2, C1, C2) -> wxGraphicsBrush:wxGraphicsBrush() when
-	This::wxGraphicsRenderer(), X1::number(), Y1::number(), X2::number(), Y2::number(), C1::wx:wx_colour(), C2::wx:wx_colour().
-createLinearGradientBrush(#wx_ref{type=ThisT,ref=ThisRef},X1,Y1,X2,Y2,C1,C2)
- when is_number(X1),is_number(Y1),is_number(X2),is_number(Y2),tuple_size(C1) =:= 3; tuple_size(C1) =:= 4,tuple_size(C2) =:= 3; tuple_size(C2) =:= 4 ->
+-doc """
+Creates a native brush with a linear gradient.
+
+Stops support is new since wxWidgets 2.9.1, previously only the start and end colours
+could be specified.
+
+The ability to apply a transformation matrix to the gradient was added in 3.1.3
+""".
+-spec createLinearGradientBrush(This, X1, Y1, X2, Y2, Stops) -> wxGraphicsBrush:wxGraphicsBrush() when
+        This::wxGraphicsRenderer(), X1::number(), Y1::number(), X2::number(), Y2::number(), Stops::wxGraphicsGradientStops:wxGraphicsGradientStops().
+createLinearGradientBrush(#wx_ref{type=ThisT}=This,X1,Y1,X2,Y2,#wx_ref{type=StopsT}=Stops)
+ when is_number(X1),is_number(Y1),is_number(X2),is_number(Y2) ->
   ?CLASS(ThisT,wxGraphicsRenderer),
-  wxe_util:call(?wxGraphicsRenderer_CreateLinearGradientBrush,
-  <<ThisRef:32/?UI,0:32,X1:64/?F,Y1:64/?F,X2:64/?F,Y2:64/?F,(wxe_util:colour_bin(C1)):16/binary,(wxe_util:colour_bin(C2)):16/binary>>).
+  ?CLASS(StopsT,wxGraphicsGradientStops),
+  wxe_util:queue_cmd(This,X1,Y1,X2,Y2,Stops,?get_env(),?wxGraphicsRenderer_CreateLinearGradientBrush),
+  wxe_util:rec(?wxGraphicsRenderer_CreateLinearGradientBrush).
 
-%% @doc See <a href="http://www.wxwidgets.org/manuals/2.8.12/wx_wxgraphicsrenderer.html#wxgraphicsrenderercreateradialgradientbrush">external documentation</a>.
--spec createRadialGradientBrush(This, Xo, Yo, Xc, Yc, Radius, OColor, CColor) -> wxGraphicsBrush:wxGraphicsBrush() when
-	This::wxGraphicsRenderer(), Xo::number(), Yo::number(), Xc::number(), Yc::number(), Radius::number(), OColor::wx:wx_colour(), CColor::wx:wx_colour().
-createRadialGradientBrush(#wx_ref{type=ThisT,ref=ThisRef},Xo,Yo,Xc,Yc,Radius,OColor,CColor)
- when is_number(Xo),is_number(Yo),is_number(Xc),is_number(Yc),is_number(Radius),tuple_size(OColor) =:= 3; tuple_size(OColor) =:= 4,tuple_size(CColor) =:= 3; tuple_size(CColor) =:= 4 ->
+-doc """
+Creates a native brush with a radial gradient.
+
+Stops support is new since wxWidgets 2.9.1, previously only the start and end colours
+could be specified.
+
+The ability to apply a transformation matrix to the gradient was added in 3.1.3
+""".
+-spec createRadialGradientBrush(This, StartX, StartY, EndX, EndY, Radius, Stops) -> wxGraphicsBrush:wxGraphicsBrush() when
+        This::wxGraphicsRenderer(), StartX::number(), StartY::number(), EndX::number(), EndY::number(), Radius::number(), Stops::wxGraphicsGradientStops:wxGraphicsGradientStops().
+createRadialGradientBrush(#wx_ref{type=ThisT}=This,StartX,StartY,EndX,EndY,Radius,#wx_ref{type=StopsT}=Stops)
+ when is_number(StartX),is_number(StartY),is_number(EndX),is_number(EndY),is_number(Radius) ->
   ?CLASS(ThisT,wxGraphicsRenderer),
-  wxe_util:call(?wxGraphicsRenderer_CreateRadialGradientBrush,
-  <<ThisRef:32/?UI,0:32,Xo:64/?F,Yo:64/?F,Xc:64/?F,Yc:64/?F,Radius:64/?F,(wxe_util:colour_bin(OColor)):16/binary,(wxe_util:colour_bin(CColor)):16/binary>>).
+  ?CLASS(StopsT,wxGraphicsGradientStops),
+  wxe_util:queue_cmd(This,StartX,StartY,EndX,EndY,Radius,Stops,?get_env(),?wxGraphicsRenderer_CreateRadialGradientBrush),
+  wxe_util:rec(?wxGraphicsRenderer_CreateRadialGradientBrush).
 
-%% @equiv createFont(This,Font, [])
+-doc(#{equiv => createFont(This,Font, [])}).
 -spec createFont(This, Font) -> wxGraphicsFont:wxGraphicsFont() when
-	This::wxGraphicsRenderer(), Font::wxFont:wxFont().
+        This::wxGraphicsRenderer(), Font::wxFont:wxFont().
 
 createFont(This,Font)
  when is_record(This, wx_ref),is_record(Font, wx_ref) ->
   createFont(This,Font, []).
 
-%% @doc See <a href="http://www.wxwidgets.org/manuals/2.8.12/wx_wxgraphicsrenderer.html#wxgraphicsrenderercreatefont">external documentation</a>.
--spec createFont(This, Font, [Option]) -> wxGraphicsFont:wxGraphicsFont() when
+-doc "Creates a native graphics font from a `m:wxFont` and a text colour.".
+-spec createFont(This, SizeInPixels, Facename) -> wxGraphicsFont:wxGraphicsFont() when
+        This::wxGraphicsRenderer(), SizeInPixels::number(), Facename::unicode:chardata();
+      (This, Font, [Option]) -> wxGraphicsFont:wxGraphicsFont() when
 	This::wxGraphicsRenderer(), Font::wxFont:wxFont(),
-	Option :: {col, wx:wx_colour()}.
-createFont(#wx_ref{type=ThisT,ref=ThisRef},#wx_ref{type=FontT,ref=FontRef}, Options)
+	Option :: {'col', wx:wx_colour()}.
+
+createFont(This,SizeInPixels,Facename)
+ when is_record(This, wx_ref),is_number(SizeInPixels),?is_chardata(Facename) ->
+  createFont(This,SizeInPixels,Facename, []);
+createFont(#wx_ref{type=ThisT}=This,#wx_ref{type=FontT}=Font, Options)
  when is_list(Options) ->
   ?CLASS(ThisT,wxGraphicsRenderer),
   ?CLASS(FontT,wxFont),
-  MOpts = fun({col, Col}, Acc) -> [<<1:32/?UI,(wxe_util:colour_bin(Col)):16/binary,0:32>>|Acc];
-          (BadOpt, _) -> erlang:error({badoption, BadOpt}) end,
-  BinOpt = list_to_binary(lists:foldl(MOpts, [<<0:32>>], Options)),
-  wxe_util:call(?wxGraphicsRenderer_CreateFont,
-  <<ThisRef:32/?UI,FontRef:32/?UI, BinOpt/binary>>).
+  MOpts = fun({col, Col}) -> {col,wxe_util:color(Col)};
+          (BadOpt) -> erlang:error({badoption, BadOpt}) end,
+  Opts = lists:map(MOpts, Options),
+  wxe_util:queue_cmd(This,Font, Opts,?get_env(),?wxGraphicsRenderer_CreateFont_2),
+  wxe_util:rec(?wxGraphicsRenderer_CreateFont_2).
 
-%% @equiv createMatrix(This, [])
+-doc """
+Creates a graphics font with the given characteristics.
+
+If possible, the `createFont/4` overload taking `m:wxFont` should be used instead. The main advantage
+of this overload is that it can be used without X server connection under Unix when using Cairo.
+
+Since: 2.9.3
+""".
+-spec createFont(This, SizeInPixels, Facename, [Option]) -> wxGraphicsFont:wxGraphicsFont() when
+	This::wxGraphicsRenderer(), SizeInPixels::number(), Facename::unicode:chardata(),
+	Option :: {'flags', integer()}
+		 | {'col', wx:wx_colour()}.
+createFont(#wx_ref{type=ThisT}=This,SizeInPixels,Facename, Options)
+ when is_number(SizeInPixels),?is_chardata(Facename),is_list(Options) ->
+  ?CLASS(ThisT,wxGraphicsRenderer),
+  Facename_UC = unicode:characters_to_binary(Facename),
+  MOpts = fun({flags, _flags} = Arg) -> Arg;
+          ({col, Col}) -> {col,wxe_util:color(Col)};
+          (BadOpt) -> erlang:error({badoption, BadOpt}) end,
+  Opts = lists:map(MOpts, Options),
+  wxe_util:queue_cmd(This,SizeInPixels,Facename_UC, Opts,?get_env(),?wxGraphicsRenderer_CreateFont_3),
+  wxe_util:rec(?wxGraphicsRenderer_CreateFont_3).
+
+-doc(#{equiv => createMatrix(This, [])}).
 -spec createMatrix(This) -> wxGraphicsMatrix:wxGraphicsMatrix() when
-	This::wxGraphicsRenderer().
+        This::wxGraphicsRenderer().
 
 createMatrix(This)
  when is_record(This, wx_ref) ->
   createMatrix(This, []).
 
-%% @doc See <a href="http://www.wxwidgets.org/manuals/2.8.12/wx_wxgraphicsrenderer.html#wxgraphicsrenderercreatematrix">external documentation</a>.
+-doc """
+Creates a native affine transformation matrix from the passed in values.
+
+The defaults result in an identity matrix.
+""".
 -spec createMatrix(This, [Option]) -> wxGraphicsMatrix:wxGraphicsMatrix() when
 	This::wxGraphicsRenderer(),
-	Option :: {a, number()}
-		 | {b, number()}
-		 | {c, number()}
-		 | {d, number()}
-		 | {tx, number()}
-		 | {ty, number()}.
-createMatrix(#wx_ref{type=ThisT,ref=ThisRef}, Options)
+	Option :: {'a', number()}
+		 | {'b', number()}
+		 | {'c', number()}
+		 | {'d', number()}
+		 | {'tx', number()}
+		 | {'ty', number()}.
+createMatrix(#wx_ref{type=ThisT}=This, Options)
  when is_list(Options) ->
   ?CLASS(ThisT,wxGraphicsRenderer),
-  MOpts = fun({a, A}, Acc) -> [<<1:32/?UI,0:32,A:64/?F>>|Acc];
-          ({b, B}, Acc) -> [<<2:32/?UI,0:32,B:64/?F>>|Acc];
-          ({c, C}, Acc) -> [<<3:32/?UI,0:32,C:64/?F>>|Acc];
-          ({d, D}, Acc) -> [<<4:32/?UI,0:32,D:64/?F>>|Acc];
-          ({tx, Tx}, Acc) -> [<<5:32/?UI,0:32,Tx:64/?F>>|Acc];
-          ({ty, Ty}, Acc) -> [<<6:32/?UI,0:32,Ty:64/?F>>|Acc];
-          (BadOpt, _) -> erlang:error({badoption, BadOpt}) end,
-  BinOpt = list_to_binary(lists:foldl(MOpts, [<<0:32>>], Options)),
-  wxe_util:call(?wxGraphicsRenderer_CreateMatrix,
-  <<ThisRef:32/?UI, 0:32,BinOpt/binary>>).
+  MOpts = fun({a, _a} = Arg) -> Arg;
+          ({b, _b} = Arg) -> Arg;
+          ({c, _c} = Arg) -> Arg;
+          ({d, _d} = Arg) -> Arg;
+          ({tx, _tx} = Arg) -> Arg;
+          ({ty, _ty} = Arg) -> Arg;
+          (BadOpt) -> erlang:error({badoption, BadOpt}) end,
+  Opts = lists:map(MOpts, Options),
+  wxe_util:queue_cmd(This, Opts,?get_env(),?wxGraphicsRenderer_CreateMatrix),
+  wxe_util:rec(?wxGraphicsRenderer_CreateMatrix).
 
-%% @doc See <a href="http://www.wxwidgets.org/manuals/2.8.12/wx_wxgraphicsrenderer.html#wxgraphicsrenderercreatepath">external documentation</a>.
+-doc "Creates a native graphics path which is initially empty.".
 -spec createPath(This) -> wxGraphicsPath:wxGraphicsPath() when
-	This::wxGraphicsRenderer().
-createPath(#wx_ref{type=ThisT,ref=ThisRef}) ->
+        This::wxGraphicsRenderer().
+createPath(#wx_ref{type=ThisT}=This) ->
   ?CLASS(ThisT,wxGraphicsRenderer),
-  wxe_util:call(?wxGraphicsRenderer_CreatePath,
-  <<ThisRef:32/?UI>>).
+  wxe_util:queue_cmd(This,?get_env(),?wxGraphicsRenderer_CreatePath),
+  wxe_util:rec(?wxGraphicsRenderer_CreatePath).
 

@@ -823,7 +823,7 @@ decode_enumerated(Buffer,C,NamedNumberTup) when tuple(NamedNumberTup) ->
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %% bitstring NamedBitList
 %% Val can be  of:
-%% - [identifiers] where only named identifers are set to one,
+%% - [identifiers] where only named identifiers are set to one,
 %%   the Constraint must then have some information of the
 %%   bitlength.
 %% - [list of ones and zeroes] all bits
@@ -1346,7 +1346,7 @@ create_char_tab(_Min,[],_V) ->
 create_char_tab(Min,L,V) ->
     [false|create_char_tab(Min+1,L,V)].
 
-%% This very inefficient and should be moved to compiletime
+%% This is very inefficient and should be moved to compile time
 charbits(NumOfChars,aligned) ->
     case charbits(NumOfChars) of
 	1 -> 1;

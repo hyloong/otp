@@ -1,8 +1,10 @@
 %%
 %% %CopyrightBegin%
-%% 
-%% Copyright Ericsson AB 2000-2013. All Rights Reserved.
-%% 
+%%
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2000-2026. All Rights Reserved.
+%%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
 %% You may obtain a copy of the License at
@@ -14,14 +16,14 @@
 %% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 %% See the License for the specific language governing permissions and
 %% limitations under the License.
-%% 
+%%
 %% %CopyrightEnd%
 %%
 
 %%
 %% Verifying erlang:phash/2. And now also phash2/2, to some extent.
 %% Test the hashing algorithm for integer numbers in 2 ways:
-%% 1 Test that numbers in diferent sequences get sufficiently spread
+%% 1 Test that numbers in different sequences get sufficiently spread
 %%   in a "bit pattern" way (modulo 256 etc).
 %% 2 Test that numbers are correctly hashed compared to a reference implementation,
 %%   regardless of their internal representation. The hashing algorithm should never 
@@ -31,10 +33,31 @@
 %% Also tests that the limit can be between 0 and 16#FFFFFFFF.
 %%
 -module(hash_SUITE).
+-compile([{nowarn_deprecated_function, [{erlang,phash,2}]}]).
+
 -export([basic_test/0,cmp_test/1,range_test/0,spread_test/1,
 	 phash2_test/0, otp_5292_test/0,
-         otp_7127_test/0]).
--compile({nowarn_deprecated_function, {erlang,hash,2}}).
+         otp_7127_test/0,
+         test_native_record/1, md5_large/1,
+         run_phash2_benchmarks/0,
+         test_phash2_binary_aligned_and_unaligned_equal/1,
+         test_phash2_4GB_plus_bin/1,
+         test_phash2_10MB_plus_bin/1,
+         test_phash2_large_map/1,
+         test_phash2_shallow_long_list/1,
+         test_phash2_deep_list/1,
+         test_phash2_deep_tuple/1,
+         test_phash2_deep_tiny/1,
+         test_phash2_with_42/1,
+         test_phash2_with_short_tuple/1,
+         test_phash2_with_short_list/1,
+         test_phash2_with_tiny_bin/1,
+         test_phash2_with_tiny_unaligned_sub_binary/1,
+         test_phash2_with_small_unaligned_sub_binary/1,
+         test_phash2_with_large_bin/1,
+         test_phash2_with_large_unaligned_sub_binary/1,
+         test_phash2_with_super_large_unaligned_sub_binary/1,
+         test_iovblockhash/1]).
 
 %%
 %% Define to run outside of test server
@@ -44,13 +67,15 @@
 %%
 %% Define for debug output
 %%
-%-define(debug,1).
+-define(debug,1).
 
 -ifdef(STANDALONE).
 -define(config(A,B),config(A,B)).
+-record(event, {name, data}).
 -export([config/2]).
 -else.
--include_lib("test_server/include/test_server.hrl").
+-include_lib("common_test/include/ct.hrl").
+-include_lib("common_test/include/ct_event.hrl").
 -endif.
 
 -ifdef(debug).
@@ -68,88 +93,120 @@
 -ifdef(STANDALONE).
 config(priv_dir,_) ->
     ".".
+notify(X) -> 
+    erlang:display(X).
 -else.
 %% When run in test server.
--export([all/0, suite/0,groups/0,init_per_suite/1, end_per_suite/1, 
-	 init_per_group/2,end_per_group/2,
+-export([groups/0, all/0, suite/0,
 	 test_basic/1,test_cmp/1,test_range/1,test_spread/1,
 	 test_phash2/1,otp_5292/1,bit_level_binaries/1,otp_7127/1,
-         test_hash_zero/1,
-	 end_per_testcase/2,init_per_testcase/2]).
-init_per_testcase(_Case, Config) ->
-    Dog=test_server:timetrap(test_server:minutes(10)),
-    [{watchdog, Dog}|Config].
- 
-end_per_testcase(_Case, Config) ->
-    Dog=?config(watchdog, Config),
-    test_server:timetrap_cancel(Dog),
-    ok.
-suite() -> [{ct_hooks,[ts_install_cth]}].
+         test_hash_zero/1, init_per_suite/1, end_per_suite/1,
+         init_per_testcase/2, end_per_testcase/2,
+         init_per_group/2, end_per_group/2]).
+
+suite() ->
+    [{ct_hooks,[ts_install_cth]},
+     {timetrap, {minutes, 10}}].
 
 all() -> 
     [test_basic, test_cmp, test_range, test_spread,
      test_phash2, otp_5292, bit_level_binaries, otp_7127,
-     test_hash_zero
+     test_hash_zero, test_phash2_binary_aligned_and_unaligned_equal,
+     test_phash2_4GB_plus_bin,
+     test_phash2_10MB_plus_bin,
+     test_native_record,
+     md5_large,
+     test_iovblockhash,
+     {group, phash2_benchmark_tests},
+     {group, phash2_benchmark}].
+
+get_phash2_benchmarks() ->
+    [
+     test_phash2_large_map,
+     test_phash2_shallow_long_list,
+     test_phash2_deep_list,
+     test_phash2_deep_tuple,
+     test_phash2_deep_tiny,
+     test_phash2_with_42,
+     test_phash2_with_short_tuple,
+     test_phash2_with_short_list,
+     test_phash2_with_tiny_bin,
+     test_phash2_with_tiny_unaligned_sub_binary,
+     test_phash2_with_small_unaligned_sub_binary,
+     test_phash2_with_large_bin,
+     test_phash2_with_large_unaligned_sub_binary,
+     test_phash2_with_super_large_unaligned_sub_binary
     ].
 
 groups() -> 
-    [].
+    [
+     {
+      phash2_benchmark_tests,
+      [],
+      get_phash2_benchmarks()
+     },
+     {
+      phash2_benchmark,
+      [],
+      get_phash2_benchmarks()
+     }
+    ].
+
 
 init_per_suite(Config) ->
+    io:format("START APPS~n"),
+    A0 = case application:start(sasl) of
+	     ok -> [sasl];
+	     _ -> []
+	 end,
+    A = case application:start(os_mon) of
+	     ok -> [os_mon|A0];
+	     _ -> A0
+	 end,
+    io:format("APPS STARTED~n"),
+    [{started_apps, A}|Config].
+
+end_per_suite(Config) ->
+    As = proplists:get_value(started_apps, Config),
+    lists:foreach(fun (A) -> application:stop(A) end, As),
     Config.
 
-end_per_suite(_Config) ->
-    ok.
-
-init_per_group(_GroupName, Config) ->
+init_per_group(phash2_benchmark_tests, Config) ->
+    [phash2_benchmark_tests |Config];
+init_per_group(_, Config) ->
     Config.
 
-end_per_group(_GroupName, Config) ->
+end_per_group(_, Config) ->
     Config.
 
+init_per_testcase(_TestCase, Config) ->
+    Config.
+end_per_testcase(_TestCase, Config) ->
+    erts_test_utils:ept_check_leaked_nodes(Config).
 
-test_basic(suite) ->
-    [];
-test_basic(doc) ->
-    ["Tests basic functionality of erlang:phash and that the "
-     "hashes has not changed (neither hash nor phash)"];
+%% Tests basic functionality of erlang:phash and that the
+%% hashes has not changed (neither hash nor phash)
 test_basic(Config) when is_list(Config) ->
     basic_test().
 
 
-test_cmp(suite) ->
-    [];
-test_cmp(doc) ->
-    ["Compares integer hashes made by erlang:phash with those of a reference "
-     "implementation"];
+%% Compares integer hashes made by erlang:phash with those of a reference implementation
 test_cmp(Config) when is_list(Config) ->
     cmp_test(10000).
 
-test_range(suite) ->
-    [];
-test_range(doc) ->
-    ["Tests ranges on erlang:phash from 1 to 2^32"];
+%% Tests ranges on erlang:phash from 1 to 2^32
 test_range(Config) when is_list(Config) ->
     range_test().
 
-test_spread(suite) ->
-    [];
-test_spread(doc) ->
-    ["Tests that the hashes are spread ok"];
+%% Tests that the hashes are spread ok
 test_spread(Config) when is_list(Config) ->
     spread_test(10).
 
-test_phash2(suite) ->
-    [];
-test_phash2(doc) ->
-    ["Tests phash2"];
+%% Tests phash2
 test_phash2(Config) when is_list(Config) ->
     phash2_test().
 
-otp_5292(suite) ->
-    [];
-otp_5292(doc) ->
-    ["Tests hash, phash and phash2 regarding integers."];
+%% Tests hash, phash and phash2 regarding integers.
 otp_5292(Config) when is_list(Config) ->
     otp_5292_test().
 
@@ -157,15 +214,15 @@ otp_5292(Config) when is_list(Config) ->
 bit_level_binaries(Config) when is_list(Config) ->
     bit_level_binaries_do().
 
-otp_7127(suite) ->
-    [];
-otp_7127(doc) ->
-    ["Tests phash2/1."];
+%% Tests phash2/1.
 otp_7127(Config) when is_list(Config) ->
     otp_7127_test().
 
 test_hash_zero(Config) when is_list(Config) ->
     hash_zero_test().
+
+notify(X) ->
+    ct_event:notify(X).
 -endif.
 
 
@@ -176,58 +233,36 @@ test_hash_zero(Config) when is_list(Config) ->
 %%
 basic_test() ->
     685556714 = erlang:phash({a,b,c},16#FFFFFFFF),
-    14468079 = erlang:hash({a,b,c},16#7FFFFFF),
-    37442646 =  erlang:phash([a,b,c,{1,2,3},c:pid(0,2,3),
+    37442646 =  erlang:phash([a,b,c,{1,2,3},c:pid(0,2,0),
 				    16#77777777777777],16#FFFFFFFF),
-    Comment = case erlang:hash([a,b,c,{1,2,3},c:pid(0,2,3),
-				      16#77777777777777],16#7FFFFFF) of
-			102727602 ->
-			    big = erlang:system_info(endian),
-			    "Big endian machine";
-			105818829 ->
-			    little = erlang:system_info(endian),
-			    "Little endian machine"
-		    end,
     ExternalReference = <<131,114,0,3,100,0,13,110,111,110,111,100,101,64,
 			 110,111,104,111,115,116,0,0,0,0,122,0,0,0,0,0,0,0,0>>,
-    1113403635 = erlang:phash(binary_to_term(ExternalReference),
-				    16#FFFFFFFF),
-    123 = erlang:hash(binary_to_term(ExternalReference),
-			    16#7FFFFFF),
-    ExternalFun = <<131,117,0,0,0,3,103,100,0,13,110,111,110,111,100,101,64,
-		   110,111,104,111,115,116,0,0,0,38,0,0,0,0,0,100,0,8,101,
-		   114,108,95,101,118,97,108,97,20,98,5,182,139,98,108,0,0,
-		   0,3,104,2,100,0,1,66,109,0,0,0,33,131,114,0,3,100,0,13,
-		   110,111,110,111,100,101,64,110,111,104,111,115,116,0,0,
-		   0,0,122,0,0,0,0,0,0,0,0,104,2,100,0,1,76,107,0,33,131,
-		   114,0,3,100,0,13,110,111,110,111,100,101,64,110,111,104,
-		   111,115,116,0,0,0,0,122,0,0,0,0,0,0,0,0,104,2,100,0,1,82,
-		   114,0,3,100,0,13,110,111,110,111,100,101,64,110,111,104,
-		   111,115,116,0,0,0,0,122,0,0,0,0,0,0,0,0,106,108,0,0,0,1,
-		   104,5,100,0,6,99,108,97,117,115,101,97,1,106,106,108,0,0,
-		   0,1,104,3,100,0,7,105,110,116,101,103,101,114,97,1,97,1,
-		   106,106,104,3,100,0,4,101,118,97,108,104,2,100,0,5,115,
-		   104,101,108,108,100,0,10,108,111,99,97,108,95,102,117,
-		   110,99,108,0,0,0,1,103,100,0,13,110,111,110,111,100,101,
-		   64,110,111,104,111,115,116,0,0,0,22,0,0,0,0,0,106>>,
-    170987488 = erlang:phash(binary_to_term(ExternalFun),
-				   16#FFFFFFFF),
-    124460689 = erlang:hash(binary_to_term(ExternalFun),
-				  16#7FFFFFF),
+    ExternalReference = <<131,114,0,3,100,0,13,110,111,110,111,100,101,64,
+			 110,111,104,111,115,116,0,0,0,0,122,0,0,0,0,0,0,0,0>>,
+    1113403635 = phash_from_external(ExternalReference),
+
+    ExternalFun = <<131,112,0,0,0,70,1,212,190,220,28,179,144,194,131,
+                    19,215,105,97,77,251,125,93,0,0,0,0,0,0,0,2,100,0,1,
+                    116,97,0,98,6,165,246,224,103,100,0,13,110,111,
+                    110,111,100,101,64,110,111,104,111,115,116,0,0,0,91,
+                    0,0,0,0,0,97,2,97,1>>,
+    25769064 = phash_from_external(ExternalFun),
+
     case (catch erlang:phash(1,0)) of
 	{'EXIT',{badarg, _}} ->
-	    {comment, Comment};
+	    ok;
 	_ ->
 	    exit(phash_accepted_zero_as_range)
     end.
 
+phash_from_external(Ext) ->
+    erlang:phash(binary_to_term(Ext), 16#FFFFFFFF).
 
 range_test() ->
-    random:seed(),
     F = fun(From,From,_FF) ->
 		ok;
 	   (From,To,FF) ->
-		R = random:uniform(16#FFFFFFFFFFFFFFFF),
+		R = rand:uniform(16#FFFFFFFFFFFFFFFF),
 		X = erlang:phash(R, From),
 		Y = erlang:phash(R, 16#100000000) - 1,
 		Z = (Y rem From) + 1,
@@ -240,7 +275,6 @@ range_test() ->
 	end,
     F(1,16#100000000,F).
 
-    
 
 spread_test(N) ->
     test_fun(N,{erlang,phash},16#50000000000,fun(X) ->
@@ -265,14 +299,13 @@ spread_test(N) ->
 
 
 cmp_test(N) ->
-    % No need to save seed, the error indicates what number caused it.
-    random:seed(),
     do_cmp_hashes(N,8).
+
 do_cmp_hashes(0,_) ->
     ok;
 do_cmp_hashes(N,Steps) ->
-    R0 = random:uniform(1 bsl Steps - 1) + random:uniform(16#FFFFFFFF),
-    R = case random:uniform(2) of
+    R0 = rand:uniform(1 bsl Steps - 1) + rand:uniform(16#FFFFFFFF),
+    R = case rand:uniform(2) of
 	    1 ->
 		R0;
 	    _ ->
@@ -295,8 +328,12 @@ do_cmp_hashes(N,Steps) ->
 	true ->
 	    do_cmp_hashes(N - 1, NSteps);
 	_ ->
-	    exit({missmatch_on_input, R, phash, X, make_hash, Y})
+	    exit({mismatch_on_input, R, phash, X, make_hash, Y})
     end.
+
+-record #empty{}.
+-record #a{x, y}.
+-record #order{zzzz=0, true=1, aaaa=2, wwww=3}.
 
 phash2_test() ->
     Max = 1 bsl 32,
@@ -418,6 +455,7 @@ phash2_test() ->
 
 	 %% bit-level binaries
 	 {<<0:7>>, 1055790816},
+	 {(fun()-> B = <<255,7:3>>, <<_:4,D/bitstring>> = B, D end)(), 911751529},
 	 {<<"abc",13:4>>, 670412287},
 	 {<<5:3,"12345678901234567890">>, 289973273},
 
@@ -467,7 +505,7 @@ phash2_test() ->
 	 {"abc"++[1009], 290369864},
 	 {"abc"++[1009]++"de", 4134369195},
 	 {"1234567890123456", 963649519},
-	 
+
 	 %% tuple
 	 {{}, 221703996},
 	 {{{}}, 2165044361},
@@ -479,7 +517,16 @@ phash2_test() ->
 	 {{c:pid(0,2,0)}, 686997880},
 	 {{F4}, 2279632930},
 	 {{a,<<>>}, 2724468891},
-	 {{b,<<>>}, 2702508511}
+         {{b,<<>>}, 2702508511},
+
+         %% native record
+         {#empty{}, 1272570834},
+         {#a{x=1,y=10}, 1020908739},
+         {#a{x=2,y=10}, 535979803},
+         {#a{x=1,y=11}, 4240758587},
+         {#order{}, 3170326674},
+         {#order{zzzz=100}, 2535759712},
+         {#order{wwww=999}, 438972933}
 	],
     SpecFun = fun(S) -> sofs:no_elements(S) > 1 end,
     F = sofs:relation_to_family(sofs:converse(sofs:relation(L))),
@@ -487,6 +534,234 @@ phash2_test() ->
     [] = D,
     [] = [{E,H,H2} || {E,H} <- L, (H2 = erlang:phash2(E, Max)) =/= H],
     ok.
+
+test_phash2_binary_aligned_and_unaligned_equal(Config) when is_list(Config) ->
+    erts_debug:set_internal_state(available_internal_state, true),
+    test_aligned_and_unaligned_equal_up_to(256*12+255),
+    erts_debug:set_internal_state(available_internal_state, false).
+
+test_aligned_and_unaligned_equal_up_to(BinSize) ->
+    Results =
+        lists:map(fun(Size) ->
+                          test_aligned_and_unaligned_equal(Size)
+                  end, lists:seq(1, BinSize)),
+    %% DataDir = filename:join(filename:dirname(code:which(?MODULE)), "hash_SUITE_data"),
+    %% ExpResFile = filename:join(DataDir, "phash2_bin_expected_results.txt"),
+    %% {ok, [ExpRes]} = file:consult(ExpResFile),
+    %% %% ok = file:write_file(ExpResFile, io_lib:format("~w.~n", [Results])),
+    %% Results = ExpRes,
+    110469206 = erlang:phash2(Results).
+
+test_aligned_and_unaligned_equal(BinSize) ->
+    Bin = make_random_bin(BinSize),
+    LastByte = last_byte(Bin),
+    LastInBitstring = LastByte rem 11,
+    Bitstring = << Bin/binary, <<LastInBitstring:5>>/bitstring >>,
+    UnalignedBin = make_unaligned_sub_bitstring(Bin),
+    UnalignedBitstring = make_unaligned_sub_bitstring(Bitstring),
+    case erts_debug:get_internal_state(available_internal_state) of
+        false -> erts_debug:set_internal_state(available_internal_state, true);
+        _ -> ok
+    end,
+    erts_debug:set_internal_state(reds_left, 3),
+    BinHash = erlang:phash2(Bin),
+    BinHash = erlang:phash2(Bin),
+    erts_debug:set_internal_state(reds_left, 3),
+    UnalignedBinHash = erlang:phash2(UnalignedBin),
+    UnalignedBinHash = erlang:phash2(UnalignedBin),
+    BinHash = UnalignedBinHash,
+    erts_debug:set_internal_state(reds_left, 3),
+    BitstringHash = erlang:phash2(Bitstring),
+    BitstringHash = erlang:phash2(Bitstring),
+    erts_debug:set_internal_state(reds_left, 3),
+    UnalignedBitstringHash = erlang:phash2(UnalignedBitstring),
+    UnalignedBitstringHash = erlang:phash2(UnalignedBitstring),
+    BitstringHash = UnalignedBitstringHash,
+    {BinHash, BitstringHash}.
+
+last_byte(Bin) ->
+    NotLastByteSize = (erlang:bit_size(Bin)) - 8,
+    <<_:NotLastByteSize/bitstring, LastByte:8>> = Bin,
+    LastByte.
+
+
+%% This testcase needs 8-10 GB of free memory. If not enough is available
+%% the testcase will fail with {erpc,noconnection}
+test_phash2_4GB_plus_bin(Config) when is_list(Config) ->
+    run_when_enough_resources(
+      fun() ->
+              {ok, Peer, N} = ?CT_PEER(),
+              erpc:call(N,
+                        fun() ->
+                                test_phash2_4GB_plus_bin_tc()
+                        end),
+              peer:stop(Peer)
+      end).
+
+test_phash2_4GB_plus_bin_tc() ->
+    erts_debug:set_internal_state(available_internal_state, true),
+    test_phash2_gc(),
+    test_phash2_plus_bin_helper(fun get_4GB_bin/0, <<>>, <<>>, 13708901),
+    test_phash2_gc(),
+    test_phash2_plus_bin_helper(fun get_4GB_bin/0, <<>>, <<3:5>>, 66617678),
+    test_phash2_gc(),
+    test_phash2_plus_bin_helper(fun get_4GB_bin/0, <<13>>, <<>>, 31308392),
+    test_phash2_gc(),
+    erts_debug:set_internal_state(available_internal_state, false),
+    ok.
+
+test_phash2_10MB_plus_bin(Config) when is_list(Config) ->
+    erts_debug:set_internal_state(available_internal_state, true),
+    test_phash2_gc(),
+    test_phash2_plus_bin_helper(fun get_10MB_bin/0, <<>>, <<>>, 22776267),
+    test_phash2_gc(),
+    test_phash2_plus_bin_helper(fun get_10MB_bin/0, <<>>, <<3:5>>, 124488972),
+    test_phash2_gc(),
+    test_phash2_plus_bin_helper(fun get_10MB_bin/0, <<13>>, <<>>, 72958346),
+    test_phash2_gc(),
+    erts_debug:set_internal_state(available_internal_state, false).
+
+get_10MB_bin() ->
+    TmpBin = make_random_bin(10239),
+    Bin = erlang:iolist_to_binary([0, TmpBin]),
+    IOList10MB = duplicate_iolist(Bin, 10),
+    Bin10MB = erlang:iolist_to_binary(IOList10MB),
+    10485760 = size(Bin10MB),
+    Bin10MB.
+
+get_4GB_bin() ->
+    TmpBin = make_random_bin(65535),
+    Bin = erlang:iolist_to_binary([0, TmpBin]),
+    IOList4GB = duplicate_iolist(Bin, 16),
+    Bin4GB = erlang:iolist_to_binary(IOList4GB),
+    4294967296 = size(Bin4GB),
+    Bin4GB.
+
+duplicate_iolist(IOList, 0) ->
+    IOList;
+duplicate_iolist(IOList, NrOfTimes) ->
+    duplicate_iolist([IOList, IOList], NrOfTimes - 1).
+
+%% This testcase needs >3 GB of free memory.
+test_iovblockhash(Config) when is_list(Config) ->
+    run_when_enough_resources(
+      fun() ->
+              {ok, Peer, N} = ?CT_PEER(),
+              erpc:call(N,
+                        fun() ->
+                                test_iovblockhash_1()
+                        end),
+              peer:stop(Peer)
+      end).
+
+test_iovblockhash_1() ->
+    BigBin = binary:copy(<<0>>, 3 bsl 30),
+    _ = term_to_iovec(BigBin, [local]),
+    ok.
+
+%% This functions is written very carefully so that the binaries
+%% created are released as quickly as possible. If they are not released
+%% then the memory consumption going through the roof and systems will need
+%% lots of memory.
+test_phash2_plus_bin_helper(Bin4GB, ExtraBytes, ExtraBits, ExpectedHash) ->
+    ct:log("Test with ~p extra bytes and ~p extra bits",
+          [ExtraBytes, ExtraBits]),
+    test_phash2_plus_bin_helper(Bin4GB, fun id/1, ExtraBytes, ExtraBits, ExpectedHash),
+    ct:log("Test as unaligned sub bitstring"),
+    test_phash2_plus_bin_helper(Bin4GB, fun make_unaligned_sub_bitstring/1,
+                                ExtraBytes, ExtraBits, ExpectedHash).
+test_phash2_plus_bin_helper(Bin, TransformerFun, ExtraBytes, ExtraBits, ExpectedHash) ->
+    %% GC to free any binaries used by previous test cases
+    test_phash2_gc(),
+    ExtraBitstring = << ExtraBytes/binary, ExtraBits/bitstring >>,
+    LargerBitstring = << ExtraBytes/binary,
+                         ExtraBits/bitstring,
+                         (Bin())/bitstring >>,
+    %% GC to free binary created by Bin()
+    test_phash2_gc(),
+    LargerTransformedBitstring = TransformerFun(LargerBitstring),
+    %% GC to free binary LargerBitstring
+    test_phash2_gc(),
+    ExtraBitstringHash = erlang:phash2(ExtraBitstring),
+    ExpectedHash =
+        case size(LargerTransformedBitstring) < 4294967296 of
+            true ->
+                erts_debug:set_internal_state(reds_left, 1),
+                Hash = erlang:phash2(LargerTransformedBitstring),
+                Hash = erlang:phash2(LargerTransformedBitstring),
+                Hash;
+            false ->
+                erts_debug:set_internal_state(reds_left, 1),
+                ExtraBitstringHash = erlang:phash2(LargerTransformedBitstring),
+                ExtraBitstringHash = erlang:phash2(LargerTransformedBitstring),
+                ExtraBitstringHash
+        end.
+
+test_phash2_gc() ->
+    erts_debug:set_internal_state(force_gc, self()),
+    wait_for_mseg_cache(10).
+
+%% We want to wait for the mseg cache to clear as otherwise the
+%% extra refc binaries may still use memory and cause the system
+%% to run out when it should not.
+wait_for_mseg_cache(0) ->
+    io:format("Cached segments never became zero, continue anyways.");
+wait_for_mseg_cache(N) ->
+    case get_cached_segments() of
+        0 ->
+            %% We sleep an extra second in order for the OS to catch up
+            timer:sleep(1000);
+        NotZero ->
+            io:format("Cached segments = ~p, sleeping for 1 second~n",
+                      [NotZero]),
+            timer:sleep(1000),
+            wait_for_mseg_cache(N-1)
+    end.
+
+get_cached_segments() ->
+    case erlang:system_info({allocator,mseg_alloc}) of
+        false ->
+            0;
+        MsegInfo ->
+            lists:foldl(
+              fun({instance,_,Info}, Acc) ->
+                      Kind = proplists:get_value(memkind, Info),
+                      Status = proplists:get_value(status, Kind),
+                      {cached_segments,Cached} = lists:keyfind(cached_segments, 1, Status),
+                      Acc + Cached
+              end, 0, MsegInfo)
+    end.
+
+run_when_enough_resources(Fun) ->
+    Bits = 8 * erlang:system_info({wordsize,external}),
+    Mem = total_memory(),
+    Build = erlang:system_info(build_type),
+
+    if Bits =:= 64, is_integer(Mem), Mem >= 16,
+       Build =/= valgrind, Build =/= asan ->
+            Fun();
+
+       true ->
+            {skipped,
+             io_lib:format("Not enough resources (System Memory = ~p, Bits = ~p, Build = ~p)",
+                           [Mem, Bits, Build])}
+    end.
+
+total_memory() ->
+    %% Total memory in GB.
+    try
+	SMD = memsup:get_system_memory_data(),
+        TM = proplists:get_value(
+               available_memory, SMD,
+               proplists:get_value(
+                 total_memory, SMD,
+                 proplists:get_value(
+                   system_total_memory, SMD))),
+        TM div (1024*1024*1024)
+    catch
+	_ : _ ->
+	    undefined
+    end.
 
 -ifdef(FALSE).
 f1() ->
@@ -500,30 +775,24 @@ f3(X, Y) ->
 -endif.
 
 otp_5292_test() ->
-    H = fun(E) -> [erlang:hash(E, 16#7FFFFFF),
-                   erlang:hash(-E, 16#7FFFFFF)]
-        end,
-    S1 = md5([md5(hash_int(S, E, H)) || {Start, N, Sz} <- d(), 
-                                        {S, E} <- int(Start, N, Sz)]),
-    PH = fun(E) -> [erlang:phash(E, 1 bsl 32),
-                    erlang:phash(-E, 1 bsl 32),
-                    erlang:phash2(E, 1 bsl 32),
-                    erlang:phash2(-E, 1 bsl 32)]
-            end,
-    S2 = md5([md5(hash_int(S, E, PH)) || {Start, N, Sz} <- d(), 
+    PH = fun(E) ->
+                 EInList = [1, 2, 3, E],
+                 EInList2 = [E, 1, 2, 3],
+                 NegEInList = [1, 2, 3, -E],
+                 NegEInList2 = [-E, 1, 2, 3],
+                 [erlang:phash(E, 1 bsl 32),
+                  erlang:phash(-E, 1 bsl 32),
+                  erlang:phash2(E, 1 bsl 32),
+                  erlang:phash2(-E, 1 bsl 32),
+                  erlang:phash2(EInList, 1 bsl 32),
+                  erlang:phash2(EInList2, 1 bsl 32),
+                  erlang:phash2(NegEInList, 1 bsl 32),
+                  erlang:phash2(NegEInList2, 1 bsl 32)]
+         end,
+    S2 = md5([md5(hash_int(S, E, PH)) || {Start, N, Sz} <- d(),
                                          {S, E} <- int(Start, N, Sz)]),
-    Comment = case S1 of 
-			<<4,248,208,156,200,131,7,1,173,13,239,173,112,81,16,174>> ->
-			    big = erlang:system_info(endian),
-                            "Big endian machine";
-                        <<180,28,33,231,239,184,71,125,76,47,227,241,78,184,176,233>> ->
-			    little = erlang:system_info(endian),
-                            "Little endian machine"
-                    end,
-    <<124,81,198,121,174,233,19,137,10,83,33,80,226,111,238,99>> = S2,
-    2 = erlang:hash(1, (1 bsl 27) -1),
-    {'EXIT', _} = (catch erlang:hash(1, (1 bsl 27))),
-    {comment, Comment}.
+    <<234,63,192,76,253,57,250,32,44,11,73,1,161,102,14,238>> = S2,
+    ok.
 
 d() ->
     [%% Start,          NumOfIntervals, SizeOfInterval
@@ -543,8 +812,6 @@ md5(T) ->
     erlang:md5(term_to_binary(T)).   
 
 bit_level_binaries_do() ->
-    [3511317,7022633,14044578,28087749,56173436,112344123,90467083|_] =
-	bit_level_all_different(fun erlang:hash/2),
     [3511317,7022633,14044578,28087749,56173436,112344123,90467083|_] =
 	bit_level_all_different(fun erlang:phash/2),
     [102233154,19716,102133857,4532024,123369135,24565730,109558721|_] =
@@ -583,9 +850,7 @@ bit_level_all_different(Hash) ->
     Hashes1.
 
 test_hash_phash(Bitstr, Rem) ->
-    Hash = erlang:hash(Bitstr, Rem),
     Hash = erlang:phash(Bitstr, Rem),
-    Hash = erlang:hash(unaligned_sub_bitstr(Bitstr), Rem),
     Hash = erlang:phash(unaligned_sub_bitstr(Bitstr), Rem).
 
 test_phash2(Bitstr, Rem) ->
@@ -603,19 +868,73 @@ hash_zero_test() ->
           binary_to_term(<<131,70,128,0,0,0,0,0,0,0>>)], %% -0.0
     ok = hash_zero_test(Zs,fun(T) -> erlang:phash2(T, 1 bsl 32) end),
     ok = hash_zero_test(Zs,fun(T) -> erlang:phash(T, 1 bsl 32) end),
-    ok = hash_zero_test(Zs,fun(T) -> erlang:hash(T, (1 bsl 27) - 1) end),
     ok.
 
 hash_zero_test([Z|Zs],F) ->
     hash_zero_test(Zs,Z,F(Z),F).
 hash_zero_test([Z|Zs],Z0,V,F) ->
-    true = Z0 =:= Z, %% assert exact equal
-    Z0   = Z,        %% assert matching
-    V    = F(Z),     %% assert hash
+    true = (0.0 == Z0) andalso (0.0 == Z),
+    %% assert that phash and phash2 yield the same hash for both -0.0 and +0.0,
+    %% even though they are different terms since OTP 27.
+    V    = F(Z),
     hash_zero_test(Zs,Z0,V,F);
 hash_zero_test([],_,_,_) ->
     ok.
 
+test_native_record(_Config) ->
+    erts_debug:set_internal_state(available_internal_state, true),
+
+    Records = [#empty{}, #a{x={a,b,c},y=[x,y,z]}, #a{x=42,y=0.0},
+               #order{}, #order{wwww=abc}],
+    _ = [begin
+             %% Hash of the definition is calculated when loading a
+             %% module and when reconstructing a record definition
+             %% from the external term format. Those calculations
+             %% must give the same result.
+             ProcessedTerm = binary_to_term(term_to_binary(Term)),
+             CreatedTerm = create_record(Term),
+
+             Hash = erlang:phash(Term, 1 bsl 32),
+             Hash = erlang:phash(ProcessedTerm, 1 bsl 32),
+             Hash = erlang:phash(CreatedTerm, 1 bsl 32),
+
+             Hash2 = erlang:phash2(Term, 1 bsl 32),
+             Hash2 = erlang:phash2(ProcessedTerm, 1 bsl 32),
+             Hash2 = erlang:phash2(CreatedTerm, 1 bsl 32),
+
+             IntHash = make_internal_hash(Term),
+             IntHash = make_internal_hash(ProcessedTerm),
+             IntHash = make_internal_hash(CreatedTerm)
+         end || Term <- Records],
+
+    erts_debug:set_internal_state(available_internal_state, false),
+    ok.
+
+create_record(Rec) ->
+    Mod = records:get_module(Rec),
+    Name = records:get_name(Rec),
+    Exp = records:is_exported(Rec),
+    Fs = [{Key,records:get(Key, Rec)} ||
+             Key <- records:get_field_names(Rec)],
+    records:create(Mod, Name, Fs, #{is_exported => Exp}).
+
+make_internal_hash(Term) ->
+    erts_debug:get_internal_state({internal_hash, Term}).
+
+md5_large(_Config) when is_list(_Config) ->
+    %% A type conversion error in the md5 implementation on binaries
+    %% larger than 512 MB would cause the MD5 be incorrect on
+    %% 32-bit systems.
+
+    Chunk = <<0:(32*1024*1024)/unit:8>>,
+    L1 = [<<0>> | lists:duplicate(16, Chunk)],
+    <<16#EA3B62C6B93CB3625A1FD76777985F5A:128>> = erlang:md5(L1),
+
+    %% 4GB + 1 will not fit in a size_t on 32-bit systems.
+    L2 = [<<0>> | lists:duplicate(8*16, Chunk)],
+    <<16#F18C798FF5D450DFE4D3ACDC12B621FF:128>> = erlang:md5(L2),
+
+    ok.
 
 %%
 %% Reference implementation of integer hashing
@@ -768,3 +1087,312 @@ unaligned_sub_bitstr(Bin0) when is_bitstring(Bin0) ->
 
 id(I) -> I.
     
+
+%% Benchmarks for phash2
+
+run_phash2_benchmarks() ->
+    Benchmarks = [
+                  test_phash2_large_map,
+                  test_phash2_shallow_long_list,
+                  test_phash2_deep_list,
+                  test_phash2_deep_tuple,
+                  test_phash2_deep_tiny,
+                  test_phash2_with_42,
+                  test_phash2_with_short_tuple,
+                  test_phash2_with_short_list,
+                  test_phash2_with_tiny_bin,
+                  test_phash2_with_tiny_unaligned_sub_binary,
+                  test_phash2_with_small_unaligned_sub_binary,
+                  test_phash2_with_large_bin,
+                  test_phash2_with_large_unaligned_sub_binary,
+                  test_phash2_with_super_large_unaligned_sub_binary
+                 ],
+    [print_comment(B) || B <- Benchmarks].
+
+
+print_comment(FunctionName) ->
+    io:format("~p~n", [FunctionName]),
+    io:format("~s~n", [element(2, erlang:apply(?MODULE, FunctionName, [[]]))]).
+
+nr_of_iters(BenchmarkNumberOfIterations, Config) ->
+    case lists:member(phash2_benchmark_tests, Config) of
+        true -> 1;
+        false -> BenchmarkNumberOfIterations
+    end.
+
+
+test_phash2_large_map(Config) when is_list(Config) ->
+    {Size, ExpectedHash} =
+        case {total_memory(), erlang:system_info(wordsize)} of
+            {Mem, 8} when is_integer(Mem) andalso Mem > 2 ->
+                {1000000, 121857429};
+            _ ->
+                {1000, 66609305}
+        end,
+    run_phash2_test_and_benchmark(nr_of_iters(45, Config),
+                                  get_map(Size),
+                                  ExpectedHash).
+
+test_phash2_shallow_long_list(Config) when is_list(Config) ->
+    {Size, ExpectedHash} =
+        case {total_memory(), erlang:system_info(wordsize)} of
+            {Mem, 8} when is_integer(Mem) andalso Mem > 2 ->
+                {1000000, 78700388};
+            _ ->
+                {1000, 54749638}
+        end,
+    run_phash2_test_and_benchmark(nr_of_iters(1, Config),
+                                  lists:duplicate(Size, get_complex_tuple()),
+                                  ExpectedHash).
+
+test_phash2_deep_list(Config) when is_list(Config) ->
+    {Size, ExpectedHash} =
+        case {total_memory(), erlang:system_info(wordsize)} of
+            {Mem, 8} when is_integer(Mem) andalso Mem > 2 ->
+                {500000, 17986444};
+            _ ->
+                {1000, 81794308}
+        end,
+    run_phash2_test_and_benchmark(nr_of_iters(1, Config),
+                                  make_deep_list(Size, get_complex_tuple()),
+                                  ExpectedHash).
+
+test_phash2_deep_tuple(Config) when is_list(Config) ->
+    {Size, ExpectedHash} =
+        case {total_memory(), erlang:system_info(wordsize)} of
+            {Mem, 8} when is_integer(Mem) andalso Mem > 2 ->
+                {500000, 116594715};
+            _ ->
+                {500, 109057352}
+        end,
+    run_phash2_test_and_benchmark(nr_of_iters(1, Config),
+                                  make_deep_tuple(Size, get_complex_tuple()),
+                                  ExpectedHash).
+
+test_phash2_deep_tiny(Config) when is_list(Config) ->
+    run_phash2_test_and_benchmark(nr_of_iters(1000000, Config),
+                                  make_deep_list(19, 42),
+                                  111589624).
+
+test_phash2_with_42(Config) when is_list(Config) ->
+    run_phash2_test_and_benchmark(nr_of_iters(20000000, Config),
+                                  42,
+                                  30328728).
+
+test_phash2_with_short_tuple(Config) when is_list(Config) ->
+    run_phash2_test_and_benchmark(nr_of_iters(10000000, Config),
+                                  {a,b,<<"hej">>, "hej"},
+                                  50727199).
+
+test_phash2_with_short_list(Config) when is_list(Config) ->
+    run_phash2_test_and_benchmark(nr_of_iters(10000000, Config),
+                                  [a,b,"hej", "hello"],
+                                  117108642).
+
+test_phash2_with_tiny_bin(Config) when is_list(Config) ->
+    run_phash2_test_and_benchmark(nr_of_iters(20000000, Config),
+                                  make_random_bin(10),
+                                  129616602).
+
+test_phash2_with_tiny_unaligned_sub_binary(Config) when is_list(Config) ->
+    run_phash2_test_and_benchmark(nr_of_iters(10000000, Config),
+                                  make_unaligned_sub_binary(make_random_bin(11)),
+                                  59364725).
+
+test_phash2_with_small_unaligned_sub_binary(Config) when is_list(Config) ->
+    run_phash2_test_and_benchmark(nr_of_iters(400000, Config),
+                                  make_unaligned_sub_binary(make_random_bin(1001)),
+                                  130388119).
+
+test_phash2_with_large_bin(Config) when is_list(Config) ->
+    {Size, ExpectedHash} =
+        case {total_memory(), erlang:system_info(wordsize)} of
+            {Mem, 8} when is_integer(Mem) andalso Mem > 2 ->
+                {10000000, 48249379};
+            _ ->
+                {1042, 14679520}
+        end,
+    run_phash2_test_and_benchmark(nr_of_iters(150, Config),
+                                  make_random_bin(Size),
+                                  ExpectedHash).
+
+test_phash2_with_large_unaligned_sub_binary(Config) when is_list(Config) ->
+    {Size, ExpectedHash} =
+        case {total_memory(), erlang:system_info(wordsize)} of
+            {Mem, 8} when is_integer(Mem) andalso Mem > 2 ->
+                {10000001, 122836437};
+            _ ->
+                {10042, 127144287}
+        end,
+    run_phash2_test_and_benchmark(nr_of_iters(50, Config),
+                                  make_unaligned_sub_binary(make_random_bin(Size)),
+                                  ExpectedHash).
+
+test_phash2_with_super_large_unaligned_sub_binary(Config) when is_list(Config) ->
+    {Size, ExpectedHash} =
+        case {total_memory(), erlang:system_info(wordsize)} of
+            {Mem, 8} when is_integer(Mem) andalso Mem > 2 ->
+                {20000001, 112086727};
+            _ ->
+                {20042, 91996619}
+        end,
+    run_phash2_test_and_benchmark(nr_of_iters(20, Config),
+                                  make_unaligned_sub_binary(make_random_bin(Size)),
+                                  ExpectedHash).
+
+make_deep_list(1, Item) ->
+    {Item, Item};
+make_deep_list(Depth, Item) ->
+    [{Item, Item}, make_deep_list(Depth - 1, Item)].
+
+make_deep_tuple(1, Item) ->
+    [Item, Item];
+make_deep_tuple(Depth, Item) ->
+    {[Item, Item], make_deep_tuple(Depth - 1, Item)}.
+
+% Helper functions for benchmarking
+
+loop(0, _) -> ok;
+loop(Iterations, Fun) ->
+    Fun(),
+    loop(Iterations - 1, Fun).
+
+run_phash2_test_and_benchmark(Iterations, Term, ExpectedHash) ->
+    Parent = self(),
+    Test =
+        fun() ->
+                Hash = erlang:phash2(Term),
+                case ExpectedHash =:= Hash of
+                    false ->
+                        Parent ! {got_bad_hash, Hash},
+                        ExpectedHash = Hash;
+                    _ -> ok
+                end
+        end,
+    Benchmark =
+        fun() ->
+                garbage_collect(),
+                {Time, _} =timer:tc(fun() -> loop(Iterations, Test) end),
+                Parent ! Time
+        end,
+    spawn(Benchmark),
+    receive
+        {got_bad_hash, Hash} ->
+            ExpectedHash = Hash;
+        Time ->
+            TimeInS = case (Time/1000000) of
+                          0.0 -> 0.0000000001;
+                          T -> T
+                      end,
+            IterationsPerSecond = Iterations / TimeInS,
+            notify(#event{ name = benchmark_data, data = [{value, IterationsPerSecond}]}),
+            {comment, io_lib:format("Iterations per second: ~p, Iterations ~p, Benchmark time: ~p seconds)",
+                                    [IterationsPerSecond, Iterations, Time/1000000])}
+    end.
+
+get_complex_tuple() ->
+    BPort = <<131,102,100,0,13,110,111,110,111,100,101,64,110,111,104,
+              111,115,116,0,0,0,1,0>>,
+    Port = binary_to_term(BPort),
+
+    BXPort = <<131,102,100,0,11,97,112,97,64,108,101,103,111,108,97,115,
+               0,0,0,24,3>>,
+    XPort = binary_to_term(BXPort),
+
+    BRef = <<131,114,0,3,100,0,13,110,111,110,111,100,101,64,110,111,104,
+             111,115,116,0,0,0,1,255,0,0,0,0,0,0,0,0>>,
+    Ref = binary_to_term(BRef),
+
+    BXRef = <<131,114,0,3,100,0,11,97,112,97,64,108,101,103,111,108,97,115,
+              2,0,0,0,155,0,0,0,0,0,0,0,0>>,
+    XRef = binary_to_term(BXRef),
+
+    BXPid = <<131,103,100,0,11,97,112,97,64,108,101,103,111,108,97,115,
+              0,0,0,36,0,0,0,0,1>>,
+    XPid = binary_to_term(BXPid),
+
+
+    %% X = f1(), Y = f2(), Z = f3(X, Y),
+
+    %% F1 = fun f1/0, % -> abc
+    B1 = <<131,112,0,0,0,66,0,215,206,77,69,249,50,170,17,129,47,21,98,
+           13,196,76,242,0,0,0,1,0,0,0,0,100,0,1,116,97,1,98,2,195,126,
+           58,103,100,0,13,110,111,110,111,100,101,64,110,111,104,111,
+           115,116,0,0,0,112,0,0,0,0,0>>,
+    F1 = binary_to_term(B1),
+
+    %% F2 = fun f2/0, % -> abd
+    B2 = <<131,112,0,0,0,66,0,215,206,77,69,249,50,170,17,129,47,21,98,
+           13,196,76,242,0,0,0,2,0,0,0,0,100,0,1,116,97,2,98,3,130,152,
+           185,103,100,0,13,110,111,110,111,100,101,64,110,111,104,111,
+           115,116,0,0,0,112,0,0,0,0,0>>,
+    F2 = binary_to_term(B2),
+
+    %% F3 = fun f3/2, % -> {abc, abd}
+    B3 = <<131,112,0,0,0,66,2,215,206,77,69,249,50,170,17,129,47,21,98,
+           13,196,76,242,0,0,0,3,0,0,0,0,100,0,1,116,97,3,98,7,168,160,
+           93,103,100,0,13,110,111,110,111,100,101,64,110,111,104,111,
+           115,116,0,0,0,112,0,0,0,0,0>>,
+    F3 = binary_to_term(B3),
+
+    %% F4 = fun () -> 123456789012345678901234567 end,
+    B4 = <<131,112,0,0,0,66,0,215,206,77,69,249,50,170,17,129,47,21,98,
+           13,196,76,242,0,0,0,4,0,0,0,0,100,0,1,116,97,4,98,2,230,21,
+           171,103,100,0,13,110,111,110,111,100,101,64,110,111,104,111,
+           115,116,0,0,0,112,0,0,0,0,0>>,
+    F4 = binary_to_term(B4),
+
+    %% F5 = fun() -> {X,Y,Z} end,
+    B5 = <<131,112,0,0,0,92,0,215,206,77,69,249,50,170,17,129,47,21,98,
+           13,196,76,242,0,0,0,5,0,0,0,3,100,0,1,116,97,5,98,0,99,101,
+           130,103,100,0,13,110,111,110,111,100,101,64,110,111,104,111,
+           115,116,0,0,0,112,0,0,0,0,0,100,0,3,97,98,99,100,0,3,97,98,
+           100,104,2,100,0,3,97,98,99,100,0,3,97,98,100>>,
+    F5 = binary_to_term(B5),
+    {{1,{2}},an_atom, 1, 3434.923942394,<<"this is a binary">>,
+     make_unaligned_sub_binary(<<"this is also a binary">>),c,d,e,f,g,h,i,j,k,l,[f],
+     999999999999999999666666662123123123123324234999999999999999, 234234234,
+     BPort, Port, BXPort, XPort, BRef, Ref, BXRef, XRef, BXPid, XPid, F1, F2, F3, F4, F5,
+     #{a => 1, b => 2, c => 3, d => 4, e => 5, f => 6, g => 7, h => 8, i => 9,
+       j => 1, k => 1, l => 123123123123213, m => [1,2,3,4,5,6,7,8], o => 5, p => 6,
+       q => 7, r => 8, s => 9}}.
+
+get_map_helper(MapSoFar, 0) ->
+    MapSoFar;
+get_map_helper(MapSoFar, NumOfItemsToAdd) ->
+    NewMapSoFar = maps:put(NumOfItemsToAdd, NumOfItemsToAdd, MapSoFar),
+    get_map_helper(NewMapSoFar, NumOfItemsToAdd -1).
+
+get_map(Size) ->
+    get_map_helper(#{}, Size).
+
+
+%% Copied from binary_SUITE
+make_unaligned_sub_binary(Bin) when is_binary(Bin) ->
+    erts_debug:unaligned_bitstring(Bin, 3).
+
+%% This function is written very carefully so that the bitstrings
+%% created are released as quickly as possible. If they are not released,
+%% the memory consumption will go through the roof.
+make_unaligned_sub_bitstring(Bin0) ->
+    Bin = erts_debug:unaligned_bitstring(Bin0, 3),
+    erlang:garbage_collect(),
+    Bin.
+
+make_random_bin(Size) ->
+    make_random_bin(Size, []).
+
+make_random_bin(0, Acc) ->
+    iolist_to_binary(Acc);
+make_random_bin(Size, []) ->
+    make_random_bin(Size - 1, [simple_rand() rem 256]);
+make_random_bin(Size, [N | Tail]) ->
+    make_random_bin(Size - 1, [simple_rand(N) rem 256, N |Tail]).
+
+simple_rand() ->
+    123456789.
+simple_rand(Seed) ->
+    A = 1103515245,
+    C = 12345,
+    M = (1 bsl 31),
+    (A * Seed + C) rem M.

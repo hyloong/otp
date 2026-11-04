@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2005-2014. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2005-2026. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -23,8 +25,8 @@
 %%% Description: SFTP functions
 
 -module(ssh_xfer).
+-moduledoc false.
 
--export([attach/2, connect/3, connect/4]).
 -export([open/6, opendir/3, readdir/3, close/3, read/5, write/5,
 	 rename/5, remove/3, mkdir/4, rmdir/3, realpath/3, extended/4,
 	 stat/4, fstat/4, lstat/4, setstat/4,
@@ -46,34 +48,6 @@
 
 -define(is_set(F, Bits),
 	((F) band (Bits)) == (F)).
-
--define(XFER_PACKET_SIZE, 32768).
--define(XFER_WINDOW_SIZE, 4*?XFER_PACKET_SIZE).
-
-attach(CM, Opts) ->
-    open_xfer(CM, Opts).
-
-connect(Host, Port, Opts) ->
-    case ssh:connect(Host, Port, Opts) of
-	{ok, CM} -> open_xfer(CM, Opts);
-	Error -> Error
-    end.
-
-connect(Host, Port, Opts, Timeout) ->
-    case ssh:connect(Host, Port, Opts, Timeout) of
-	{ok, CM} -> open_xfer(CM, [{timeout, Timeout}|Opts]);
-	{error, Timeout} -> {error, timeout};
-	Error -> Error
-    end.
-
-open_xfer(CM, Opts) ->
-    TMO = proplists:get_value(timeout, Opts, infinity),
-    case ssh_connection:session_channel(CM, ?XFER_WINDOW_SIZE, ?XFER_PACKET_SIZE, TMO) of
-	{ok, ChannelId} ->
-	    {ok, ChannelId, CM};
-	Error -> 
-	    Error
-    end.
 
 protocol_version_request(XF, Version) ->
     xf_request(XF, ?SSH_FXP_INIT, <<?UINT32(Version)>>).
@@ -122,7 +96,7 @@ write(XF,ReqID, Handle, Offset, Data) ->
 		is_binary(Data) ->
 		    Data;
 		is_list(Data) -> 
-		    unicode:characters_to_binary(Data)
+		    ?to_binary(Data)
 	    end,
     xf_request(XF,?SSH_FXP_WRITE,
 	       [?uint32(ReqID),
@@ -146,13 +120,20 @@ rename(XF, ReqID, OldPath, NewPath, Flags) ->
 	     true ->
 		  (<<>>)
 	  end,
-    xf_request(XF, ?SSH_FXP_RENAME, 
-	       [?uint32(ReqID),
-		?string_utf8(OldPath),
-		?string_utf8(NewPath),
-		FlagBits]).
-
-
+    Ext = XF#ssh_xfer.ext,
+    ExtRename = "posix-rename@openssh.com",
+    case lists:member({ExtRename, "1"}, Ext) of
+	true ->
+	    extended(XF, ReqID, ExtRename,
+		     [?string_utf8(OldPath),
+		      ?string_utf8(NewPath)]);
+	false ->
+	    xf_request(XF, ?SSH_FXP_RENAME,
+		       [?uint32(ReqID),
+			?string_utf8(OldPath),
+			?string_utf8(NewPath),
+			FlagBits])
+    end.
 
 %% Create directory
 mkdir(XF, ReqID, Path, Attrs) ->
@@ -251,7 +232,7 @@ extended(XF, ReqID, Request, Data) ->
     xf_request(XF, ?SSH_FXP_EXTENDED,
 	       [?uint32(ReqID),
 		?string(Request),
-		?binary(Data)]).
+		Data]).
 
 
 %% Send xfer request to connection manager
@@ -262,9 +243,9 @@ xf_request(XF, Op, Arg) ->
 	       is_binary(Arg) -> 
 		   Arg;
 	       is_list(Arg) ->
-		   list_to_binary(Arg)
+		   ?to_binary(Arg)
 	   end,
-    Size = 1+size(Data),
+    Size = 1+byte_size(Data),
     ssh_connection:send(CM, Channel, [<<?UINT32(Size), Op, Data/binary>>]).
 
 xf_send_reply(#ssh_xfer{cm = CM, channel = Channel}, Op, Arg) ->    
@@ -272,9 +253,9 @@ xf_send_reply(#ssh_xfer{cm = CM, channel = Channel}, Op, Arg) ->
 	       is_binary(Arg) ->
 		   Arg;
 	       is_list(Arg) ->
-		   list_to_binary(Arg)
+		   ?to_binary(Arg)
 	   end,
-    Size = 1 + size(Data),
+    Size = 1 + byte_size(Data),
     ssh_connection:send(CM, Channel, [<<?UINT32(Size), Op, Data/binary>>]).
 
 xf_send_name(XF, ReqId, Name, Attr) ->
@@ -312,7 +293,7 @@ xf_send_status(#ssh_xfer{cm = CM, channel = Channel},
     LangTag = "en",
     ELen = length(ErrorMsg),
     TLen = 2, %% length(LangTag),
-    Size = 1 + 4 + 4 + 4+ELen + 4+TLen + size(Data),
+    Size = 1 + 4 + 4 + 4+ELen + 4+TLen + byte_size(Data),
     ToSend = [<<?UINT32(Size), ?SSH_FXP_STATUS, ?UINT32(ReqId),
 	       ?UINT32(ErrorCode)>>,
 	      <<?UINT32(ELen)>>, ErrorMsg,
@@ -322,13 +303,13 @@ xf_send_status(#ssh_xfer{cm = CM, channel = Channel},
 
 xf_send_attr(#ssh_xfer{cm = CM, channel = Channel, vsn = Vsn}, ReqId, Attr) ->
     EncAttr = encode_ATTR(Vsn, Attr),
-    ALen = size(EncAttr),
+    ALen = byte_size(EncAttr),
     Size = 1 + 4 + ALen,
     ToSend = [<<?UINT32(Size), ?SSH_FXP_ATTRS, ?UINT32(ReqId)>>, EncAttr],
     ssh_connection:send(CM, Channel, ToSend).
 
 xf_send_data(#ssh_xfer{cm = CM, channel = Channel}, ReqId, Data) ->
-    DLen = size(Data),
+    DLen = byte_size(Data),
     Size = 1 + 4 + 4+DLen,
     ToSend = [<<?UINT32(Size), ?SSH_FXP_DATA, ?UINT32(ReqId), ?UINT32(DLen)>>,
 	      Data],
@@ -358,7 +339,7 @@ xf_reply(XF, <<?SSH_FXP_ATTRS, ?UINT32(ReqID),
     {A, _} = decode_ATTR(XF#ssh_xfer.vsn, AData),
     {attrs, ReqID, A};
 xf_reply(_XF, <<?SSH_FXP_EXTENDED_REPLY, ?UINT32(ReqID),
-	      RData>>) ->
+                RData/binary>>) ->
     {extended_reply, ReqID, RData}.
 
 
@@ -682,7 +663,7 @@ encode_As(Vsn, [{AName, X}|As], Flags, Acc) ->
 	     encode_As(Vsn, As,Flags bor ?SSH_FILEXFER_ATTR_UIDGID,
 		       [?uint32(X) | Acc]);
 	ownergroup when Vsn>=5 ->
-	    X1 = list_to_binary(integer_to_list(X)), % TODO: check owner and group
+	    X1 = integer_to_binary(X), % TODO: check owner and group
 	    encode_As(Vsn, As,Flags bor ?SSH_FILEXFER_ATTR_OWNERGROUP,
 		      [?binary(X1) | Acc]);
 	permissions ->
@@ -724,7 +705,7 @@ decode_ATTR(Vsn, <<?UINT32(Flags), Tail/binary>>) ->
     {Type,Tail2} =
 	if Vsn =< 3 ->
 		{?SSH_FILEXFER_TYPE_UNKNOWN, Tail};
-	   Vsn >= 5 ->
+	   true ->
 		<<?BYTE(T), TL/binary>> = Tail,
 		{T, TL}
 	end,
@@ -758,13 +739,11 @@ decode_As(Vsn, [{AName, AField}|As], R, Flags, Tail) ->
 	    decode_As(Vsn, As, setelement(AField, R, X), Flags, Tail2);
 	ownergroup when ?is_set(?SSH_FILEXFER_ATTR_OWNERGROUP, Flags),Vsn>=5 ->
 	    <<?UINT32(Len), Bin:Len/binary, Tail2/binary>> = Tail,
-	    X = binary_to_list(Bin),
+	    X = binary_to_integer(Bin),
 	    decode_As(Vsn, As, setelement(AField, R, X), Flags, Tail2);
-
 	permissions when ?is_set(?SSH_FILEXFER_ATTR_PERMISSIONS,Flags),Vsn>=5->
 	    <<?UINT32(X), Tail2/binary>> = Tail,
 	    decode_As(Vsn, As, setelement(AField, R, X), Flags, Tail2);
-
 	permissions when ?is_set(?SSH_FILEXFER_ATTR_PERMISSIONS,Flags),Vsn=<3->
 	    <<?UINT32(X), Tail2/binary>> = Tail,
 	    R1 = setelement(AField, R, X),
@@ -779,7 +758,6 @@ decode_As(Vsn, [{AName, AField}|As], R, Flags, Tail) ->
 		       _ -> unknown
 		   end,
 	    decode_As(Vsn, As, R1#ssh_xfer_attr { type=Type}, Flags, Tail2);
-
 	acmodtime when ?is_set(?SSH_FILEXFER_ATTR_ACMODTIME,Flags),Vsn=<3 ->
 	    <<?UINT32(X), Tail2/binary>> = Tail,
 	    decode_As(Vsn, As, setelement(AField, R, X), Flags, Tail2);
@@ -831,18 +809,27 @@ decode_names(Vsn, I, <<?UINT32(Len), FileName:Len/binary,
 encode_names(Vsn, NamesAndAttrs) ->
     lists:mapfoldl(fun(N, L) -> encode_name(Vsn, N, L) end, 0, NamesAndAttrs).
 
+encode_name(Vsn, {{NameUC,LongNameUC},Attr}, Len) when Vsn =< 3 ->
+    Name = binary_to_list(unicode:characters_to_binary(NameUC)),
+    NLen = length(Name),
+	LongName = binary_to_list(unicode:characters_to_binary(LongNameUC)),
+    LNLen = length(LongName),
+	EncAttr = encode_ATTR(Vsn, Attr),
+    ALen = byte_size(EncAttr),
+    NewLen = Len + NLen + LNLen + 4 + 4 + ALen,
+    {[<<?UINT32(NLen)>>, Name, <<?UINT32(LNLen)>>, LongName, EncAttr], NewLen};
 encode_name(Vsn, {NameUC,Attr}, Len) when Vsn =< 3 ->
     Name = binary_to_list(unicode:characters_to_binary(NameUC)),
     NLen = length(Name),
     EncAttr = encode_ATTR(Vsn, Attr),
-    ALen = size(EncAttr),
+    ALen = byte_size(EncAttr),
     NewLen = Len + NLen*2 + 4 + 4 + ALen,
     {[<<?UINT32(NLen)>>, Name, <<?UINT32(NLen)>>, Name, EncAttr], NewLen};
 encode_name(Vsn, {NameUC,Attr}, Len) when Vsn >= 4 ->
     Name = binary_to_list(unicode:characters_to_binary(NameUC)),
     NLen = length(Name),
     EncAttr = encode_ATTR(Vsn, Attr),
-    ALen = size(EncAttr),
+    ALen = byte_size(EncAttr),
     {[<<?UINT32(NLen)>>, Name, EncAttr],
      Len + 4 + NLen + ALen}.
 

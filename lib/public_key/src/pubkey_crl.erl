@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2010-2013. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2010-2025. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -19,8 +21,9 @@
 %%
 
 -module(pubkey_crl).
+-moduledoc false.
 
--include("public_key.hrl").
+-include("public_key_internal.hrl").
 
 -export([validate/7, init_revokation_state/0, fresh_crl/3, verify_crl_signature/4,
 	 is_delta_crl/1, combines/2, match_one/2]).
@@ -38,7 +41,7 @@ validate(OtpCert, OtherDPCRLs, DP, {DerCRL, CRL}, {DerDeltaCRL, DeltaCRL},
 		TBSCert = OtpCert#'OTPCertificate'.tbsCertificate,
 		SerialNumber = TBSCert#'OTPTBSCertificate'.serialNumber,
 		CertIssuer = TBSCert#'OTPTBSCertificate'.issuer,
-		TBSCRL = CRL#'CertificateList'.tbsCertList,
+		TBSCRL = CRL#'CertificateList'.toBeSigned,
 		CRLIssuer =  TBSCRL#'TBSCertList'.issuer,
 		AltNames = case pubkey_cert:select_extension(?'id-ce-subjectAltName',
 							     TBSCert#'OTPTBSCertificate'.extensions) of
@@ -58,13 +61,14 @@ validate(OtpCert, OtherDPCRLs, DP, {DerCRL, CRL}, {DerDeltaCRL, DeltaCRL},
 init_revokation_state() ->
     #revoke_state{reasons_mask = sets:new(),
 		  interim_reasons_mask = sets:new(),
-		  cert_status = unrevoked}.
+		  cert_status = unrevoked,
+                  details = []}.
 
 fresh_crl(_, {undefined, undefined}, _) ->
     %% Typically happens when there is no delta CRL that covers a CRL
     no_fresh_crl;
 
-fresh_crl(DP, {_, #'CertificateList'{tbsCertList = TBSCRL}} = CRL, CallBack) ->
+fresh_crl(DP, {_, #'CertificateList'{toBeSigned = TBSCRL}} = CRL, CallBack) ->
     Now = calendar:datetime_to_gregorian_seconds(calendar:universal_time()),
     UpdateTime =
 	pubkey_cert:time_str_2_gregorian_sec(TBSCRL#'TBSCertList'.nextUpdate),
@@ -80,7 +84,7 @@ fresh_crl(DP, {_, #'CertificateList'{tbsCertList = TBSCRL}} = CRL, CallBack) ->
 	    {fresh, CRL}
     end.
 
-is_delta_crl(#'CertificateList'{tbsCertList = TBSCRL}) ->
+is_delta_crl(#'CertificateList'{toBeSigned = TBSCRL}) ->
     Extensions = TBSCRL#'TBSCertList'.crlExtensions,
     case pubkey_cert:select_extension(?'id-ce-deltaCRLIndicator',
 				      Extensions) of
@@ -124,7 +128,7 @@ crl_status(#revoke_state{reasons_mask = Mask,
 
 verify_crl(OtpCert, DP, CRL, DerCRL, DeltaCRL, DerDeltaCRL, OtherDPCRLs,
 	   Options, State0) ->
-    #'CertificateList'{tbsCertList =
+    #'CertificateList'{toBeSigned =
 			   #'TBSCertList'{crlExtensions = Extensions,
 					  revokedCertificates = TmpRevoked}
 		      } = CRL,
@@ -133,7 +137,7 @@ verify_crl(OtpCert, DP, CRL, DerCRL, DeltaCRL, DerDeltaCRL, OtherDPCRLs,
 
     DeltaRevoked = delta_revoked(DeltaCRL),
 
-    ValidExt = verify_extensions(Extensions) and
+    ValidExt = verify_extensions(Extensions) andalso
 	verify_extensions(Revoked),
 
     IntMask = compute_interim_reasons_mask(DP, IDP),
@@ -152,9 +156,10 @@ verify_crl(OtpCert, DP, CRL, DerCRL, DeltaCRL, DerDeltaCRL, OtherDPCRLs,
 					       RevokedState,
 					       CRL, DerCRL, DeltaCRL, DerDeltaCRL,
 					       IssuerFun, TrustedOtpCert, Path, OtherDPCRLs, IDP);
-		_ ->
-		    {invalid, State0#revoke_state{valid_ext = ValidExt}}
-	    end;
+	        _ ->
+                    Details = RevokedState#revoke_state.details,
+		    {invalid, RevokedState#revoke_state{valid_ext = ValidExt, details = [{{bad_crl, no_issuer_cert_chain}, CRL} | Details]}}
+            end;
 	{error, issuer_not_found} ->
 	    case Fun(DP, CRL, issuer_not_found, AdditionalArgs) of
 		{ok, TrustedOtpCert, Path} ->
@@ -163,13 +168,16 @@ verify_crl(OtpCert, DP, CRL, DerCRL, DeltaCRL, DerDeltaCRL, OtherDPCRLs,
 					       DerDeltaCRL, IssuerFun,
 					       TrustedOtpCert, Path, OtherDPCRLs, IDP);
 		_ ->
-		    {invalid, {skip, State0}}
-	    end
+                    Details = State0#revoke_state.details,
+		    {invalid, {skip, State0#revoke_state{details = [{{bad_crl, no_issuer_cert_chain}, CRL} | Details] }}}
+            end
     catch
-	throw:{bad_crl, invalid_issuer} ->
-	    {invalid, {skip, State0}};
-	throw:_ ->
-	    {invalid, State0#revoke_state{valid_ext = ValidExt}}
+	throw:{bad_crl, invalid_issuer} = Reason ->
+            Details = RevokedState#revoke_state.details,
+	    {invalid, {skip, RevokedState#revoke_state{details = [{Reason, CRL} | Details]}}};
+	throw:Reason ->
+            Details = RevokedState#revoke_state.details,
+	    {invalid, RevokedState#revoke_state{details =  [{Reason, CRL} | Details]}}
     end.
 
 verify_mask_and_signatures(Revoked, DeltaRevoked, RevokedState, CRL, DerCRL, DeltaCRL, DerDeltaCRL,
@@ -183,10 +191,12 @@ verify_mask_and_signatures(Revoked, DeltaRevoked, RevokedState, CRL, DerCRL, Del
 				     TrustedOtpCert, Path, IssuerFun, OtherDPCRLs, IDP),
 	{valid, Revoked, DeltaRevoked, RevokedState#revoke_state{reasons_mask = ReasonsMask}, IDP}
     catch
-	throw:_ ->
-	    {invalid, RevokedState};
+	throw:Reason ->
+            Details = RevokedState#revoke_state.details,
+	    {invalid, RevokedState#revoke_state{details =  [{Reason, CRL} | Details]}};
 	error:{badmatch, _} ->
-	    {invalid, RevokedState}
+            Details = RevokedState#revoke_state.details,
+	    {invalid, RevokedState#revoke_state{details = [{{bad_crl, invalid_signature}, CRL} | Details]}}
     end.
 
 
@@ -244,7 +254,7 @@ validate_crl_signing_cert(OtpCert, IssuerFun, #userstate{dpcrls = CRLInfo} = Use
 
 delta_revoked(undefined)->
     [];
-delta_revoked(#'CertificateList'{tbsCertList =
+delta_revoked(#'CertificateList'{toBeSigned =
 				     #'TBSCertList'{revokedCertificates
 						    = DeltaRevoked}}) ->
     revoked(DeltaRevoked).
@@ -291,7 +301,7 @@ is_all_reasons(Mask, AllReasonsFun) ->
 	    %% As the "uspecified" reason should not
 	    %% be explicitly used according to RFC 3280
 	    %% and the conformance tests have test cases
-	    %% that should succed, and that does not specify
+	    %% that should succeed, and that does not specify
 	    %% "unspecified", we tolorate that it is not included.
 	    sets:is_subset(sets:del_element(unspecified, AllReasons), Mask)
     end.
@@ -304,11 +314,11 @@ all_reasons() ->
 
 verify_issuer_and_scope(#'OTPCertificate'{tbsCertificate = TBSCert} = Cert,
 			#'DistributionPoint'{cRLIssuer = DPIssuer} = DP, IDP,
-			#'CertificateList'{tbsCertList = TBSCRL} = CRL)
+			#'CertificateList'{toBeSigned = TBSCRL} = CRL)
   when DPIssuer =/= asn1_NOVALUE ->
     CRLIssuer = pubkey_cert_records:transform(TBSCRL#'TBSCertList'.issuer, decode),
     Issuer = dp_crlissuer_to_issuer(DPIssuer),
-    case pubkey_cert:is_issuer(Issuer, CRLIssuer) and is_indirect_crl(IDP) of
+    case pubkey_cert:is_issuer(Issuer, CRLIssuer) andalso is_indirect_crl(IDP) of
 	true ->
 	    verify_scope(Cert, DP, IDP),
 	    issuer_id(Cert, CRL);
@@ -321,7 +331,7 @@ verify_issuer_and_scope(#'OTPCertificate'{tbsCertificate = TBSCert} = Cert,
     end;
 verify_issuer_and_scope(#'OTPCertificate'{tbsCertificate = TBSCert}= Cert,
 			DP, IDP,
-			#'CertificateList'{tbsCertList = TBSCRL}) ->
+			#'CertificateList'{toBeSigned = TBSCRL}) ->
     CRLIssuer = pubkey_cert_records:transform(TBSCRL#'TBSCertList'.issuer, decode),
     CertIssuer = TBSCert#'OTPTBSCertificate'.issuer,
     case pubkey_cert:is_issuer(CertIssuer, CRLIssuer) of
@@ -333,6 +343,7 @@ verify_issuer_and_scope(#'OTPCertificate'{tbsCertificate = TBSCert}= Cert,
     end.
 
 dp_crlissuer_to_issuer(DPCRLIssuer) ->
+     %% Assume the cRLIssuer SEQUENCE is of length exactly 1
      [{directoryName, Issuer}] = pubkey_cert_records:transform(DPCRLIssuer, decode),
      Issuer.
 
@@ -356,7 +367,7 @@ verify_scope(#'OTPCertificate'{tbsCertificate = TBSCert}, #'DistributionPoint'{c
     verify_scope(DPName, IDPName, Names, TBSCert, IDP).
 
 verify_scope(asn1_NOVALUE, _, asn1_NOVALUE, _, _) ->
-    throw({bad_crl, scope_error1});
+    throw({bad_crl, scope_error});
 verify_scope(asn1_NOVALUE, IDPName, DPIssuerNames, TBSCert, IDP) ->
     verify_dp_name(IDPName, DPIssuerNames),
     verify_dp_bools(TBSCert, IDP);
@@ -452,8 +463,8 @@ verify_onlyContainsAttributeCerts(
   #'IssuingDistributionPoint'{onlyContainsAttributeCerts = Bool}) ->
     not Bool.
 
-check_crl_num(#'CertificateList'{tbsCertList = TBSCRL},
-	      #'CertificateList'{tbsCertList = TBSDeltaCRL})->
+check_crl_num(#'CertificateList'{toBeSigned = TBSCRL},
+	      #'CertificateList'{toBeSigned = TBSDeltaCRL})->
     Extensions = TBSCRL#'TBSCertList'.crlExtensions,
     DeltaExtensions = TBSDeltaCRL#'TBSCertList'.crlExtensions,
 
@@ -490,8 +501,8 @@ assert_extension_value(Extension, ExtType, Extensions) ->
 
 check_delta_issuer_and_scope(_, undefined) ->
     true;
-check_delta_issuer_and_scope(#'CertificateList'{tbsCertList = TBSCRL},
-			     #'CertificateList'{tbsCertList = TBSDeltaCRL}) ->
+check_delta_issuer_and_scope(#'CertificateList'{toBeSigned = TBSCRL},
+			     #'CertificateList'{toBeSigned = TBSDeltaCRL}) ->
     case pubkey_cert:is_issuer(TBSCRL#'TBSCertList'.issuer,
 			       TBSDeltaCRL#'TBSCertList'.issuer) of
 	true ->
@@ -567,17 +578,17 @@ verify_crl_signature(CRL, DerCRL, Key, KeyParams) ->
     end.
 extract_crl_verify_data(CRL, DerCRL) ->
     Signature = CRL#'CertificateList'.signature,
-    #'AlgorithmIdentifier'{algorithm = SigAlg} =
-	CRL#'CertificateList'.signatureAlgorithm,
+    #'CertificateList_algorithmIdentifier'{algorithm = SigAlg} =
+	CRL#'CertificateList'.algorithmIdentifier,
     PlainText = encoded_tbs_crl(DerCRL),
     {DigestType, _} = public_key:pkix_sign_types(SigAlg),
     {DigestType, PlainText, Signature}.
 
 encoded_tbs_crl(CRL) ->
     {ok, PKIXCRL} =
-	'OTP-PUB-KEY':decode_TBSCertList_exclusive(CRL),
+        'PKIX1Explicit-2009':decode_TBSCertList_exclusive(CRL),
     {'CertificateList',
-     {'CertificateList_tbsCertList', EncodedTBSCertList}, _, _} = PKIXCRL,
+     {'CertificateList_toBeSigned', EncodedTBSCertList}, _, _} = PKIXCRL,
     EncodedTBSCertList.
 
 check_revoked(_,_,_,_,_,[], State) ->
@@ -589,7 +600,7 @@ check_revoked(#'DistributionPoint'{cRLIssuer = DPIssuer} = DP, IDP, DefaultIssue
 							    Extensions}| Rest],
 	      State) ->
     Reason = revoked_reason(Extensions),
-    case (DPIssuer =/= asn1_NOVALUE) and is_indirect_crl(IDP) of
+    case DPIssuer =/= asn1_NOVALUE andalso is_indirect_crl(IDP) of
 	true ->
 	    handle_indirect_crl_check(DP, IDP, DefaultIssuer0, Names, SerialNr, Extensions, Reason, Rest, State);
 	false ->
@@ -642,7 +653,7 @@ verify_crl_keybit(#'OTPCertificate'{tbsCertificate = TBS}, Bit) ->
 	    true
     end.
 
-issuer_id(Cert, #'CertificateList'{tbsCertList = TBSCRL}) ->
+issuer_id(Cert, #'CertificateList'{toBeSigned = TBSCRL}) ->
     Extensions =
 	pubkey_cert:extensions_list(TBSCRL#'TBSCertList'.crlExtensions),
     case authority_key_identifier(Extensions) of
@@ -670,7 +681,7 @@ status(Reason) ->
     {revoked, Reason}.
 
 verify_extensions([#'TBSCertList_revokedCertificates_SEQOF'{crlEntryExtensions = Ext} | Rest]) ->
-    verify_extensions(pubkey_cert:extensions_list(Ext)) and verify_extensions(Rest);
+    verify_extensions(pubkey_cert:extensions_list(Ext)) andalso verify_extensions(Rest);
 verify_extensions([]) ->
     true;
 verify_extensions(asn1_NOVALUE) ->

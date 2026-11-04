@@ -1,8 +1,10 @@
 %%
 %% %CopyrightBegin%
-%% 
-%% Copyright Ericsson AB 1997-2013. All Rights Reserved.
-%% 
+%%
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 1997-2025. All Rights Reserved.
+%%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
 %% You may obtain a copy of the License at
@@ -14,7 +16,7 @@
 %% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 %% See the License for the specific language governing permissions and
 %% limitations under the License.
-%% 
+%%
 %% %CopyrightEnd%
 %%
 -module(tuple_SUITE).
@@ -25,8 +27,11 @@
 	 t_list_to_tuple/1, t_list_to_upper_boundry_tuple/1, t_tuple_to_list/1,
 	 t_make_tuple_2/1, t_make_upper_boundry_tuple_2/1, t_make_tuple_3/1,
 	 t_append_element/1, t_append_element_upper_boundry/1,
-	 build_and_match/1, tuple_with_case/1, tuple_in_guard/1]).
--include_lib("test_server/include/test_server.hrl").
+         build_and_match/1, tuple_with_case/1, tuple_in_guard/1,
+         get_two_tuple_elements/1,
+         record_update/1,
+         bad_tuple_match/1]).
+-include_lib("common_test/include/ct.hrl").
 
 %% Tests tuples and the BIFs:
 %%
@@ -47,12 +52,16 @@ all() ->
      t_make_tuple_2, t_make_upper_boundry_tuple_2, t_make_tuple_3,
      t_append_element, t_append_element_upper_boundry,
      t_insert_element, t_delete_element,
-     tuple_with_case, tuple_in_guard].
+     tuple_with_case, tuple_in_guard,
+     get_two_tuple_elements,
+     record_update,
+     bad_tuple_match].
 
 groups() -> 
     [].
 
 init_per_suite(Config) ->
+    id(Config),
     A0 = case application:start(sasl) of
 	     ok -> [sasl];
 	     _ -> []
@@ -64,7 +73,7 @@ init_per_suite(Config) ->
     [{started_apps, A}|Config].
 
 end_per_suite(Config) ->
-    As = ?config(started_apps, Config),
+    As = proplists:get_value(started_apps, Config),
     lists:foreach(fun (A) -> application:stop(A) end, As),
     Config.
 
@@ -123,25 +132,165 @@ t_element(Config) when is_list(Config) ->
     a = element(1, {a}),
     a = element(1, {a, b}),
 
-    List = lists:seq(1, 4096),
-    Tuple = list_to_tuple(lists:seq(1, 4096)),
+    List = lists:seq(1, 16384),
+    Tuple = list_to_tuple(List),
     get_elements(List, Tuple, 1),
+
+    get_literal_elements(Tuple),
+    get_literal_tuple_elements(Tuple),
+
+    {31,32, 63,64, 127,128, 255,256, 511,512, 1023,1024,
+     2047,2048, 4095,4096, 8191,8192, 16383, 16384} =
+        get_literal_tuple_element_pairs(Tuple),
 
     {'EXIT', {badarg, _}} = (catch element(0, id({a,b}))),
     {'EXIT', {badarg, _}} = (catch element(3, id({a,b}))),
     {'EXIT', {badarg, _}} = (catch element(1, id({}))),
     {'EXIT', {badarg, _}} = (catch element(1, id([a,b]))),
     {'EXIT', {badarg, _}} = (catch element(1, id(42))),
+    {'EXIT', {badarg, _}} = (catch element(false, id({a,b}))),
     {'EXIT', {badarg, _}} = (catch element(id(1.5), id({a,b}))),
 
+    %% Make sure that the loader does not reject the module when
+    %% huge literal index values are used.
+    {'EXIT', {badarg, _}} = (catch element((1 bsl 24)-1, id({a,b,c}))),
+    {'EXIT', {badarg, _}} = (catch element(1 bsl 24, id({a,b,c}))),
+    {'EXIT', {badarg, _}} = (catch element(1 bsl 32, id({a,b,c}))),
+    {'EXIT', {badarg, _}} = (catch element(1 bsl 64, id({a,b,c}))),
+
+    %% Test known tuple and unknown position.
+    true = is_tuple(Tuple),
+    {'EXIT', {badarg, _}} = catch element(id(false), Tuple),
+    {'EXIT', {badarg, _}} = catch element(id(-1), Tuple),
+    {'EXIT', {badarg, _}} = catch element(id(0), Tuple),
+    {'EXIT', {badarg, _}} = catch element(id(1 bsl 64), Tuple),
+
+    %% Test a known tuple and position that is a known integer.
+    {'EXIT', {badarg, _}} = catch element(known_integer(-1), Tuple),
+    {'EXIT', {badarg, _}} = catch element(known_integer(0), Tuple),
+    {'EXIT', {badarg, _}} = catch element(known_integer(1 bsl 64), Tuple),
+    {'EXIT', {badarg, _}} = catch element(known_integer(tuple_size(Tuple)+1), Tuple),
+
+    %% Test unknown tuple and unknown position.
+    {'EXIT', {badarg, _}} = catch element(id(false), id(Tuple)),
+    {'EXIT', {badarg, _}} = catch element(id(-1), id(Tuple)),
+    {'EXIT', {badarg, _}} = catch element(id(0), id(Tuple)),
+    {'EXIT', {badarg, _}} = catch element(id(1 bsl 64), id(Tuple)),
+
     ok.
+
+known_integer(I) when is_integer(I) ->
+    I.
 
 get_elements([Element|Rest], Tuple, Pos) ->
     Element = element(Pos, Tuple),
     get_elements(Rest, Tuple, Pos+1);
 get_elements([], _Tuple, _Pos) ->
     ok.
-    
+
+get_literal_elements(Tuple) ->
+    31 = element(31, Tuple),
+    32 = element(32, Tuple),
+
+    63 = element(63, Tuple),
+    64 = element(64, Tuple),
+
+    127 = element(127, Tuple),
+    128 = element(128, Tuple),
+
+    255 = element(255, Tuple),
+    256 = element(256, Tuple),
+
+    511 = element(511, Tuple),
+    512 = element(512, Tuple),
+
+    1023 = element(1023, Tuple),
+    1024 = element(1024, Tuple),
+
+    2047 = element(2047, Tuple),
+    2048 = element(2048, Tuple),
+
+    4095 = element(4095, Tuple),
+    4096 = element(4096, Tuple),
+
+    8191 = element(8191, Tuple),
+    8192 = element(8192, Tuple),
+
+    16383 = element(16383, Tuple),
+    16384 = element(16384, Tuple),
+
+    ok.
+
+get_literal_tuple_elements(Tuple) when tuple_size(Tuple) =:= 16384 ->
+    %% Since the tuple size is known, the element/2 calls will be
+    %% rewritten to get_tuple_element instructions.
+
+    31 = element(31, Tuple),
+    32 = element(32, Tuple),
+
+    63 = element(63, Tuple),
+    64 = element(64, Tuple),
+
+    127 = element(127, Tuple),
+    128 = element(128, Tuple),
+
+    255 = element(255, Tuple),
+    256 = element(256, Tuple),
+
+    511 = element(511, Tuple),
+    512 = element(512, Tuple),
+
+    1023 = element(1023, Tuple),
+    1024 = element(1024, Tuple),
+
+    2047 = element(2047, Tuple),
+    2048 = element(2048, Tuple),
+
+    4095 = element(4095, Tuple),
+    4096 = element(4096, Tuple),
+
+    8191 = element(8191, Tuple),
+    8192 = element(8192, Tuple),
+
+    16383 = element(16383, Tuple),
+    16384 = element(16384, Tuple),
+
+    ok.
+
+get_literal_tuple_element_pairs(Tuple) when tuple_size(Tuple) =:= 16384 ->
+    %% Since the tuple size is known, the element/2 calls will be
+    %% rewritten to get_tuple_element instructions.
+
+    {element(31, Tuple),
+     element(32, Tuple),
+
+     element(63, Tuple),
+     element(64, Tuple),
+
+     element(127, Tuple),
+     element(128, Tuple),
+
+     element(255, Tuple),
+     element(256, Tuple),
+
+     element(511, Tuple),
+     element(512, Tuple),
+
+     element(1023, Tuple),
+     element(1024, Tuple),
+
+     element(2047, Tuple),
+     element(2048, Tuple),
+
+     element(4095, Tuple),
+     element(4096, Tuple),
+
+     element(8191, Tuple),
+     element(8192, Tuple),
+
+     element(16383, Tuple),
+     element(16384, Tuple)}.
+
 %% Tests set_element/3.
 
 t_setelement(Config) when is_list(Config) ->
@@ -149,9 +298,9 @@ t_setelement(Config) when is_list(Config) ->
     {x,2} = setelement(1, id({1,2}), x),
     {1,x} = setelement(2, id({1,2}), x),
 
-    Tuple = list_to_tuple(lists:duplicate(2048, x)),
+    Tuple = list_to_tuple(lists:duplicate(16385, x)),
     NewTuple = set_all_elements(Tuple, 1),
-    NewTuple = list_to_tuple(lists:seq(1+7, 2048+7)),
+    NewTuple = list_to_tuple(lists:seq(1+7, 16385+7)),
 
     {'EXIT', {badarg, _}} = (catch setelement(0, {a, b}, x)),
     {'EXIT', {badarg, _}} = (catch setelement(3, {a, b}, x)),
@@ -165,12 +314,80 @@ t_setelement(Config) when is_list(Config) ->
 	setelement(1, setelement(2, setelement(3, AnotherTuple, gurka),
 				 3.0), 93748793749387837476555412),
 
+    NewNewTuple = set_literal_tuple_elements(NewTuple),
+    verify_set_elements(1, NewNewTuple),
+
     ok.
 
 set_all_elements(Tuple, Pos) when Pos =< size(Tuple) ->
     set_all_elements(setelement(Pos, Tuple, Pos+7), Pos+1);
 set_all_elements(Tuple, Pos) when Pos > size(Tuple) ->
     Tuple.
+
+set_literal_tuple_elements(Tuple0) when tuple_size(Tuple0) =:= 16385 ->
+    %% Since the tuple size is known, the setelement/3 calls will be
+    %% rewritten to set_tuple_element instructions.
+    Tuple1 = setelement(16385, Tuple0, -16385),
+    Tuple2 = setelement(16384, Tuple1, -16384),
+
+    Tuple3 = setelement(8192, Tuple2, -8192),
+    Tuple4 = setelement(8191, Tuple3, -8191),
+
+    Tuple5 = setelement(4096, Tuple4, -4096),
+    Tuple6 = setelement(4095, Tuple5, -4095),
+
+    Tuple7 = setelement(2048, Tuple6, -2048),
+    Tuple8 = setelement(2047, Tuple7, -2047),
+
+    Tuple9 = setelement(1024, Tuple8, -1024),
+    Tuple10 = setelement(1023, Tuple9, -1023),
+
+    Tuple11 = setelement(512, Tuple10, -512),
+    Tuple12 = setelement(511, Tuple11, -511),
+
+    Tuple13 = setelement(256, Tuple12, -256),
+    Tuple14 = setelement(255, Tuple13, -255),
+
+    Tuple15 = setelement(128, Tuple14, -128),
+    Tuple16 = setelement(127, Tuple15, -127),
+
+    Tuple17 = setelement(64, Tuple16, -64),
+    Tuple18 = setelement(63, Tuple17, -63),
+
+    Tuple19 = setelement(32, Tuple18, -32),
+    Tuple20 = setelement(31, Tuple19, -31),
+
+    Tuple21 = setelement(16, Tuple20, -16),
+    Tuple22 = setelement(15, Tuple21, -15),
+
+    Tuple23 = setelement(8, Tuple22, -8),
+    Tuple24 = setelement(7, Tuple23, -7),
+
+    Tuple25 = setelement(4, Tuple24, -4),
+    Tuple26 = setelement(3, Tuple25, -3),
+
+    Tuple27 = setelement(2, Tuple26, -2),
+    setelement(1, Tuple27, -1).
+
+verify_set_elements(16385, Tuple) ->
+    -16385 = element(16385, Tuple),
+    ok;
+verify_set_elements(N, Tuple) ->
+    El = element(N, Tuple),
+    if
+        El =:= N + 7 ->
+            true = not (is_power_of_two(N + 1) andalso is_power_of_two(N)),
+            verify_set_elements(N + 1, Tuple);
+        El =:= -N ->
+            true = is_power_of_two(N + 1) orelse is_power_of_two(N),
+            verify_set_elements(N + 1, Tuple);
+        true ->
+            io:format("element(~p) =:= ~p\n", [N,El]),
+            ct:fail(bad_element)
+    end.
+
+is_power_of_two(N) ->
+    N band (N - 1) =:= 0.
 
 %% Tests list_to_tuple/1.
 
@@ -196,7 +413,7 @@ t_list_to_tuple(Config) when is_list(Config) ->
 t_list_to_upper_boundry_tuple(Config) when is_list(Config) ->
     sys_mem_cond_run(2048,
 		    fun () ->
-			    %% test upper boundry, 16777215 elements
+			    %% test upper boundary, 16777215 elements
 			    MaxSize  = 1 bsl 24 - 1,
 			    MaxTuple = list_to_tuple(lists:seq(1, MaxSize)),
 			    MaxSize  = size(MaxTuple),
@@ -245,7 +462,7 @@ t_make_tuple_2(Config) when is_list(Config) ->
 t_make_upper_boundry_tuple_2(Config) when is_list(Config) ->
     sys_mem_cond_run(2048,
 		     fun () ->
-			     %% test upper boundry, 16777215 elements
+			     %% test upper boundary, 16777215 elements
 			     t_make_tuple(1 bsl 24 - 1, a)
 		     end).
 
@@ -259,7 +476,7 @@ t_make_tuple(Size, Element) ->
     lists:foreach(fun(El) when El =:= Element ->
 			  ok;
 		     (Other) ->
-			  test_server:fail({got, Other, expected, Element})
+			  ct:fail({got, Other, expected, Element})
 		  end, tuple_to_list(Tuple)).
 
 %% Tests the erlang:make_tuple/3 BIF.
@@ -338,7 +555,7 @@ t_append_element(Config) when is_list(Config) ->
 t_append_element_upper_boundry(Config) when is_list(Config) ->
     sys_mem_cond_run(2048,
 		     fun () ->
-			     %% test upper boundry, 16777215 elements
+			     %% test upper boundary, 16777215 elements
 			     MaxSize  = 1 bsl 24 - 1,
 			     MaxTuple = list_to_tuple(lists:seq(1, MaxSize)),
 			     {'EXIT',{badarg,_}} = (catch erlang:append_element(MaxTuple, a)),
@@ -385,20 +602,144 @@ tuple_in_guard(Config) when is_list(Config) ->
 	Tuple1 == {element(1, Tuple2),element(2, Tuple2)} ->
 	    ok;
 	true ->
-	    test_server:fail()
+	    ct:fail("failed")
     end,
     if
 	Tuple2 == {element(1, Tuple2),element(2, Tuple2),
 	    element(3, Tuple2)} ->
 	    ok;
 	true ->
-	    test_server:fail()
+	    ct:fail("failed")
     end,
+    ok.
+
+%% For BeamAsm, test that the tuple pointer is correctly reloaded after
+%% a get_two_tuple_elements instruction that ovewrites the register holding
+%% the tuple.
+get_two_tuple_elements(Config) ->
+    DataDir = proplists:get_value(data_dir, Config),
+    GTTETestsFile = filename:join(DataDir, "get_two_tuple_elements"),
+
+    %% Compile from Erlang source code.
+    {ok,GTTEMod,Code1} = compile:file(GTTETestsFile, [no_ssa_opt_sink,binary,report,time]),
+    {module,GTTEMod} = code:load_binary(GTTEMod, GTTEMod, Code1),
+    GTTEMod:GTTEMod(),
+    true = code:delete(GTTEMod),
+    code:purge(GTTEMod),
+
+    %% Compile from the pre-generated BEAM assembly code file. (In case that the
+    %% compiler's code generation has changed.)
+    {ok,GTTEMod,Code2} = compile:file(GTTETestsFile, [from_asm,binary,report,time]),
+    {module,GTTEMod} = code:load_binary(GTTEMod, GTTEMod, Code2),
+    GTTEMod:GTTEMod(),
+    true = code:delete(GTTEMod),
+    code:purge(GTTEMod),
+
+    ok.
+
+
+%% Do some basic tests of the destructive tuple update added in
+%% Erlang/OTP 27 (commit 8d4df9ae9fc9d1289b3c5a37e5bc6d73abb73297).
+
+-record(rec, {a,b,c,d,e}).
+record_update(_Config) ->
+    N = id(100_000),
+    First = id(1 bsl 64),
+    Last = id(First + N),
+
+    #rec{a=Last} = record_update_1(First, Last, #rec{b=id(42)}),
+    #rec{a=N} = record_update_1(id(0), N, #rec{b=id(42)}),
+
+    #rec{a=Last} = record_update_2(First, Last, #rec{b=id(42)}),
+
+    #rec{a=List} = record_update_3(id([]), N, #rec{b=id(42)}),
+    N = length(List),
+    true = lists:all(fun(a) -> true end, List),
+
+    ok.
+
+record_update_1(I, N, R) when is_integer(I) ->
+    do_record_update_1(I, N, R).
+
+do_record_update_1(I, Last, R0) ->
+    %% An incorrect test for an immediate would allow a boxed term
+    %% (such as a bignum) to be written into an existing tuple without
+    %% testing whether the tuple were in the safe part of the heap.
+    R = R0#rec{a=I},
+
+    %% Force a minor collection here to force the tuple over to the
+    %% unsafe part of the new heap (below the high-water mark).
+    erlang:garbage_collect(self(), [{type,minor}]),
+    if
+        I < Last ->
+            do_record_update_1(I + 1, Last, R);
+        true ->
+            R
+    end.
+
+record_update_2(I, Last, R0) ->
+    R = R0#rec{a=I},
+
+    %% Force a minor collection here to force the tuple over to the
+    %% unsafe part of the new heap (below the high-water mark).
+    erlang:garbage_collect(self(), [{type,minor}]),
+    if
+        I < Last ->
+            record_update_2(I + 1, Last, R);
+        true ->
+            R
+    end.
+
+record_update_3(L, N, R) when is_list(L); is_integer(L) ->
+    do_record_update_3(L, N, R).
+
+do_record_update_3(L, N, R0) ->
+    %% Test that the basic test for the tuple being in the
+    %% safe part of the new heap is correct.
+    R = R0#rec{a=L},
+
+    if
+        N > 0 ->
+            do_record_update_3(id([a|L]), N-1, R);
+        true ->
+            R
+    end.
+
+%% GH-8875
+bad_tuple_match(_Config) ->
+    ContentName = id(~"content-name"),
+    Content = id(#{ContentName => value}),
+
+    Find = case maps:find(ContentName, Content) of
+               {ok, _} -> {ok1, aa};
+               error -> ok
+           end,
+
+    Details = try id(good) of
+                  good ->
+                      {ok2, bb, cc}
+              catch
+                  _:_ ->
+                      {error, some_reason}
+              end,
+
+    %% Compiler optimizations will turn the following two lines into:
+    %%
+    %%    {test,is_tuple,Fail1,[{y,0}]}
+    %%    {test,test_arity,Fail2,[{x,0},3]}.
+    %%
+    %% The JIT would rewrite that to:
+    %%
+    %%    {i_is_tuple_of_arity_ff,Fail1,Fail2,{y,0},3}
+    %%
+    %% That is unsafe because the source tuples are distinct.
+    {ok1, _} = Find,
+    {ok2, _, _} = Details,
+
     ok.
 
 %% Use this function to avoid compile-time evaluation of an expression.
 id(I) -> I.
-
 
 sys_mem_cond_run(ReqSizeMB, TestFun) when is_integer(ReqSizeMB) ->
     case total_memory() of
@@ -412,17 +753,16 @@ sys_mem_cond_run(ReqSizeMB, TestFun) when is_integer(ReqSizeMB) ->
 
 
 total_memory() ->
-    %% Totat memory in MB.
+    %% Total memory in MB.
     try
-	MemoryData = memsup:get_system_memory_data(),
-	case lists:keysearch(total_memory, 1, MemoryData) of
-	    {value, {total_memory, TM}} ->
-		TM div (1024*1024);
-	    false ->
-		{value, {system_total_memory, STM}} =
-		    lists:keysearch(system_total_memory, 1, MemoryData),
-		STM div (1024*1024)
-	end
+	SMD = memsup:get_system_memory_data(),
+        TM = proplists:get_value(
+               available_memory, SMD,
+               proplists:get_value(
+                 total_memory, SMD,
+                 proplists:get_value(
+                   system_total_memory, SMD))),
+        TM div (1024*1024)
     catch
 	_ : _ ->
 	    undefined

@@ -1,3 +1,24 @@
+%%
+%% %CopyrightBegin%
+%%
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2004-2025. All Rights Reserved.
+%%
+%% Licensed under the Apache License, Version 2.0 (the "License");
+%% you may not use this file except in compliance with the License.
+%% You may obtain a copy of the License at
+%%
+%%     http://www.apache.org/licenses/LICENSE-2.0
+%%
+%% Unless required by applicable law or agreed to in writing, software
+%% distributed under the License is distributed on an "AS IS" BASIS,
+%% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+%% See the License for the specific language governing permissions and
+%% limitations under the License.
+%%
+%% %CopyrightEnd%
+%%
 %%%-------------------------------------------------------------------
 %%% @author Simon Cornish <simon@cali.coffee>
 %%% @copyright (C) 2015, Simon Cornish
@@ -28,8 +49,7 @@
 	 }).
 
 -record(state, {
-	  local_addr,
-	  local_port,
+          sockname,
 	  peer_addr,
 	  peer_port,
 	  lpid,
@@ -92,11 +112,17 @@ release_next(Srv, Dir, TriggerDir) ->
 %% @doc
 %% Starts the server
 %%
-%% @spec start_link() -> {ok, Pid} | ignore | {error, Error}
+%% @spec start_link() -> {ok, Pid, Host, Port} | ignore | {error, Error}
 %% @end
 %%--------------------------------------------------------------------
 start_link(ListenAddr, ListenPort, PeerAddr, PeerPort) ->
-    gen_server:start_link(?MODULE, [ListenAddr, ListenPort, PeerAddr, PeerPort], []).
+    case gen_server:start_link(?MODULE, [ListenAddr, ListenPort, PeerAddr, PeerPort], []) of
+        {ok,Pid} ->
+            {ok,{Host,Port}} = gen_server:call(Pid, get_sockname),
+            {ok, Pid, Host, Port};
+        Other ->
+            Other
+    end.
 
 stop(Srv) ->
     unlink(Srv),
@@ -126,12 +152,13 @@ init([ListenAddr, ListenPort, PeerAddr, PeerPort | _Options]) ->
 	     end,
     case gen_tcp:listen(ListenPort, [{reuseaddr, true}, {backlog, 1}, {active, false}, binary | IfAddr]) of
 	{ok, LSock} ->
+            {ok, SName} = inet:sockname(LSock),
 	    Parent = self(),
 	    {LPid, _LMod} = spawn_monitor(fun() -> listen(Parent, LSock) end),
-	    S = #state{local_addr = ListenAddr,
-		       local_port = ListenPort,
-		       lpid = LPid,
-		       peer_addr = PeerAddr,
+	    S = #state{sockname = SName,
+                       lpid = LPid,
+		       peer_addr = ssh_test_lib:ntoa(
+                                     ssh_test_lib:mangle_connect_address(PeerAddr)),
 		       peer_port = PeerPort
 		      },
 	    {ok, S};
@@ -173,6 +200,8 @@ handle_call({release, Dir}, _From, State) ->
     end;
 handle_call({release_next, _Dir, _TriggerDir}, _From, State) ->
     {reply, {error, nyi}, State};
+handle_call(get_sockname, _From, State) ->
+    {reply, {ok,State#state.sockname}, State};
 
 handle_call(Request, _From, State) ->
     Reply = {unhandled, Request},
@@ -241,11 +270,11 @@ handle_info(stop, State) ->
     {stop, normal, State};
 
 handle_info({'DOWN', _Ref, _process, LPid, Reason}, S) when S#state.lpid == LPid ->
-    io:format("Acceptor has finished: ~p~n", [Reason]),
+    io:format("Acceptor in ~p has finished: ~p~n", [?MODULE,Reason]),
     {noreply, S};
 
 handle_info(_Info, State) ->
-    io:format("Unhandled info: ~p~n", [_Info]),
+    io:format("~p:~p Unhandled info: ~p~n", [?MODULE,?LINE,_Info]),
     {noreply, State}.
 
 %%--------------------------------------------------------------------
@@ -305,7 +334,7 @@ listen(Parent, LSock) ->
     do_listen(Parent, LSock).
 
 do_listen(Parent, LSock) ->
-    %% So annoying there is no select-like sematic for this
+    %% So annoying there is no select-like semantics for this
     case gen_tcp:accept(LSock, ?ACCEPT_TMO) of
 	{ok, Sock} ->
 	    Parent ! {accept, Sock},

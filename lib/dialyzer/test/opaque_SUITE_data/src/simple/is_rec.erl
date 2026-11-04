@@ -16,18 +16,18 @@ ri11() ->
 
 ri13() ->
     A = simple1_adt:d1(),
-    if is_record(A, r) -> true end. % breaks the opaqueness
+    if is_record(A, r) -> true end. % breaks the opacity
 
 ri14() ->
     A = simple1_adt:d1(),
-    if is_record({A, 1}, r) -> true end. % breaks the opaqueness
+    if is_record({A, 1}, r) -> true end. % breaks the opacity
 
 -type '1-3-t'() :: 1..3.
 
 -spec '1-3'() -> '1-3-t'().
 
 '1-3'() ->
-    random:uniform(3).
+    rand:uniform(3).
 
 
 -spec 'Atom'() -> atom().
@@ -54,7 +54,7 @@ ri5() ->
 
 ri6() ->
     A = simple1_adt:d1(),
-    if is_record(A, r) -> true end. % breaks opaqueness
+    if is_record(A, r) -> true end. % breaks opacity
 
 ri7() ->
     A = simple1_adt:d1(),

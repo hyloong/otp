@@ -1,7 +1,9 @@
 %% %CopyrightBegin%
-%% 
-%% Copyright Ericsson AB 2013. All Rights Reserved.
-%% 
+%%
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2013-2025. All Rights Reserved.
+%%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
 %% You may obtain a copy of the License at
@@ -13,7 +15,7 @@
 %% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 %% See the License for the specific language governing permissions and
 %% limitations under the License.
-%% 
+%%
 %% %CopyrightEnd%
 %%
 %%
@@ -182,6 +184,19 @@ end_per_group(_GroupName, _Config) ->
 %% Note: This function is free to add any key/value pairs to the Config
 %% variable, but should NOT alter/remove any existing entries.
 %%--------------------------------------------------------------------
+init_per_testcase(sanity_check, Config) ->
+    %% We check if the test results were released using a version
+    %% of Erlang/OTP that was a tagged version or not. On a non-tagged
+    %% version this testcase most likely will fail.
+    case file:read_file(
+           filename:join(
+             proplists:get_value(data_dir,Config), "otp_version_tickets")) of
+        {ok,<<"DEVELOPMENT",_/binary>>} ->
+            {skip, "This is a development version, test might fail "
+             "because of incorrect version numbers"};
+        {ok,_S} ->
+            Config
+    end;
 init_per_testcase(_TestCase, Config) ->
     Config.
 
@@ -230,19 +245,19 @@ api_report(_Config) ->
     ok.
 
 api_to_file(Config) ->
-    DataDir  = ?config(data_dir, Config),
+    DataDir  = proplists:get_value(data_dir, Config),
     Filename = filename:join([DataDir, "system_information_report_1.dat"]),
     ok      = system_information:to_file(Filename),
     {ok, _} = file:consult(Filename),
     {save_config, [{report_name, Filename}]}.
 
 api_from_file(Config) ->
-    {api_to_file, Saved} = ?config(saved_config, Config),
-    DataDir = ?config(data_dir, Config),
+    {api_to_file, Saved} = proplists:get_value(saved_config, Config),
+    DataDir = proplists:get_value(data_dir, Config),
     Fname1  = filename:join([DataDir, "information_test_report.dat"]),
     Report1 = system_information:from_file(Fname1),
     ok      = validate_report(Report1),
-    Fname2  = ?config(report_name, Saved),
+    Fname2  = proplists:get_value(report_name, Saved),
     Report2 = system_information:from_file(Fname2),
     ok      = validate_report(Report2),
     ok.
@@ -253,7 +268,7 @@ api_start_stop(_Config) ->
     ok.
 
 validate_server_interface(Config) ->
-    DataDir = ?config(data_dir, Config),
+    DataDir = proplists:get_value(data_dir, Config),
     Fname1  = filename:join([DataDir, "information_test_report.dat"]),
     %% load old report
     ok = system_information:load_report(file, Fname1),
@@ -280,7 +295,6 @@ validate_loaded_report() ->
     ok = system_information:application(kernel,[full]),
     ok = system_information:module(gen_server),
     ok = system_information:module(gen_server,[full]),
-    ok = system_information:modules(native),
     ok.
 
 

@@ -1,8 +1,10 @@
 /*
  * %CopyrightBegin%
- * 
- * Copyright Ericsson AB 2015. All Rights Reserved.
- * 
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Copyright Ericsson AB 2015-2025. All Rights Reserved.
+ *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
@@ -14,7 +16,7 @@
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  * See the License for the specific language governing permissions and
  * limitations under the License.
- * 
+ *
  * %CopyrightEnd%
  */
 
@@ -23,7 +25,6 @@
 #endif
 #include "erl_os_monotonic_time_extender.h"
 
-#ifdef USE_THREADS
 
 static void *os_monotonic_time_extender(void *vstatep)
 {
@@ -44,35 +45,27 @@ static void *os_monotonic_time_extender(void *vstatep)
 	erts_milli_sleep(sleep_time);
     }
 
-    erl_exit(ERTS_ABORT_EXIT, "os_monotonic_time_extender thread terminating");
+    erts_exit(ERTS_ABORT_EXIT, "os_monotonic_time_extender thread terminating");
     return NULL;
 }
 
 static erts_tid_t os_monotonic_extender_tid;
-#endif
 
 void
 erts_init_os_monotonic_time_extender(ErtsOsMonotonicTimeExtendState *statep,
 				     Uint32 (*raw_os_monotonic_time)(void),
 				     int check_seconds)
 {
-#ifdef USE_THREADS
     statep->raw_os_monotonic_time = raw_os_monotonic_time;
     erts_atomic32_init_nob(&statep->extend[0], (erts_aint32_t) 0);
     erts_atomic32_init_nob(&statep->extend[1], (erts_aint32_t) 0);
     statep->check_interval = check_seconds;
 
-#else
-    statep->extend[0] = (Uint32) 0;
-    statep->extend[1] = (Uint32) 0;
-    statep->last_msb = (ErtsMonotonicTime) 0;
-#endif
 }
 
 void
 erts_late_init_os_monotonic_time_extender(ErtsOsMonotonicTimeExtendState *statep)
 {
-#ifdef USE_THREADS
     erts_thr_opts_t thr_opts = ERTS_THR_OPTS_DEFAULT_INITER;
     thr_opts.detached = 1;
     thr_opts.suggested_stack_size = 4;
@@ -85,5 +78,4 @@ erts_late_init_os_monotonic_time_extender(ErtsOsMonotonicTimeExtendState *statep
 		    os_monotonic_time_extender,
 		    (void*) statep,
 		    &thr_opts);
-#endif
 }

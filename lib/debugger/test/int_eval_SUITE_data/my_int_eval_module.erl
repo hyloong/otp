@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 1999-2013. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 1999-2025. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -31,6 +33,7 @@
 -export([f/1, f_try/1, f_catch/1]).
 -export([otp_5837/1, otp_8310/0]).
 -export([empty_map_update/1, update_in_fun/0]).
+-export([call_inside_binary/1]).
 
 %% Internal exports.
 -export([echo/2,my_subtract/2,catch_a_ball/0,throw_a_ball/0]).
@@ -39,7 +42,6 @@
 -import(lists, [member/2]).
 
 -define(line,put(test_server_loc,{?MODULE,?LINE}),).
--define(t,test_server).
 -define(m,test_server:match).
 -define(config,test_server:lookup_config).
 
@@ -118,7 +120,7 @@ external_call_test(Data) ->
     {yes,Data} = i_am_exported(Data),
     {yes,Data} = ?MODULE:i_am_exported(Data),
 
-    %% Excercise the function cache in the interpreter.
+    %% Exercise the function cache in the interpreter.
 
     {ok,Data,[a,b]} = not_exported(Data, [a,b]),
     {yes,Data} = i_am_exported(Data),
@@ -230,10 +232,10 @@ otp_8310() ->
     a = if (false orelse a) =:= a -> a; true -> b end,
     F1 = fun() -> a end,
     {'EXIT',{{bad_filter,a},_}} =
-        (catch {a, [X || X <- [1,2,3], _ = F1()]}),
+        (catch {a, [X || X <- [1,2,3], F1()]}),
     F2 = fun() -> << 3:8 >> end,
     {'EXIT',{{bad_filter,<<3>>},_}} =
-        (catch {a, << << X >> || << X >> <= << 7:8 >>,_ = F2() >>}),
+        (catch {a, << << X >> || << X >> <= << 7:8 >>, F2() >>}),
     {'EXIT',{{bad_generator,a},_}} =
         (catch {a, [X || X <- a]}),
     {'EXIT',{{bad_generator,b},_}} =
@@ -248,3 +250,6 @@ empty_map_update(Map) -> Map#{}.
 
 update_in_fun() ->
     lists:map(fun (X) -> X#{price := 0} end, [#{hello => 0, price => nil}]).
+
+call_inside_binary(Fun) ->
+    <<(Fun(1))/binary>>.

@@ -1,7 +1,9 @@
 #
 # %CopyrightBegin%
 #
-# Copyright Ericsson AB 2002-2013. All Rights Reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Copyright Ericsson AB 2002-2026. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -35,7 +37,7 @@ RELSYSDIR = $(RELEASE_PATH)/lib/observer-$(VSN)
 # Common Macros
 # ----------------------------------------------------
 
-MODULES= \
+MODULES = \
 	crashdump_viewer \
 	cdv_atom_cb \
 	cdv_bin_cb \
@@ -50,6 +52,7 @@ MODULES= \
 	cdv_mem_cb \
 	cdv_mod_cb \
 	cdv_multi_wx \
+	cdv_persistent_cb \
 	cdv_port_cb \
 	cdv_proc_cb \
 	cdv_sched_cb \
@@ -67,8 +70,10 @@ MODULES= \
 	observer_html_lib \
 	observer_lib \
 	observer_perf_wx \
+	observer_port_wx \
 	observer_pro_wx \
 	observer_procinfo \
+	observer_sock_wx \
 	observer_sys_wx \
 	observer_trace_wx \
 	observer_traceoptions_wx \
@@ -91,7 +96,7 @@ EXAMPLE_FILES= multitrace.erl
 TARGET_FILES= $(MODULES:%=$(EBIN)/%.$(EMULATOR)) $(APP_TARGET) $(APPUP_TARGET)
 
 PRIVDIR= ../priv
-WEBTOOLFILES= $(PRIVDIR)/crashdump_viewer.tool $(PRIVDIR)/erlang_observer.png
+PNGFILES= $(PRIVDIR)/erlang_observer.png
 BINDIR= $(PRIVDIR)/bin
 ifeq ($(findstring win32,$(TARGET)),win32)
 WIN32_EXECUTABLES= $(BINDIR)/etop.bat $(BINDIR)/cdv.bat
@@ -102,10 +107,6 @@ EXECUTABLES= \
 	$(BINDIR)/etop \
 	$(BINDIR)/cdv \
 	$(WIN32_EXECUTABLES)
-CDVDIR= $(PRIVDIR)/crashdump_viewer
-GIF_FILES= \
-	$(CDVDIR)/collapsd.gif \
-	$(CDVDIR)/exploded.gif
 
 APP_FILE= observer.app
 
@@ -124,12 +125,14 @@ ERL_COMPILE_FLAGS += \
 	-I../include \
 	-I ../../et/include \
 	-I ../../../libraries/et/include \
-	-Werror
+	-I $(ERL_TOP)/lib \
+	-pa $(ERL_TOP)/lib/wx/ebin \
+	-Werror +nowarn_deprecated_catch
 
 # ----------------------------------------------------
 # Targets
 # ----------------------------------------------------
-opt debug: $(TARGET_FILES)
+$(TYPES): $(TARGET_FILES)
 
 clean:
 	rm -f $(TARGET_FILES)
@@ -154,23 +157,19 @@ release_spec: opt
 	$(INSTALL_DIR) "$(RELSYSDIR)/src"
 	$(INSTALL_DATA) $(ERL_FILES) "$(RELSYSDIR)/src"
 	$(INSTALL_DATA) $(INTERNAL_HRL_FILES) "$(RELSYSDIR)/src"
-	$(INSTALL_DIR) "$(RELSYSDIR)/examples"
-	$(INSTALL_DATA) $(EXAMPLE_FILES) "$(RELSYSDIR)/examples"
 	$(INSTALL_DIR) "$(RELSYSDIR)/include"
 	$(INSTALL_DATA) $(HRL_FILES) "$(RELSYSDIR)/include"
 	$(INSTALL_DIR) "$(RELSYSDIR)/ebin"
 	$(INSTALL_DATA) $(TARGET_FILES) "$(RELSYSDIR)/ebin"
 	$(INSTALL_DIR) "$(RELSYSDIR)/priv/bin"
 	$(INSTALL_SCRIPT) $(EXECUTABLES) "$(RELSYSDIR)/priv/bin"
-	$(INSTALL_DIR) "$(RELSYSDIR)/priv/crashdump_viewer"
-	$(INSTALL_DATA) $(WEBTOOLFILES) "$(RELSYSDIR)/priv"
-	$(INSTALL_DATA) $(GIF_FILES) "$(RELSYSDIR)/priv/crashdump_viewer"
+	$(INSTALL_DATA) $(PNGFILES) "$(RELSYSDIR)/priv"
 
 release_docs_spec:
+	$(INSTALL_DIR) "$(RELSYSDIR)/doc/examples"
+	$(INSTALL_DATA) $(EXAMPLE_FILES) "$(RELSYSDIR)/doc/examples"
 
-
-
-
-
-
-
+# ----------------------------------------------------
+# Dependencies
+# ----------------------------------------------------
+include $(ERL_TOP)/make/dep.mk

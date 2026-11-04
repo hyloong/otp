@@ -1,8 +1,10 @@
 %%
 %% %CopyrightBegin%
-%% 
-%% Copyright Ericsson AB 1997-2010. All Rights Reserved.
-%% 
+%%
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 1997-2026. All Rights Reserved.
+%%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
 %% You may obtain a copy of the License at
@@ -14,12 +16,15 @@
 %% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 %% See the License for the specific language governing permissions and
 %% limitations under the License.
-%% 
+%%
 %% %CopyrightEnd%
 %%
 %%
 -module(mod_actions).
--export([do/1,load/2, store/2]).
+
+-deprecated([{'_','_',"use 'mod_esi' for dynamic page generation"}]).
+-moduledoc false.
+-export([do/1, store/2]).
 
 -include("httpd.hrl").
 -include("httpd_internal.hrl").
@@ -38,7 +43,7 @@ do(Info) ->
 	undefined ->
 	  Path = mod_alias:path(Info#mod.data,Info#mod.config_db,
 			      Info#mod.request_uri),
-	  Suffix = httpd_util:suffix(Path),
+	  Suffix = httpd_util:strip_extension_dot(Path),
 	  MimeType = httpd_util:lookup_mime(Info#mod.config_db,Suffix,
 					  "text/plain"),
 	  Actions = httpd_util:multi_lookup(Info#mod.config_db,action),
@@ -77,23 +82,6 @@ script(RequestURI, Method, [_ | Rest]) ->
 %%
 %% Configuration
 %%
-
-%% load
-
-load("Action "++  Action, []) ->
-  case inets_regexp:split(Action, " ") of
-    {ok,[MimeType, CGIScript]} ->
-      {ok,[],{action, {MimeType, CGIScript}}};
-    {ok,_} ->
-      {error,?NICE(string:strip(Action)++" is an invalid Action")}
-  end;
-load("Script " ++ Script,[]) ->
-  case inets_regexp:split(Script, " ") of
-    {ok,[Method, CGIScript]} ->
-      {ok,[],{script, {Method, CGIScript}}};
-    {ok,_} ->
-      {error,?NICE(string:strip(Script)++" is an invalid Script")}
-  end.
 
 store({action, {MimeType, CGIScript}} = Conf, _) when is_list(MimeType),
 						      is_list(CGIScript)  ->

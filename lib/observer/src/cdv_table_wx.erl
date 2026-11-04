@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2011-2013. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2011-2025. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -17,6 +19,7 @@
 %%
 %% %CopyrightEnd%
 -module(cdv_table_wx).
+-moduledoc false.
 
 -behaviour(wx_object).
 
@@ -50,11 +53,12 @@ init([ParentWin, {ColumnSpec,Info,TW}]) ->
 	end,
     Grid = wxListCtrl:new(ParentWin, [{style, Style}]),
     Li = wxListItem:new(),
+    Scale = observer_wx:get_scale(),
     AddListEntry = fun({Name, Align, DefSize}, Col) ->
 			   wxListItem:setText(Li, Name),
 			   wxListItem:setAlign(Li, Align),
 			   wxListCtrl:insertColumn(Grid, Col, Li),
-			   wxListCtrl:setColumnWidth(Grid, Col, DefSize),
+			   wxListCtrl:setColumnWidth(Grid, Col, DefSize*Scale),
 			   Col + 1
 		   end,
     lists:foldl(AddListEntry, 0, ColumnSpec),
@@ -74,7 +78,7 @@ handle_info(active, State) ->
     {noreply, State};
 
 handle_info(Info, State) ->
-    io:format("~p:~p: Unhandled info: ~p~n", [?MODULE, ?LINE, Info]),
+    io:format("~p:~p: Unhandled info: ~tp~n", [?MODULE, ?LINE, Info]),
     {noreply, State}.
 
 terminate(_Reason, _State) ->
@@ -84,15 +88,15 @@ code_change(_, _, State) ->
     {ok, State}.
 
 handle_call(Msg, _From, State) ->
-    io:format("~p~p: Unhandled Call ~p~n",[?MODULE, ?LINE, Msg]),
+    io:format("~p~p: Unhandled Call ~tp~n",[?MODULE, ?LINE, Msg]),
     {reply, ok, State}.
 
 handle_cast(Msg, State) ->
-    io:format("~p~p: Unhandled cast ~p~n",[?MODULE, ?LINE, Msg]),
+    io:format("~p~p: Unhandled cast ~tp~n",[?MODULE, ?LINE, Msg]),
     {noreply, State}.
 
 handle_event(Event, State) ->
-    io:format("~p:~p: Unhandled event ~p\n", [?MODULE,?LINE,Event]),
+    io:format("~p:~p: Unhandled event ~tp\n", [?MODULE,?LINE,Event]),
     {noreply, State}.
 
 %%%%%%%%%%%%%%%%%%%%%%% Internal %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%

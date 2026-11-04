@@ -1,8 +1,10 @@
 %%
 %% %CopyrightBegin%
-%% 
-%% Copyright Ericsson AB 1997-2012. All Rights Reserved.
-%% 
+%%
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 1997-2025. All Rights Reserved.
+%%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
 %% You may obtain a copy of the License at
@@ -14,10 +16,11 @@
 %% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 %% See the License for the specific language governing permissions and
 %% limitations under the License.
-%% 
+%%
 %% %CopyrightEnd%
 %%
 -module(os_mon_sysinfo).
+-moduledoc false.
 -behaviour(gen_server).
 
 %% API
@@ -26,7 +29,7 @@
 
 %% gen_server callbacks
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2,
-	 terminate/2, code_change/3]).
+	 terminate/2]).
 
 -define(DISK_INFO, $d).
 -define(MEM_INFO,  $m).
@@ -45,7 +48,7 @@ get_disk_info() ->
     gen_server:call(os_mon_sysinfo, get_disk_info).
 
 get_disk_info(DriveRoot) ->
-    gen_server:call(os_mon_sysinfo, {get_disk_info,DriveRoot}).
+    gen_server:call(os_mon_sysinfo, {get_disk_info, DriveRoot}).
 
 get_mem_info() ->
     gen_server:call(os_mon_sysinfo, get_mem_info).
@@ -65,8 +68,8 @@ init([]) ->
 
 handle_call(get_disk_info, _From, State) ->
     {reply, get_disk_info1(State#state.port), State};
-handle_call({get_disk_info,RootList}, _From, State) ->
-    {reply, get_disk_info1(State#state.port,RootList), State};
+handle_call({get_disk_info, DriveRoot}, _From, State) ->
+    {reply, get_disk_info1(State#state.port, DriveRoot), State};
 handle_call(get_mem_info, _From, State) ->
     {reply, get_mem_info1(State#state.port), State}.
 
@@ -86,23 +89,6 @@ terminate(_Reason, State) ->
 	    port_close(Port)
     end,
     ok.
-
-%% os_mon-2.0
-%% For live downgrade to/upgrade from os_mon-1.8[.1]
-code_change(Vsn, PrevState, "1.8") ->
-    case Vsn of
-
-	%% Downgrade from this version
-	{down, _Vsn} ->
-	    process_flag(trap_exit, false);
-
-	%% Upgrade to this version
-	_Vsn ->
-	    process_flag(trap_exit, true)
-    end,
-    {ok, PrevState};
-code_change(_OldVsn, State, _Extra) ->
-    {ok, State}.
 
 %%----------------------------------------------------------------------
 %% Internal functions
@@ -125,8 +111,8 @@ get_disk_info1(Port) ->
     Port ! {self(),{command,[?DISK_INFO]}},
     get_data(Port,[]).
 
-get_disk_info1(Port,PathList) ->
-    Port ! {self(),{command,[?DISK_INFO|[P++[0]||P <- PathList]]}},
+get_disk_info1(Port, DriveRoot) ->
+    Port ! {self(), {command,[?DISK_INFO|DriveRoot++[0]]}},
     get_data(Port,[]).
 
 get_mem_info1(Port) ->

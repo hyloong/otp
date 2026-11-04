@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2009-2014. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2009-2025. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -18,6 +20,7 @@
 %% %CopyrightEnd%
 %%
 -module(dbg_wx_filedialog_win).
+-moduledoc false.
 
 -behaviour(wx_object).
 
@@ -118,9 +121,9 @@ init([Parent, Id, Options0]) ->
     wxTextCtrl:connect(Dir, char, [{callback, IsTab}]),
 
     Top  = wxBoxSizer:new(?wxHORIZONTAL),
-    wxSizer:add(Top, Back, [{border, 2},{flag,?wxALL bor ?wxEXPAND}]),
-    wxSizer:add(Top, Forw, [{border, 2},{flag,?wxALL bor ?wxEXPAND}]),
-    wxSizer:add(Top, Up,   [{border, 2},{flag,?wxALL bor ?wxEXPAND}]),    
+    _ = wxSizer:add(Top, Back, [{border, 2},{flag,?wxALL bor ?wxEXPAND}]),
+    _ = wxSizer:add(Top, Forw, [{border, 2},{flag,?wxALL bor ?wxEXPAND}]),
+    _ = wxSizer:add(Top, Up,   [{border, 2},{flag,?wxALL bor ?wxEXPAND}]),    
 
     %% List Ctrl
     {Art, IconMap} = create_icons(ExtraIcons),
@@ -154,13 +157,13 @@ init([Parent, Id, Options0]) ->
     
     %% OK done
     Box  = wxBoxSizer:new(?wxVERTICAL),
-    wxSizer:add(Box, Top,  [{border, 2}, {flag,?wxALL bor ?wxEXPAND}]),
-    wxSizer:add(Box, Dir,  [{border, 2}, {flag,?wxALL bor ?wxEXPAND}]),
-    wxSizer:add(Box, LC,   [{border, 2}, {flag,?wxALL bor ?wxEXPAND}, {proportion, 1}]),
-    wxSizer:add(Box, Bott, [{border, 2}, {flag,?wxALL bor ?wxEXPAND}]),
+    _ = wxSizer:add(Box, Top,  [{border, 2}, {flag,?wxALL bor ?wxEXPAND}]),
+    _ = wxSizer:add(Box, Dir,  [{border, 2}, {flag,?wxALL bor ?wxEXPAND}]),
+    _ = wxSizer:add(Box, LC,   [{border, 2}, {flag,?wxALL bor ?wxEXPAND}, {proportion, 1}]),
+    _ = wxSizer:add(Box, Bott, [{border, 2}, {flag,?wxALL bor ?wxEXPAND}]),
     
     wxWindow:setSizer(Dlg, Box),
-    wxSizer:fit(Box, Dlg),
+    _ = wxSizer:fit(Box, Dlg),
     wxSizer:setSizeHints(Box,Dlg),
     State = #state{win=Dlg, 
 		   back=Back, forward=Forw, up=Up,

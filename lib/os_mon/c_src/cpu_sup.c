@@ -1,8 +1,10 @@
 /*
  * %CopyrightBegin%
- * 
- * Copyright Ericsson AB 1997-2012. All Rights Reserved.
- * 
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Copyright Ericsson AB 1997-2025. All Rights Reserved.
+ *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
@@ -14,7 +16,7 @@
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  * See the License for the specific language governing permissions and
  * limitations under the License.
- * 
+ *
  * %CopyrightEnd%
  */
 /*
@@ -47,6 +49,10 @@
 #include <kstat.h>
 #endif
 
+#if (defined(__APPLE__) && defined(__MACH__))
+#include <mach/mach.h>
+#endif
+
 #include <errno.h>
 
 #if defined(__sun__) || defined(__linux__)
@@ -73,12 +79,21 @@ typedef struct {
 
 #endif
 
+#if (defined(__APPLE__) && defined(__MACH__))
+#define CU_OSX_VALUES (5)
+#endif
+
 #if defined(__FreeBSD__)
 #include <sys/resource.h>
 #include <sys/sysctl.h>
 #define CU_BSD_VALUES (6)
 #endif
 
+#if defined(__OpenBSD__)
+#include <sys/types.h>
+#include <sys/sched.h>
+#define CU_OPENBSD_VALUES (6)
+#endif
 
 #define FD_IN		(0)
 #define FD_OUT		(1)
@@ -144,6 +159,8 @@ static void util_measure(unsigned int **result_vec, int *result_sz);
 
 #if defined(__sun__)
 static unsigned int misc_measure(char* name);
+#elif defined(__linux__)
+static unsigned int misc_measure(char cmd);
 #endif
 static void sendi(unsigned int data);
 static void sendv(unsigned int data[], int ints);
@@ -164,8 +181,13 @@ static int processors_online() {
 }
 #endif
 
-#if defined(__FreeBSD__)
+#if (defined(__APPLE__) && defined(__MACH__)) || defined(__FreeBSD__)
 void getsysctl(const char *, void *, size_t);
+#endif
+
+#if defined(__OpenBSD__)
+static int getncpu(void);
+static int getncpuonline(void);
 #endif
 
 int main(int argc, char** argv) {
@@ -173,7 +195,7 @@ int main(int argc, char** argv) {
   int rc;
   int sz;
   unsigned int *rv;
-#if defined(__linux__) || defined(__FreeBSD__)
+#if defined(__linux__) || (defined(__APPLE__) && defined(__MACH__)) || defined(__FreeBSD__) || defined(__OpenBSD__)
   unsigned int no_of_cpus = 0;
 #endif
 
@@ -188,6 +210,22 @@ int main(int argc, char** argv) {
     if ( (rv = (unsigned int*)malloc(sizeof(unsigned int)*(2 + 2*no_of_cpus*CU_VALUES))) == NULL) {
 	error("cpu_sup: malloc error");
     }
+#endif
+
+#if (defined(__APPLE__) && defined(__MACH__))
+    getsysctl("hw.ncpu", &no_of_cpus, sizeof(int));
+    if ( (rv = (unsigned int*)malloc(sizeof(unsigned int)*(2 + 2*no_of_cpus*CU_OSX_VALUES))) == NULL) {
+	error("cpu_sup: malloc error");
+    }
+#endif
+
+#if defined(__OpenBSD__)
+    no_of_cpus = getncpu();
+    if ( no_of_cpus == -1 )
+      error("cpu_sup: sysctl error");
+
+    if ( (rv = (unsigned int*)malloc(sizeof(unsigned int)*(2 + 2*no_of_cpus*CU_OPENBSD_VALUES))) == NULL)
+      error("cpu_sup: malloc error");
 #endif
 
 #if defined(__FreeBSD__)
@@ -216,14 +254,19 @@ int main(int argc, char** argv) {
     case AVG1:		sendi(misc_measure("avenrun_1min"));		break;
     case AVG5:		sendi(misc_measure("avenrun_5min"));		break;
     case AVG15:		sendi(misc_measure("avenrun_15min"));		break;
+#elif defined(__linux__)
+    case NPROCS:
+    case AVG1:
+    case AVG5:
+    case AVG15:		sendi(misc_measure(cmd));			break;
 #elif defined(__OpenBSD__) || (defined(__APPLE__) && defined(__MACH__)) || defined(__FreeBSD__) || defined(__DragonFly__)
     case NPROCS:	bsd_count_procs();				break;
     case AVG1:		bsd_loadavg(0);					break;
     case AVG5:		bsd_loadavg(1);					break;
     case AVG15:		bsd_loadavg(2);					break;
 #endif
-#if defined(__sun__) || defined(__linux__) || defined(__FreeBSD__)
-    case UTIL:		util_measure(&rv,&sz); 	sendv(rv, sz);		break;
+#if defined(__sun__) || defined(__linux__) || (defined(__APPLE__) && defined(__MACH__)) || defined(__FreeBSD__) || defined(__OpenBSD__)
+    case UTIL:		util_measure(&rv,&sz); sendv(rv, sz);		break;
 #endif
     case QUIT:		free((void*)rv); return 0;
     default:		error("Bad command");				break;
@@ -314,6 +357,22 @@ static void bsd_count_procs(void) {
 
 #if defined(__linux__)
 
+static unsigned int misc_measure(char cmd) {
+    struct sysinfo info;
+
+    if (sysinfo(&info))
+        error(strerror(errno));
+
+    switch (cmd) {
+    case AVG1:	 	return (unsigned int)(info.loads[0] / 256);
+    case AVG5:	 	return (unsigned int)(info.loads[1] / 256);
+    case AVG15: 	return (unsigned int)(info.loads[2] / 256);
+    case NPROCS:	return info.procs;
+    }
+
+    return -1;
+}
+
 static cpu_t *read_procstat(FILE *fp, cpu_t *cpu) {
     char buffer[BUFFERSIZE];
 
@@ -321,7 +380,7 @@ static cpu_t *read_procstat(FILE *fp, cpu_t *cpu) {
 	memset(cpu, 0, sizeof(cpu_t));
 	return cpu;
     }
-    sscanf(buffer, "cpu%u %Lu %Lu %Lu %Lu %Lu %Lu %Lu %Lu",
+    sscanf(buffer, "cpu%u %llu %llu %llu %llu %llu %llu %llu %llu",
 	&(cpu->id),
 	&(cpu->user),
 	&(cpu->nice_user),
@@ -342,8 +401,24 @@ static void util_measure(unsigned int **result_vec, int *result_sz) {
     FILE *fp;
     unsigned int *rv = NULL;
     cpu_t cpu;
- 
+
+    rv = *result_vec;
+    rv[0] = no_of_cpus;
+
     if ( (fp = fopen(PROCSTAT,"r")) == NULL) {
+        if (errno == EACCES) { /* SELinux */
+            rv[1] = 1; /* just the cpu id */
+            ++rv; /* first value is number of cpus */
+            ++rv; /* second value is number of entries */
+            for (i = 0; i < no_of_cpus; ++i) {
+                rv[0] = CU_CPU_ID;
+                rv[1] = i;
+	        rv += 1*2;
+            }
+            *result_sz = 2 + 2*1 * no_of_cpus;
+            return;
+        }
+
 	/* Check if procfs is mounted,
 	 *  otherwise:
 	 *  try and try again, bad procsfs.
@@ -352,20 +427,19 @@ static void util_measure(unsigned int **result_vec, int *result_sz) {
 	return;
     }
 
-	/*ignore read*/
+    /*ignore read*/
     if (fgets(buffer, BUFFERSIZE, fp) == NULL) {
 	*result_sz = 0;
 	return;
     }
-    rv = *result_vec; 
-    rv[0] = no_of_cpus;
+
     rv[1] = CU_VALUES;
     ++rv; /* first value is number of cpus */
     ++rv; /* second value is number of entries */
 
     for (i = 0; i < no_of_cpus; ++i) {
 	read_procstat(fp, &cpu);
-	      
+
 	rv[ 0] = CU_CPU_ID;    rv[ 1] = cpu.id;
 	rv[ 2] = CU_USER;      rv[ 3] = cpu.user;
 	rv[ 4] = CU_NICE_USER; rv[ 5] = cpu.nice_user;
@@ -538,10 +612,60 @@ static void util_measure(unsigned int **result_vec, int *result_sz) {
 #endif
 
 /* ---------------------------- *
- *     FreeBSD stat functions 	*
+ *     OSX util functions      *
  * ---------------------------- */
 
-#if defined(__FreeBSD__)
+#if (defined(__APPLE__) && defined(__MACH__))
+
+static void util_measure(unsigned int **result_vec, int *result_sz) {
+    natural_t no_of_cpus;
+    processor_info_array_t info_array;
+    mach_msg_type_number_t info_count;
+    mach_port_t host_port;
+    kern_return_t error;
+    processor_cpu_load_info_data_t *cpu_load_info = NULL;
+    unsigned int *rv = NULL;
+    int i;
+
+    host_port = mach_host_self();
+    error = host_processor_info(host_port, PROCESSOR_CPU_LOAD_INFO,
+                                &no_of_cpus, &info_array, &info_count);
+    if (error != KERN_SUCCESS) {
+      *result_sz = 0;
+      return;
+    }
+    mach_port_deallocate(mach_task_self(), host_port);
+    cpu_load_info = (processor_cpu_load_info_data_t *) info_array;
+
+    rv = *result_vec; 
+    rv[0] = no_of_cpus;
+    rv[1] = CU_OSX_VALUES;
+    ++rv; /* first value is number of cpus */
+    ++rv; /* second value is number of entries */
+
+    for (i = 0; i < no_of_cpus; ++i) {
+        rv[0] = CU_CPU_ID;    rv[1] = i;
+        rv[2] = CU_USER;      rv[3] = cpu_load_info[i].cpu_ticks[CPU_STATE_USER];
+        rv[4] = CU_NICE_USER; rv[5] = cpu_load_info[i].cpu_ticks[CPU_STATE_NICE];
+        rv[6] = CU_KERNEL;    rv[7] = cpu_load_info[i].cpu_ticks[CPU_STATE_SYSTEM];
+        rv[8] = CU_IDLE;      rv[9] = cpu_load_info[i].cpu_ticks[CPU_STATE_IDLE];
+        rv += CU_OSX_VALUES*2;
+    }	
+
+    *result_sz = 2 + 2*CU_OSX_VALUES * no_of_cpus;
+
+    error = vm_deallocate(mach_task_self(), (vm_address_t)info_array,
+                        info_count * sizeof(int));
+    if (error != KERN_SUCCESS)
+      *result_sz = 0;
+}
+#endif
+
+/* ---------------------------- *
+ *  Utils for OSX and FreeBSD 	*
+ * ---------------------------- */
+
+#if (defined(__APPLE__) && defined(__MACH__)) || defined(__FreeBSD__)
 
 #define EXIT_WITH(msg) (rich_error(msg, __FILE__, __LINE__))
 #define RICH_BUFLEN    (213)  /* left in error(char*) */
@@ -552,6 +676,25 @@ void rich_error(const char *reason, const char *file, const int line) {
     error(buf);
 }
 #undef RICH_BUFLEN
+
+void getsysctl(const char *name, void *ptr, size_t len)
+{
+    size_t gotlen = len;
+    if (sysctlbyname(name, ptr, &gotlen, NULL, 0) != 0) {
+	EXIT_WITH("sysctlbyname failed");
+    }
+    if (gotlen != len) {
+	EXIT_WITH("sysctlbyname: unexpected length");
+    }
+}
+#endif
+
+
+/* ---------------------------- *
+ *     FreeBSD stat functions 	*
+ * ---------------------------- */
+
+#if defined(__FreeBSD__)
 
 static void util_measure(unsigned int **result_vec, int *result_sz) {
     int no_of_cpus;
@@ -585,19 +728,74 @@ static void util_measure(unsigned int **result_vec, int *result_sz) {
 	rv[10] = CU_HARD_IRQ;  rv[11] = cpu_times[CP_INTR + offset];
 	rv += CU_BSD_VALUES*2;
     }
-
+    
+    free((void*) cpu_times);
     *result_sz = 2 + 2*CU_BSD_VALUES * no_of_cpus;
 }
+#endif
 
-void getsysctl(const char *name, void *ptr, size_t len)
-{
-    size_t gotlen = len;
-    if (sysctlbyname(name, ptr, &gotlen, NULL, 0) != 0) {
-	EXIT_WITH("sysctlbyname failed");
+/* ---------------------------- *
+ *     OpenBSD stat functions 	*
+ * ---------------------------- */
+
+#if defined(__OpenBSD__)
+static int getncpu(void) {
+    const int mib[] = { CTL_HW, HW_NCPU };
+    int numcpu;
+    size_t size = sizeof(numcpu);
+
+    if (sysctl(mib, sizeof(mib)/sizeof(mib[0]), &numcpu, &size, NULL, 0) == -1)
+        error("cpu_sup: sysctl error");
+
+    return(numcpu);
+}
+
+static int getncpuonline(void) {
+    const int mib[] = { CTL_HW, HW_NCPUONLINE };
+    int numcpu;
+    size_t size = sizeof(numcpu);
+
+    if (sysctl(mib, sizeof(mib)/sizeof(mib[0]), &numcpu, &size, NULL, 0) == -1)
+        error("cpu_sup: sysctl error");
+
+    return(numcpu);
+}
+
+static void util_measure(unsigned int **result_vec, int *result_sz) {
+    static int mib[] = { CTL_KERN, KERN_CPTIME2, 0 };
+    size_t size_cpu_times;
+    int64_t *cpu_times;
+    unsigned int *rv = NULL;
+    int i;
+    int ncpuonline = getncpuonline();
+
+    rv = *result_vec;
+    rv[0] = ncpuonline;
+    rv[1] = CU_OPENBSD_VALUES;
+    ++rv; /* first value is number of cpus */
+    ++rv; /* second value is number of entries */
+
+    size_cpu_times = sizeof(int64_t) * CPUSTATES;
+    cpu_times = malloc(size_cpu_times);
+    if (!cpu_times)
+        error("cpu_sup: malloc error");
+
+    for (i = 0; i < ncpuonline; ++i) {
+        mib[2] = i;
+        if (sysctl(mib, sizeof(mib)/sizeof(mib[0]), cpu_times, &size_cpu_times, NULL, 0) == -1)
+            error("cpu_sup: sysctl error");
+
+        rv[ 0] = CU_CPU_ID;    rv[ 1] = i;
+        rv[ 2] = CU_USER;      rv[ 3] = (unsigned int)cpu_times[CP_USER];
+        rv[ 4] = CU_NICE_USER; rv[ 5] = (unsigned int)cpu_times[CP_NICE];
+        rv[ 6] = CU_KERNEL;    rv[ 7] = (unsigned int)cpu_times[CP_SYS];
+        rv[ 8] = CU_IDLE;      rv[ 9] = (unsigned int)cpu_times[CP_IDLE];
+        rv[10] = CU_HARD_IRQ;  rv[11] = (unsigned int)cpu_times[CP_INTR];
+        rv += CU_OPENBSD_VALUES*2;
     }
-    if (gotlen != len) {
-	EXIT_WITH("sysctlbyname: unexpected length");
-    }
+    free((void*) cpu_times);
+
+    *result_sz = 2 + 2*CU_OPENBSD_VALUES * ncpuonline;
 }
 #endif
 

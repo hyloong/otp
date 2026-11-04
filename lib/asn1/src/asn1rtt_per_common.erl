@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2012-2013. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2012-2026. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -90,7 +92,7 @@ decode_big_chars(Val, N) ->
     decode_big_chars_1(decode_chars(Val, N)).
 
 decode_oid(Octets) ->
-    [First|Rest] = dec_subidentifiers(Octets, 0, []),
+    [First|Rest] = dec_subidentifiers(Octets),
     Idlist = if
 		 First < 40 ->
 		     [0,First|Rest];
@@ -102,7 +104,7 @@ decode_oid(Octets) ->
     list_to_tuple(Idlist).
 
 decode_relative_oid(Octets) ->
-    list_to_tuple(dec_subidentifiers(Octets, 0, [])).
+    list_to_tuple(dec_subidentifiers(Octets)).
 
 encode_chars(Val, NumBits) ->
     << <<C:NumBits>> || C <- Val >>.
@@ -140,6 +142,8 @@ encode_relative_oid(Val) when is_tuple(Val) ->
 encode_relative_oid(Val) when is_list(Val) ->
     list_to_binary([e_object_element(X)||X <- Val]).
 
+encode_unconstrained_number(Val) when not is_integer(Val) ->
+    exit({error,{asn1,{illegal_integer,Val}}});
 encode_unconstrained_number(Val) when Val >= 0 ->
     if
 	Val < 16#80 ->
@@ -370,12 +374,20 @@ decode_big_chars_1([H|T]) ->
     [list_to_tuple(binary_to_list(<<H:32>>))|decode_big_chars_1(T)];
 decode_big_chars_1([]) -> [].
 
-dec_subidentifiers([H|T], Av, Al) when H >=16#80 ->
-    dec_subidentifiers(T, (Av bsl 7) bor (H band 16#7F), Al);
-dec_subidentifiers([H|T], Av, Al) ->
-    dec_subidentifiers(T, 0, [(Av bsl 7) bor H|Al]);
-dec_subidentifiers([], _Av, Al) ->
-    lists:reverse(Al).
+dec_subidentifiers(Octets) ->
+    dec_subidentifiers_1(Octets, 0, 0).
+
+%% Reject overlong OID components to mitigate a DoS vector. This should be
+%% enough bits for all legitimate uses until someone can prove otherwise. For
+%% comparison, golang limits to 30 bits per component.
+dec_subidentifiers_1([H | T], N, Av0) when H >= 16#80, N < 16 ->
+    Av = (Av0 bsl 7) bor (H band 16#7F),
+    dec_subidentifiers_1(T, N + 1, Av);
+dec_subidentifiers_1([H | T], N, Av0) when N < 16 ->
+    Av = (Av0 bsl 7) bor H,
+    [Av | dec_subidentifiers_1(T, 0, 0)];
+dec_subidentifiers_1([], _N, _Av) ->
+    [].
 
 enc_char(C0, Lb, Tab) ->
     try	element(C0-Lb, Tab) of
@@ -540,6 +552,7 @@ extension_bitmap(_Val, Pos, Limit, Acc) when Pos >= Limit ->
 extension_bitmap(Val, Pos, Limit, Acc) ->
     Bit = case element(Pos, Val) of
 	      asn1_NOVALUE -> 0;
+	      asn1_DEFAULT -> 0;
 	      _ -> 1
 	  end,
     extension_bitmap(Val, Pos+1, Limit, (Acc bsl 1) bor Bit).

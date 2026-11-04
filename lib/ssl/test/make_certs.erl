@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
+%%
+%% SPDX-License-Identifier: Apache-2.0
 %% 
-%% Copyright Ericsson AB 2007-2015. All Rights Reserved.
+%% Copyright Ericsson AB 2007-2025. All Rights Reserved.
 %% 
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -19,29 +21,33 @@
 %%
 
 -module(make_certs).
--compile([export_all]).
+-compile([export_all, nowarn_export_all]).
 
 %-export([all/1, all/2, rootCA/2, intermediateCA/3, endusers/3, enduser/3, revoke/3, gencrl/2, verify/3]).
 
 -record(config, {commonName, 
-	     organizationalUnitName = "Erlang OTP",
-	     organizationName = "Ericsson AB",
-	     localityName = "Stockholm",
-	     countryName = "SE",
-	     emailAddress = "peter@erix.ericsson.se",
-	     default_bits = 2048,
-	     v2_crls = true,
-	     ecc_certs = false,
-	     issuing_distribution_point = false,
-	     crl_port = 8000,
-	     openssl_cmd = "openssl"}).
+                 organizationalUnitName = "Erlang OTP",
+                 organizationName = "Ericsson AB",
+                 localityName = "Stockholm",
+                 countryName = "SE",
+                 emailAddress = "peter@erix.ericsson.se",
+                 default_bits = 2048,
+                 v2_crls = true,
+                 ecc_certs = false,
+                 issuing_distribution_point = false,
+                 crldp_crlissuer = false,
+                 crl_port = 8000,
+                 openssl_cmd = "openssl",
+                 hostname = "host.example.com",
+                 cert_profile = "user_cert",
+                 revoke_check = false}).
 
 
 default_config() ->
-    #config{}.
+    #config{hostname = net_adm:localhost()}.
 
 make_config(Args) ->
-    make_config(Args, #config{}).
+    make_config(Args, default_config()).
 
 make_config([], C) ->
     C;
@@ -58,16 +64,21 @@ make_config([{emailAddress, Name}|T], C) when is_list(Name) ->
 make_config([{default_bits, Bits}|T], C) when is_integer(Bits) ->
     make_config(T, C#config{default_bits = Bits});
 make_config([{v2_crls, Bool}|T], C) when is_boolean(Bool) ->
-    make_config(T, C#config{v2_crls = Bool});
+    make_config(T, C#config{v2_crls = Bool, revoke_check = crl});
 make_config([{crl_port, Port}|T], C) when is_integer(Port) ->
-    make_config(T, C#config{crl_port = Port});
+    make_config(T, C#config{crl_port = Port, revoke_check = crl});
 make_config([{ecc_certs, Bool}|T], C) when is_boolean(Bool) ->
     make_config(T, C#config{ecc_certs = Bool});
 make_config([{issuing_distribution_point, Bool}|T], C) when is_boolean(Bool) ->
     make_config(T, C#config{issuing_distribution_point = Bool});
+make_config([{crldp_crlissuer, Bool}|T], C) when is_boolean(Bool) ->
+    make_config(T, C#config{crldp_crlissuer = Bool, revoke_check = crl});
 make_config([{openssl_cmd, Cmd}|T], C) when is_list(Cmd) ->
-    make_config(T, C#config{openssl_cmd = Cmd}).
-
+    make_config(T, C#config{openssl_cmd = Cmd});
+make_config([{hostname, Hostname}|T], C) when is_list(Hostname) ->
+    make_config(T, C#config{hostname = Hostname});
+make_config([{staple, true}|T], C)  ->
+    make_config(T, C#config{revoke_check = ocsp_staple}).
 
 all([DataDir, PrivDir]) ->
     all(DataDir, PrivDir).
@@ -82,7 +93,17 @@ all(DataDir, PrivDir, C = #config{}) ->
     create_rnd(DataDir, PrivDir),			% For all requests
     rootCA(PrivDir, "erlangCA", C),
     intermediateCA(PrivDir, "otpCA", "erlangCA", C),
-    endusers(PrivDir, "otpCA", ["client", "server", "revoked", "a.server", "b.server"], C),
+    endusers(PrivDir, "otpCA", ["client", "server", "revoked", "undetermined",
+                                "a.server"], C),
+    case C#config.revoke_check of
+        ocsp_staple ->
+            endusers(PrivDir, "otpCA", ["b.server"],
+                     C#config{cert_profile="user_cert_ocsp_signing"});
+        crl ->
+            endusers(PrivDir, "otpCA", ["b.server"], C);
+        false ->
+            endusers(PrivDir, "otpCA", ["b.server"], C)
+    end,
     endusers(PrivDir, "erlangCA", ["localhost"], C),
     %% Create keycert files 
     SDir = filename:join([PrivDir, "server"]),
@@ -101,6 +122,12 @@ all(DataDir, PrivDir, C = #config{}) ->
     RKC = filename:join([RDir, "keycert.pem"]),
     revoke(PrivDir, "otpCA", "revoked", C),
     append_files([RK, RC], RKC),
+    MDir = filename:join([PrivDir, "undetermined"]),
+    MC = filename:join([MDir, "cert.pem"]),
+    MK = filename:join([MDir, "key.pem"]),
+    MKC = filename:join([MDir, "keycert.pem"]),
+    remove_entry(PrivDir, "otpCA", "undetermined", C),
+    append_files([MK, MC], MKC),
     remove_rnd(PrivDir),
     {ok, C}.
 
@@ -116,16 +143,16 @@ do_append_files([F|Fs], RF) ->
     do_append_files(Fs, RF).
 
 rootCA(Root, Name, C) ->
-    create_ca_dir(Root, Name, ca_cnf(C#config{commonName = Name})),
-    create_self_signed_cert(Root, Name, req_cnf(C#config{commonName = Name}), C),
+    create_ca_dir(Root, Name, ca_cnf(Root, C#config{commonName = Name})),
+    create_self_signed_cert(Root, Name, req_cnf(Root, C#config{commonName = Name}), C),
     file:copy(filename:join([Root, Name, "cert.pem"]), filename:join([Root, Name, "cacerts.pem"])),
     gencrl(Root, Name, C).
 
 intermediateCA(Root, CA, ParentCA, C) ->
-    create_ca_dir(Root, CA, ca_cnf(C#config{commonName = CA})),
+    create_ca_dir(Root, CA, ca_cnf(Root, C#config{commonName = CA})),
     CARoot = filename:join([Root, CA]),
     CnfFile = filename:join([CARoot, "req.cnf"]),
-    file:write_file(CnfFile, req_cnf(C#config{commonName = CA})),
+    file:write_file(CnfFile, req_cnf(Root, C#config{commonName = CA})),
     KeyFile = filename:join([CARoot, "private", "key.pem"]), 
     ReqFile =  filename:join([CARoot, "req.pem"]), 
     create_req(Root, CnfFile, KeyFile, ReqFile, C),
@@ -147,13 +174,13 @@ enduser(Root, CA, User, C) ->
     UsrRoot = filename:join([Root, User]),
     file:make_dir(UsrRoot),
     CnfFile = filename:join([UsrRoot, "req.cnf"]),
-    file:write_file(CnfFile, req_cnf(C#config{commonName = User})),
+    file:write_file(CnfFile, req_cnf(Root, C#config{commonName = User})),
     KeyFile = filename:join([UsrRoot, "key.pem"]), 
     ReqFile =  filename:join([UsrRoot, "req.pem"]), 
     create_req(Root, CnfFile, KeyFile, ReqFile, C),
     %create_req(Root, CnfFile, KeyFile, ReqFile),
     CertFileAllUsage =  filename:join([UsrRoot, "cert.pem"]),
-    sign_req(Root, CA, "user_cert", ReqFile, CertFileAllUsage, C),
+    sign_req(Root, CA, C#config.cert_profile, ReqFile, CertFileAllUsage, C),
     CertFileDigitalSigOnly =  filename:join([UsrRoot, "digital_signature_only_cert.pem"]),
     sign_req(Root, CA, "user_cert_digital_signature_only", ReqFile, CertFileDigitalSigOnly, C),
     CACertsFile = filename:join(UsrRoot, "cacerts.pem"),
@@ -171,16 +198,61 @@ revoke(Root, CA, User, C) ->
     cmd(Cmd, Env),
     gencrl(Root, CA, C).
 
+%% Remove the certificate's entry from the database. The OCSP responder
+%% will consider the certificate to be unknown.
+remove_entry(Root, CA, User, C) ->
+    Db = filename:join([Root, CA, "index.txt"]),
+    remove_line_with_pattern(Db, "/CN=" ++ User ++ "/"),
+    gencrl(Root, CA, C).
+
+remove_line_with_pattern(File, Pattern) ->
+    {ok, Bin} = file:read_file(File),
+    AllLines = string:lexemes(Bin, [$\n,"\r\n"]),
+    MaybeRemove = fun(Line, Acc) ->
+                          case string:find(Line, Pattern) of
+                              nomatch -> [Line|Acc];
+                              _ -> Acc
+                          end
+                  end,
+    RevLines = lists:foldl(MaybeRemove, [], AllLines),
+    Lines = lists:join("\n", lists:reverse(RevLines)),
+    ok = file:write_file(File, Lines).
+
 gencrl(Root, CA, C) ->
+    %% By default, the CRL is valid for a week from now.
+    gencrl(Root, CA, C, 24*7).
+
+gencrl(Root, CA, C, CrlHours) ->
     CACnfFile = filename:join([Root, CA, "ca.cnf"]),
     CACRLFile = filename:join([Root, CA, "crl.pem"]),
     Cmd = [C#config.openssl_cmd, " ca"
 	   " -gencrl ",
-	   " -crlhours 24",
+	   " -crlhours ", integer_to_list(CrlHours),
 	   " -out ", CACRLFile,
 	   " -config ", CACnfFile],
     Env = [{"ROOTDIR", filename:absname(Root)}], 
     cmd(Cmd, Env).
+
+%% This function sets the number of seconds until the next CRL is due.
+gencrl_sec(Root, CA, C, CrlSecs) ->
+    CACnfFile = filename:join([Root, CA, "ca.cnf"]),
+    CACRLFile = filename:join([Root, CA, "crl.pem"]),
+    Cmd = [C#config.openssl_cmd, " ca"
+	   " -gencrl ",
+	   " -crlsec ", integer_to_list(CrlSecs),
+	   " -out ", CACRLFile,
+	   " -config ", CACnfFile],
+    Env = [{"ROOTDIR", filename:absname(Root)}],
+    cmd(Cmd, Env).
+
+can_generate_expired_crls(C) ->
+    %% OpenSSL can generate CRLs with an expiration date in the past,
+    %% if we pass a negative number for -crlhours.  However, LibreSSL
+    %% rejects this with the error "invalid argument -24: too small".
+    %% Let's check which one we have.
+    Cmd = [C#config.openssl_cmd, " ca -crlhours -24"],
+    Output = os:cmd(Cmd),
+    0 =:= string:str(Output, "too small").
 
 verify(Root, CA, User, C) ->
     CAFile = filename:join([Root, User, "cacerts.pem"]),
@@ -337,10 +409,10 @@ eval_cmd(Port, Cmd) ->
 %% Contents of configuration files 
 %%
 
-req_cnf(C) ->
+req_cnf(Root, C) ->
     ["# Purpose: Configuration for requests (end users and CAs)."
      "\n"
-     "ROOTDIR	        = $ENV::ROOTDIR\n"
+     "ROOTDIR	        = " ++ Root ++ "\n"
      "\n"
 
      "[req]\n"
@@ -349,7 +421,7 @@ req_cnf(C) ->
      "default_bits	= ", integer_to_list(C#config.default_bits), "\n"
      "RANDFILE		= $ROOTDIR/RAND\n"
      "encrypt_key	= no\n"
-     "default_md	= md5\n"
+     "default_md	= sha256\n"
      "#string_mask	= pkix\n"
      "x509_extensions	= ca_ext\n"
      "prompt		= no\n"
@@ -371,10 +443,14 @@ req_cnf(C) ->
      "subjectKeyIdentifier = hash\n"
      "subjectAltName	= email:copy\n"].
 
-ca_cnf(C = #config{issuing_distribution_point = true}) ->
+ca_cnf(
+  Root,
+  #config{
+     issuing_distribution_point = true,
+     hostname = Hostname} = C) ->
     ["# Purpose: Configuration for CAs.\n"
      "\n"
-     "ROOTDIR	        = $ENV::ROOTDIR\n"
+     "ROOTDIR	       = " ++ Root ++ "\n"
      "default_ca	= ca\n"
      "\n"
 
@@ -395,7 +471,7 @@ ca_cnf(C = #config{issuing_distribution_point = true}) ->
      ["crl_extensions = crl_ext\n" || C#config.v2_crls],
      "unique_subject  = no\n"
      "default_days	= 3600\n"
-     "default_md	= md5\n"
+     "default_md	= sha256\n"
      "preserve	        = no\n"
      "policy		= policy_match\n"
      "\n"
@@ -421,7 +497,7 @@ ca_cnf(C = #config{issuing_distribution_point = true}) ->
      "keyUsage 		= nonRepudiation, digitalSignature, keyEncipherment\n"
      "subjectKeyIdentifier = hash\n"
      "authorityKeyIdentifier = keyid,issuer:always\n"
-     "subjectAltName	= email:copy\n"
+     "subjectAltName	= DNS.1:" ++ Hostname ++ "\n"
      "issuerAltName	= issuer:copy\n"
      "crlDistributionPoints=@crl_section\n"
 
@@ -436,7 +512,7 @@ ca_cnf(C = #config{issuing_distribution_point = true}) ->
      "keyUsage 		= digitalSignature\n"
      "subjectKeyIdentifier = hash\n"
      "authorityKeyIdentifier = keyid,issuer:always\n"
-     "subjectAltName	= email:copy\n"
+     "subjectAltName	= DNS.1:" ++ Hostname ++ "\n"
      "issuerAltName	= issuer:copy\n"
      "\n"
 
@@ -445,15 +521,19 @@ ca_cnf(C = #config{issuing_distribution_point = true}) ->
      "keyUsage 		= cRLSign, keyCertSign\n"
      "subjectKeyIdentifier = hash\n"
      "authorityKeyIdentifier = keyid:always,issuer:always\n"
-     "subjectAltName	= email:copy\n"
+     "subjectAltName	= DNS.1:" ++ Hostname ++ "\n"
      "issuerAltName	= issuer:copy\n"
      "crlDistributionPoints=@crl_section\n"
     ];
 
-ca_cnf(C = #config{issuing_distribution_point = false}) ->
+ca_cnf(
+  Root,
+  #config{
+     crldp_crlissuer = true,
+     hostname = Hostname} = C) ->
     ["# Purpose: Configuration for CAs.\n"
      "\n"
-     "ROOTDIR	        = $ENV::ROOTDIR\n"
+     "ROOTDIR	          = " ++ Root ++ "\n"
      "default_ca	= ca\n"
      "\n"
 
@@ -474,7 +554,89 @@ ca_cnf(C = #config{issuing_distribution_point = false}) ->
      ["crl_extensions = crl_ext\n" || C#config.v2_crls],
      "unique_subject  = no\n"
      "default_days	= 3600\n"
-     "default_md	= md5\n"
+     "default_md	= sha256\n"
+     "preserve	        = no\n"
+     "policy		= policy_match\n"
+     "\n"
+
+     "[policy_match]\n"
+     "commonName		= supplied\n"
+     "organizationalUnitName	= optional\n"
+     "organizationName	        = match\n"
+     "countryName		= match\n"
+     "localityName		= match\n"
+     "emailAddress		= supplied\n"
+     "\n"
+
+     "[crl_ext]\n"
+     "authorityKeyIdentifier=keyid:always,issuer:always\n",
+
+     "[user_cert]\n"
+     "basicConstraints	= CA:false\n"
+     "keyUsage 		= nonRepudiation, digitalSignature, keyEncipherment\n"
+     "subjectKeyIdentifier = hash\n"
+     "authorityKeyIdentifier = keyid,issuer:always\n"
+     "subjectAltName	= DNS.1:" ++ Hostname ++ "\n"
+     "issuerAltName	= issuer:copy\n"
+     "crlDistributionPoints=crl_section\n"
+
+     "[crl_section]\n"
+     "fullname=URI:http://localhost/",C#config.commonName,"/crl.pem\n"
+     "CRLissuer=dirName:issuer_sect\n"
+
+     "[issuer_sect]\n"
+     "C=UK\n"
+     "O=Organisation\n"
+     "CN=Some Name\n"
+
+     "[user_cert_digital_signature_only]\n"
+     "basicConstraints	= CA:false\n"
+     "keyUsage 		= digitalSignature\n"
+     "subjectKeyIdentifier = hash\n"
+     "authorityKeyIdentifier = keyid,issuer:always\n"
+     "subjectAltName	= DNS.1:" ++ Hostname ++ "\n"
+     "issuerAltName	= issuer:copy\n"
+     "\n"
+
+     "[ca_cert]\n"
+     "basicConstraints 	= critical,CA:true\n"
+     "keyUsage 		= cRLSign, keyCertSign\n"
+     "subjectKeyIdentifier = hash\n"
+     "authorityKeyIdentifier = keyid:always,issuer:always\n"
+     "subjectAltName	= email:copy\n"
+     "issuerAltName	= issuer:copy\n"
+    ];
+
+ca_cnf(
+  Root,
+  #config{
+     issuing_distribution_point = false,
+     hostname = Hostname
+    } = C) ->
+    ["# Purpose: Configuration for CAs.\n"
+     "\n"
+     "ROOTDIR	          = " ++ Root ++ "\n"
+     "default_ca	= ca\n"
+     "\n"
+
+     "[ca]\n"
+     "dir		= $ROOTDIR/", C#config.commonName, "\n"
+     "certs		= $dir/certs\n"
+     "crl_dir	        = $dir/crl\n"
+     "database	        = $dir/index.txt\n"
+     "new_certs_dir	= $dir/newcerts\n"
+     "certificate	= $dir/cert.pem\n"
+     "serial		= $dir/serial\n"
+     "crl		= $dir/crl.pem\n",
+     ["crlnumber		= $dir/crlnumber\n" || C#config.v2_crls],
+     "private_key	= $dir/private/key.pem\n"
+     "RANDFILE	        = $dir/private/RAND\n"
+     "\n"
+     "x509_extensions   = user_cert\n",
+     ["crl_extensions = crl_ext\n" || C#config.v2_crls],
+     "unique_subject  = no\n"
+     "default_days	= 3600\n"
+     "default_md	= sha256\n"
      "preserve	        = no\n"
      "policy		= policy_match\n"
      "\n"
@@ -500,22 +662,25 @@ ca_cnf(C = #config{issuing_distribution_point = false}) ->
      "keyUsage 		= nonRepudiation, digitalSignature, keyEncipherment\n"
      "subjectKeyIdentifier = hash\n"
      "authorityKeyIdentifier = keyid,issuer:always\n"
-     "subjectAltName	= email:copy\n"
+     "subjectAltName	= DNS.1:" ++ Hostname ++ "\n"
      "issuerAltName	= issuer:copy\n"
-     %"crlDistributionPoints=@crl_section\n"
+     %"crlDistributionPoints=@crl_section\n"    
 
-     %%"[crl_section]\n"
-     %% intentionally invalid
-     %%"URI.1=http://localhost/",C#config.commonName,"/crl.pem\n"
-     %%"URI.2=http://localhost:",integer_to_list(C#config.crl_port),"/",C#config.commonName,"/crl.pem\n"
-     %%"\n"
+     "[user_cert_ocsp_signing]\n"
+     "basicConstraints	= CA:false\n"
+     "keyUsage 		= nonRepudiation, digitalSignature, keyEncipherment\n"
+     "extendedKeyUsage = OCSPSigning\n"
+     "subjectKeyIdentifier = hash\n"
+     "authorityKeyIdentifier = keyid,issuer:always\n"
+     "subjectAltName	= DNS.1:" ++ Hostname ++ "\n"
+     "issuerAltName	= issuer:copy\n"
 
      "[user_cert_digital_signature_only]\n"
      "basicConstraints	= CA:false\n"
      "keyUsage 		= digitalSignature\n"
      "subjectKeyIdentifier = hash\n"
      "authorityKeyIdentifier = keyid,issuer:always\n"
-     "subjectAltName	= email:copy\n"
+     "subjectAltName	= DNS.1:" ++ Hostname ++ "\n"
      "issuerAltName	= issuer:copy\n"
      "\n"
 

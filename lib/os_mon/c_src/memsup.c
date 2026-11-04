@@ -1,8 +1,10 @@
 /*
  * %CopyrightBegin%
- * 
- * Copyright Ericsson AB 1996-2013. All Rights Reserved.
- * 
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Copyright Ericsson AB 1996-2025. All Rights Reserved.
+ *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
@@ -14,7 +16,7 @@
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  * See the License for the specific language governing permissions and
  * limitations under the License.
- * 
+ *
  * %CopyrightEnd%
  */
 
@@ -66,7 +68,7 @@
  *  This program communicates with Erlang through the standard
  *  input and output file descriptors (0 and 1). These descriptors
  *  (and the standard error descriptor 2) must NOT be closed
- *  explicitely by this program at termination (in UNIX it is
+ *  explicitly by this program at termination (in UNIX it is
  *  taken care of by the operating system itself; in VxWorks
  *  it is taken care of by the spawn driver part of the Emulator).
  *
@@ -112,6 +114,13 @@
 
 #if defined (__linux__)
 #include <sys/sysinfo.h>
+#endif
+
+#if defined(__APPLE__)
+#include <mach/mach.h>
+static mach_port_t mach_host_port;
+static vm_size_t mach_page_size;
+static uint64_t total_memory_size;
 #endif
 
 /* commands */
@@ -169,7 +178,7 @@ static void print_error(const char *,...);
  * PageTables:       9368 kB	2.5.41+
  * VmallocTotal: 34359738367 kB	??	total size of vmalloc memory area
  * VmallocUsed:     57376 kB	??	amount of vmalloc area which is used
- * VmallocChunk: 34359677947 kB	??	largest contigious block of vmalloc area which is free
+ * VmallocChunk: 34359677947 kB	??	largest contiguous block of vmalloc area which is free
  * ReverseMaps:      5738       2.5.41+	number of rmap pte chains
  * SwapCached:          0 kB	2.5.??+	
  * HugePages_Total:     0	2.5.??+
@@ -189,14 +198,18 @@ static void print_error(const char *,...);
 #define F_MEM_SHARED  (1 << 4)
 #define F_SWAP_TOTAL  (1 << 5)
 #define F_SWAP_FREE   (1 << 6)
+#define F_MEM_AVAIL   (1 << 7)
+#define F_MEM_CACHED_X (1 << 8)
 
 typedef struct {
     unsigned int flag;
     unsigned long pagesize;
     unsigned long total;
     unsigned long free;
+    unsigned long available;
     unsigned long buffered;
     unsigned long cached;
+    unsigned long cached_x;
     unsigned long shared;
     unsigned long total_swap;
     unsigned long free_swap;
@@ -277,7 +290,6 @@ get_mem_procfs(memory_ext *me){
     int fd, nread;
     char buffer[4097];
     char *bp;
-    unsigned long value;
     
     me->flag = 0;
     
@@ -303,10 +315,15 @@ get_mem_procfs(memory_ext *me){
     
     bp = strstr(buffer, "Buffers:");    
     if (bp != NULL && sscanf(bp, "Buffers: %lu kB\n", &(me->buffered))) me->flag |= F_MEM_BUFFERS;
-    
+
     bp = strstr(buffer, "Cached:");    
     if (bp != NULL && sscanf(bp, "Cached: %lu kB\n", &(me->cached)))   me->flag |= F_MEM_CACHED;
     
+    bp = strstr(buffer, "SReclaimable:");    
+    if (bp != NULL && sscanf(bp, "SReclaimable: %lu kB\n", &me->cached_x)) me->flag |= F_MEM_CACHED_X;
+
+    bp = strstr(buffer, "MemAvailable:");    
+    if (bp != NULL && sscanf(bp, "MemAvailable: %lu kB\n", &me->available)) me->flag |= F_MEM_AVAIL;
 
     /* Swap */
     
@@ -394,6 +411,49 @@ get_extended_mem_sgi(memory_ext *me) {
 }
 #endif
 
+#if defined(__APPLE__)
+static void
+init_apple(void) {
+    kern_return_t kr;
+    mach_msg_type_number_t count;
+    host_basic_info_data_t hinfo;
+
+    mach_host_port = mach_host_self();
+
+    count = HOST_BASIC_INFO_COUNT;
+    kr = host_info(mach_host_port, HOST_BASIC_INFO, (host_info_t) &hinfo, &count);
+    if (kr != KERN_SUCCESS) {
+        abort();
+    }
+    total_memory_size = hinfo.max_mem;
+
+    kr = host_page_size(mach_host_port, &mach_page_size);
+    if (kr != KERN_SUCCESS) {
+        abort();
+    }
+}
+
+static void
+get_extended_mem_apple(memory_ext *me) {
+    kern_return_t kr;
+    host_basic_info_data_t hinfo;
+    mach_msg_type_number_t count;
+    vm_statistics_data_t vm_stat;
+
+    count = HOST_VM_INFO_COUNT;
+    kr = host_statistics(mach_host_port, HOST_VM_INFO, (host_info_t)&vm_stat, &count);
+    if (kr != KERN_SUCCESS) {
+        return;
+    }
+
+    me->free = vm_stat.free_count * mach_page_size;
+    me->available = (vm_stat.inactive_count + vm_stat.free_count) * mach_page_size;
+    me->total = total_memory_size;
+    me->pagesize = 1;
+    me->flag = F_MEM_TOTAL | F_MEM_FREE | F_MEM_AVAIL;
+}
+#endif
+
 static void
 get_extended_mem(memory_ext *me) {
 /* android */
@@ -418,6 +478,9 @@ get_extended_mem(memory_ext *me) {
 #if defined(_SC_AVPHYS_PAGES)
     if (get_extended_mem_sysconf(me)) return;
 
+#elif defined(__APPLE__)
+    get_extended_mem_apple(me);
+
 /* We fake the rest */
 /* SunOS4 (for example) */
 #else  
@@ -432,7 +495,7 @@ get_extended_mem(memory_ext *me) {
 static void 
 get_basic_mem(unsigned long *tot, unsigned long *used, unsigned long *pagesize){
 #if defined(_SC_AVPHYS_PAGES)	/* Does this exist on others than Solaris2? */
-    unsigned long avPhys, phys, pgSz;
+    unsigned long avPhys, phys;
     
     phys = sysconf(_SC_PHYS_PAGES);
     avPhys = sysconf(_SC_AVPHYS_PAGES);
@@ -447,7 +510,11 @@ get_basic_mem(unsigned long *tot, unsigned long *used, unsigned long *pagesize){
     }
     *tot      = me.total;
     *pagesize = me.pagesize;
-    *used     = me.total - me.free;
+    if (me.flag & F_MEM_AVAIL) {
+        *used = me.total - me.available;
+    } else {
+        *used = me.total - me.free;
+    }
 #elif defined(BSD4_4)
     struct vmtotal vt;
     long pgsz;
@@ -470,6 +537,15 @@ fail:
     } else {
 	print_error("%s", strerror(errno));
 	exit(1); 
+    }
+#elif defined(__APPLE__)
+    {
+        memory_ext me;
+        me.available = 0;
+        get_extended_mem_apple(&me);
+        *used = me.total - me.available;
+        *tot = total_memory_size;
+        *pagesize = 1;
     }
 #else  /* SunOS4 */
     *used = (1<<27);	       	/* Fake! 128 MB used */
@@ -500,7 +576,9 @@ extended_show_mem(void){
     /* extensions */
     if (me.flag & F_MEM_BUFFERS){ send_tag(MEM_BUFFERS);      send(me.buffered, ps);   }
     if (me.flag & F_MEM_CACHED) { send_tag(MEM_CACHED);       send(me.cached, ps);     }
+    if (me.flag & F_MEM_CACHED_X){ send_tag(MEM_CACHED_X);    send(me.cached_x, ps);     }
     if (me.flag & F_MEM_SHARED) { send_tag(MEM_SHARED);       send(me.shared, ps);     }
+    if (me.flag & F_MEM_AVAIL)  { send_tag(MEM_AVAIL);        send(me.available, ps);     }
     
     /* swap */
     if (me.flag & F_SWAP_TOTAL) { send_tag(SWAP_TOTAL);       send(me.total_swap, ps); }
@@ -537,6 +615,8 @@ message_loop(int erlin_fd)
 		    case SHOW_SYSTEM_MEM:
 			extended_show_mem();
 			break;
+		    case EXIT:
+			return;
 		    default:	/* ignore all other messages */
 			break;
 		    }
@@ -567,7 +647,12 @@ message_loop(int erlin_fd)
 int
 MAIN(int argc, char **argv)
 {
+#ifdef __APPLE__
+    init_apple();
+#endif
+
   program_name = argv[0];
+
   message_loop(ERLIN_FD);
   return 0;
 }

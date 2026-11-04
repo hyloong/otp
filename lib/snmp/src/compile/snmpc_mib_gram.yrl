@@ -1,8 +1,10 @@
 %%
 %% %CopyrightBegin%
-%% 
-%% Copyright Ericsson AB 1996-2013. All Rights Reserved.
-%% 
+%%
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 1996-2025. All Rights Reserved.
+%%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
 %% You may obtain a copy of the License at
@@ -14,7 +16,7 @@
 %% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 %% See the License for the specific language governing permissions and
 %% limitations under the License.
-%% 
+%%
 %% %CopyrightEnd%
 %%
 
@@ -387,10 +389,12 @@ syntax -> type : {{type, cat('$1')},line_of('$1')}.
 syntax -> type size : {{type_with_size, cat('$1'), '$2'},line_of('$1')}.
 syntax -> usertype size : {{type_with_size,val('$1'), '$2'},line_of('$1')}.
 syntax -> 'INTEGER' '{' namedbits '}' : 
-          {{integer_with_enum, 'INTEGER', '$3'}, line_of('$1')}.
+          {{type_with_enum, 'INTEGER', '$3'}, line_of('$1')}.
 syntax -> 'BITS' '{' namedbits '}' : 
           ensure_ver(2,'$1'), 
           {{bits, '$3'}, line_of('$1')}.
+syntax -> usertype '{' namedbits '}' :
+          {{type_with_enum, 'INTEGER', '$3'}, line_of('$1')}.
 syntax -> 'SEQUENCE' 'OF' usertype : 
           {{sequence_of,val('$3')},line_of('$1')}.
 
@@ -451,7 +455,7 @@ variables -> objectname : ['$1'].
 variables -> variables ',' objectname : ['$3' | '$1'].
 
 implies -> '::=' : '$1'.
-implies -> ':' ':' '=' : w("Sloppy asignment on line ~p", [line_of('$1')]), '$1'.
+implies -> ':' ':' '=' : w("Sloppy assignment on line ~p", [line_of('$1')]), '$1'.
 descriptionfield -> string : lreverse(descriptionfield, val('$1')).
 descriptionfield -> '$empty' : undefined.
 description -> 'DESCRIPTION' string : lreverse(description, val('$2')).
@@ -750,6 +754,8 @@ objects -> objects ',' objectname : ['$3'|'$1'].
 
 %%----------------------------------------------------------------------
 Erlang code.
+-moduledoc false.
+
 %%----------------------------------------------------------------------
 
 -include("snmp_types.hrl").
@@ -1069,7 +1075,7 @@ bits_to_bytes([], 1, _Byte) ->   % empty bitstring
     [];
 bits_to_bytes([], 256, _Byte) -> % correct; multiple of 8
     [];
-% If we are to support arbitrary length of bitstrings.  This migth
+% If we are to support arbitrary length of bitstrings.  This might
 % be needed in the new SMI.
 %bits_to_bytes([], N, Byte) ->
 %    [Byte];

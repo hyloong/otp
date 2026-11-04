@@ -1,8 +1,10 @@
 %%
 %% %CopyrightBegin%
-%% 
-%% Copyright Ericsson AB 2004-2010. All Rights Reserved.
-%% 
+%%
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2004-2025. All Rights Reserved.
+%%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
 %% You may obtain a copy of the License at
@@ -14,7 +16,7 @@
 %% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 %% See the License for the specific language governing permissions and
 %% limitations under the License.
-%% 
+%%
 %% %CopyrightEnd%
 %%
 
@@ -993,15 +995,15 @@ expect_exec([#expect_instruction{description = Desc,
 
 skip({What, Why}) when is_atom(What) andalso is_list(Why) ->
     Reason = lists:flatten(io_lib:format("~p: ~s", [What, Why])),
-    exit({skipped, Reason});
+    ?SKIP(Reason);
 skip({What, Why}) ->
     Reason = lists:flatten(io_lib:format("~p: ~p", [What, Why])),
-    exit({skipped, Reason});
+    ?SKIP(Reason);
 skip(Reason) when is_list(Reason) ->
-    exit({skipped, Reason});
+    ?SKIP(Reason);
 skip(Reason1) ->
     Reason2 = lists:flatten(io_lib:format("~p", [Reason1])),
-    exit({skipped, Reason2}).
+    ?SKIP(Reason2).
 
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%

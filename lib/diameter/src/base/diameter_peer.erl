@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2010-2015. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2010-2025. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -19,6 +21,7 @@
 %%
 
 -module(diameter_peer).
+-moduledoc false.
 -behaviour(gen_server).
 
 %% Interface towards transport modules ...
@@ -202,10 +205,10 @@ match1(Addr, Match) ->
 match(Addr, {ok, A}, _) ->
     Addr == A;
 match(Addr, {error, _}, RE) ->
-    match == re:run(inet_parse:ntoa(Addr), RE, [{capture, none}]).
+    match == re:run(inet:ntoa(Addr), RE, [{capture, none}, caseless]).
 
 addr([_|_] = A) ->
-    inet_parse:address(A);
+    inet:parse_address(A);
 addr(A) ->
     {ok, A}.
 

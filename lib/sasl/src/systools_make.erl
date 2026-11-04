@@ -1,8 +1,10 @@
 %%
 %% %CopyrightBegin%
-%% 
-%% Copyright Ericsson AB 1996-2013. All Rights Reserved.
-%% 
+%%
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 1996-2026. All Rights Reserved.
+%%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
 %% You may obtain a copy of the License at
@@ -14,10 +16,11 @@
 %% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 %% See the License for the specific language governing permissions and
 %% limitations under the License.
-%% 
+%%
 %% %CopyrightEnd%
 %%
 -module(systools_make).
+-moduledoc false.
 
 %% Purpose : Create start script. RelName.rel --> RelName.{script,boot}.
 %%           and create a tar file of a release (RelName.tar.gz)
@@ -27,12 +30,12 @@
 
 -export([format_error/1, format_warning/1]).
 
--export([read_release/2, get_release/2, get_release/3,
-	 get_release/4, pack_app/1]).
+-export([read_release/2, get_release/2, get_release/3, pack_app/1]).
 
 -export([read_application/4]).
 
--export([make_hybrid_boot/5]).
+-export([make_hybrid_boot/4]).
+-export([preloaded/0]). % Exported just for testing
 
 -import(lists, [filter/2, keysort/2, keysearch/3, map/2, reverse/1,
 		append/1, foldl/3,  member/2, foreach/2]).
@@ -43,13 +46,17 @@
 
 -define(XREF_SERVER, systools_make).
 
--compile({inline,[{badarg,2}]}).
+-compile([{nowarn_possibly_unsafe_function, {erlang, binary_to_term, 1}},
+          {nowarn_possibly_unsafe_function, {file, consult, 1}},
+          {inline,[{badarg,2}]}]).
+
+-define(ESOCK_MODS, [prim_net,prim_socket,socket_registry]).
 
 %%-----------------------------------------------------------------
 %% Create a boot script from a release file.
 %% Options is a list of {path, Path} | silent | local
 %%         | warnings_as_errors
-%% where path sets the search path, silent supresses error message
+%% where path sets the search path, silent suppresses error message
 %% printing on console, local generates a script with references
 %% to the directories there the applications are found,
 %% and warnings_as_errors treats warnings as errors.
@@ -57,7 +64,6 @@
 %% New options: {path,Path} can contain wildcards
 %%              src_tests
 %%              {variables,[{Name,AbsString}]}
-%%              {machine, jam | beam | vee}
 %%              exref | {exref, [AppName]}
 %%              no_warn_sasl
 %%-----------------------------------------------------------------
@@ -68,15 +74,16 @@ make_script(RelName) ->
     badarg(RelName,[RelName]).
 
 make_script(RelName, Flags) when is_list(RelName), is_list(Flags) ->
+    ScriptName = get_script_name(RelName, Flags),
     case get_outdir(Flags) of
 	"" ->
-	    make_script(RelName, RelName, Flags);
+	    make_script(RelName, ScriptName, Flags);
 	OutDir ->
 	    %% To maintain backwards compatibility for make_script/3,
 	    %% the boot script file name is constructed here, before
 	    %% checking the validity of OutDir
 	    %% (is done in check_args_script/1)
-	    Output = filename:join(OutDir, filename:basename(RelName)),
+	    Output = filename:join(OutDir, filename:basename(ScriptName)),
 	    make_script(RelName, Output, Flags)
     end.
     
@@ -89,12 +96,16 @@ make_script(RelName, Output, Flags) when is_list(RelName),
 	    Path1 = mk_path(Path0), % expand wildcards etc.
 	    Path  = make_set(Path1 ++ code:get_path()),
 	    ModTestP = {member(src_tests, Flags),xref_p(Flags)},
-	    case get_release(RelName, Path, ModTestP, machine(Flags)) of
+	    case get_release(RelName, Path, ModTestP) of
 		{ok, Release, Appls, Warnings0} ->
 		    Warnings = wsasl(Flags, Warnings0),
 		    case systools_lib:werror(Flags, Warnings) of
 			true ->
-			    return(ok,Warnings,Flags);
+                            Warnings1 = [W || {warning,W}<-Warnings],
+			    return({error,?MODULE,
+                                    {warnings_treated_as_errors,Warnings1}},
+                                   Warnings,
+                                   Flags);
 			false ->
 			    case generate_script(Output,Release,Appls,Flags) of
 				ok ->
@@ -115,7 +126,6 @@ make_script(RelName, _Output, Flags) when is_list(Flags) ->
 make_script(RelName, _Output, Flags) ->
     badarg(Flags,[RelName, Flags]).
 
-
 wsasl(Options, Warnings) ->
     case lists:member(no_warn_sasl,Options) of
 	true -> lists:delete({warning,missing_sasl},Warnings);
@@ -125,10 +135,10 @@ wsasl(Options, Warnings) ->
 badarg(BadArg, Args) ->
     erlang:error({badarg,BadArg}, Args).
 
-machine(Flags) ->
-    case get_flag(machine,Flags) of
-	{machine, Machine} when is_atom(Machine) -> Machine;
-	_                                        -> false
+get_script_name(RelName, Flags) ->
+    case get_flag(script_name,Flags) of
+	{script_name,ScriptName} when is_list(ScriptName) -> ScriptName;
+	_    -> RelName
     end.
 
 get_path(Flags) ->
@@ -148,21 +158,10 @@ get_outdir(Flags) ->
 return(ok,Warnings,Flags) ->
     case member(silent,Flags) of
 	true ->
-	    case systools_lib:werror(Flags, Warnings) of
-		true ->
-		    error;
-		false ->
-		    {ok,?MODULE,Warnings}
-	    end;
+            {ok,?MODULE,Warnings};
 	_ ->
-	    case member(warnings_as_errors,Flags) of
-		true ->
-		    io:format("~ts",[format_warning(Warnings, true)]),
-		    error;
-		false ->
-		    io:format("~ts",[format_warning(Warnings)]),
-		    ok
-	    end
+            io:format("~ts",[format_warning(Warnings)]),
+            ok
     end;
 return({error,Mod,Error},_,Flags) ->
     case member(silent,Flags) of
@@ -186,94 +185,153 @@ return({error,Mod,Error},_,Flags) ->
 %% and sasl.
 %%
 %% TmpVsn = string(),
-%% Paths = {KernelPath,StdlibPath,SaslPath}
 %% Returns {ok,Boot} | {error,Reason}
 %% Boot1 = Boot2 = Boot = binary()
 %% Reason = {app_not_found,App} | {app_not_replaced,App}
-%% App = kernel | stdlib | sasl
-make_hybrid_boot(TmpVsn, Boot1, Boot2, Paths, Args) ->
-    catch do_make_hybrid_boot(TmpVsn, Boot1, Boot2, Paths, Args).
-do_make_hybrid_boot(TmpVsn, Boot1, Boot2, Paths, Args) ->
-    {script,{_RelName1,_RelVsn1},Script1} = binary_to_term(Boot1),
-    {script,{RelName2,_RelVsn2},Script2} = binary_to_term(Boot2),
-    MatchPaths = get_regexp_path(Paths),
-    NewScript1 = replace_paths(Script1,MatchPaths),
-    {Kernel,Stdlib,Sasl} = get_apps(Script2,undefined,undefined,undefined),
-    NewScript2 = replace_apps(NewScript1,Kernel,Stdlib,Sasl),
-    NewScript3 = add_apply_upgrade(NewScript2,Args),
-    Boot = term_to_binary({script,{RelName2,TmpVsn},NewScript3}),
+%% App = stdlib | sasl
+make_hybrid_boot(TmpVsn, Boot1, Boot2, Args) ->
+    catch do_make_hybrid_boot(TmpVsn, Boot1, Boot2, Args).
+do_make_hybrid_boot(TmpVsn, OldBoot, NewBoot, Args) ->
+    {script,{_RelName1,_RelVsn1},OldScript} = binary_to_term(OldBoot),
+    {script,{NewRelName,_RelVsn2},NewScript} = binary_to_term(NewBoot),
+
+    %% Everything up to kernel_load_completed must come from the new script
+    Fun1 = fun({progress,kernel_load_completed}) -> false;
+              (_) -> true
+           end,
+    {_OldKernelLoad,OldRest1} = lists:splitwith(Fun1,OldScript),
+    {NewKernelLoad,NewRest1} = lists:splitwith(Fun1,NewScript),
+
+    Fun2 = fun({progress,modules_loaded}) -> false;
+              (_) -> true
+           end,
+    {OldModLoad,OldRest2} = lists:splitwith(Fun2,OldRest1),
+    {NewModLoad,NewRest2} = lists:splitwith(Fun2,NewRest1),
+
+    Fun3 = fun({kernelProcess,_,_}) -> false;
+              (_) -> true
+           end,
+    {OldPaths,OldRest3} = lists:splitwith(Fun3,OldRest2),
+    {NewPaths,NewRest3} = lists:splitwith(Fun3,NewRest2),
+
+    Fun4 = fun({progress,init_kernel_started}) -> false;
+              (_) -> true
+           end,
+    {_OldKernelProcs,OldApps} = lists:splitwith(Fun4,OldRest3),
+    {NewKernelProcs,NewApps} = lists:splitwith(Fun4,NewRest3),
+
+    %% Then comes all module load, which for each app consist of:
+    %% {path,[AppPath]},
+    %% {primLoad,ModuleList}
+    %% Replace kernel, stdlib and sasl here
+    MatchPaths = get_regexp_path(),
+    ModLoad = replace_module_load(OldModLoad,NewModLoad,MatchPaths),
+    Paths = replace_paths(OldPaths,NewPaths,MatchPaths),
+
+    {Stdlib,Sasl} = get_apps(NewApps,undefined,undefined),
+    Apps0 = replace_apps(OldApps,Stdlib,Sasl),
+    Apps = add_apply_upgrade(Apps0,Args),
+
+    Script = NewKernelLoad++ModLoad++Paths++NewKernelProcs++Apps,
+    Boot = term_to_binary({script,{NewRelName,TmpVsn},Script}),
     {ok,Boot}.
 
 %% For each app, compile a regexp that can be used for finding its path
-get_regexp_path({KernelPath,StdlibPath,SaslPath}) ->
+get_regexp_path() ->
     {ok,KernelMP} = re:compile("kernel-[0-9\.]+",[unicode]),
     {ok,StdlibMP} = re:compile("stdlib-[0-9\.]+",[unicode]),
     {ok,SaslMP} = re:compile("sasl-[0-9\.]+",[unicode]),
-    [{KernelMP,KernelPath},{StdlibMP,StdlibPath},{SaslMP,SaslPath}].
+    [KernelMP,StdlibMP,SaslMP].
 
-%% For each path in the script, check if it matches any of the MPs
-%% found above, and if so replace it with the correct new path.
-replace_paths([{path,Path}|Script],MatchPaths) ->
-    [{path,replace_path(Path,MatchPaths)}|replace_paths(Script,MatchPaths)];
-replace_paths([Stuff|Script],MatchPaths) ->
-    [Stuff|replace_paths(Script,MatchPaths)];
-replace_paths([],_) ->
-    [].
+replace_module_load(Old,New,[MP|MatchPaths]) ->
+    replace_module_load(do_replace_module_load(Old,New,MP),New,MatchPaths);
+replace_module_load(Script,_,[]) ->
+    Script.
 
-replace_path([Path|Paths],MatchPaths) ->
-    [do_replace_path(Path,MatchPaths)|replace_path(Paths,MatchPaths)];
-replace_path([],_) ->
-    [].
-
-do_replace_path(Path,[{MP,ReplacePath}|MatchPaths]) ->
-    case re:run(Path,MP,[{capture,none}]) of
-	nomatch -> do_replace_path(Path,MatchPaths);
-	match -> ReplacePath
+do_replace_module_load([{path,[OldAppPath]},{primLoad,OldMods}|OldRest],New,MP) ->
+    case re:run(OldAppPath,MP,[{capture,none}]) of
+        nomatch ->
+            [{path,[OldAppPath]},{primLoad,OldMods}|
+             do_replace_module_load(OldRest,New,MP)];
+        match ->
+            get_module_load(New,MP) ++ OldRest
     end;
-do_replace_path(Path,[]) ->
-    Path.
+do_replace_module_load([Other|Rest],New,MP) ->
+    [Other|do_replace_module_load(Rest,New,MP)];
+do_replace_module_load([],_,_) ->
+    [].
 
-%% Return the entries for loading the three base applications
-get_apps([{kernelProcess,application_controller,
-	   {application_controller,start,[{application,kernel,_}]}}=Kernel|
-	  Script],_,Stdlib,Sasl) ->
-    get_apps(Script,Kernel,Stdlib,Sasl);
+get_module_load([{path,[AppPath]},{primLoad,Mods}|Rest],MP) ->
+    case re:run(AppPath,MP,[{capture,none}]) of
+        nomatch ->
+            get_module_load(Rest,MP);
+        match ->
+            [{path,[AppPath]},{primLoad,Mods}]
+    end;
+get_module_load([_|Rest],MP) ->
+    get_module_load(Rest,MP);
+get_module_load([],_) ->
+    [].
+
+replace_paths([{path,OldPaths}|Old],New,MatchPaths) ->
+    {path,NewPath} = lists:keyfind(path,1,New),
+    [{path,do_replace_paths(OldPaths,NewPath,MatchPaths)}|Old];
+replace_paths([Other|Old],New,MatchPaths) ->
+    [Other|replace_paths(Old,New,MatchPaths)].
+
+do_replace_paths(Old,New,[MP|MatchPaths]) ->
+    do_replace_paths(do_replace_paths1(Old,New,MP),New,MatchPaths);
+do_replace_paths(Paths,_,[]) ->
+    Paths.
+
+do_replace_paths1([P|Ps],New,MP) ->
+    case re:run(P,MP,[{capture,none}]) of
+        nomatch ->
+            [P|do_replace_paths1(Ps,New,MP)];
+        match ->
+            get_path(New,MP) ++ Ps
+    end;
+do_replace_paths1([],_,_) ->
+    [].
+
+get_path([P|Ps],MP) ->
+    case re:run(P,MP,[{capture,none}]) of
+        nomatch ->
+            get_path(Ps,MP);
+        match ->
+            [P]
+    end;
+get_path([],_) ->
+    [].
+
+
+%% Return the entries for loading stdlib and sasl
 get_apps([{apply,{application,load,[{application,stdlib,_}]}}=Stdlib|Script],
-	 Kernel,_,Sasl) ->
-    get_apps(Script,Kernel,Stdlib,Sasl);
+	 _,Sasl) ->
+    get_apps(Script,Stdlib,Sasl);
 get_apps([{apply,{application,load,[{application,sasl,_}]}}=Sasl|_Script],
-	 Kernel,Stdlib,_) ->
-    {Kernel,Stdlib,Sasl};
-get_apps([_|Script],Kernel,Stdlib,Sasl) ->
-    get_apps(Script,Kernel,Stdlib,Sasl);
-get_apps([],undefined,_,_) ->
-    throw({error,{app_not_found,kernel}});
-get_apps([],_,undefined,_) ->
+	 Stdlib,_) ->
+    {Stdlib,Sasl};
+get_apps([_|Script],Stdlib,Sasl) ->
+    get_apps(Script,Stdlib,Sasl);
+get_apps([],undefined,_) ->
     throw({error,{app_not_found,stdlib}});
-get_apps([],_,_,undefined) ->
+get_apps([],_,undefined) ->
     throw({error,{app_not_found,sasl}}).
 
-
-%% Replace the entries for loading the base applications
-replace_apps([{kernelProcess,application_controller,
-	       {application_controller,start,[{application,kernel,_}]}}|
-	      Script],Kernel,Stdlib,Sasl) ->
-    [Kernel|replace_apps(Script,undefined,Stdlib,Sasl)];
+%% Replace the entries for loading the stdlib and sasl
 replace_apps([{apply,{application,load,[{application,stdlib,_}]}}|Script],
-	     Kernel,Stdlib,Sasl) ->
-    [Stdlib|replace_apps(Script,Kernel,undefined,Sasl)];
+	     Stdlib,Sasl) ->
+    [Stdlib|replace_apps(Script,undefined,Sasl)];
 replace_apps([{apply,{application,load,[{application,sasl,_}]}}|Script],
-	     _Kernel,_Stdlib,Sasl) ->
+	     _Stdlib,Sasl) ->
     [Sasl|Script];
-replace_apps([Stuff|Script],Kernel,Stdlib,Sasl) ->
-    [Stuff|replace_apps(Script,Kernel,Stdlib,Sasl)];
-replace_apps([],undefined,undefined,_) ->
+replace_apps([Stuff|Script],Stdlib,Sasl) ->
+    [Stuff|replace_apps(Script,Stdlib,Sasl)];
+replace_apps([],undefined,_) ->
     throw({error,{app_not_replaced,sasl}});
-replace_apps([],undefined,_,_) ->
-    throw({error,{app_not_replaced,stdlib}});
-replace_apps([],_,_,_) ->
-    throw({error,{app_not_replaced,kernel}}).
-
+replace_apps([],_,_) ->
+    throw({error,{app_not_replaced,stdlib}}).
 
 %% Finally add an apply of release_handler:new_emulator_upgrade - which will
 %% complete the execution of the upgrade script (relup).
@@ -283,13 +341,11 @@ add_apply_upgrade(Script,Args) ->
 		   {apply,{release_handler,new_emulator_upgrade,Args}} |
 		   RevScript]).
 
-
-
 %%-----------------------------------------------------------------
 %% Create a release package from a release file.
 %% Options is a list of {path, Path} | silent |
 %%    {dirs, [src,include,examples,..]} | {erts, ErtsDir} where path
-%% sets the search path, silent supresses error message printing,
+%% sets the search path, silent suppresses error message printing,
 %% dirs includes the specified directories (per application) in the
 %% release package and erts specifies that the erts-Vsn/bin directory
 %% should be included in the release package and there it can be found.
@@ -298,8 +354,9 @@ add_apply_upgrade(Script,Args) ->
 %%              src_tests
 %%              exref | {exref, [AppName]}
 %%              {variables,[{Name,AbsString}]}
-%%              {machine, jam | beam | vee}
 %%              {var_tar, include | ownfile | omit}
+%%              no_warn_sasl
+%%              warnings_as_errors
 %%
 %% The tar file contains:
 %%         lib/App-Vsn/ebin
@@ -316,6 +373,7 @@ add_apply_upgrade(Script,Args) ->
 %%                  RelVsn/start.boot
 %%                         relup
 %%                         sys.config
+%%                         sys.config.src
 %%         erts-EVsn[/bin]
 %%-----------------------------------------------------------------
 
@@ -331,14 +389,24 @@ make_tar(RelName, Flags) when is_list(RelName), is_list(Flags) ->
 	    Path1 = mk_path(Path0),
 	    Path  = make_set(Path1 ++ code:get_path()),
 	    ModTestP = {member(src_tests, Flags),xref_p(Flags)},
-	    case get_release(RelName, Path, ModTestP, machine(Flags)) of
-		{ok, Release, Appls, Warnings} ->
-		    case catch mk_tar(RelName, Release, Appls, Flags, Path1) of
-			ok ->
-			    return(ok,Warnings,Flags);
-			Error ->
-			    return(Error,Warnings,Flags)
-		    end;
+	    case get_release(RelName, Path, ModTestP) of
+		{ok, Release, Appls, Warnings0} ->
+		    Warnings = wsasl(Flags, Warnings0),
+		    case systools_lib:werror(Flags, Warnings) of
+			true ->
+                            Warnings1 = [W || {warning,W}<-Warnings],
+			    return({error,?MODULE,
+                                    {warnings_treated_as_errors,Warnings1}},
+                                   Warnings,
+                                   Flags);
+			false ->
+                            case catch mk_tar(RelName, Release, Appls, Flags, Path1) of
+                                ok ->
+                                    return(ok,Warnings,Flags);
+                                Error ->
+                                    return(Error,Warnings,Flags)
+                            end
+                    end;
 		Error ->
 		    return(Error,[],Flags)
 	    end;
@@ -353,17 +421,13 @@ make_tar(RelName, Flags) ->
 %%______________________________________________________________________
 %% get_release(File, Path) ->
 %% get_release(File, Path, ModTestP) ->
-%% get_release(File, Path, ModTestP, Machine) ->
 %%     {ok, #release, [{{Name,Vsn},#application}], Warnings} | {error, What}
 
 get_release(File, Path) ->
-    get_release(File, Path, {false,false}, false).
+    get_release(File, Path, {false,false}).
 
 get_release(File, Path, ModTestP) ->
-    get_release(File, Path, ModTestP, false).
-
-get_release(File, Path, ModTestP, Machine) ->
-    case catch get_release1(File, Path, ModTestP, Machine) of
+    case catch get_release1(File, Path, ModTestP) of
 	{error, Error} ->
 	    {error, ?MODULE, Error};
 	{'EXIT', Why} ->
@@ -372,12 +436,12 @@ get_release(File, Path, ModTestP, Machine) ->
 	    Answer
     end.
 	
-get_release1(File, Path, ModTestP, Machine) ->
+get_release1(File, Path, ModTestP) ->
     {ok, Release, Warnings1} = read_release(File, Path),
     {ok, Appls0} = collect_applications(Release, Path),
     {ok, Appls1} = check_applications(Appls0),
     {ok, Appls2} = sort_used_and_incl_appls(Appls1, Release), % OTP-4121, OTP-9984
-    {ok, Warnings2} = check_modules(Appls2, Path, ModTestP, Machine),
+    {ok, Warnings2} = check_modules(Appls2, Path, ModTestP),
     {ok, Appls} = sort_appls(Appls2),
     {ok, Release, Appls, Warnings1 ++ Warnings2}.
 
@@ -578,10 +642,10 @@ read_application(_Name, _, [], _, _, FirstError) ->
 parse_application({application, Name, Dict}, File, Vsn, Incls)
   when is_atom(Name),
        is_list(Dict) ->
-    Items = [vsn,id,description,modules,registered,
-	     applications,included_applications,mod,start_phases,env,maxT,maxP],
+    Items = [vsn,id,description,modules,registered,applications,
+	     optional_applications,included_applications,mod,start_phases,env,maxT,maxP],
     case catch get_items(Items, Dict) of
-	[Vsn,Id,Desc,Mods,Regs,Apps,Incs0,Mod,Phases,Env,MaxT,MaxP] ->
+	[Vsn,Id,Desc,Mods,Regs,Apps,Opts,Incs0,Mod,Phases,Env,MaxT,MaxP] ->
 	    case override_include(Name, Incs0, Incls) of
 		{ok, Incs} ->
 		    {ok, #application{name=Name,
@@ -590,6 +654,7 @@ parse_application({application, Name, Dict}, File, Vsn, Incls)
 				      description=Desc,
 				      modules=Mods,
 				      uses=Apps,
+				      optional=Opts,
 				      includes=Incs,
 				      regs=Regs,
 				      mod=Mod,
@@ -601,7 +666,7 @@ parse_application({application, Name, Dict}, File, Vsn, Incls)
 		{error, IncApps} ->
 		    {error, {override_include, IncApps}}
 	    end;
-	[OtherVsn,_,_,_,_,_,_,_,_,_,_,_] ->
+	[OtherVsn,_,_,_,_,_,_,_,_,_,_,_,_] ->
 	    {error, {no_valid_version, {Vsn, OtherVsn}}};
 	Err ->
 	    {error, {Err, {application, Name, Dict}}}
@@ -609,7 +674,7 @@ parse_application({application, Name, Dict}, File, Vsn, Incls)
 parse_application(Other, _, _, _) ->
     {error, {badly_formatted_application, Other}}.
 
-%% Test if all included applications specifed in the .rel file
+%% Test if all included applications specified in the .rel file
 %% exists in the {included_applications,Incs} specified in the
 %% .app file.
 override_include(Name, Incs, Incls) ->
@@ -636,13 +701,23 @@ specified([], _) ->
     [].
 
 get_items([H|T], Dict) ->
-    Item = check_item(keysearch(H, 1, Dict),H),
+    Item = case check_item(keysearch(H, 1, Dict),H) of
+        [Atom|_]=Atoms when is_atom(Atom), is_list(Atoms) ->
+            %% Check for duplicate entries in lists
+            case Atoms =/= lists:uniq(Atoms) of
+                true -> throw({dupl_entry, H, lists:subtract(Atoms, lists:uniq(Atoms))});
+                false -> Atoms
+            end;
+        X -> X
+    end,
     [Item|get_items(T, Dict)];
 get_items([], _Dict) ->
     [].
 
 check_item({_,{mod,{M,A}}},_) when is_atom(M) ->
     {M,A};
+check_item({_,{mod,[]}},_) -> % default mod is [], so accept as entry
+    [];
 check_item({_,{vsn,Vsn}},I) ->
     case string_p(Vsn) of
 	true -> Vsn;
@@ -663,6 +738,11 @@ check_item({_,{applications,Apps}},I) ->
 	true -> Apps;
 	_ -> throw({bad_param, I})
     end;
+check_item({_,{optional_applications,Apps}},I) ->
+    case a_list_p(Apps) of
+	true -> Apps;
+	_ -> throw({bad_param, I})
+    end;
 check_item({_,{included_applications,Apps}},I) ->
     case a_list_p(Apps) of
 	true -> Apps;
@@ -678,6 +758,8 @@ check_item({_,{modules,Mods}},I) ->
 	true -> Mods;
 	_ -> throw({bad_param, I})
     end;
+check_item({_,{start_phases,undefined}},_) -> % default start_phase is undefined,
+    undefined;                                % so accept as entry
 check_item({_,{start_phases,Phase}},I) ->
     case t_list_p(Phase) of
 	true -> Phase;
@@ -700,6 +782,8 @@ check_item({_,{maxP,MaxP}},I) ->
 	infinity -> infinity;
 	_ -> throw({bad_param, I})
     end;
+check_item(false, optional_applications) -> % optional !
+    [];
 check_item(false, included_applications) -> % optional !
     [];
 check_item(false, mod) -> % mod is optional !
@@ -837,7 +921,8 @@ find_top_app(App, InclApps) ->
 
 undefined_applications(Appls) ->
     Uses = append(map(fun({_,A}) ->
-			      A#application.uses ++ A#application.includes
+			      (A#application.uses -- A#application.optional) ++
+				       A#application.includes
 		      end, Appls)),
     Defined = map(fun({{X,_},_}) -> X end, Appls),
     filter(fun(X) -> not member(X, Defined) end, Uses).
@@ -890,16 +975,18 @@ find_pos([], _OrderedAppls) ->
 find_pos(N, Name, [{Name,_Vsn,_Type}|_OrderedAppls]) ->
     {N, Name};
 find_pos(N, Name, [_OtherAppl|OrderedAppls]) ->
-    find_pos(N+1, Name, OrderedAppls).
+    find_pos(N+1, Name, OrderedAppls);
+find_pos(_N, Name, []) ->
+    {optional, Name}.
 
 %%______________________________________________________________________
-%% check_modules(Appls, Path, TestP, Machine) ->
+%% check_modules(Appls, Path, TestP) ->
 %%  {ok, Warnings} | throw({error, What})
 %%   where Appls = [{App,Vsn}, #application}]
 %%   performs logical checking that we can find all the modules
 %%   etc.
 
-check_modules(Appls, Path, TestP, Machine) ->
+check_modules(Appls, Path, TestP) ->
     %% first check that all the module names are unique
     %% Make a list M1 = [{Mod,App,Dir}]
     M1 = [{Mod,App,A#application.dir} ||
@@ -907,7 +994,7 @@ check_modules(Appls, Path, TestP, Machine) ->
 	     Mod <- A#application.modules],
     case duplicates(M1) of
 	[] ->
-	    case check_mods(M1, Appls, Path, TestP, Machine) of
+	    case check_mods(M1, Appls, Path, TestP) of
 		{error, Errors} ->
 		    throw({error, {modules, Errors}});
 		Return ->
@@ -923,8 +1010,8 @@ check_modules(Appls, Path, TestP, Machine) ->
 %% Use the module extension of the running machine as extension for
 %% the checked modules.
 
-check_mods(Modules, Appls, Path, {SrcTestP, XrefP}, Machine) ->
-    SrcTestRes = check_src(Modules, Appls, Path, SrcTestP, Machine),
+check_mods(Modules, Appls, Path, {SrcTestP, XrefP}) ->
+    SrcTestRes = check_src(Modules, Appls, Path, SrcTestP),
     XrefRes = check_xref(Appls, Path, XrefP),
     Res = SrcTestRes ++ XrefRes,
     case filter(fun({error, _}) -> true;
@@ -940,8 +1027,8 @@ check_mods(Modules, Appls, Path, {SrcTestP, XrefP}, Machine) ->
 	    {error, Errors}
     end.
 
-check_src(Modules, Appls, Path, true, Machine) ->
-    Ext = objfile_extension(Machine),
+check_src(Modules, Appls, Path, true) ->
+    Ext = code:objfile_extension(),
     IncPath = create_include_path(Appls, Path),
     append(map(fun(ModT) ->
 		       {Mod,App,Dir} = ModT,
@@ -955,7 +1042,7 @@ check_src(Modules, Appls, Path, true, Machine) ->
 		       end
 	       end,
 	       Modules));
-check_src(_, _, _, _, _) ->
+check_src(_, _, _, _) ->
     [].
 
 check_xref(_Appls, _Path, false) ->
@@ -998,35 +1085,13 @@ check_xref([]) ->
     R = case xref:analyze(?XREF_SERVER, undefined_functions) of
 	    {ok, []} ->
 		[];
-	    {ok, Undefined} -> 
-		%% This clause is a (temporary?) fix for hipe.
-		adjust_for_hipe(Undefined);
+	    {ok, Undefined} ->
+		[{warning, {exref_undef, Undefined}}];
 	    Error ->
 		[{error, Error}]
 	end,
     xref:stop(?XREF_SERVER),
     R.
-
-adjust_for_hipe(Undef) ->
-    case erlang:system_info(hipe_architecture) of
-	undefined ->
-	    U = lists:filter(fun ({hipe_bifs,_,_}) -> false;
-				 ({hipe,_,_}) -> false;
-				 (_) -> true
-			     end, Undef),
-	    if 
-		[] == U ->
-		    [];
-		true ->
-		    [{warning, {exref_undef, U}}]
-	    end;
-	_Arch -> 
-	    %% Some BIFs are not always available on all versions of HiPE.
-	    U = lists:filter(fun ({hipe_bifs,write_u64,2}) -> false;
-				 (_) -> true
-			     end, Undef),
-	    [{warning, {exref_undef, U}}]
-    end.
 
 %% Perform cross reference checks between all modules specified
 %% in .app files.
@@ -1052,11 +1117,6 @@ exists_xref(Flag) ->
 	{error, _} -> false;
 	_          -> Flag
     end.
-
-objfile_extension(false) ->
-    code:objfile_extension();
-objfile_extension(Machine) ->
-    "." ++ atom_to_list(Machine).
 
 check_mod(Mod,App,Dir,Ext,IncPath) ->
     ObjFile = mod_to_filename(Dir, Mod, Ext),
@@ -1110,9 +1170,33 @@ smart_guess(Dir,IncPath) ->
 	    D1 = reverse(D),
 	    Dirs = [filename:join(D1 ++ ["src"]),
 		    filename:join(D1 ++ ["src", "e_src"])],
-	    {Dirs,Dirs ++ IncPath};
+	    RecurseDirs = add_subdirs(Dirs),
+	    {RecurseDirs,RecurseDirs ++ IncPath};
 	_ ->
 	    {[Dir],[Dir] ++ IncPath}
+    end.
+
+%%______________________________________________________________________
+%% add_subdirs([Dirs]) -> [Dirs]
+%% Take the directories that were used for a guess, and search them
+%% recursively. This is required for applications relying on varying
+%% nested directories. One example within OTP is the `wx' application,
+%% which has auto-generated modules in `src/gen/' and then fail any
+%% systools check.
+
+add_subdirs([]) ->
+    [];
+add_subdirs([Dir|Dirs]) ->
+    case filelib:is_dir(Dir) of
+        false ->
+            %% Keep the bad guess, but put it last in the search order
+            %% since we won't find anything there. Handling of errors
+            %% for unfound file is done in `locate_src/2'
+            add_subdirs(Dirs) ++ [Dir];
+        true ->
+            SubDirs = [File || File <- filelib:wildcard(filename:join(Dir, "**")),
+                               filelib:is_dir(File)],
+            [Dir|SubDirs] ++ add_subdirs(Dirs)
     end.
 
 %%______________________________________________________________________
@@ -1144,10 +1228,10 @@ generate_script(Output, Release, Appls, Flags) ->
 	     },
 
     ScriptFile = Output ++ ".script",
-    case file:open(ScriptFile, [write]) of
+    case file:open(ScriptFile, [write,{encoding,utf8}]) of
 	{ok, Fd} ->
-	    io:format(Fd, "%% script generated at ~w ~w\n~p.\n",
-		      [date(), time(), Script]),
+	    io:format(Fd, "%% ~s\n~tp.\n",
+		      [epp:encoding_to_string(utf8), Script]),
 	    case file:close(Fd) of
 		ok ->
 		    BootFile = Output ++ ".boot",
@@ -1258,7 +1342,7 @@ sort_appls([{N, A}|T], Missing, Circular, Visited) ->
 				   T, Visited, [], []),
     {Incs, T2, NotFnd2} = find_all(Name, lists:reverse(A#application.includes),
 				   T1, Visited, [], []),
-    Missing1 = NotFnd1 ++ NotFnd2 ++ Missing,
+    Missing1 = (NotFnd1 -- A#application.optional) ++ NotFnd2 ++ Missing,
     case Uses ++ Incs of
 	[] -> 
 	    %% No more app that must be started before this one is
@@ -1294,7 +1378,7 @@ find_all(CheckingApp, [Name|T], L, Visited, Found, NotFound) ->
     case find_app(Name, L) of
 	{value, App} ->
 	    {_A,R} = App,
-	    %% It is OK to have a dependecy like
+	    %% It is OK to have a dependency like
 	    %% X includes Y, Y uses X.
 	    case lists:member(CheckingApp, R#application.includes) of
 		true ->
@@ -1334,7 +1418,7 @@ del_apps([], L) ->
 %%______________________________________________________________________
 %% Create the load path used in the generated script.
 %% If PathFlag is true a script intended to be used as a complete
-%% system (e.g. in an embbeded system), i.e. all applications are
+%% system (e.g. in an embedded system), i.e. all applications are
 %% located under $ROOT/lib.
 %% Otherwise all paths are set according to dir per application.
 
@@ -1429,7 +1513,7 @@ load_commands(Mods, Path) ->
 %% Pack an application to an application term.
 
 pack_app(#application{name=Name,vsn=V,id=Id,description=D,modules=M,
-		      uses=App,includes=Incs,regs=Regs,mod=Mod,start_phases=SF,
+		      uses=App,optional=Opts,includes=Incs,regs=Regs,mod=Mod,start_phases=SF,
 		      env=Env,maxT=MaxT,maxP=MaxP}) ->
     {application, Name,
      [{description,D},
@@ -1438,6 +1522,7 @@ pack_app(#application{name=Name,vsn=V,id=Id,description=D,modules=M,
       {modules, M},
       {registered, Regs},
       {applications, App},
+      {optional_applications, Opts},
       {included_applications, Incs},
       {env, Env},
       {maxT, MaxT},
@@ -1453,24 +1538,66 @@ behave([H|T]) ->
 behave([]) ->
     [].
 
-%%______________________________________________________________________
-%% mandatory modules; this modules must be loaded before processes
-%% can be started. These are a collection of modules from the kernel
-%% and stdlib applications.
-%% Nowadays, error_handler dynamically loads almost every module.
-%% The error_handler self must still be there though.
-
 mandatory_modules() ->
-    %% Sorted
-    [error_handler].
+    [error_handler,				%Truly mandatory.
+
+     %% Modules that are almost always needed. Listing them here
+     %% helps the init module to load them faster. Modules not
+     %% listed here will be loaded by the error_handler module.
+     %%
+     %% Keep this list sorted.
+     application,
+     application_controller,
+     application_master,
+     code,
+     code_server,
+     erl_eval,
+     erl_lint,
+     erl_parse,
+     error_logger,
+     ets,
+     file,
+     filename,
+     file_server,
+     file_io_server,
+     gen,
+     gen_event,
+     gen_server,
+     heart,
+     kernel,
+     logger,
+     logger_filters,
+     logger_server,
+     logger_backend,
+     logger_config,
+     logger_simple_h,
+     lists,
+     proc_lib,
+     supervisor
+    ].
 
 %%______________________________________________________________________
 %% This is the modules that are preloaded into the Erlang system.
 
 preloaded() ->
-    %% Sorted
-    [erl_prim_loader,erlang,erts_internal,init,otp_ring0,prim_eval,prim_file,
-     prim_inet,prim_zip,zlib].
+    lists:sort(
+      ?ESOCK_MODS ++
+          [atomics,counters,erl_init,erl_prim_loader,erl_tracer,erlang,
+           erts_code_purger,erts_dirty_process_signal_handler,
+           erts_internal,erts_literal_area_collector,erts_trace_cleaner,
+           init,persistent_term,prim_buffer,prim_eval,prim_file,
+           prim_inet,prim_zip,zlib]).
+
+%%______________________________________________________________________
+%% This is the erts binaries that should *not* be part of a systool:make_tar package
+
+erts_binary_filter() ->
+    Cmds = ["typer", "dialyzer", "ct_run", "yielding_c_fun", "erlc"],
+    Extensions = [".exe", ".pdb"],
+    case os:type() of
+        {unix,_} -> Cmds;
+        {win32,_} -> [ [Cmd, Ext] || Cmd <- Cmds, Ext <- Extensions]
+    end.
 
 %%______________________________________________________________________
 %% Kernel processes; processes that are specially treated by the init
@@ -1480,7 +1607,7 @@ preloaded() ->
 
 kernel_processes() ->
     [{heart, heart, start, []},
-     {error_logger, error_logger, start_link, []},
+     {logger, logger_server, start_link, []},
      {application_controller, application_controller, start,
       fun(Appls) ->
               [{_,App}] = filter(fun({{kernel,_},_App}) -> true;
@@ -1520,6 +1647,7 @@ create_kernel_procs(Appls) ->
 %%                  RelVsn/start.boot
 %%                         relup
 %%                         sys.config
+%%                         sys.config.src
 %%         erts-EVsn[/bin]
 %%
 %% The VariableN.tar.gz files can also be stored as own files not
@@ -1562,8 +1690,17 @@ mk_tar(Tar, RelName, Release, Appls, Flags, Path1) ->
     add_applications(Appls, Tar, Variables, Flags, false),
     add_variable_tars(Variables, Appls, Tar, Flags),
     add_system_files(Tar, RelName, Release, Path1),
-    add_erts_bin(Tar, Release, Flags).
-    
+    add_erts_bin(Tar, Release, Flags),
+    add_additional_files(Tar, Flags).
+
+add_additional_files(Tar, Flags) ->
+    case get_flag(extra_files, Flags) of
+        {extra_files, ToAdd} ->
+            [add_to_tar(Tar, From, To) || {From, To} <- ToAdd];
+        _ ->
+            ok
+    end.
+
 add_applications(Appls, Tar, Variables, Flags, Var) ->
     Res = foldl(fun({{Name,Vsn},App}, Errs) ->
 		  case catch add_appl(to_list(Name), Vsn, App,
@@ -1651,7 +1788,7 @@ add_system_files(Tar, RelName, Release, Path1) ->
     %% (well, actually the boot file was looked for in the same
     %% directory as RelName, which is not necessarily the same as cwd)
     %% --
-    %% but also in the path specfied as an option to systools:make_tar
+    %% but also in the path specified as an option to systools:make_tar
     %% (but make sure to search the RelName directory and cwd first)
     Path = case filename:dirname(RelName) of
 	       "." ->
@@ -1660,11 +1797,16 @@ add_system_files(Tar, RelName, Release, Path1) ->
 		   [RelDir, "."|Path1]
 	   end,
 
-    case lookup_file(RelName0 ++ ".boot", Path) of
-	false ->
-	    throw({error, {tar_error,{add, RelName0++".boot",enoent}}});
-	Boot ->
-	    add_to_tar(Tar, Boot, filename:join(RelVsnDir, "start.boot"))
+    case lookup_file("start.boot", Path) of
+        false ->
+            case lookup_file(RelName0 ++ ".boot", Path) of
+                false ->
+                    throw({error, {tar_error, {add, boot, RelName, enoent}}});
+                Boot ->
+                    add_to_tar(Tar, Boot, filename:join(RelVsnDir, "start.boot"))
+            end;
+        Boot ->
+            add_to_tar(Tar, Boot, filename:join(RelVsnDir, "start.boot"))
     end,
 
     case lookup_file("relup", Path) of
@@ -1675,14 +1817,18 @@ add_system_files(Tar, RelName, Release, Path1) ->
 	    add_to_tar(Tar, Relup, filename:join(RelVsnDir, "relup"))
     end,
 
-    case lookup_file("sys.config", Path) of
-	false ->
-	    ignore;
-	Sys ->
-	    check_sys_config(Sys),
-	    add_to_tar(Tar, Sys, filename:join(RelVsnDir, "sys.config"))
+    case lookup_file("sys.config.src", Path) of
+        false ->
+            case lookup_file("sys.config", Path) of
+                false ->
+                    ignore;
+                Sys ->
+	            check_sys_config(Sys),
+	            add_to_tar(Tar, Sys, filename:join(RelVsnDir, "sys.config"))
+            end;
+        SysSrc ->
+            add_to_tar(Tar, SysSrc, filename:join(RelVsnDir, "sys.config.src"))
     end,
-    
     ok.
 
 lookup_file(Name, [Dir|Path]) ->
@@ -1755,15 +1901,22 @@ add_appl(Name, Vsn, App, Tar, Variables, Flags, Var) ->
 		    ok
 	    end,
 	    BinDir = filename:join(ToDir, "ebin"),
-	    add_to_tar(Tar,
-		       filename:join(AppDir, Name ++ ".app"),
-		       filename:join(BinDir, Name ++ ".app")),
+	    AppBase = filename:join(AppDir, Name),
+	    BinBase = filename:join(BinDir, Name),
+	    add_to_tar(Tar, AppBase ++ ".app", BinBase ++ ".app"),
+	    AppUp = AppBase ++ ".appup",
+	    case filelib:is_regular(AppUp) of
+		true ->
+		    add_to_tar(Tar, AppUp, BinBase ++ ".appup");
+		false ->
+		    ok
+	    end,
 	    add_modules(map(fun(Mod) -> to_list(Mod) end,
 			    App#application.modules),
 			Tar,
 			AppDir,
 			BinDir,
-			objfile_extension(machine(Flags)))
+			code:objfile_extension())
     end.
 
 %%______________________________________________________________________
@@ -1842,17 +1995,25 @@ add_priv(ADir, ToDir, Tar) ->
     end.
 
 add_erts_bin(Tar, Release, Flags) ->
-    case get_flag(erts,Flags) of
-	{erts,ErtsDir} ->
-	    EVsn = Release#release.erts_vsn,
-	    FromDir = filename:join([to_list(ErtsDir),
-				     "erts-" ++ EVsn, "bin"]),
-	    dirp(FromDir),
-	    ToDir = filename:join("erts-" ++ EVsn, "bin"),
-	    add_to_tar(Tar, FromDir, ToDir);
+    case {get_flag(erts,Flags),member(erts_all,Flags)} of
+	{{erts,ErtsDir},true} ->
+            add_erts_bin(Tar, Release, ErtsDir, []);
+	{{erts,ErtsDir},false} ->
+            add_erts_bin(Tar, Release, ErtsDir, erts_binary_filter());
 	_ ->
 	    ok
     end.
+
+add_erts_bin(Tar, Release, ErtsDir, Filters) ->
+    FlattenedFilters = [filename:flatten(Filter) || Filter <- Filters],
+    EVsn = Release#release.erts_vsn,
+    FromDir = filename:join([to_list(ErtsDir),
+                             "erts-" ++ EVsn, "bin"]),
+    ToDir = filename:join("erts-" ++ EVsn, "bin"),
+    {ok, Bins} = file:list_dir(FromDir),
+    [add_to_tar(Tar, filename:join(FromDir,Bin), filename:join(ToDir,Bin))
+     || Bin <- Bins, not lists:member(Bin, FlattenedFilters)],
+    ok.
 
 %%______________________________________________________________________
 %% Tar functions.
@@ -1876,8 +2037,10 @@ del_tar(Tar, TarName) ->
     file:delete(TarName).
 
 add_to_tar(Tar, FromFile, ToFile) ->
-    case erl_tar:add(Tar, FromFile, ToFile, [compressed, dereference]) of
+    case catch erl_tar:add(Tar, FromFile, ToFile, [compressed, dereference]) of
 	ok -> ok;
+        {'EXIT', Reason} ->
+            throw({error, {tar_error, {add, FromFile, Reason}}});
 	{error, Error} ->
 	    throw({error, {tar_error, {add, FromFile, Error}}})
     end.
@@ -2045,9 +2208,6 @@ cas([{variables, V} | Args], X) when is_list(V) ->
 	error ->
 	    cas(Args, X++[{variables, V}])
     end;
-%%% machine ------------------------------------------------------------
-cas([{machine, M} | Args], X) when is_atom(M) ->
-    cas(Args, X);
 %%% exref --------------------------------------------------------------
 cas([exref | Args], X)  ->
     cas(Args, X);
@@ -2076,6 +2236,9 @@ cas([no_module_tests | Args], X) ->
     cas(Args, X);
 cas([no_dot_erlang | Args], X) ->
     cas(Args, X);
+%% set the name of the script and boot file to create
+cas([{script_name, Name} | Args], X) when is_list(Name) ->
+    cas(Args, X);
 
 %%% ERROR --------------------------------------------------------------
 cas([Y | Args], X) ->
@@ -2085,90 +2248,82 @@ cas([Y | Args], X) ->
 
 %% Check Options for make_tar
 check_args_tar(Args) ->
-    cat(Args, {undef, undef, undef, undef, undef, undef, undef, undef, undef, undef, []}). 
+    cat(Args, []).
 
-cat([], {_Path,_Sil,_Dirs,_Erts,_Test,_Var,_VarTar,_Mach,_Xref,_XrefApps, X}) ->
+cat([], X) ->
     X;
 %%% path ---------------------------------------------------------------
-cat([{path, P} | Args], {Path, Sil, Dirs, Erts, Test, 
-			 Var, VarTar, Mach, Xref, XrefApps, X}) when is_list(P) -> 
+cat([{path, P} | Args], X) when is_list(P) ->
     case check_path(P) of
 	ok ->
-	    cat(Args, {P, Sil, Dirs, Erts, Test, Var, VarTar, Mach, Xref, XrefApps, X});
+	    cat(Args, X);
 	error ->
-	    cat(Args, {Path, Sil, Dirs, Erts, Test, 
-		       Var, VarTar, Mach, Xref, XrefApps, X++[{path,P}]})
+	    cat(Args, X++[{path,P}])
     end;
 %%% silent -------------------------------------------------------------
-cat([silent | Args], {Path, _Sil, Dirs, Erts, Test, Var, VarTar, Mach, Xref, XrefApps, X}) ->
-    cat(Args, {Path, silent, Dirs, Erts, Test, Var, VarTar, Mach, Xref, XrefApps, X});
+cat([silent | Args], X) ->
+    cat(Args, X);
 %%% dirs ---------------------------------------------------------------
-cat([{dirs, D} | Args], {Path, Sil, Dirs, Erts, Test, 
-			    Var, VarTar, Mach, Xref, XrefApps, X}) ->
+cat([{dirs, D} | Args], X) ->
     case check_dirs(D) of
 	ok ->
-	    cat(Args, {Path, Sil, D, Erts, Test, Var, VarTar, Mach, Xref, XrefApps, X});
+	    cat(Args, X);
 	error ->
-	    cat(Args, {Path, Sil, Dirs, Erts, Test, 
-		       Var, VarTar, Mach, Xref, XrefApps, X++[{dirs, D}]})
+	    cat(Args, X++[{dirs, D}])
     end;
 %%% erts ---------------------------------------------------------------
-cat([{erts, E} | Args], {Path, Sil, Dirs, _Erts, Test, 
-			 Var, VarTar, Mach, Xref, XrefApps, X}) when is_list(E)->
-    cat(Args, {Path, Sil, Dirs, E, Test, Var, VarTar, Mach, Xref, XrefApps, X});
+cat([{erts, E} | Args], X) when is_list(E)->
+    cat(Args, X);
+cat([erts_all | Args], X) ->
+    cat(Args, X);
 %%% src_tests ----------------------------------------------------
-cat([src_tests | Args], {Path, Sil, Dirs, Erts, _Test, Var, VarTar, Mach, Xref, XrefApps, X}) ->
-    cat(Args, {Path, Sil, Dirs, Erts, src_tests, Var, VarTar, Mach, 
-	       Xref, XrefApps, X});
+cat([src_tests | Args], X) ->
+    cat(Args, X);
 %%% variables ----------------------------------------------------------
-cat([{variables, V} | Args], {Path, Sil, Dirs, Erts, Test, Var, VarTar, Mach, Xref, XrefApps, X}) when is_list(V) ->
+cat([{variables, V} | Args], X) when is_list(V) ->
     case check_vars(V) of
 	ok ->
-	    cat(Args, {Path, Sil, Dirs, Erts, Test, V, VarTar, Mach, Xref, XrefApps, X});
+	    cat(Args, X);
 	error ->
-	    cat(Args, {Path, Sil, Dirs, Erts, Test, Var, VarTar, Mach, 
-			     Xref, XrefApps, X++[{variables, V}]})
+	    cat(Args, X++[{variables, V}])
     end;
 %%% var_tar ------------------------------------------------------------
-cat([{var_tar, VT} | Args], {Path, Sil, Dirs, Erts, Test, 
-			    Var, _VarTar, Mach, Xref, XrefApps, X}) when VT == include ->
-    cat(Args, {Path, Sil, Dirs, Erts, Test, Var, include, Mach, Xref, XrefApps, X});
-cat([{var_tar, VT} | Args], {Path, Sil, Dirs, Erts, Test, 
-			    Var, _VarTar, Mach, Xref, XrefApps, X}) when VT == ownfile ->
-    cat(Args, {Path, Sil, Dirs, Erts, Test, Var, ownfile, Mach, Xref, XrefApps, X});
-cat([{var_tar, VT} | Args], {Path, Sil, Dirs, Erts, Test, 
-			    Var, _VarTar, Mach, Xref, XrefApps, X}) when VT == omit ->
-    cat(Args, {Path, Sil, Dirs, Erts, Test, Var, omit, Mach, Xref, XrefApps, X});
-%%% machine ------------------------------------------------------------
-cat([{machine, M} | Args], {Path, Sil, Dirs, Erts, Test, 
-			    Var, VarTar, Mach, Xref, XrefApps, X}) when is_atom(M) ->
-    cat(Args, {Path, Sil, Dirs, Erts, Test, Var, VarTar, Mach, Xref, XrefApps, X});
+cat([{var_tar, VT} | Args], X) when VT == include;
+                                    VT == ownfile;
+                                    VT == omit ->
+    cat(Args, X);
 %%% exref --------------------------------------------------------------
-cat([exref | Args], {Path, Sil, Dirs, Erts, Test, Var, VarTar, Mach, _Xref, XrefApps, X})  ->
-    cat(Args, {Path, Sil, Dirs, Erts, Test, Var, VarTar, Mach, exref, XrefApps, X});
+cat([exref | Args], X)  ->
+    cat(Args, X);
 %%% exref Apps ---------------------------------------------------------
-cat([{exref, Apps} | Args], {Path, Sil, Dirs, Erts, Test, Var, VarTar, Mach, Xref, XrefApps, X}) when is_list(Apps) ->
+cat([{exref, Apps} | Args], X) when is_list(Apps) ->
     case check_apps(Apps) of 
 	ok ->
-	    cat(Args, {Path, Sil, Dirs, Erts, Test, Var, VarTar, Mach, 
-			     Xref, Apps, X});
+	    cat(Args, X);
 	error ->
-	    cat(Args, {Path, Sil, Dirs, Erts, Test, Var, VarTar, Mach, 
-			     Xref, XrefApps, X++[{exref, Apps}]})
+	    cat(Args, X++[{exref, Apps}])
     end;
 %%% outdir Dir ---------------------------------------------------------
-cat([{outdir, Dir} | Args], {Path, Sil, Dirs, Erts, Test, Var, VarTar, Mach, Xref, XrefApps, X}) when is_list(Dir) ->
-    cat(Args, {Path, Sil, Dirs, Erts, Test, Var, VarTar, Mach,
-	       Xref, XrefApps, X});
+cat([{outdir, Dir} | Args], X) when is_list(Dir) ->
+    cat(Args, X);
 %%% otp_build (secret, not documented) ---------------------------------
-cat([otp_build | Args], {Path, Sil, Dirs, Erts, Test, Var, VarTar, Mach, Xref, XrefApps, X})  ->
-    cat(Args, {Path, Sil, Dirs, Erts, Test, Var, VarTar, Mach, Xref, XrefApps, X});
+cat([otp_build | Args], X)  ->
+    cat(Args, X);
+%%% warnings_as_errors ----
+cat([warnings_as_errors | Args], X) ->
+    cat(Args, X);
+%%% no_warn_sasl ----
+cat([no_warn_sasl | Args], X) ->
+    cat(Args, X);
 %%% no_module_tests (kept for backwards compatibility, but ignored) ----
-cat([no_module_tests | Args], {Path, Sil, Dirs, Erts, Test, Var, VarTar, Mach, Xref, XrefApps, X}) ->
-    cat(Args, {Path, Sil, Dirs, Erts, Test, Var, VarTar, Mach, Xref, XrefApps, X});
+cat([no_module_tests | Args], X) ->
+    cat(Args, X);
+cat([{extra_files, ExtraFiles} | Args], X) when is_list(ExtraFiles) ->
+    cat(Args, X);
+
 %%% ERROR --------------------------------------------------------------
-cat([Y | Args], {Path, Sil, Dirs, Erts, Test, Var, VarTar, Mach, Xref, XrefApps, X}) ->
-    cat(Args, {Path, Sil, Dirs, Erts, Test, Var, VarTar, Mach, Xref, XrefApps, X++[Y]}).
+cat([Y | Args], X) ->
+    cat(Args, X++[Y]).
 
 check_path([]) ->
     ok;
@@ -2210,9 +2365,9 @@ check_apps(_) ->
 format_error(badly_formatted_release) ->
     io_lib:format("Syntax error in the release file~n",[]);
 format_error({illegal_name, Name}) ->
-    io_lib:format("Illegal name (~p) in the release file~n",[Name]);
+    io_lib:format("Illegal name (~tp) in the release file~n",[Name]);
 format_error({illegal_form, Form}) ->
-    io_lib:format("Illegal tag in the release file: ~p~n",[Form]);
+    io_lib:format("Illegal tag in the release file: ~tp~n",[Form]);
 format_error({missing_parameter,Par}) ->
     io_lib:format("Missing parameter (~p) in the release file~n",[Par]);
 format_error({illegal_applications,Names}) ->
@@ -2227,7 +2382,7 @@ format_error({mandatory_app,Name,Type}) ->
 format_error({duplicate_register,Dups}) ->
     io_lib:format("Duplicated register names: ~n~ts",
 		  [map(fun({{Reg,App1,_,_},{Reg,App2,_,_}}) ->
-			       io_lib:format("\t~w registered in ~w and ~w~n",
+			       io_lib:format("\t~tw registered in ~w and ~w~n",
 					     [Reg,App1,App2])
 		       end, Dups)]);
 format_error({undefined_applications,Apps}) ->
@@ -2251,26 +2406,29 @@ format_error({modules,ModErrs}) ->
 format_error({circular_dependencies,Apps}) ->
     io_lib:format("Circular dependencies among applications: ~p~n",[Apps]);
 format_error({not_found,File}) ->
-    io_lib:format("File not found: ~p~n",[File]);
+    io_lib:format("File not found: ~tp~n",[File]);
 format_error({parse,File,{Line,Mod,What}}) ->
     Str = Mod:format_error(What),
     io_lib:format("~ts:~w: ~ts\n",[File, Line, Str]);
 format_error({read,File}) ->
-    io_lib:format("Cannot read ~p~n",[File]);
+    io_lib:format("Cannot read ~tp~n",[File]);
 format_error({open,File,Error}) ->
-    io_lib:format("Cannot open ~p - ~ts~n",
+    io_lib:format("Cannot open ~tp - ~ts~n",
 		  [File,file:format_error(Error)]);
 format_error({close,File,Error}) ->
-    io_lib:format("Cannot close ~p - ~ts~n",
+    io_lib:format("Cannot close ~tp - ~ts~n",
 		  [File,file:format_error(Error)]);
 format_error({delete,File,Error}) ->
-    io_lib:format("Cannot delete ~p - ~ts~n",
+    io_lib:format("Cannot delete ~tp - ~ts~n",
 		  [File,file:format_error(Error)]);
 format_error({tar_error,What}) ->
     form_tar_err(What);
+format_error({warnings_treated_as_errors,Warnings}) ->
+    io_lib:format("Warnings being treated as errors:~n~ts",
+                  [map(fun(W) -> form_warn("",W) end, Warnings)]);
 format_error(ListOfErrors) when is_list(ListOfErrors) ->
     format_errors(ListOfErrors);
-format_error(E) -> io_lib:format("~p~n",[E]).
+format_error(E) -> io_lib:format("~tp~n",[E]).
 
 format_errors(ListOfErrors) ->
     map(fun({error,E}) -> form_err(E);
@@ -2286,19 +2444,21 @@ form_err({module_not_found,App,Mod}) ->
 form_err({error_add_appl, {Name, {tar_error, What}}}) ->
     io_lib:format("~p: ~ts~n",[Name,form_tar_err(What)]);
 form_err(E) ->
-    io_lib:format("~p~n",[E]).
+    io_lib:format("~tp~n",[E]).
 
 form_reading({not_found,File}) ->
-    io_lib:format("File not found: ~p~n",[File]);
+    io_lib:format("File not found: ~tp~n",[File]);
 form_reading({application_vsn, {Name,Vsn}}) ->
-    io_lib:format("Application ~ts with version ~p not found~n",[Name, Vsn]);
+    io_lib:format("Application ~ts with version ~tp not found~n",[Name, Vsn]);
 form_reading({parse,File,{Line,Mod,What}}) ->
     Str = Mod:format_error(What),
     io_lib:format("~ts:~w: ~ts\n",[File, Line, Str]);
 form_reading({read,File}) ->
-    io_lib:format("Cannot read ~p~n",[File]);
+    io_lib:format("Cannot read ~tp~n",[File]);
 form_reading({{bad_param, P},_}) ->
-    io_lib:format("Bad parameter in .app file: ~p~n",[P]);
+    io_lib:format("Bad parameter in .app file: ~tp~n",[P]);
+form_reading({{dupl_entry, P, DE},_}) ->
+    io_lib:format("~tp parameter contains duplicates of: ~tp~n", [P, DE]);
 form_reading({{missing_param,P},_}) ->
     io_lib:format("Missing parameter in .app file: ~p~n",[P]);
 form_reading({badly_formatted_application,_}) ->
@@ -2307,16 +2467,19 @@ form_reading({override_include,Apps}) ->
     io_lib:format("Tried to include not (in .app file) specified applications: ~p~n",
 		  [Apps]);
 form_reading({no_valid_version, {{_, SVsn}, {_, File, FVsn}}}) ->
-    io_lib:format("No valid version (~p) of .app file found. Found file ~p with version ~p~n", 
+    io_lib:format("No valid version (~tp) of .app file found. Found file ~tp with version ~tp~n", 
 		  [SVsn, File, FVsn]);
 form_reading({parse_error, {File, Line, Error}}) ->
-    io_lib:format("Parse error in file: ~p.  Line: ~w  Error: ~p; ~n", [File, Line, Error]);
+    io_lib:format("Parse error in file: ~tp.  Line: ~w  Error: ~tp; ~n", [File, Line, Error]);
 form_reading(W) ->
-    io_lib:format("~p~n",[W]).
+    io_lib:format("~tp~n",[W]).
 
 form_tar_err({open, File, Error}) ->
     io_lib:format("Cannot open tar file ~ts - ~ts~n",
 		  [File, erl_tar:format_error(Error)]);
+form_tar_err({add, boot, RelName, enoent}) ->
+    io_lib:format("Cannot find file start.boot or ~ts to add to tar file - ~ts~n",
+		  [RelName, erl_tar:format_error(enoent)]);
 form_tar_err({add, File, Error}) ->
     io_lib:format("Cannot add file ~ts to tar file - ~ts~n",
 		  [File, erl_tar:format_error(Error)]).
@@ -2324,35 +2487,26 @@ form_tar_err({add, File, Error}) ->
 %% Format warning
 
 format_warning(Warnings) ->
-    format_warning(Warnings, false).
+    map(fun({warning,W}) -> form_warn("*WARNING* ", W) end, Warnings).
 
-format_warning(Warnings, Werror) ->
-    Prefix = case Werror of
-		 true ->
-		     "";
-		 false ->
-		     "*WARNING* "
-	     end,
-    map(fun({warning,W}) -> form_warn(Prefix, W) end, Warnings).
-
-form_warn(Prefix, {source_not_found,{Mod,_,App,_,_}}) ->
+form_warn(Prefix, {source_not_found,{Mod,App,_}}) ->
     io_lib:format("~ts~w: Source code not found: ~w.erl~n",
 		  [Prefix,App,Mod]);
 form_warn(Prefix, {{parse_error, File},{_,_,App,_,_}}) ->
-    io_lib:format("~ts~w: Parse error: ~p~n",
+    io_lib:format("~ts~w: Parse error: ~tp~n",
 		  [Prefix,App,File]);
-form_warn(Prefix, {obj_out_of_date,{Mod,_,App,_,_}}) ->
+form_warn(Prefix, {obj_out_of_date,{Mod,App,_}}) ->
     io_lib:format("~ts~w: Object code (~w) out of date~n",
 		  [Prefix,App,Mod]);
 form_warn(Prefix, {exref_undef, Undef}) ->
     F = fun({M,F,A}) ->
-		io_lib:format("~tsUndefined function ~w:~w/~w~n",
+		io_lib:format("~tsUndefined function ~w:~tw/~w~n",
 			      [Prefix,M,F,A])
 	end,
     map(F, Undef);
 form_warn(Prefix, missing_sasl) ->
-    io_lib:format("~ts: Missing application sasl. "
+    io_lib:format("~tsMissing application sasl. "
 		  "Can not upgrade with this release~n",
 		  [Prefix]);
 form_warn(Prefix, What) ->
-    io_lib:format("~ts ~p~n", [Prefix,What]).
+    io_lib:format("~ts~tp~n", [Prefix,What]).

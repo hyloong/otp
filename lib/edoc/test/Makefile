@@ -6,7 +6,8 @@ include $(ERL_TOP)/make/$(TARGET)/otp.mk
 # ----------------------------------------------------
 
 MODULES= \
-	edoc_SUITE
+	edoc_SUITE \
+	eep48_SUITE
 
 ERL_FILES= $(MODULES:%=%.erl)
 
@@ -25,7 +26,8 @@ RELSYSDIR = $(RELEASE_PATH)/edoc_test
 # ----------------------------------------------------
 
 ERL_MAKE_FLAGS += 
-ERL_COMPILE_FLAGS += -I$(ERL_TOP)/lib/test_server/include
+ERL_COMPILE_FLAGS += +nowarn_missing_spec_documented
+ERL_COMPILE_FLAGS := $(filter-out +deterministic,$(ERL_COMPILE_FLAGS))
 
 EBIN = .
 
@@ -39,7 +41,7 @@ make_emakefile:
 	$(ERL_TOP)/make/make_emakefile $(ERL_COMPILE_FLAGS) -o$(EBIN) '*_SUITE_make' \
 	>> $(EMAKEFILE)
 
-tests debug opt: make_emakefile
+tests $(TYPES): make_emakefile
 	erl $(ERL_MAKE_FLAGS) -make
 
 clean:

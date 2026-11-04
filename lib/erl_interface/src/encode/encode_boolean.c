@@ -1,8 +1,10 @@
 /*
  * %CopyrightBegin%
- * 
- * Copyright Ericsson AB 1998-2009. All Rights Reserved.
- * 
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Copyright Ericsson AB 1998-2025. All Rights Reserved.
+ *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
@@ -14,7 +16,7 @@
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  * See the License for the specific language governing permissions and
  * limitations under the License.
- * 
+ *
  * %CopyrightEnd%
  */
 #include <string.h>
@@ -32,12 +34,12 @@ int ei_encode_boolean(char *buf, int *index, int p)
   val = p ? "true" : "false";
   len = strlen(val);
 
-  if (!buf) s += 3;
+  if (!buf) s += 2;
   else {
-    put8(s,ERL_ATOM_EXT);
-    put16be(s,len);
+      put8(s, ERL_SMALL_ATOM_UTF8_EXT);
+      put8(s, len);
 
-    memmove(s,val,len); /* unterminated string */
+      memcpy(s,val,len); /* unterminated string */
   }
   s += len;
 

@@ -1,8 +1,10 @@
 %%
 %% %CopyrightBegin%
-%% 
-%% Copyright Ericsson AB 1996-2013
-%% 
+%%
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 1996-2025. All Rights Reserved.
+%%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
 %% You may obtain a copy of the License at
@@ -14,12 +16,13 @@
 %% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 %% See the License for the specific language governing permissions and
 %% limitations under the License.
-%% 
+%%
 %% %CopyrightEnd%
 %%
 
 %%
 -module(mnesia_checkpoint).
+-moduledoc false.
 
 %% TM callback interface
 -export([
@@ -306,7 +309,7 @@ really_retain(Name, Tab) ->
 %%
 %% {min, MinTabs}
 %%   Minimize redundancy and only keep checkpoint info together with
-%%   one replica, preferrably at the local node. If any node involved
+%%   one replica, preferably at the local node. If any node involved
 %%   the checkpoint goes down, the checkpoint is deactivated.
 %%
 %% {max, MaxTabs}
@@ -319,7 +322,7 @@ really_retain(Name, Tab) ->
 %% {ram_overrides_dump, Tabs}
 %%   Only applicable for ram_copies. Bool controls which versions of
 %%   the records that should be included in the checkpoint state.
-%%   true means that the latest comitted records in ram (i.e. the
+%%   true means that the latest committed records in ram (i.e. the
 %%   records that the application accesses) should be included
 %%   in the checkpoint. false means that the records dumped to
 %%   dat-files (the records that will be loaded at startup) should
@@ -579,7 +582,7 @@ call(Name, Msg) ->
 		{'DOWN', Monitor, _, Pid, Reason} ->
 		    {error, {"Got exit", [Name, Reason]}};
 		{Name, Self, Reply} ->
-		    erlang:demonitor(Monitor),
+                    erlang:demonitor(Monitor, [flush]),
 		    Reply
 	    end;
 	Error ->
@@ -617,24 +620,29 @@ init(Cp) ->
     Name = Cp#checkpoint_args.name,
     Props = [set, public, {keypos, 2}],
     try ?ets_new_table(mnesia_pending_checkpoint, Props) of
-	PendingTab ->
-	    Rs = [prepare_tab(Cp, R) || R <- Cp#checkpoint_args.retainers],
-	    Cp2 = Cp#checkpoint_args{retainers = Rs,
-				pid = self(),
-				pending_tab = PendingTab},
-	    add(pending_checkpoint_pids, self()),
-	    add(pending_checkpoints, PendingTab),
-	    set({checkpoint, Name}, self()),
-	    add(checkpoints, Name),
-	    dbg_out("Checkpoint ~p (~p) started~n", [Name, self()]),
-	    proc_lib:init_ack(Cp2#checkpoint_args.supervisor, {ok, self()}),
-	    retainer_loop(Cp2)
+        PendingTab ->
+            try [prepare_tab(Cp, R) || R <- Cp#checkpoint_args.retainers] of
+                Rs ->
+                    Cp2 = Cp#checkpoint_args{retainers = Rs,
+                                             pid = self(),
+                                             pending_tab = PendingTab},
+                    add(pending_checkpoint_pids, self()),
+                    add(pending_checkpoints, PendingTab),
+                    set({checkpoint, Name}, self()),
+                    add(checkpoints, Name),
+                    dbg_out("Checkpoint ~p (~p) started~n", [Name, self()]),
+                    proc_lib:init_ack(Cp2#checkpoint_args.supervisor, {ok, self()}),
+                    retainer_loop(Cp2)
+            catch exit:Reason ->
+                    proc_lib:init_ack(Cp#checkpoint_args.supervisor, {error, Reason})
+            end
     catch error:Reason -> %% system limit
 	    Msg = "Cannot create an ets table for pending transactions",
 	    Error = {error, {system_limit, Name, Msg, Reason}},
-	    proc_lib:init_ack(Cp#checkpoint_args.supervisor, Error)
+	    proc_lib:init_fail(
+              Cp#checkpoint_args.supervisor, Error, {exit, normal})
     end.
-    
+
 prepare_tab(Cp, R) ->
     Tab = R#retainer.tab_name,
     prepare_tab(Cp, R, val({Tab, storage_type})).
@@ -675,12 +683,22 @@ tab2retainer({Tab, Name}) ->
     FlatName = lists:flatten(io_lib:write(Name)),
     mnesia_lib:dir(lists:concat([?MODULE, "_", Tab, "_", FlatName, ".RET"])).
 
+retainer_create(_Cp, R, Tab, Name, Ext = {ext, Alias, Mod}) ->
+    T = {Tab, retainer, Name},
+    P = mnesia_schema:cs2list(val({Tab, cstruct})),
+    Mod:delete_table(Alias, T),
+    ok = Mod:create_table(Alias, T, P),
+    Cs = val({Tab, cstruct}),
+    Mod:load_table(Alias, T, {retainer, create_table},
+		   mnesia_schema:cs2list(Cs)),
+    dbg_out("Checkpoint retainer created ~p ~tp~n", [Name, Tab]),
+    R#retainer{store = {Ext, T}, really_retain = true};
 retainer_create(_Cp, R, Tab, Name, disc_only_copies) ->
     Fname = tab2retainer({Tab, Name}),
     file:delete(Fname),
     Args = [{file, Fname}, {type, set}, {keypos, 2}, {repair, false}],
     {ok, _} = mnesia_lib:dets_sync_open({Tab, Name}, Args),
-    dbg_out("Checkpoint retainer created ~p ~p~n", [Name, Tab]),
+    dbg_out("Checkpoint retainer created ~p ~tp~n", [Name, Tab]),
     R#retainer{store = {dets, {Tab, Name}}, really_retain = true};
 retainer_create(Cp, R, Tab, Name, Storage) ->
     T = ?ets_new_table(mnesia_retainer, [set, public, {keypos, 2}]),
@@ -688,7 +706,7 @@ retainer_create(Cp, R, Tab, Name, Storage) ->
     ReallyR = R#retainer.really_retain,
     ReallyCp = lists:member(Tab, Overriders),
     ReallyR2 = prepare_ram_tab(Tab, T, Storage, ReallyR, ReallyCp),
-    dbg_out("Checkpoint retainer created ~p ~p~n", [Name, Tab]),
+    dbg_out("Checkpoint retainer created ~p ~tp~n", [Name, Tab]),
     R#retainer{store = {ets, T}, really_retain = ReallyR2}.
 
 %% Copy the dumped table into retainer if needed
@@ -734,15 +752,23 @@ traverse_dcd({Cont, Recs}, Log, Fun) ->     %% trashed data??
 traverse_dcd(eof, _Log, _Fun) ->
     ok.
 
+retainer_get({{ext, Alias, Mod}, Store}, Key) ->
+    Mod:lookup(Alias, Store, Key);
 retainer_get({ets, Store}, Key) -> ?ets_lookup(Store, Key);
 retainer_get({dets, Store}, Key) -> dets:lookup(Store, Key).
 
+retainer_put({{ext, Alias, Mod}, Store}, Val) ->
+    Mod:insert(Alias, Store, Val);
 retainer_put({ets, Store}, Val) -> ?ets_insert(Store, Val);
 retainer_put({dets, Store}, Val) -> dets:insert(Store, Val).
 
+retainer_first({{ext, Alias, Mod}, Store}) ->
+    Mod:first(Alias, Store);
 retainer_first({ets, Store}) -> ?ets_first(Store);
 retainer_first({dets, Store}) -> dets:first(Store).
  
+retainer_next({{ext, Alias, Mod}, Store}, Key) ->
+    Mod:next(Alias, Store, Key);
 retainer_next({ets, Store}, Key) -> ?ets_next(Store, Key);
 retainer_next({dets, Store}, Key) -> dets:next(Store, Key).
 
@@ -761,11 +787,16 @@ retainer_next({dets, Store}, Key) -> dets:next(Store, Key).
 
 retainer_fixtable(Tab, Bool) when is_atom(Tab) ->
     mnesia_lib:db_fixtable(val({Tab, storage_type}), Tab, Bool);
+retainer_fixtable({Ext = {ext, _, _}, Tab}, Bool) ->
+    mnesia_lib:db_fixtable(Ext, Tab, Bool);
 retainer_fixtable({ets, Tab}, Bool) ->
     mnesia_lib:db_fixtable(ram_copies, Tab, Bool);
 retainer_fixtable({dets, Tab}, Bool) ->
     mnesia_lib:db_fixtable(disc_only_copies, Tab, Bool).
 
+retainer_delete({{ext, Alias, Mod}, Store}) ->
+    Mod:close_table(Alias, Store),
+    Mod:delete_table(Alias, Store);
 retainer_delete({ets, Store}) ->
     ?ets_delete_table(Store);
 retainer_delete({dets, Store}) ->
@@ -794,7 +825,6 @@ retainer_loop(Cp = #checkpoint_args{is_activated=false, name=Name}) ->
 	{From, deactivate} ->
 	    do_stop(Cp),
 	    reply(From, Name, deactivated),
-	    unlink(From),
 	    exit(shutdown);
 
 	{From, get_checkpoint} ->
@@ -826,7 +856,7 @@ retainer_loop(Cp = #checkpoint_args{is_activated=false, name=Name}) ->
 	    retainer_loop(Cp#checkpoint_args{iterators = Iters});
 
 	{system, From, Msg} ->
-	    dbg_out("~p got {system, ~p, ~p}~n", [?MODULE, From, Msg]),
+	    dbg_out("~p got {system, ~p, ~tp}~n", [?MODULE, From, Msg]),
 	    sys:handle_system_msg(Msg, From, Cp#checkpoint_args.supervisor,
 				  ?MODULE, [], Cp)
     end;
@@ -834,9 +864,9 @@ retainer_loop(Cp = #checkpoint_args{is_activated=false, name=Name}) ->
 retainer_loop(Cp = #checkpoint_args{name=Name}) ->
     receive
 	{_From, {retain, Tid, Tab, Key, OldRecs}} ->
-	    R = val({Tab, {retainer, Name}}),
+	    R = ?catch_val({Tab, {retainer, Name}}),
 	    PendingTab = Cp#checkpoint_args.pending_tab,
-	    case R#retainer.really_retain of
+            case is_record(R, retainer) andalso R#retainer.really_retain of
 		true ->
 		    Store = R#retainer.store,
 		    try true = ets:member(PendingTab, Tid),
@@ -869,8 +899,8 @@ retainer_loop(Cp = #checkpoint_args{name=Name}) ->
 	    Cp2 = do_del_copy(Cp, Tab, Node),
 	    reply(From, Name, ok),
 	    retainer_loop(Cp2);
-	{From, {change_copy, Tab, From, To}} ->
-	    Cp2 = do_change_copy(Cp, Tab, From, To),
+        {From, {change_copy, Tab, FromType, ToType}} ->
+            Cp2 = do_change_copy(Cp, Tab, FromType, ToType),
 	    reply(From, Name, ok),
 	    retainer_loop(Cp2);
 	{_From, {add_retainer, R, Node}} ->
@@ -886,7 +916,7 @@ retainer_loop(Cp = #checkpoint_args{name=Name}) ->
 	    retainer_loop(Cp2);
 
 	{From, {iter_end, Iter}}  ->
-	    retainer_fixtable(Iter#iter.oid_tab, false),
+	    ?SAFE(retainer_fixtable(Iter#iter.oid_tab, false)),
 	    Iters = Cp#checkpoint_args.iterators -- [Iter],
 	    reply(From, Name, ok),
 	    retainer_loop(Cp#checkpoint_args{iterators = Iters});
@@ -897,7 +927,6 @@ retainer_loop(Cp = #checkpoint_args{name=Name}) ->
 	{From, deactivate} ->
 	    do_stop(Cp),
 	    reply(From, Name, deactivated),
-	    unlink(From),
 	    exit(shutdown);
 
 	{_From, {mnesia_down, Node}} ->
@@ -915,11 +944,11 @@ retainer_loop(Cp = #checkpoint_args{name=Name}) ->
 	    retainer_loop(Cp#checkpoint_args{iterators = Iters});
 
 	{system, From, Msg} ->
-	    dbg_out("~p got {system, ~p, ~p}~n", [?MODULE, From, Msg]),
+	    dbg_out("~p got {system, ~p, ~tp}~n", [?MODULE, From, Msg]),
 	    sys:handle_system_msg(Msg, From, Cp#checkpoint_args.supervisor,
 				  ?MODULE, [], Cp);
 	Msg ->
-	    dbg_out("~p got ~p~n", [?MODULE, Msg])
+	    dbg_out("~p got ~tp~n", [?MODULE, Msg])
     end.
 
 maybe_activate(Cp)
@@ -948,7 +977,8 @@ do_stop(Cp) ->
     unset({checkpoint, Name}),
     lists:foreach(fun deactivate_tab/1, Cp#checkpoint_args.retainers),
     Iters = Cp#checkpoint_args.iterators,
-    lists:foreach(fun(I) -> retainer_fixtable(I#iter.oid_tab, false) end, Iters).
+    [?SAFE(retainer_fixtable(Tab, false)) || #iter{main_tab=Tab} <- Iters],
+    ok.
 
 deactivate_tab(R) ->
     Name = R#retainer.cp_name,
@@ -1128,7 +1158,7 @@ do_change_copy(Cp, Tab, FromType, ToType) ->
     Cp#checkpoint_args{retainers = Rs, nodes = writers(Rs)}.
 
 check_iter(From, Iter) when Iter#iter.pid == From ->
-    retainer_fixtable(Iter#iter.oid_tab, false),
+    ?SAFE(retainer_fixtable(Iter#iter.oid_tab, false)),
     false;
 check_iter(_From, _Iter) ->
     true.
@@ -1245,9 +1275,9 @@ system_code_change(Cp, _Module, _OldVsn, _Extra) ->
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%
 
+%% Local function in order to avoid external function call
 val(Var) ->
-    case ?catch_val(Var) of
-	{'EXIT', _} -> mnesia_lib:other_val(Var);
-	_VaLuE_ -> _VaLuE_
+    case ?catch_val_and_stack(Var) of
+	{'EXIT', Stacktrace} -> mnesia_lib:other_val(Var, Stacktrace);
+	Value -> Value
     end.
-

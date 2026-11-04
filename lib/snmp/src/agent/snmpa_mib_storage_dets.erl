@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2013-2013. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2013-2026. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -18,9 +20,11 @@
 %% %CopyrightEnd%
 %%
 -module(snmpa_mib_storage_dets).
+-moduledoc false.
 
 -behaviour(snmpa_mib_storage).
 
+-compile([{nowarn_possibly_unsafe_function, {erlang, list_to_atom, 1}}]).
 
 %%%-----------------------------------------------------------------
 %%% This module implements the snmpa_mib_storage behaviour. 
@@ -291,16 +295,16 @@ dets_backup(close, _Cont, _ID, B) ->
     ok;
 dets_backup(read, Cont1, ID, B) ->
     case dets:bchunk(ID, Cont1) of
+        {error, _} = ERROR ->
+            ERROR;
+	'$end_of_table' ->
+	    dets:close(B),
+	    end_of_input;
 	{Cont2, Data} ->
 	    F = fun(Arg) ->
 			dets_backup(Arg, Cont2, ID, B)
 		end,
-	    {Data, F};
-	'$end_of_table' ->
-	    dets:close(B),
-	    end_of_input;
-	Error ->
-	    Error
+	    {Data, F}
     end.
 
 

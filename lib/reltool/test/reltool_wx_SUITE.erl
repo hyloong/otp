@@ -1,8 +1,10 @@
 %%
 %% %CopyrightBegin%
-%% 
-%% Copyright Ericsson AB 2009-2012. All Rights Reserved.
-%% 
+%%
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2009-2025. All Rights Reserved.
+%%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
 %% You may obtain a copy of the License at
@@ -14,7 +16,7 @@
 %% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 %% See the License for the specific language governing permissions and
 %% limitations under the License.
-%% 
+%%
 %% %CopyrightEnd%
 
 -module(reltool_wx_SUITE).
@@ -23,7 +25,7 @@
 	 init_per_suite/1, end_per_suite/1, 
 	 init_per_testcase/2, end_per_testcase/2]).
 
--compile(export_all).
+-export([start_all_windows/1, check_no_win_crash/0, wait_terminate/1]).
 
 -include("reltool_test_lib.hrl").
 
@@ -74,7 +76,12 @@ start_all_windows(_Config) ->
     %% Test that server pid can be fetched, and that server is alive
     {ok, Server} = ?msym({ok,_}, reltool:get_server(SysPid)),
     ?m(true, erlang:is_process_alive(Server)),
-    ?m({ok,{sys,[]}}, reltool:get_config(Server)),
+    Sys =
+        case reltool_test_lib:erl_libs() of
+            [] -> [];
+            Libs -> [{lib_dirs,Libs}]
+        end,
+    ?m({ok,{sys,Sys}}, reltool:get_config(Server)),
 
     %% Terminate
     check_no_win_crash(),

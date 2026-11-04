@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2001-2015. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2001-2025. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -36,7 +38,7 @@
 
 %% Start of Abstract Format
 
--type line() :: erl_scan:line().
+-type line() :: erl_anno:line().
 
 -export_type([af_record_index/0, af_record_field/1, af_record_name/0,
               af_field_name/0, af_function_decl/0]).
@@ -332,8 +334,8 @@
 %% End of Abstract Format
 
 -type error_description() :: term().
--type error_info() :: {erl_scan:line(), module(), error_description()}.
--type token() :: {Tag :: atom(), Line :: erl_scan:line()}.
+-type error_info() :: {erl_anno:line(), module(), error_description()}.
+-type token() :: {Tag :: atom(), Line :: erl_scan:anno()}.
 
 %% mkop(Op, Arg) -> {op,Line,Op,Arg}.
 %% mkop(Left, Op, Right) -> {op,Line,Op,Left,Right}.
@@ -412,7 +414,7 @@ normalise({bin,_,Fs}) ->
 	eval_bits:expr_grp(Fs, [],
 			   fun(E, _) ->
 				   {value, normalise(E), []}
-			   end, [], true),
+			   end),
     B;
 normalise({cons,_,Head,Tail}) ->
     [normalise(Head)|normalise(Tail)];

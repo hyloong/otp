@@ -1,8 +1,10 @@
 %%
 %% %CopyrightBegin%
-%% 
-%% Copyright Ericsson AB 2005-2009. All Rights Reserved.
-%% 
+%%
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2005-2026. All Rights Reserved.
+%%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
 %% You may obtain a copy of the License at
@@ -14,7 +16,7 @@
 %% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 %% See the License for the specific language governing permissions and
 %% limitations under the License.
-%% 
+%%
 %% %CopyrightEnd%
 %%
 
@@ -27,6 +29,8 @@
 -include_lib("megaco/include/megaco.hrl").
 -include_lib("megaco/include/megaco_message_v3.hrl").
 -include("megaco_text_tokens.hrl").
+
+-define(MAX_DIGITS, 20). % Safe upper bound; real defense is the 100 KB scanner gate.
 
 -ifdef(megaco_parser_inline).
 -compile({inline,[{make_safe_token,1}]}).
@@ -1740,6 +1744,36 @@ do_merge_control_streamParms([{SubTag, SD} | T] = All, LCD) ->
 do_merge_control_streamParms([], LCD) ->
     LCD.
 
+
+%% This is to get around the two defs:
+%%
+%% statisticsDescriptor = StatsToken [LBRKT statisticsParameter *(COMMA
+%%                        statisticsParameter) RBRKT]
+%%
+%% and
+%%
+%% auditReturnParameter = (mediaDescriptor / modemDescriptor / muxDescriptor /
+%%                         eventsDescriptor / signalsDescriptor /
+%%                         digitMapDescriptor / observedEventsDescriptor /
+%%                         eventBufferDescriptor / statisticsDescriptor /
+%%                         packagesDescriptor / errorDescriptor /
+%%                         auditReturnItem)
+%% auditReturnItem = (MuxToken / ModemToken / MediaToken /
+%%                    DigitMapToken / StatsToken / ObservedEventsToken /
+%%                    PackagesToken)
+%%
+%% In both statisticsDescriptor and auditReturnItem the StatsToken
+%% can occure on its owm => conflict
+
+-ifdef(megaco_parser_inline).
+-compile({inline,[{ensure_arp_statisticsDescriptor,1}]}).
+-endif.
+ensure_arp_statisticsDescriptor([]) ->
+    {auditReturnItem, statsToken};
+ensure_arp_statisticsDescriptor(SPs) ->
+    {statisticsDescriptor, SPs}.
+
+
 -ifdef(megaco_parser_inline).
 -compile({inline,[{merge_terminationStateDescriptor,1}]}).
 -endif.
@@ -1897,29 +1931,33 @@ ensure_prop_groups(Token) ->
 -endif.
 ensure_uint(Token, Min, Max) ->
     case Token of
-	{_TokenTag, Line, Val} when is_integer(Val) ->
-	    ensure_uint(Val, Min, Max, Line);
-	{_TokenTag, Line, Text} ->
-	    case (catch list_to_integer(Text)) of
-		{'EXIT', _} ->
-		    return_error(Line, {not_an_integer, Text});
-		Val when is_integer(Val) ->
-		    ensure_uint(Val, Min, Max, Line)
-	    end;
-	Val when is_integer(Val) ->
-	    ensure_uint(Val, Min, Max, 0);
-	Text ->
-	    case (catch list_to_integer(Text)) of
-		{'EXIT', _} ->
-		    return_error(0, {not_an_integer, Text});
-		Val when is_integer(Val) ->
-		    ensure_uint(Val, Min, Max, 0)
-	    end
+        {_TokenTag, Line, Val} when is_integer(Val) ->
+            ensure_uint(Val, Min, Max, Line);
+        {_TokenTag, Line, Text} ->
+            validate_uint_text(Text, Min, Max, Line);
+        Val when is_integer(Val) ->
+            ensure_uint(Val, Min, Max, 0);
+        Text ->
+            validate_uint_text(Text, Min, Max, 0)
+    end.
+
+validate_uint_text(Text, Min, Max, Line) ->
+    case length(Text) > ?MAX_DIGITS of
+        true ->
+            return_error(Line, {too_large_integer, Text, Max});
+        false ->
+            case (catch list_to_integer(Text)) of
+                {'EXIT', _} ->
+                    return_error(Line, {not_an_integer, Text});
+                Val when is_integer(Val) ->
+                    ensure_uint(Val, Min, Max, Line)
+            end
     end.
 
 -ifdef(megaco_parser_inline).
 -compile({inline,[{ensure_uint,4}]}).
 -endif.
+-dialyzer({nowarn_function, ensure_uint/4}). % Future compat
 ensure_uint(Val, Min, Max, Line) ->
     if 
 	is_integer(Min) andalso (Val >= Min) ->

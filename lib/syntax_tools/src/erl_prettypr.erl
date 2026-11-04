@@ -1,31 +1,45 @@
 %% =====================================================================
-%% This library is free software; you can redistribute it and/or modify
-%% it under the terms of the GNU Lesser General Public License as
-%% published by the Free Software Foundation; either version 2 of the
-%% License, or (at your option) any later version.
+%% %CopyrightBegin%
 %%
-%% This library is distributed in the hope that it will be useful, but
-%% WITHOUT ANY WARRANTY; without even the implied warranty of
-%% MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
-%% Lesser General Public License for more details.
+%% SPDX-License-Identifier: Apache-2.0 OR LGPL-2.1-or-later
 %%
-%% You should have received a copy of the GNU Lesser General Public
-%% License along with this library; if not, write to the Free Software
-%% Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307
-%% USA
+%% Copyright 1997-2006 Richard Carlsson
+%% Copyright Ericsson AB 2009-2026. All Rights Reserved.
 %%
-%% @copyright 1997-2006 Richard Carlsson
-%% @author Richard Carlsson <carlsson.richard@gmail.com>
-%% @end
-%% =====================================================================
-
-%% @doc Pretty printing of abstract Erlang syntax trees.
+%% Licensed under the Apache License, Version 2.0 (the "License");
+%% you may not use this file except in compliance with the License.
+%% You may obtain a copy of the License at
 %%
-%% This module is a front end to the pretty-printing library module
-%% `prettypr', for text formatting of abstract syntax trees defined by
-%% the module `erl_syntax'.
+%%     http://www.apache.org/licenses/LICENSE-2.0
+%%
+%% Unless required by applicable law or agreed to in writing, software
+%% distributed under the License is distributed on an "AS IS" BASIS,
+%% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+%% See the License for the specific language governing permissions and
+%% limitations under the License.
+%%
+%% Alternatively, you may use this file under the terms of the GNU Lesser
+%% General Public License (the "LGPL") as published by the Free Software
+%% Foundation; either version 2.1, or (at your option) any later version.
+%% If you wish to allow use of your version of this file only under the
+%% terms of the LGPL, you should delete the provisions above and replace
+%% them with the notice and other provisions required by the LGPL; see
+%% <http://www.gnu.org/licenses/>. If you do not delete the provisions
+%% above, a recipient may use your version of this file under the terms of
+%% either the Apache License or the LGPL.
+%%
+%% %CopyrightEnd%
 
 -module(erl_prettypr).
+-moduledoc """
+Pretty printing of abstract Erlang syntax trees.
+
+This module is a front end to the pretty-printing library module `prettypr`, for
+text formatting of abstract syntax trees defined by the module `erl_syntax`.
+""".
+
+-compile([{nowarn_possibly_unsafe_function, {erlang, list_to_atom, 1}},
+          nowarn_deprecated_catch]).
 
 -export([format/1, format/2, best/1, best/2, layout/1, layout/2,
 	 get_ctxt_precedence/1, set_ctxt_precedence/2,
@@ -38,7 +52,7 @@
 		   follow/3, empty/0]).
 
 -import(erl_parse, [preop_prec/1, inop_prec/1, func_prec/0,
-		    max_prec/0]).
+		    max_prec/0, type_inop_prec/1, type_preop_prec/1]).
 
 -define(PADDING, 2).
 -define(PAPER, 80).
@@ -47,10 +61,11 @@
 -define(NOHOOK, none).
 
 -type hook() :: 'none'
-              | fun((erl_syntax:syntaxTree(), _, _) -> prettypr:document()).
--type clause_t() :: 'case_expr' | 'cond_expr' | 'fun_expr'
-                  | 'if_expr' | 'receive_expr' | 'try_expr'
-                  | {'function', prettypr:document()}.
+              | fun((syntaxTree(), _, _) -> prettypr:document()).
+-type clause_t() :: 'case_expr' | 'fun_expr'
+                  | 'if_expr' | 'maybe_expr' | 'receive_expr' | 'try_expr'
+                  | {'function', prettypr:document()}
+                  | 'spec'.
 
 -record(ctxt, {prec = 0           :: integer(),
 	       sub_indent = 2     :: non_neg_integer(),
@@ -60,32 +75,29 @@
 	       paper = ?PAPER     :: integer(),
 	       ribbon = ?RIBBON   :: integer(),
 	       user = ?NOUSER     :: term(),
-               encoding = epp:default_encoding() :: epp:source_encoding()}).
+               encoding = epp:default_encoding() :: epp:source_encoding(),
+	       empty_lines = sets:new() :: sets:set(integer())}).
 
 -type context() :: #ctxt{}.
 
-%% =====================================================================
-%% The following functions examine and modify contexts:
+-doc """
+Returns the operator precedence field of the prettyprinter context.
 
-%% @spec (context()) -> integer()
-%% @doc Returns the operator precedence field of the prettyprinter
-%% context.
-%%
-%% @see set_ctxt_precedence/2
-
+_See also: _`set_ctxt_precedence/2`.
+""".
 -spec get_ctxt_precedence(context()) -> integer().
 
 get_ctxt_precedence(Ctxt) ->
     Ctxt#ctxt.prec.
 
-%% @spec (context(), integer()) -> context()
-%%
-%% @doc Updates the operator precedence field of the prettyprinter
-%% context. See the {@link //stdlib/erl_parse} module for operator precedences.
-%%
-%% @see //stdlib/erl_parse
-%% @see get_ctxt_precedence/1
+-doc """
+Updates the operator precedence field of the prettyprinter context.
 
+See the [`//stdlib/erl_parse`](`m:erl_parse`) module for operator
+precedences.
+
+_See also: _[//stdlib/erl_parse](`m:erl_parse`), `get_ctxt_precedence/1`.
+""".
 -spec set_ctxt_precedence(context(), integer()) -> context().
 
 set_ctxt_precedence(Ctxt, Prec) ->
@@ -97,177 +109,174 @@ set_prec(Ctxt, Prec) ->
 reset_prec(Ctxt) ->
     set_prec(Ctxt, 0).    % used internally
 
-%% @spec (context()) -> integer()
-%% @doc Returns the paper widh field of the prettyprinter context.
-%% @see set_ctxt_paperwidth/2
+-doc """
+Returns the paper widh field of the prettyprinter context.
 
+_See also: _`set_ctxt_paperwidth/2`.
+""".
 -spec get_ctxt_paperwidth(context()) -> integer().
 
 get_ctxt_paperwidth(Ctxt) ->
     Ctxt#ctxt.paper.
 
-%% @spec (context(), integer()) -> context()
-%%
-%% @doc Updates the paper widh field of the prettyprinter context.
-%%
-%% Note: changing this value (and passing the resulting context to a
-%% continuation function) does not affect the normal formatting, but may
-%% affect user-defined behaviour in hook functions.
-%%
-%% @see get_ctxt_paperwidth/1
+-doc """
+Updates the paper widh field of the prettyprinter context.
 
+> #### Note {: .info }
+>
+> Changing this value (and passing the resulting context to a
+> continuation function) does not affect the normal formatting, but may
+> affect user-defined behaviour in hook functions.
+
+_See also: _`get_ctxt_paperwidth/1`.
+""".
 -spec set_ctxt_paperwidth(context(), integer()) -> context().
 
 set_ctxt_paperwidth(Ctxt, W) ->
     Ctxt#ctxt{paper = W}.
 
-%% @spec (context()) -> integer()
-%% @doc Returns the line widh field of the prettyprinter context.
-%% @see set_ctxt_linewidth/2
+-doc """
+Returns the line widh field of the prettyprinter context.
 
+_See also: _`set_ctxt_linewidth/2`.
+""".
 -spec get_ctxt_linewidth(context()) -> integer().
 
 get_ctxt_linewidth(Ctxt) ->
     Ctxt#ctxt.ribbon.
 
-%% @spec (context(), integer()) -> context()
-%%
-%% @doc Updates the line widh field of the prettyprinter context.
-%%
-%% Note: changing this value (and passing the resulting context to a
-%% continuation function) does not affect the normal formatting, but may
-%% affect user-defined behaviour in hook functions.
-%%
-%% @see get_ctxt_linewidth/1
+-doc """
+Updates the line widh field of the prettyprinter context.
 
+> #### Note {: .info }
+>
+> Changing this value (and passing the resulting context to a
+> continuation function) does not affect the normal formatting, but may
+> affect user-defined behaviour in hook functions.
+
+_See also: _`get_ctxt_linewidth/1`.
+""".
 -spec set_ctxt_linewidth(context(), integer()) -> context().
 
 set_ctxt_linewidth(Ctxt, W) ->
     Ctxt#ctxt{ribbon = W}.
 
-%% @spec (context()) -> hook()
-%% @doc Returns the hook function field of the prettyprinter context.
-%% @see set_ctxt_hook/2
+-doc """
+Returns the hook function field of the prettyprinter context.
 
+_See also: _`set_ctxt_hook/2`.
+""".
 -spec get_ctxt_hook(context()) -> hook().
 
 get_ctxt_hook(Ctxt) ->
     Ctxt#ctxt.hook.
 
-%% @spec (context(), hook()) -> context()
-%% @doc Updates the hook function field of the prettyprinter context.
-%% @see get_ctxt_hook/1
+-doc """
+Updates the hook function field of the prettyprinter context.
 
+_See also: _`get_ctxt_hook/1`.
+""".
 -spec set_ctxt_hook(context(), hook()) -> context().
 
 set_ctxt_hook(Ctxt, Hook) ->
     Ctxt#ctxt{hook = Hook}.
 
-%% @spec (context()) -> term()
-%% @doc Returns the user data field of the prettyprinter context.
-%% @see set_ctxt_user/2
+-doc """
+Returns the user data field of the prettyprinter context.
 
+_See also: _`set_ctxt_user/2`.
+""".
 -spec get_ctxt_user(context()) -> term().
 
 get_ctxt_user(Ctxt) ->
     Ctxt#ctxt.user.
 
-%% @spec (context(), term()) -> context()
-%% @doc Updates the user data field of the prettyprinter context.
-%% @see get_ctxt_user/1
+-doc """
+Updates the user data field of the prettyprinter context.
 
+_See also: _`get_ctxt_user/1`.
+""".
 -spec set_ctxt_user(context(), term()) -> context().
 
 set_ctxt_user(Ctxt, X) ->
     Ctxt#ctxt{user = X}.
 
 
-%% =====================================================================
-%% @spec format(Tree::syntaxTree()) -> string()
-%% @equiv format(Tree, [])
-
--spec format(erl_syntax:syntaxTree()) -> string().
+-doc #{equiv => format(Tree, [])}.
+-spec format(syntaxTree()) -> string().
 
 format(Node) ->
     format(Node, []).
 
+-doc """
+An abstract syntax tree.
 
-%% =====================================================================
-%% @spec format(Tree::syntaxTree(), Options::[term()]) -> string()
-%%           syntaxTree() = erl_syntax:syntaxTree()
-%%
-%% @type hook() = (syntaxTree(), context(), Continuation) -> document()
-%%	    Continuation = (syntaxTree(), context()) -> document().
-%%
-%% A call-back function for user-controlled formatting. See {@link
-%% format/2}.
-%%
-%% @type context(). A representation of the current context of the
-%% pretty-printer. Can be accessed in hook functions.
-%%
-%% @doc Prettyprint-formats an abstract Erlang syntax tree as text. For
-%% example, if you have a `.beam' file that has been compiled with
-%% `debug_info', the following should print the source code for the
-%% module (as it looks in the debug info representation):
-%% ```{ok,{_,[{abstract_code,{_,AC}}]}} =
-%%            beam_lib:chunks("myfile.beam",[abstract_code]),
-%%    io:put_chars(erl_prettypr:format(erl_syntax:form_list(AC)))
-%% '''
-%%
-%% Available options:
-%% <dl>
-%%   <dt>{hook, none | {@link hook()}}</dt>
-%%       <dd>Unless the value is `none', the given function is called
-%%       for each node whose list of annotations is not empty; see below
-%%       for details. The default value is `none'.</dd>
-%%
-%%   <dt>{paper, integer()}</dt>
-%%       <dd>Specifies the preferred maximum number of characters on any
-%%       line, including indentation. The default value is 80.</dd>
-%%
-%%   <dt>{ribbon, integer()}</dt>
-%%       <dd>Specifies the preferred maximum number of characters on any
-%%       line, not counting indentation. The default value is 65.</dd>
-%%
-%%   <dt>{user, term()}</dt>
-%%       <dd>User-specific data for use in hook functions. The default
-%%       value is `undefined'.</dd>
-%%   <dt>{encoding, epp:source_encoding()}</dt>
-%%       <dd>Specifies the encoding of the generated file.</dd>
-%% </dl>
-%%
-%% A hook function (cf. the {@link hook()} type) is passed the current
-%% syntax tree node, the context, and a continuation. The context can be
-%% examined and manipulated by functions such as `get_ctxt_user/1' and
-%% `set_ctxt_user/2'. The hook must return a "document" data structure
-%% (see {@link layout/2} and {@link best/2}); this may be constructed in
-%% part or in whole by applying the continuation function. For example,
-%% the following is a trivial hook:
-%% ```
-%%     fun (Node, Ctxt, Cont) -> Cont(Node, Ctxt) end
-%% '''
-%% which yields the same result as if no hook was given.
-%% The following, however:
-%% ```
-%%     fun (Node, Ctxt, Cont) ->
-%%         Doc = Cont(Node, Ctxt),
-%%         prettypr:beside(prettypr:text("<b>"),
-%%                         prettypr:beside(Doc,
-%%                                         prettypr:text("</b>")))
-%%     end
-%% '''
-%% will place the text of any annotated node (regardless of the
-%% annotation data) between HTML "boldface begin" and "boldface end"
-%% tags.
-%%
-%% @see erl_syntax
-%% @see format/1
-%% @see layout/2
-%% @see best/2
-%% @see get_ctxt_user/1
-%% @see set_ctxt_user/2
+See the `m:erl_syntax` module for details.
+""".
+-type syntaxTree() :: erl_syntax:syntaxTree().
 
--spec format(erl_syntax:syntaxTree(), [term()]) -> string().
+
+-doc """
+Prettyprint-formats an abstract Erlang syntax tree as text.
+
+For example, if you have a `.beam` file that has been compiled with
+`debug_info`, the following should print the source code for the
+module (as it looks in the debug info representation):
+
+```text
+     {ok,{_,[{abstract_code,{_,AC}}]}} =
+             beam_lib:chunks("myfile.beam",[abstract_code]),
+     io:put_chars(erl_prettypr:format(erl_syntax:form_list(AC)))
+```
+
+Available options:
+
+- **`{hook, none | hook()}`** - Unless the value is `none`, the
+  given function is called for each node whose list of annotations is
+  not empty. The default value is `none`.
+
+- **`{paper, integer()}`** - Specifies the preferred maximum number of
+  characters on any line, including indentation. The default value is 80.
+
+- **`{ribbon, integer()}`** - Specifies the preferred maximum number of
+  characters on any line, not counting indentation. The default value is 65.
+
+- **`{user, term()}`** - User-specific data for use in hook functions. The
+  default value is `undefined`.
+
+- **`{encoding, epp:source_encoding()}`** - Specifies the encoding of the
+  generated file.
+
+A hook function (see the [`hook()`](`t:hook/0`) type) is passed the current
+syntax tree node, the context, and a continuation. The context can be examined
+and manipulated by functions such as [`get_ctxt_user/1`](`get_ctxt_user/1`) and
+[`set_ctxt_user/2`](`set_ctxt_user/2`). The hook must return a "document" data
+structure (see `layout/2` and `best/2`); this may be constructed in part or in
+whole by applying the continuation function. For example, the following is a
+trivial hook:
+
+```text
+      fun (Node, Ctxt, Cont) -> Cont(Node, Ctxt) end
+```
+
+which yields the same result as if no hook was given. The following, however:
+
+```text
+      fun (Node, Ctxt, Cont) ->
+          Doc = Cont(Node, Ctxt),
+          prettypr:beside(prettypr:text("<b>"),
+                          prettypr:beside(Doc,
+                                          prettypr:text("</b>")))
+      end
+```
+
+will place the text of any annotated node (regardless of the annotation data)
+between HTML "boldface begin" and "boldface end" tags.
+
+_See also: _`m:erl_syntax`, `best/2`, `format/1`, `get_ctxt_user/1`, `layout/2`,
+`set_ctxt_user/2`.
+""".
+-spec format(syntaxTree(), [term()]) -> string().
 
 format(Node, Options) ->
     W = proplists:get_value(paper, Options, ?PAPER),
@@ -275,32 +284,25 @@ format(Node, Options) ->
     prettypr:format(layout(Node, Options), W, L).
 
 
-%% =====================================================================
-%% @spec best(Tree::syntaxTree()) -> empty | document()
-%% @equiv best(Tree, [])
-
--spec best(erl_syntax:syntaxTree()) -> 'empty' | prettypr:document().
+-doc #{equiv => best(Tree, [])}.
+-spec best(syntaxTree()) -> 'empty' | prettypr:document().
 
 best(Node) ->
     best(Node, []).
 
 
-%% =====================================================================
-%% @spec best(Tree::syntaxTree(), Options::[term()]) ->
-%%           empty | document()
-%%
-%% @doc Creates a fixed "best" abstract layout for a syntax tree. This
-%% is similar to the `layout/2' function, except that here, the final
-%% layout has been selected with respect to the given options. The atom
-%% `empty' is returned if no such layout could be produced. For
-%% information on the options, see the `format/2' function.
-%%
-%% @see best/1
-%% @see layout/2
-%% @see format/2
-%% @see prettypr:best/3
+-doc """
+Creates a fixed "best" abstract layout for a syntax tree.
 
--spec best(erl_syntax:syntaxTree(), [term()]) -> 'empty' | prettypr:document().
+This is similar to the [`layout/2`](`layout/2`) function, except that
+here, the final layout has been selected with respect to the given
+options. The atom `empty` is returned if no such layout could be
+produced. For information on the options, see the
+[`format/2`](`format/2`) function.
+
+_See also: _`best/1`, `format/2`, `layout/2`, `prettypr:best/3`.
+""".
+-spec best(syntaxTree(), [term()]) -> 'empty' | prettypr:document().
 
 best(Node, Options) ->
     W = proplists:get_value(paper, Options, ?PAPER),
@@ -308,37 +310,30 @@ best(Node, Options) ->
     prettypr:best(layout(Node, Options), W, L).
 
 
-%% =====================================================================
-%% @spec layout(Tree::syntaxTree()) -> document()
-%% @equiv layout(Tree, [])
-
--spec layout(erl_syntax:syntaxTree()) -> prettypr:document().
+-doc #{equiv => layout(Tree, [])}.
+-spec layout(syntaxTree()) -> prettypr:document().
 
 layout(Node) ->
     layout(Node, []).
 
 
-%% =====================================================================
-%% @spec layout(Tree::syntaxTree(), Options::[term()]) -> document()
-%%	    document() = prettypr:document()
-%%
-%% @doc Creates an abstract document layout for a syntax tree. The
-%% result represents a set of possible layouts (cf. module `prettypr').
-%% For information on the options, see {@link format/2}; note, however,
-%% that the `paper' and `ribbon' options are ignored by this function.
-%%
-%% This function provides a low-level interface to the pretty printer,
-%% returning a flexible representation of possible layouts, independent
-%% of the paper width eventually to be used for formatting. This can be
-%% included as part of another document and/or further processed
-%% directly by the functions in the `prettypr' module, or used in a hook
-%% function (see `format/2' for details).
-%%
-%% @see prettypr
-%% @see format/2
-%% @see layout/1
+-doc """
+Creates an abstract document layout for a syntax tree.
 
--spec layout(erl_syntax:syntaxTree(), [term()]) -> prettypr:document().
+The result represents a set of possible layouts (see module
+`m:prettypr`). For information on the options, see `format/2`;
+however, note that the `paper` and `ribbon` options are ignored by
+this function.
+
+This function provides a low-level interface to the pretty printer, returning a
+flexible representation of possible layouts, independent of the paper width
+eventually to be used for formatting. This can be included as part of another
+document and/or further processed directly by the functions in the `prettypr`
+module, or used in a hook function (see [`format/2`](`format/2`) for details).
+
+_See also: _`m:prettypr`, `format/2`, `layout/1`.
+""".
+-spec layout(syntaxTree(), [term()]) -> prettypr:document().
 
 layout(Node, Options) ->
     lay(Node,
@@ -347,7 +342,8 @@ layout(Node, Options) ->
 	      ribbon = proplists:get_value(ribbon, Options, ?RIBBON),
 	      user = proplists:get_value(user, Options),
               encoding = proplists:get_value(encoding, Options,
-                                             epp:default_encoding())}).
+                                             epp:default_encoding()),
+              empty_lines = proplists:get_value(empty_lines, Options, sets:new())}).
 
 lay(Node, Ctxt) ->
     case erl_syntax:get_ann(Node) of
@@ -436,22 +432,22 @@ add_comment_prefix(S) ->
 lay_2(Node, Ctxt) ->
     case erl_syntax:type(Node) of
 	%% We list literals and other common cases first.
-	
+
 	variable ->
 	    text(erl_syntax:variable_literal(Node));
-	
+
 	atom ->
-	    text(erl_syntax:atom_literal(Node));
-	
+	    text(erl_syntax:atom_literal(Node, Ctxt#ctxt.encoding));
+
 	integer ->
 	    text(erl_syntax:integer_literal(Node));
 
 	float ->
 	    text(tidy_float(erl_syntax:float_literal(Node)));
-	
+
 	char ->
 	    text(erl_syntax:char_literal(Node, Ctxt#ctxt.encoding));
-	
+
 	string ->
 	    lay_string(erl_syntax:string_literal(Node, Ctxt#ctxt.encoding), Ctxt);
 
@@ -463,13 +459,13 @@ lay_2(Node, Ctxt) ->
 		     floating(text(",")), reset_prec(Ctxt),
 		     fun lay/2),
 	    beside(floating(text("{")),
-		   beside(par(Es),
+		   beside(sep(Es),
 			  floating(text("}"))));
-	
+
 	list ->
 	    Ctxt1 = reset_prec(Ctxt),
 	    Node1 = erl_syntax:compact_list(Node),
-	    D1 = par(seq(erl_syntax:list_prefix(Node1),
+	    D1 = sep(seq(erl_syntax:list_prefix(Node1),
 			 floating(text(",")), Ctxt1,
 			 fun lay/2)),
 	    D = case erl_syntax:list_suffix(Node1) of
@@ -486,7 +482,7 @@ lay_2(Node, Ctxt) ->
 
 	operator ->
 	    floating(text(erl_syntax:operator_literal(Node)));
-	
+
 	infix_expr ->
 	    Operator = erl_syntax:infix_expr_operator(Node),
 	    {PrecL, Prec, PrecR} =
@@ -502,9 +498,9 @@ lay_2(Node, Ctxt) ->
 	    D2 = lay(Operator, reset_prec(Ctxt)),
 	    D3 = lay(erl_syntax:infix_expr_right(Node),
 		     set_prec(Ctxt, PrecR)),
-	    D4 = par([D1, D2, D3], Ctxt#ctxt.sub_indent),
+	    D4 = par([D1, D2, D3], Ctxt#ctxt.break_indent),
 	    maybe_parentheses(D4, Prec, Ctxt);
-	
+
 	prefix_expr ->
 	    Operator = erl_syntax:prefix_expr_operator(Node),
 	    {{Prec, PrecR}, Name} =
@@ -524,10 +520,10 @@ lay_2(Node, Ctxt) ->
 		     '-' ->
 			 beside(D1, D2);
 		     _ ->
-			 par([D1, D2], Ctxt#ctxt.sub_indent)
+			 par([D1, D2], Ctxt#ctxt.break_indent)
 		 end,
 	    maybe_parentheses(D3, Prec, Ctxt);
-	
+
 	application ->
 	    {PrecL, Prec} = func_prec(),
 	    D = lay(erl_syntax:application_operator(Node),
@@ -535,14 +531,11 @@ lay_2(Node, Ctxt) ->
 	    As = seq(erl_syntax:application_arguments(Node),
 		     floating(text(",")), reset_prec(Ctxt),
 		     fun lay/2),
-%% 	    D1 = beside(D, beside(text("("),
-%% 				  beside(par(As),
-%% 					 floating(text(")"))))),
 	    D1 = beside(D, beside(text("("),
-				  beside(par(As),
+				  beside(sep(As),
 					 floating(text(")"))))),
 	    maybe_parentheses(D1, Prec, Ctxt);
-	
+
 	match_expr ->
 	    {PrecL, Prec, PrecR} = inop_prec('='),
 	    D1 = lay(erl_syntax:match_expr_pattern(Node),
@@ -568,9 +561,7 @@ lay_2(Node, Ctxt) ->
 		     G ->
 			 lay(G, Ctxt1)
 		 end,
-	    D3 = sep(seq(erl_syntax:clause_body(Node),
-			 floating(text(",")), Ctxt1,
-			 fun lay/2)),
+	    D3 = lay_clause_expressions(erl_syntax:clause_body(Node), Ctxt1),
 	    case Ctxt#ctxt.clause of
 		fun_expr ->
 		    make_fun_clause(D1, D2, D3, Ctxt);
@@ -578,9 +569,9 @@ lay_2(Node, Ctxt) ->
 		    make_fun_clause(N, D1, D2, D3, Ctxt);
 		if_expr ->
 		    make_if_clause(D1, D2, D3, Ctxt);
-		cond_expr ->
-		    make_if_clause(D1, D2, D3, Ctxt);
 		case_expr ->
+		    make_case_clause(D1, D2, D3, Ctxt);
+		maybe_expr ->
 		    make_case_clause(D1, D2, D3, Ctxt);
 		receive_expr ->
 		    make_case_clause(D1, D2, D3, Ctxt);
@@ -606,32 +597,24 @@ lay_2(Node, Ctxt) ->
 	    D1 = lay(erl_syntax:case_expr_argument(Node), Ctxt1),
 	    D2 = lay_clauses(erl_syntax:case_expr_clauses(Node),
 			     case_expr, Ctxt1),
-	    sep([par([follow(text("case"), D1, Ctxt1#ctxt.sub_indent),
+	    sep([par([follow(text("case"), D1, Ctxt1#ctxt.break_indent),
 		      text("of")],
 		     Ctxt1#ctxt.break_indent),
-		 nest(Ctxt1#ctxt.sub_indent, D2),
+		 nest(Ctxt1#ctxt.break_indent, D2),
 		 text("end")]);
-	
+
 	if_expr ->
 	    Ctxt1 = reset_prec(Ctxt),
 	    D = lay_clauses(erl_syntax:if_expr_clauses(Node),
 			    if_expr, Ctxt1),
-	    sep([follow(text("if"), D, Ctxt1#ctxt.sub_indent),
-		 text("end")]);
-
-	cond_expr ->
-	    Ctxt1 = reset_prec(Ctxt),
-	    D = lay_clauses(erl_syntax:cond_expr_clauses(Node),
-			    cond_expr, Ctxt1),
-	    sep([text("cond"),
-		 nest(Ctxt1#ctxt.sub_indent, D),
+	    sep([follow(text("if"), D, Ctxt1#ctxt.break_indent),
 		 text("end")]);
 
 	fun_expr ->
 	    Ctxt1 = reset_prec(Ctxt),
 	    D = lay_clauses(erl_syntax:fun_expr_clauses(Node),
 			    fun_expr, Ctxt1),
-	    sep([follow(text("fun"), D, Ctxt1#ctxt.sub_indent),
+	    sep([follow(text("fun"), D, Ctxt1#ctxt.break_indent),
 		 text("end")]);
 
         named_fun_expr ->
@@ -639,7 +622,7 @@ lay_2(Node, Ctxt) ->
             D1 = lay(erl_syntax:named_fun_expr_name(Node), Ctxt1),
             D = lay_clauses(erl_syntax:named_fun_expr_clauses(Node),
                             {function,D1}, Ctxt1),
-            sep([follow(text("fun"), D, Ctxt1#ctxt.sub_indent),
+            sep([follow(text("fun"), D, Ctxt1#ctxt.break_indent),
                  text("end")]);
 
 	module_qualifier ->
@@ -650,8 +633,36 @@ lay_2(Node, Ctxt) ->
 		     set_prec(Ctxt, PrecR)),
 	    beside(D1, beside(text(":"), D2));
 
+        maybe_expr ->
+	    Ctxt1 = reset_prec(Ctxt),
+	    D1 = vertical(seq(erl_syntax:maybe_expr_body(Node),
+                              floating(text(",")), Ctxt1, fun lay/2)),
+            Es0 = [text("end")],
+            Es1 = case erl_syntax:maybe_expr_else(Node) of
+                      none -> Es0;
+                      ElseNode ->
+                          ElseCs = erl_syntax:else_expr_clauses(ElseNode),
+                          D3 = lay_clauses(ElseCs, maybe_expr, Ctxt1),
+                          [text("else"),
+                           nest(Ctxt1#ctxt.break_indent, D3)
+                          | Es0]
+                  end,
+	    sep([par([text("maybe"), nest(Ctxt1#ctxt.break_indent, D1),
+		      hd(Es1)]) | tl(Es1)]);
+
+	maybe_match_expr ->
+	    {PrecL, Prec, PrecR} = inop_prec('='),
+	    D1 = lay(erl_syntax:maybe_match_expr_pattern(Node),
+		     set_prec(Ctxt, PrecL)),
+	    D2 = lay(erl_syntax:maybe_match_expr_body(Node),
+		     set_prec(Ctxt, PrecR)),
+	    D3 = follow(beside(D1, floating(text(" ?="))), D2,
+			Ctxt#ctxt.break_indent),
+	    maybe_parentheses(D3, Prec, Ctxt);
+
+
 	%%
-	%% The rest is in alphabetical order
+	%% The rest is in alphabetical order (except map and types)
 	%%
 
 	arity_qualifier ->
@@ -666,18 +677,79 @@ lay_2(Node, Ctxt) ->
 	    %% a period. If the arguments is `none', we only output the
 	    %% attribute name, without following parentheses.
 	    Ctxt1 = reset_prec(Ctxt),
-	    N = erl_syntax:attribute_name(Node),
-	    D = case erl_syntax:attribute_arguments(Node) of
-		    none ->
+            Args = erl_syntax:attribute_arguments(Node),
+            N = case erl_syntax:attribute_name(Node) of
+                    {atom, _, 'if'} ->
+                        erl_syntax:variable('if');
+                    {atom, A, native_record} ->
+                        {atom, A, record};
+                    N0 ->
+                        N0
+                end,
+            D = case attribute_type(Node) of
+                    spec ->
+                        [SpecTuple] = Args,
+                        [FuncName, FuncTypes] =
+                            erl_syntax:tuple_elements(SpecTuple),
+                        Name =
+                            case erl_syntax:type(FuncName) of
+                                tuple ->
+                                    case erl_syntax:tuple_elements(FuncName) of
+                                        [F0, _] ->
+                                            F0;
+                                        [M0, F0, _] ->
+                                            erl_syntax:module_qualifier(M0,
+                                                                        F0);
+                                        _ ->
+                                            FuncName
+                                    end;
+                                _ ->
+                                    FuncName
+                            end,
+                        Types = dodge_macros(FuncTypes),
+                        D1 = lay_clauses(erl_syntax:concrete(Types),
+                                         spec, Ctxt1),
+                        beside(follow(lay(N, Ctxt1),
+                                      lay(Name, Ctxt1),
+                                      Ctxt1#ctxt.break_indent),
+                               D1);
+                    type ->
+                        [TypeTuple] = Args,
+                        [Name, Type0, Elements] =
+                            erl_syntax:tuple_elements(TypeTuple),
+                        TypeName = dodge_macros(Name),
+                        Type = dodge_macros(Type0),
+                        As0 = dodge_macros(Elements),
+                        As = erl_syntax:concrete(As0),
+                        D1 = lay_type_application(TypeName, As, Ctxt1),
+                        D2 = lay(erl_syntax:concrete(Type), Ctxt1),
+                        beside(follow(lay(N, Ctxt1),
+                                      beside(D1, floating(text(" :: "))),
+                                      Ctxt1#ctxt.break_indent),
+                               D2);
+                    Tag when Tag =:= export_type;
+                             Tag =:= optional_callbacks ->
+                        [FuncNs] = Args,
+                        FuncNames = erl_syntax:concrete(dodge_macros(FuncNs)),
+                        As = unfold_function_names(FuncNames),
+                        beside(lay(N, Ctxt1),
+                               beside(text("("),
+                                      beside(lay(As, Ctxt1),
+                                             floating(text(")")))));
+                    native_record ->
+                        [Name, Def] = Args,
+                        D1 = sep(seq([Def], text(","), Ctxt1, fun lay/2)),
+                        beside(text("record #"),
+			       beside(lay(Name, Ctxt1), D1));
+		    _ when Args =:= none ->
 			lay(N, Ctxt1);
-		    Args ->
-			As = seq(Args, floating(text(",")), Ctxt1,
-				 fun lay/2),
+                    _ ->
+                        D1 = sep(seq(Args, text(","), Ctxt1,
+                                     fun lay/2)),
 			beside(lay(N, Ctxt1),
 			       beside(text("("),
-				      beside(par(As),
-					     floating(text(")")))))
-		end,
+				      beside(D1, floating(text(")")))))
+                end,
 	    beside(floating(text("-")), beside(D, floating(text("."))));
 
 	binary ->
@@ -704,22 +776,29 @@ lay_2(Node, Ctxt) ->
 	    Es = seq(erl_syntax:block_expr_body(Node),
 		     floating(text(",")), Ctxt1, fun lay/2),
 	    sep([text("begin"),
-		 nest(Ctxt1#ctxt.sub_indent, sep(Es)),
+		 nest(Ctxt1#ctxt.break_indent, sep(Es)),
 		 text("end")]);
 
-	catch_expr ->
+	'catch_expr' ->                         %Quoted to help Emacs.
 	    {Prec, PrecR} = preop_prec('catch'),
 	    D = lay(erl_syntax:catch_expr_body(Node),
 		    set_prec(Ctxt, PrecR)),
-	    D1 = follow(text("catch"), D, Ctxt#ctxt.sub_indent),
+	    D1 = follow(text("catch"), D, Ctxt#ctxt.break_indent),
 	    maybe_parentheses(D1, Prec, Ctxt);
 
 	class_qualifier ->
 	    Ctxt1 = set_prec(Ctxt, max_prec()),
 	    D1 = lay(erl_syntax:class_qualifier_argument(Node), Ctxt1),
-	    D2 = lay(erl_syntax:class_qualifier_body(Node), Ctxt1),
-	    beside(D1, beside(text(":"), D2));
-
+            D2 = lay(erl_syntax:class_qualifier_body(Node), Ctxt1),
+            Stacktrace = erl_syntax:class_qualifier_stacktrace(Node),
+            case erl_syntax:variable_name(Stacktrace) of
+                '_' ->
+                    beside(D1, beside(text(":"), D2));
+                _ ->
+                    D3 = lay(Stacktrace, Ctxt1),
+                    beside(D1, beside(beside(text(":"), D2),
+                                      beside(text(":"), D3)))
+            end;
 	comment ->
 	    D = stack_comment_lines(
 		  erl_syntax:comment_text(Node)),
@@ -742,7 +821,7 @@ lay_2(Node, Ctxt) ->
 	    sep(seq(erl_syntax:disjunction_body(Node),
 		    floating(text(";")), reset_prec(Ctxt),
 		    fun lay/2));
-	    
+
 	error_marker ->
 	    E = erl_syntax:error_marker_info(Node),
 	    beside(text("** "),
@@ -751,7 +830,7 @@ lay_2(Node, Ctxt) ->
 
 	eof_marker ->
 	    empty();
-	
+
 	form_list ->
 	    Es = seq(erl_syntax:form_list_elements(Node), none,
 		     reset_prec(Ctxt), fun lay/2),
@@ -763,11 +842,41 @@ lay_2(Node, Ctxt) ->
 	    D2 = lay(erl_syntax:generator_body(Node), Ctxt1),
 	    par([D1, beside(text("<- "), D2)], Ctxt1#ctxt.break_indent);
 
+	strict_generator ->
+	    Ctxt1 = reset_prec(Ctxt),
+	    D1 = lay(erl_syntax:strict_generator_pattern(Node), Ctxt1),
+	    D2 = lay(erl_syntax:strict_generator_body(Node), Ctxt1),
+	    par([D1, beside(text("<:- "), D2)], Ctxt1#ctxt.break_indent);
+
 	binary_generator ->
 	    Ctxt1 = reset_prec(Ctxt),
 	    D1 = lay(erl_syntax:binary_generator_pattern(Node), Ctxt1),
 	    D2 = lay(erl_syntax:binary_generator_body(Node), Ctxt1),
 	    par([D1, beside(text("<= "), D2)], Ctxt1#ctxt.break_indent);
+
+	strict_binary_generator ->
+	    Ctxt1 = reset_prec(Ctxt),
+	    D1 = lay(erl_syntax:strict_binary_generator_pattern(Node), Ctxt1),
+	    D2 = lay(erl_syntax:strict_binary_generator_body(Node), Ctxt1),
+	    par([D1, beside(text("<:= "), D2)], Ctxt1#ctxt.break_indent);
+
+	map_generator ->
+	    Ctxt1 = reset_prec(Ctxt),
+	    D1 = lay(erl_syntax:map_generator_pattern(Node), Ctxt1),
+	    D2 = lay(erl_syntax:map_generator_body(Node), Ctxt1),
+	    par([D1, beside(text("<- "), D2)], Ctxt1#ctxt.break_indent);
+
+	strict_map_generator ->
+	    Ctxt1 = reset_prec(Ctxt),
+	    D1 = lay(erl_syntax:strict_map_generator_pattern(Node), Ctxt1),
+	    D2 = lay(erl_syntax:strict_map_generator_body(Node), Ctxt1),
+	    par([D1, beside(text("<:- "), D2)], Ctxt1#ctxt.break_indent);
+
+	zip_generator ->
+	    Ctxt1 = reset_prec(Ctxt),
+	    par(seq(erl_syntax:zip_generator_body(Node),
+			 floating(text("&&")), Ctxt1,
+			 fun lay/2));
 
 	implicit_fun ->
 	    D = lay(erl_syntax:implicit_fun_name(Node),
@@ -776,7 +885,12 @@ lay_2(Node, Ctxt) ->
 
 	list_comp ->
 	    Ctxt1 = reset_prec(Ctxt),
-	    D1 = lay(erl_syntax:list_comp_template(Node), Ctxt1),
+            D1 = case erl_syntax:list_comp_template(Node) of
+                List when is_list(List) ->
+                    par(seq(List, floating(text(",")), Ctxt1, fun lay/2));
+                Single ->
+                    lay(Single, Ctxt1)
+            end,
 	    D2 = par(seq(erl_syntax:list_comp_body(Node),
 			 floating(text(",")), Ctxt1,
 			 fun lay/2)),
@@ -785,7 +899,7 @@ lay_2(Node, Ctxt) ->
 				   beside(D2, floating(text("]"))))]));
 
 	binary_comp ->
-	    Ctxt1 = reset_prec(Ctxt),
+	    Ctxt1 = set_prec(Ctxt, max_prec()),
 	    D1 = lay(erl_syntax:binary_comp_template(Node), Ctxt1),
 	    D2 = par(seq(erl_syntax:binary_comp_body(Node),
 			 floating(text(",")), Ctxt1,
@@ -794,6 +908,20 @@ lay_2(Node, Ctxt) ->
 		   par([D1, beside(floating(text(" || ")),
 				   beside(D2, floating(text(" >>"))))]));
 
+	map_comp ->
+	    Ctxt1 = set_prec(Ctxt, max_prec()),
+            D1 = case erl_syntax:map_comp_template(Node) of
+                List when is_list(List) ->
+                    par(seq(List, floating(text(",")), Ctxt1, fun lay/2));
+                Single ->
+                    lay(Single, Ctxt1)
+            end,
+	    D2 = par(seq(erl_syntax:map_comp_body(Node),
+			 floating(text(",")), Ctxt1,
+			 fun lay/2)),
+	    beside(floating(text("#{")),
+		   par([D1, beside(floating(text("|| ")),
+				   beside(D2, floating(text("}"))))]));
 	macro ->
 	    %% This is formatted similar to a normal function call, but
 	    %% prefixed with a "?".
@@ -834,10 +962,10 @@ lay_2(Node, Ctxt) ->
 			      follow(floating(text("after")),
 				     append_clause_body(D4, D3,
 							Ctxt1),
-				     Ctxt1#ctxt.sub_indent)])
+				     Ctxt1#ctxt.break_indent)])
 		 end,
 	    sep([text("receive"),
-		 nest(Ctxt1#ctxt.sub_indent, D2),
+		 nest(Ctxt1#ctxt.break_indent, D2),
 		 text("end")]);
 
 	record_access ->
@@ -850,14 +978,15 @@ lay_2(Node, Ctxt) ->
 		       set_prec(Ctxt, PrecR))),
 	    T = erl_syntax:record_access_type(Node),
 	    D3 = beside(beside(floating(text("#")),
-                               lay(T, reset_prec(Ctxt))),
-                        D2),
+                               lay_native_record_name(T, reset_prec(Ctxt))),
+                               D2),
 	    maybe_parentheses(beside(D1, D3), Prec, Ctxt);
 
 	record_expr ->
-	    {PrecL, Prec, _} = inop_prec('#'),	  
+	    {PrecL, Prec, _} = inop_prec('#'),
 	    Ctxt1 = reset_prec(Ctxt),
-	    D1 = lay(erl_syntax:record_expr_type(Node), Ctxt1),
+            D1 = lay_native_record_name(erl_syntax:record_expr_type(Node),
+                                        Ctxt1),
 	    D2 = par(seq(erl_syntax:record_expr_fields(Node),
 			 floating(text(",")), Ctxt1,
 			 fun lay/2)),
@@ -871,7 +1000,7 @@ lay_2(Node, Ctxt) ->
 			 beside(lay(A, set_prec(Ctxt, PrecL)), D3)
 		 end,
 	    maybe_parentheses(D4, Prec, Ctxt);
-	
+
 	record_field ->
 	    Ctxt1 = reset_prec(Ctxt),
 	    D1 = lay(erl_syntax:record_field_name(Node), Ctxt1),
@@ -884,7 +1013,7 @@ lay_2(Node, Ctxt) ->
 	    end;
 
 	record_index_expr ->
-	    {Prec, PrecR} = preop_prec('#'),	
+	    {Prec, PrecR} = preop_prec('#'),
 	    D1 = lay(erl_syntax:record_index_expr_type(Node),
 		     reset_prec(Ctxt)),
 	    D2 = lay(erl_syntax:record_index_expr_field(Node),
@@ -928,6 +1057,16 @@ lay_2(Node, Ctxt) ->
 	text ->
 	    text(erl_syntax:text_string(Node));
 
+        typed_record_field ->
+            {_, Prec, _} = type_inop_prec('::'),
+            Ctxt1 = reset_prec(Ctxt),
+            D1 = lay(erl_syntax:typed_record_field_body(Node), Ctxt1),
+            D2 = lay(erl_syntax:typed_record_field_type(Node),
+                     set_prec(Ctxt, Prec)),
+            D3 = par([D1, floating(text("::")), D2],
+                     Ctxt1#ctxt.break_indent),
+            maybe_parentheses(D3, Prec, Ctxt);
+
 	try_expr ->
 	    Ctxt1 = reset_prec(Ctxt),
 	    D1 = sep(seq(erl_syntax:try_expr_body(Node),
@@ -939,7 +1078,7 @@ lay_2(Node, Ctxt) ->
 			  D2 = sep(seq(As, floating(text(",")), Ctxt1,
 				       fun lay/2)),
 			  [text("after"),
-			   nest(Ctxt1#ctxt.sub_indent, D2)
+			   nest(Ctxt1#ctxt.break_indent, D2)
 			   | Es0]
 		  end,
 	    Es2 = case erl_syntax:try_expr_handlers(Node) of
@@ -947,7 +1086,7 @@ lay_2(Node, Ctxt) ->
 		      Hs ->
 			  D3 = lay_clauses(Hs, try_expr, Ctxt1),
 			  [text("catch"),
-			   nest(Ctxt1#ctxt.sub_indent, D3)
+			   nest(Ctxt1#ctxt.break_indent, D3)
 			   | Es1]
 		  end,
 	    Es3 = case erl_syntax:try_expr_clauses(Node) of
@@ -955,18 +1094,249 @@ lay_2(Node, Ctxt) ->
 		      Cs ->
 			  D4 = lay_clauses(Cs, try_expr, Ctxt1),
 			  [text("of"),
-			   nest(Ctxt1#ctxt.sub_indent, D4)
+			   nest(Ctxt1#ctxt.break_indent, D4)
 			   | Es2]
 		  end,
-	    sep([par([follow(text("try"), D1, Ctxt1#ctxt.sub_indent),
+	    sep([par([follow(text("try"), D1, Ctxt1#ctxt.break_indent),
 		      hd(Es3)])
 		 | tl(Es3)]);
 
 	warning_marker ->
 	    E = erl_syntax:warning_marker_info(Node),
 	    beside(text("%% WARNING: "),
-		   lay_error_info(E, reset_prec(Ctxt)))
+		   lay_error_info(E, reset_prec(Ctxt)));
+
+        %%
+        %% Types
+        %%
+
+        annotated_type ->
+            {_, Prec, _} = type_inop_prec('::'),
+            D1 = lay(erl_syntax:annotated_type_name(Node),
+                     reset_prec(Ctxt)),
+            D2 = lay(erl_syntax:annotated_type_body(Node),
+                     set_prec(Ctxt, Prec)),
+            D3 = follow(beside(D1, floating(text(" ::"))), D2,
+                               Ctxt#ctxt.break_indent),
+            maybe_parentheses(D3, Prec, Ctxt);
+
+        type_application ->
+            Name = erl_syntax:type_application_name(Node),
+            Arguments = erl_syntax:type_application_arguments(Node),
+            %% Prefer shorthand notation.
+            case erl_syntax_lib:analyze_type_application(Node) of
+                {nil, 0} ->
+                    text("[]");
+                {list, 1} ->
+                    [A] = Arguments,
+                    D1 = lay(A, reset_prec(Ctxt)),
+                    beside(text("["), beside(D1, text("]")));
+                {nonempty_list, 1} ->
+                    [A] = Arguments,
+                    D1 = lay(A, reset_prec(Ctxt)),
+                    beside(text("["), beside(D1, text(", ...]")));
+                _ ->
+                    lay_type_application(Name, Arguments, Ctxt)
+            end;
+
+        bitstring_type ->
+                Ctxt1 = set_prec(Ctxt, max_prec()),
+            M = erl_syntax:bitstring_type_m(Node),
+            N = erl_syntax:bitstring_type_n(Node),
+            D1 = [beside(text("_:"), lay(M, Ctxt1)) ||
+                     (erl_syntax:type(M) =/= integer orelse
+                      erl_syntax:integer_value(M) =/= 0)],
+            D2 = [beside(text("_:_*"), lay(N, Ctxt1)) ||
+                     (erl_syntax:type(N) =/= integer orelse
+                      erl_syntax:integer_value(N) =/= 0)],
+            F = fun(D, _) -> D end,
+            D = seq(D1 ++ D2, floating(text(",")), Ctxt1, F),
+            beside(floating(text("<<")),
+                   beside(par(D), floating(text(">>"))));
+
+        fun_type ->
+            text("fun()");
+
+        constrained_function_type ->
+            Ctxt1 = reset_prec(Ctxt),
+            D1 = lay(erl_syntax:constrained_function_type_body(Node),
+                     Ctxt1),
+            Ctxt2 = Ctxt1#ctxt{clause = undefined},
+            D2 = lay(erl_syntax:constrained_function_type_argument(Node),
+                     Ctxt2),
+            beside(D1,
+                   beside(floating(text(" when ")), D2));
+
+        function_type ->
+            {Before, After} = case Ctxt#ctxt.clause of
+                                  spec ->
+                                      {"", ""};
+                                  _ ->
+                                      {"fun(", ")"}
+                              end,
+            Ctxt1 = (reset_prec(Ctxt))#ctxt{clause = undefined},
+            D1 = case erl_syntax:function_type_arguments(Node) of
+                     any_arity ->
+                         text("(...)");
+                     Arguments ->
+                         As = seq(Arguments,
+                                  floating(text(",")), Ctxt1,
+                                  fun lay/2),
+                         beside(text("("),
+                                beside(par(As),
+                                       floating(text(")"))))
+                 end,
+            D2 = lay(erl_syntax:function_type_return(Node), Ctxt1),
+            beside(floating(text(Before)),
+                   beside(D1,
+                          beside(floating(text(" -> ")),
+                                 beside(D2, floating(text(After))))));
+
+        constraint ->
+            Name = erl_syntax:constraint_argument(Node),
+            Args = erl_syntax:constraint_body(Node),
+            case is_subtype(Name, Args) of
+                true ->
+                    [Var, Type] = Args,
+                    {PrecL, Prec, PrecR} = type_inop_prec('::'),
+                    D1 = lay(Var, set_prec(Ctxt, PrecL)),
+                    D2 = lay(Type, set_prec(Ctxt, PrecR)),
+                    D3 = follow(beside(D1, floating(text(" ::"))), D2,
+                                Ctxt#ctxt.break_indent),
+                    maybe_parentheses(D3, Prec, Ctxt);
+                false ->
+                    lay_type_application(Name, Args, Ctxt)
+            end;
+
+        map_type ->
+            case erl_syntax:map_type_fields(Node) of
+                any_size ->
+                    text("map()");
+                Fs ->
+                    Ctxt1 = reset_prec(Ctxt),
+                    Es = seq(Fs,
+                             floating(text(",")), Ctxt1,
+                             fun lay/2),
+                    D = beside(floating(text("#{")),
+                               beside(par(Es),
+                                      floating(text("}")))),
+                    {Prec, _PrecR} = type_preop_prec('#'),
+                    maybe_parentheses(D, Prec, Ctxt)
+            end;
+
+        map_type_assoc ->
+            Name = erl_syntax:map_type_assoc_name(Node),
+            Value = erl_syntax:map_type_assoc_value(Node),
+            lay_type_assoc(Name, Value, Ctxt);
+
+        map_type_exact ->
+            Ctxt1 = reset_prec(Ctxt),
+            D1 = lay(erl_syntax:map_type_exact_name(Node), Ctxt1),
+            D2 = lay(erl_syntax:map_type_exact_value(Node), Ctxt1),
+            par([D1, floating(text(":=")), D2], Ctxt1#ctxt.break_indent);
+
+        integer_range_type ->
+            {PrecL, Prec, PrecR} = type_inop_prec('..'),
+            D1 = lay(erl_syntax:integer_range_type_low(Node),
+                     set_prec(Ctxt, PrecL)),
+            D2 = lay(erl_syntax:integer_range_type_high(Node),
+                     set_prec(Ctxt, PrecR)),
+            D3 = beside(D1, beside(text(".."), D2)),
+            maybe_parentheses(D3, Prec, Ctxt);
+
+        record_type ->
+            {Prec, _PrecR} = type_preop_prec('#'),
+            D1 = beside(text("#"),
+                        lay(erl_syntax:record_type_name(Node),
+                            reset_prec(Ctxt))),
+            Es = seq(erl_syntax:record_type_fields(Node),
+                     floating(text(",")), reset_prec(Ctxt),
+                     fun lay/2),
+            D2 = beside(D1,
+                        beside(text("{"),
+                               beside(par(Es),
+                                      floating(text("}"))))),
+            maybe_parentheses(D2, Prec, Ctxt);
+
+	record_type_field ->
+            Ctxt1 = reset_prec(Ctxt),
+            D1 = lay(erl_syntax:record_type_field_name(Node), Ctxt1),
+            D2 = lay(erl_syntax:record_type_field_type(Node), Ctxt1),
+            par([D1, floating(text("::")), D2], Ctxt1#ctxt.break_indent);
+
+        tuple_type ->
+            case erl_syntax:tuple_type_elements(Node) of
+                any_size ->
+                    text("tuple()");
+                Elements ->
+                    Es = seq(Elements,
+                             floating(text(",")), reset_prec(Ctxt),
+                             fun lay/2),
+                    beside(floating(text("{")),
+                           beside(sep(Es), floating(text("}"))))
+            end;
+
+        type_union ->
+            {_, Prec, PrecR} = type_inop_prec('|'),
+            Es = sep(seq(erl_syntax:type_union_types(Node),
+                         floating(text(" |")), set_prec(Ctxt, PrecR),
+                         fun lay/2)),
+            maybe_parentheses(Es, Prec, Ctxt);
+
+        user_type_application ->
+            lay_type_application(erl_syntax:user_type_application_name(Node),
+                                 erl_syntax:user_type_application_arguments(Node),
+                                 Ctxt)
+
     end.
+
+attribute_type(Node) ->
+    N = erl_syntax:attribute_name(Node),
+    case catch erl_syntax:concrete(N) of
+        opaque ->
+            type;
+        spec ->
+            spec;
+        callback ->
+            spec;
+        type ->
+            type;
+        export_type ->
+            export_type;
+        optional_callbacks ->
+            optional_callbacks;
+        native_record ->
+            native_record;
+        _ ->
+            N
+    end.
+
+is_subtype(Name, [Var, _]) ->
+    (erl_syntax:is_atom(Name, is_subtype) andalso
+     erl_syntax:type(Var) =:= variable);
+is_subtype(_, _) -> false.
+
+unfold_function_names(Ns) ->
+    F = fun ({Atom, Arity}) ->
+		erl_syntax:arity_qualifier(erl_syntax:atom(Atom),
+                                           erl_syntax:integer(Arity))
+	end,
+    erl_syntax:list([F(N) || N <- Ns]).
+
+%% Macros are not handled well.
+dodge_macros(Type) ->
+    F = fun (T) ->
+                case erl_syntax:type(T) of
+                    macro ->
+                        Var = erl_syntax:macro_name(T),
+                        VarName0 = erl_syntax:variable_name(Var),
+                        VarName = list_to_atom("?"++atom_to_list(VarName0)),
+                        Atom = erl_syntax:atom(VarName),
+                        Atom;
+                    _ -> T
+                end
+        end,
+    erl_syntax_lib:map(F, Type).
 
 lay_parentheses(D, _Ctxt) ->
     beside(floating(text("(")), beside(D, floating(text(")")))).
@@ -1020,14 +1390,25 @@ split_string_1([], _N, _L, As) ->
 
 split_string_2([$^, X | Xs], N, L, As) ->
     split_string_1(Xs, N - 2, L - 2, [X, $^ | As]);
+split_string_2([$x, ${ | Xs], N, L, As) ->
+    split_string_3(Xs, N - 2, L - 2, [${, $x | As]);
 split_string_2([X1, X2, X3 | Xs], N, L, As) when
   X1 >= $0, X1 =< $7, X2 >= $0, X2 =< $7, X3 >= $0, X3 =< $7 ->
     split_string_1(Xs, N - 3, L - 3, [X3, X2, X1 | As]);
-split_string_2([X1, X2 | Xs], N, L, As) when 
+split_string_2([X1, X2 | Xs], N, L, As) when
   X1 >= $0, X1 =< $7, X2 >= $0, X2 =< $7 ->
     split_string_1(Xs, N - 2, L - 2, [X2, X1 | As]);
 split_string_2([X | Xs], N, L, As) ->
     split_string_1(Xs, N - 1, L - 1, [X | As]).
+
+split_string_3([$} | Xs], N, L, As) ->
+    split_string_1(Xs, N - 1, L - 1, [$} | As]);
+split_string_3([X | Xs], N, L, As) when
+  X >= $0, X =< $9; X >= $a, X =< $z; X >= $A, X =< $Z ->
+    split_string_3(Xs, N - 1, L -1, [X | As]);
+split_string_3([X | Xs], N, L, As) when
+  X >= $0, X =< $9 ->
+    split_string_1(Xs, N - 1, L -1, [X | As]).
 
 %% Note that there is nothing in `lay_clauses' that actually requires
 %% that the elements have type `clause'; it just sets up the proper
@@ -1105,6 +1486,32 @@ lay_error_info(T, Ctxt) ->
 lay_concrete(T, Ctxt) ->
     lay(erl_syntax:abstract(T), Ctxt).
 
+lay_type_assoc(Name, Value, Ctxt) ->
+    Ctxt1 = reset_prec(Ctxt),
+    D1 = lay(Name, Ctxt1),
+    D2 = lay(Value, Ctxt1),
+    par([D1, floating(text("=>")), D2], Ctxt1#ctxt.break_indent).
+
+lay_type_application(Name, Arguments, Ctxt) ->
+    {PrecL, Prec} = func_prec(), %
+    D1 = lay(Name, set_prec(Ctxt, PrecL)),
+    As = seq(Arguments,
+             floating(text(",")), reset_prec(Ctxt),
+             fun lay/2),
+    D = beside(D1, beside(text("("),
+                          beside(par(As),
+                                 floating(text(")"))))),
+    maybe_parentheses(D, Prec, Ctxt).
+
+lay_native_record_name(Node, Ctxt) ->
+    case erl_syntax:type(Node) of
+        list ->
+            [Mod, Name] = erl_syntax:list_elements(Node),
+            beside(lay(Mod, Ctxt), beside(text(":"), lay(Name, Ctxt)));
+        _ ->
+            lay(Node, Ctxt)
+    end.
+
 seq([H | T], Separator, Ctxt, Fun) ->
     case T of
 	[] ->
@@ -1168,5 +1575,31 @@ tidy_float_2([$e | Cs]) -> tidy_float_2([$e, $+ | Cs]);
 tidy_float_2([_C | Cs]) -> tidy_float_2(Cs);
 tidy_float_2([]) -> [].
 
+lay_clause_expressions([H], Ctxt) ->
+	lay(H, Ctxt);
+lay_clause_expressions([H | T], Ctxt) ->
+    Clause = beside(lay(H, Ctxt), floating(text(","))),
+    Next = lay_clause_expressions(T, Ctxt),
+    case is_last_and_before_empty_line(H, T, Ctxt) of
+	true ->
+	    above(above(Clause, text("")), Next);
+        false ->
+            above(Clause, Next)
+    end;
+lay_clause_expressions([], _) ->
+    empty().
+
+is_last_and_before_empty_line(H, [], #ctxt{empty_lines = EmptyLines}) ->
+    try sets:is_element(get_line(H) + 1, EmptyLines)
+    catch error:badarith -> false
+    end;
+is_last_and_before_empty_line(H, [H2 | _], #ctxt{empty_lines = EmptyLines}) ->
+    try get_line(H2) - get_line(H) >= 2 andalso sets:is_element(get_line(H) + 1, EmptyLines)
+    catch error:badarith -> false
+    end.
+
+get_line(Tree) ->
+    Anno = erl_syntax:get_pos(Tree),
+    erl_anno:line(Anno).
 
 %% =====================================================================

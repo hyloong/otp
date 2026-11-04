@@ -1,3 +1,25 @@
+<!--
+%% %CopyrightBegin%
+%%
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2013-2025. All Rights Reserved.
+%%
+%% Licensed under the Apache License, Version 2.0 (the "License");
+%% you may not use this file except in compliance with the License.
+%% You may obtain a copy of the License at
+%%
+%%     http://www.apache.org/licenses/LICENSE-2.0
+%%
+%% Unless required by applicable law or agreed to in writing, software
+%% distributed under the License is distributed on an "AS IS" BASIS,
+%% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+%% See the License for the specific language governing permissions and
+%% limitations under the License.
+%%
+%% %CopyrightEnd%
+-->
+
 Delayed Dealloc
 ===============
 
@@ -19,7 +41,7 @@ the Erlang VM where memory allocation/deallocation is frequent and
 references to memory also are passed around between threads this
 solution will also scale poorly due to lock contention.
 
-Functionality Used to Adress This problem
+Functionality Used to Address This problem
 -----------------------------------------
 
 In order to reduce contention due to locking of allocator instances we
@@ -44,12 +66,12 @@ deallocation.
 The "message box" is implemented using a lock free single linked list
 through the memory blocks to deallocate. The order of the elements in
 this list is not important. Insertion of new free blocks will be made
-somewhere near the end of this list. Requirering that the new blocks
+somewhere near the end of this list. Requiring that the new blocks
 need to be inserted at the end would cause unnecessary contention when
 large amount of memory blocks are inserted simultaneous by multiple
 threads.
 
-The data structure refering to this single linked list cover two cache
+The data structure referring to this single linked list cover two cache
 lines. One cache line containing information about the head of the
 list, and one cache line containing information about the tail of the
 list. This in order to reduce cache line ping ponging of this data
@@ -65,21 +87,21 @@ list. In the uncontended case it will point to the end of the list,
 but when simultaneous insert operations are performed it will point to
 something near the end of the list.
 
-When insterting an element one will try to write a pointer to the new
+When inserting an element one will try to write a pointer to the new
 element in the next pointer of the element pointed to by the last
 pointer. This is done using an atomic compare and swap that expects
-the next pointer to be `NULL`. If this succeds the thread performing
+the next pointer to be `NULL`. If this succeeds the thread performing
 this operation moves the last pointer to point to the newly inserted
 element.
 
 If the atomic compare and swap described above failed, the last
 pointer didn't point to the last element. In this case we need to
-insert the new element somewhere inbetween the element that the last
+insert the new element somewhere between the element that the last
 pointer pointed to and the actual last element. If we do it this way
 the last pointer will eventually end up at the last element when
 threads stop adding new elements. When trying to insert somewhere near
 the end and failing to do so, the inserting thread sometimes moves to
-the next element and somtimes tries with the same element again. This
+the next element and sometimes tries with the same element again. This
 in order to spread the inserted elements during heavy contention. That
 is, we try to spread the modifications of memory to different
 locations instead of letting all threads continue to try to modify the
@@ -87,9 +109,9 @@ same location in memory.
 
 ### Head ###
 
-The head contains pointers to begining of the list (`head.first`), and
+The head contains pointers to beginning of the list (`head.first`), and
 to the first block which other threads may refer to
-(`head.unref_end`). Blocks between these pointers are only refered to
+(`head.unref_end`). Blocks between these pointers are only referred to
 by the head part of the data structure which is only used by the
 thread owning the allocator instance. When these two pointers are not
 equal the thread owning the allocator instance deallocate block after
@@ -137,12 +159,12 @@ If no new memory blocks are inserted into the list, it should
 eventually be emptied. All pointers to the list however expect to
 always point to something. This is solved by inserting an empty
 "marker" element, which only has to purpose of being there in the
-absense of other elements. That is when the list is empty it only
+absence of other elements. That is when the list is empty it only
 contains this "marker" element.
 
 ### Contention ###
 
-When elements are continously inserted by threads not owning the
+When elements are continuously inserted by threads not owning the
 allocator instance, the thread owning the allocator instance will be
 able to work more or less undisturbed by other threads at the head end
 of the list. At the tail end large amounts of simultaneous inserts may

@@ -1,0 +1,172 @@
+%% %CopyrightBegin%
+%%
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2018-2026. All Rights Reserved.
+%%
+%% Licensed under the Apache License, Version 2.0 (the "License");
+%% you may not use this file except in compliance with the License.
+%% You may obtain a copy of the License at
+%%
+%%     http://www.apache.org/licenses/LICENSE-2.0
+%%
+%% Unless required by applicable law or agreed to in writing, software
+%% distributed under the License is distributed on an "AS IS" BASIS,
+%% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+%% See the License for the specific language governing permissions and
+%% limitations under the License.
+%%
+%% %CopyrightEnd%
+%%
+%%
+
+-module(scheduler_SUITE).
+
+-export([suite/0, all/0]).
+
+%% Test cases
+-export([basic/1,
+         utilization_disable/1,
+         weighted_utilization/1,
+         weighted_cpu_quota/1]).
+
+all() -> [basic,
+          utilization_disable,
+          weighted_utilization].
+
+
+suite() -> [{ct_hooks,[ts_install_cth]}].
+
+
+basic(_Config) ->
+    undefined = scheduler:get_sample(),
+    undefined = scheduler:get_sample_all(),
+    false = erlang:system_flag(scheduler_wall_time, true),
+    GS1 = scheduler:get_sample(),
+    GS2 = scheduler:get_sample_all(),
+    check(scheduler:utilization(GS1, scheduler:get_sample())),
+    check(scheduler:utilization(GS2, scheduler:get_sample())),
+    true = erlang:system_flag(scheduler_wall_time, false),
+
+    S1 = scheduler:sample(),
+    S2 = scheduler:sample_all(),
+
+    check(scheduler:utilization(1)),
+
+    check(scheduler:utilization(S1)),
+    check(scheduler:utilization(S2)),
+    check(scheduler:utilization(S1, scheduler:sample())),
+    check(scheduler:utilization(S2, scheduler:sample())),
+
+    S3 = scheduler:sample_all(),
+    U13 = scheduler:utilization(S1, S3),
+    U13 = scheduler:utilization(S1, remove_io(S3)),
+    check(U13),
+
+    U23all = scheduler:utilization(S2, S3),
+    check(U23all),
+    U23 = scheduler:utilization(S2, remove_io(S3)),
+    U23 = scheduler:utilization(remove_io(S2), S3),
+    U23 = remove_io(U23all),
+    check(U23),
+
+    ok.
+
+%% OTP-17800: Test that utilization(Seconds) restores scheduler_wall_time flag
+%% even when it already was globally enabled.
+utilization_disable(_Config) ->
+    false = erlang:system_flag(scheduler_wall_time, true),
+    check(scheduler:utilization(1)),
+    true = erlang:system_flag(scheduler_wall_time, false),
+
+    undefined = scheduler:get_sample(),
+    ok.
+
+
+weighted_utilization(_Config) ->
+    {S0, S1} = weighted_samples(),
+    U = scheduler:utilization(S0, S1),
+    check(U),
+    {total, 0.75, _} = lists:keyfind(total, 1, U),
+    case erlang:system_info(logical_processors_available) of
+        unknown ->
+            false = lists:keymember(weighted, 1, U);
+        LPA ->
+            Capacity = case erlang:system_info(cpu_quota) of
+                           Quota when is_integer(Quota), Quota > 0 ->
+                               min(LPA, Quota);
+                           _ -> LPA
+                       end,
+            Expected = 1.5 / Capacity,
+            {weighted, Weighted, _} = lists:keyfind(weighted, 1, U),
+            true = abs(Weighted - Expected) < 1.0e-9
+    end,
+    ok.
+
+
+%% Run explicitly in CI with a one-CPU quota and at least two available CPUs.
+weighted_cpu_quota(_Config) ->
+    1 = erlang:system_info(cpu_quota),
+    LPA = erlang:system_info(logical_processors_available),
+    true = is_integer(LPA) andalso LPA > 1,
+    {S0, S1} = weighted_samples(),
+    U = scheduler:utilization(S0, S1),
+    check(U),
+    {total, 0.75, _} = lists:keyfind(total, 1, U),
+    {weighted, 1.5, "150.0%"} = lists:keyfind(weighted, 1, U),
+    ok.
+
+
+weighted_samples() ->
+    %% Fixed intervals isolate capacity weighting and dirty-I/O exclusion.
+    {{scheduler_wall_time_all,
+      [{normal, 1, 0, 0}, {cpu, 2, 0, 0}, {io, 3, 0, 0}]},
+     {scheduler_wall_time_all,
+      [{normal, 1, 100, 100}, {cpu, 2, 50, 100}, {io, 3, 100, 100}]}}.
+
+
+check([{total, Tf, Ts} | List]=U) ->
+    io:format("\nU = ~p\n", [U]),
+    check_values(Tf, Ts, true),
+
+    SchdList = case hd(List) of
+                   {weighted, Wf, Ws} ->
+                       check_values(Wf, Ws, false),
+                       tl(List);
+                   _ ->
+                       unknown = erlang:system_info(logical_processors_available),
+                       List
+               end,
+
+    lists:foreach(fun({Type, Id, F, S}) when Type =:= normal orelse Type =:= cpu orelse Type =:= io,
+                                             is_integer(Id) ->
+                          check_values(F, S, true)
+                  end,
+                  SchdList),
+    ok.
+
+check_values(F, S, Max100) ->
+    true = is_float(F),
+    true = F >= 0.0,
+
+    $% = lists:last(S),
+    Sf = list_to_float(lists:droplast(S)),
+    true = Sf >= 0.0,
+    true = case Max100 of
+               true ->
+                   true = F =< 1.0,
+                   true = Sf =< 100.0;
+               false ->
+                   true
+           end,
+    MaxDiff = 0.055555555555555555,  %% change to 0.05 when float_to_list/2 is fixed
+    true = abs(F*100 - Sf) =< MaxDiff,
+    ok.
+
+
+remove_io({scheduler_wall_time_all,Lst}) ->
+    {scheduler_wall_time, remove_io(Lst)};
+remove_io(Lst) ->
+    lists:filter(fun({io,_,_,_}) -> false;
+                    (_) -> true end,
+                 Lst).

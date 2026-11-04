@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2010-2015. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2010-2025. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -19,40 +21,38 @@
 %%
 
 -module(diameter_lib).
+-moduledoc false.
 -compile({no_auto_import, [now/0]}).
--compile({nowarn_deprecated_function, [{erlang, now, 0}]}).
 
 -export([info_report/2,
          error_report/2,
          warning_report/2,
          now/0,
+         timestamp/0,
          timestamp/1,
+         formated_timestamp/0,
          now_diff/1,
          micro_diff/1,
          micro_diff/2,
          time/1,
-         seed/0,
          eval/1,
          eval_name/1,
-         get_stacktrace/0,
+         stacktrace/1,
          ipaddr/1,
          spawn_opts/2,
          wait/1,
-         fold_tuple/3,
          fold_n/3,
          for_n/2,
          log/4]).
 
+
 %% ---------------------------------------------------------------------------
-%% # get_stacktrace/0
+%% # stacktrace/1
 %% ---------------------------------------------------------------------------
 
 %% Return a stacktrace with a leading, potentially large, argument
-%% list replaced by an arity. Trace on stacktrace/0 to see the
+%% list replaced by an arity. Trace on stacktrace/1 to see the
 %% original.
-
-get_stacktrace() ->
-    stacktrace(erlang:get_stacktrace()).
 
 stacktrace([{M,F,A,L} | T]) when is_list(A) ->
     [{M, F, length(A), L} | T];
@@ -110,6 +110,16 @@ now() ->
     erlang:monotonic_time().
 
 %% ---------------------------------------------------------------------------
+%% # timestamp/0
+%% ---------------------------------------------------------------------------
+
+-spec timestamp()
+   -> erlang:timestamp().
+
+timestamp() ->
+    timestamp(now()).
+
+%% ---------------------------------------------------------------------------
 %% # timestamp/1
 %% ---------------------------------------------------------------------------
 
@@ -123,6 +133,35 @@ timestamp(MonoT) ->  %% monotonic time
 
 monotonic_to_microseconds(MonoT) ->
     erlang:convert_time_unit(MonoT, native, micro_seconds).
+
+
+%% ---------------------------------------------------------------------------
+%% # formated_timestamp/0
+%% ---------------------------------------------------------------------------
+
+-spec formated_timestamp()
+   -> string().
+
+formated_timestamp() ->
+    format_timestamp(os:timestamp()).
+
+format_timestamp(Now) ->
+    N2T = fun(N) -> calendar:now_to_local_time(N) end,
+    format_timestamp(Now, N2T).
+
+format_timestamp({_N1, _N2, N3} = Now, N2T)
+  when is_tuple(Now) andalso is_function(N2T) ->
+    {Date, Time} = N2T(Now),
+    do_format_timestamp(Date, Time, N3).
+
+do_format_timestamp(Date, Time, N3) ->
+    {YYYY,MM,DD}   = Date,
+    {Hour,Min,Sec} = Time,
+    FormatDate = 
+        io_lib:format("~.4w-~.2.0w-~.2.0w ~.2.0w:~.2.0w:~.2.0w.~.3.0w",
+                      [YYYY, MM, DD, Hour, Min, Sec, N3 div 1000]),  
+    lists:flatten(FormatDate).
+
 
 %% ---------------------------------------------------------------------------
 %% # now_diff/1
@@ -182,24 +221,6 @@ time(Micro) ->  %% elapsed time
     M = (Seconds rem 3600) div 60,
     S = Seconds rem 60,
     {H, M, S, Micro rem 1000000}.
-
-%% ---------------------------------------------------------------------------
-%% # seed/0
-%% ---------------------------------------------------------------------------
-
--spec seed()
-   -> {erlang:timestamp(), {integer(), integer(), integer()}}.
-
-%% Return an argument for random:seed/1.
-
-seed() ->
-    T = now(),
-    {timestamp(T), seed(T)}.
-
-%% seed/1
-
-seed(T) ->  %% monotonic time
-    {erlang:phash2(node()), T, erlang:unique_integer()}.
 
 %% ---------------------------------------------------------------------------
 %% # eval/1
@@ -278,22 +299,22 @@ ipaddr(Addr) ->
     try
         ip(Addr)
     catch
-        error: _ ->
-            erlang:error({invalid_address, erlang:get_stacktrace()})
+        error: _: Stack ->
+            erlang:error({invalid_address, Stack})
     end.
 
 %% Already a tuple: ensure non-negative integers of the right size.
 ip(T)
-  when size(T) == 4;
-       size(T) == 8 ->
-    Bs = 2*size(T),
+  when tuple_size(T) == 4;
+       tuple_size(T) == 8 ->
+    Bs = 2*tuple_size(T),
     [] = lists:filter(fun(N) when 0 =< N -> 0 < N bsr Bs end,
                       tuple_to_list(T)),
     T;
 
 %% Or not: convert from '.'/':'-separated decimal/hex.
 ip(Addr) ->
-    {ok, A} = inet_parse:address(Addr),  %% documented in inet(3)
+    {ok, A} = inet:parse_address(Addr),
     A.
 
 %% ---------------------------------------------------------------------------
@@ -308,8 +329,28 @@ spawn_opts(server, Opts) ->
 spawn_opts(worker, Opts) ->
     opts(5000, Opts).
 
-opts(HeapSize, Opts) ->
-    [{min_heap_size, HeapSize} | lists:keydelete(min_heap_size, 1, Opts)].
+%% These setting are historical rather than useful. In particular, the
+%% server setting can bloat many processes unnecessarily. Let them be
+%% disabled with -diameter min_heap_size false.
+
+opts(Def, Opts) ->
+    Key = min_heap_size,
+    case getenv(Key, Def) of
+        N when is_integer(N), 0 =< N ->
+            [{Key, N} | lists:keydelete(Key, 1, Opts)];
+        _ ->
+            Opts
+    end.
+
+%% getenv/1
+
+getenv(Key, Def) ->
+    case application:get_env(Key) of
+        {ok, T} ->
+            T;
+        undefined ->
+            Def
+    end.
 
 %% ---------------------------------------------------------------------------
 %% # wait/1
@@ -328,36 +369,6 @@ down(Pid)
 down(MRef)
   when is_reference(MRef) ->
     receive {'DOWN', MRef, process, _, _} = T -> T end.
-
-%% ---------------------------------------------------------------------------
-%% # fold_tuple/3
-%% ---------------------------------------------------------------------------
-
--spec fold_tuple(N, T0, T)
-   -> tuple()
- when N  :: pos_integer(),
-      T0 :: tuple(),
-      T  :: tuple()
-          | undefined.
-
-%% Replace fields in T0 by those of T starting at index N, unless the
-%% new value is 'undefined'.
-%%
-%% eg. fold_tuple(2, Hdr, #diameter_header{end_to_end_id = 42})
-
-fold_tuple(_, T, undefined) ->
-    T;
-
-fold_tuple(N, T0, T1) ->
-    {_, T} = lists:foldl(fun(V, {I,_} = IT) -> {I+1, ft(V, IT)} end,
-                         {N, T0},
-                         lists:nthtail(N-1, tuple_to_list(T1))),
-    T.
-
-ft(undefined, {_, T}) ->
-    T;
-ft(Value, {Idx, T}) ->
-    setelement(Idx, T, Value).
 
 %% ---------------------------------------------------------------------------
 %% # fold_n/3

@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2013. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2013-2025. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -17,6 +19,7 @@
 %%
 %% %CopyrightEnd%
 -module(cdv_port_cb).
+-moduledoc false.
 
 -export([col_to_elem/1,
 	 col_spec/0,
@@ -34,7 +37,8 @@
 -define(COL_CONN, ?COL_ID+1).
 -define(COL_NAME, ?COL_CONN+1).
 -define(COL_CTRL, ?COL_NAME+1).
--define(COL_SLOT, ?COL_CTRL+1).
+-define(COL_QUEUE, ?COL_CTRL+1).
+-define(COL_SLOT, ?COL_QUEUE+1).
 
 
 
@@ -44,6 +48,7 @@ col_to_elem(?COL_ID)  -> #port.id;
 col_to_elem(?COL_CONN) -> #port.connected;
 col_to_elem(?COL_NAME)  -> #port.name;
 col_to_elem(?COL_CTRL) -> #port.controls;
+col_to_elem(?COL_QUEUE) -> #port.queue;
 col_to_elem(?COL_SLOT) -> #port.slot.
 
 col_spec() ->
@@ -51,6 +56,7 @@ col_spec() ->
      {"Connected", ?wxLIST_FORMAT_LEFT, 120},
      {"Name", ?wxLIST_FORMAT_LEFT, 150},
      {"Controls", ?wxLIST_FORMAT_LEFT, 200},
+     {"Queue", ?wxLIST_FORMAT_RIGHT, 100},
      {"Slot", ?wxLIST_FORMAT_RIGHT, 50}].
 
 get_info(_) ->
@@ -96,9 +102,17 @@ format(D) ->
 info_fields() ->
     [{"Overview",
       [{"Name",             name},
+       {"State",            state},
+       {"Task Flags",       task_flags},
        {"Connected",        {click,connected}},
        {"Slot",             slot},
-       {"Controls",         controls}]},
+       {"Controls",         controls},
+       {"Input bytes",      input},
+       {"Output bytes",     output},
+       {"Queue bytes",      queue},
+       {"Port data",        port_data}]},
     {scroll_boxes,
      [{"Links",1,{click,links}},
-       {"Monitors",1,{click,monitors}}]}].
+      {"Monitors",1,{click,monitors}},
+      {"Suspended",1,{click,suspended}}
+     ]}].

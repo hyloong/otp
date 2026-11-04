@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2013. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2013-2025. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -17,6 +19,7 @@
 %%
 %% %CopyrightEnd%
 -module(cdv_atom_cb).
+-moduledoc false.
 
 -export([col_to_elem/1,
 	 col_spec/0,
@@ -42,7 +45,7 @@ get_info(_) ->
     {Info,TW}.
 
 format({Bin,q}) when is_binary(Bin) ->
-    [$'|binary_to_list(Bin)];
+    [$'|lists:flatten(io_lib:format("~ts",[Bin]))];
 format({Bin,nq}) when is_binary(Bin) ->
     lists:flatten(io_lib:format("~ts",[Bin]));
 format(D) ->

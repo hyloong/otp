@@ -1,7 +1,9 @@
 /*
  * %CopyrightBegin%
+ *
+ * SPDX-License-Identifier: Apache-2.0
  * 
- * Copyright Ericsson AB 1999-2011. All Rights Reserved.
+ * Copyright Ericsson AB 1999-2025. All Rights Reserved.
  * 
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -75,12 +77,8 @@
 
 
 #ifdef DEBUG
-#ifndef __WIN32__
-#define ASSERT(X) do {if (!(X)) {erl_exit(1,"%s",#X);} } while(0)
-#else
 #include <assert.h>
 #define ASSERT(X) assert(X)
-#endif
 #else
 #define ASSERT(X)
 #endif
@@ -121,7 +119,7 @@
 **    0 = binary, 1 = drop
 **    If Op is 1, then Size reflects the number of dropped messages. The 
 **    op 1 is never used in this driver.
-** Size, a 32 bit interger in network byte order:
+** Size, a 32 bit integer in network byte order:
 **    Either the size of the binary term, or the number of packet's dropped.
 ** Term, an array of bytes:
 **    An erlang term in the external format or simply empty if Op == 1, the
@@ -176,6 +174,7 @@ static ErlDrvData trace_file_start(ErlDrvPort port, char *buff);
 static void trace_file_stop(ErlDrvData handle);
 static void trace_file_output(ErlDrvData handle, char *buff,
 			      ErlDrvSizeT bufflen);
+static void trace_file_outputv(ErlDrvData handle, ErlIOVec *ev);
 static void trace_file_finish(void);
 static ErlDrvSSizeT trace_file_control(ErlDrvData handle,
 				      unsigned int command, 
@@ -218,7 +217,7 @@ ErlDrvEntry trace_file_driver_entry = {
     NULL,                  /* void * that is not used (BC) */
     trace_file_control,    /* F_PTR control, port_control callback */
     trace_file_timeout,    /* F_PTR timeout, driver_set_timer callback */
-    NULL,                  /* F_PTR outputv, reserved */
+    trace_file_outputv,    /* F_PTR outputv, reserved */
     NULL, /* ready_async */
     NULL, /* flush */
     NULL, /* call */
@@ -367,20 +366,28 @@ static void trace_file_stop(ErlDrvData handle)
 /*
 ** Data sent from erlang to port.
 */
+static void trace_file_outputv(ErlDrvData handle, ErlIOVec *ev)
+{
+    int i;
+    for (i = 0; i < ev->vsize; i++) {
+        if (ev->iov[i].iov_len)
+            trace_file_output(handle, ev->iov[i].iov_base,
+                              ev->iov[i].iov_len);
+    }
+}
+
 static void trace_file_output(ErlDrvData handle, char *buff,
 			      ErlDrvSizeT bufflen)
 {
-    int heavy = 0;
     TraceFileData *data = (TraceFileData *) handle;
     unsigned char b[5] = "";
     put_be((unsigned) bufflen, b + 1);
     switch (my_write(data, (unsigned char *) b, sizeof(b))) {
     case 1:
-	heavy = !0;
     case 0:
 	switch (my_write(data, (unsigned char *) buff, bufflen)) {
 	case 1:
-	    heavy = !0;
+            break;
 	case 0:
 	    break;
 	case -1:
@@ -401,11 +408,7 @@ static void trace_file_output(ErlDrvData handle, char *buff,
 		driver_failure_posix(data->port, errno); /* XXX */
 		return;
 	    }
-	    heavy = !0;
 	}
-    }
-    if (heavy) {
-	set_port_control_flags(data->port, PORT_CONTROL_FLAG_HEAVY);
     }
 }
 
@@ -570,7 +573,6 @@ static int my_write(TraceFileData *data, unsigned char *buff, int siz)
     } 
     memcpy(data->buff, buff + wrote, siz - wrote);
     data->buff_pos = siz - wrote;
-    set_port_control_flags(data->port, PORT_CONTROL_FLAG_HEAVY);
     return 1;
 }
 

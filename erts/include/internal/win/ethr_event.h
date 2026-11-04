@@ -1,7 +1,9 @@
 /*
  * %CopyrightBegin%
  *
- * Copyright Ericsson AB 2009-2011. All Rights Reserved.
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Copyright Ericsson AB 2009-2025. All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -56,6 +58,7 @@ ETHR_INLINE_FUNC_NAME_(ethr_event_reset)(ethr_event *e)
 #endif
 
 int ethr_event_init(ethr_event *e);
+int ethr_event_prepare_timed(ethr_event *e);
 int ethr_event_destroy(ethr_event *e);
 int ethr_event_wait(ethr_event *e);
 int ethr_event_swait(ethr_event *e, int spincount);

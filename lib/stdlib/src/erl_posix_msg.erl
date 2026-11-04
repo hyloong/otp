@@ -1,8 +1,10 @@
 %%
 %% %CopyrightBegin%
-%% 
-%% Copyright Ericsson AB 1997-2010. All Rights Reserved.
-%% 
+%%
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 1997-2025. All Rights Reserved.
+%%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
 %% You may obtain a copy of the License at
@@ -14,10 +16,11 @@
 %% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 %% See the License for the specific language governing permissions and
 %% limitations under the License.
-%% 
+%%
 %% %CopyrightEnd%
 %%
 -module(erl_posix_msg).
+-moduledoc false.
 
 %% Converts from errno identifiers to error messages.
 
@@ -64,6 +67,7 @@ message_1(eduppkg) -> <<"duplicate package name">>;
 message_1(eexist) -> <<"file already exists">>;
 message_1(efault) -> <<"bad address in system call argument">>;
 message_1(efbig) -> <<"file too large">>;
+message_1(eftype) -> <<"EFTYPE">>;
 message_1(ehostdown) -> <<"host is down">>;
 message_1(ehostunreach) -> <<"host is unreachable">>;
 message_1(eidrm) -> <<"identifier removed">>;
@@ -80,9 +84,9 @@ message_1(el2hlt) -> <<"level 2 halted">>;
 message_1(el2nsync) -> <<"level 2 not synchronized">>;
 message_1(el3hlt) -> <<"level 3 halted">>;
 message_1(el3rst) -> <<"level 3 reset">>;
-message_1(elibacc) -> <<"can not access a needed shared library">>;
+message_1(elibacc) -> <<"cannot access a needed shared library">>;
 message_1(elibbad) -> <<"accessing a corrupted shared library">>;
-message_1(elibexec) -> <<"can not exec a shared library directly">>;
+message_1(elibexec) -> <<"cannot exec a shared library directly">>;
 message_1(elibmax) ->
     <<"attempting to link in more shared libraries than system limit">>;
 message_1(elibscn) -> <<".lib section in a.out corrupted">>;
@@ -115,6 +119,7 @@ message_1(enopkg) -> <<"package not installed">>;
 message_1(enoprotoopt) -> <<"bad proocol option">>;
 message_1(enospc) -> <<"no space left on device">>;
 message_1(enosr) -> <<"out of stream resources or not a stream device">>;
+message_1(enostr) -> <<"not a stream">>;
 message_1(enosym) -> <<"unresolved symbol name">>;
 message_1(enosys) -> <<"function not implemented">>;
 message_1(enotblk) -> <<"block device required">>;
@@ -128,6 +133,7 @@ message_1(enotty) -> <<"inappropriate device for ioctl">>;
 message_1(enotuniq) -> <<"name not unique on network">>;
 message_1(enxio) -> <<"no such device or address">>;
 message_1(eopnotsupp) -> <<"operation not supported on socket">>;
+message_1(eoverflow) -> <<"offset too large for file system">>;
 message_1(eperm) -> <<"not owner">>;
 message_1(epfnosupport) -> <<"protocol family not supported">>;
 message_1(epipe) -> <<"broken pipe">>;
@@ -136,7 +142,7 @@ message_1(eprocunavail) -> <<"bad procedure for program">>;
 message_1(eprogmismatch) -> <<"program version wrong">>;
 message_1(eprogunavail) -> <<"RPC program not available">>;
 message_1(eproto) -> <<"protocol error">>;
-message_1(eprotonosupport) -> <<"protocol not suppored">>;
+message_1(eprotonosupport) -> <<"protocol not supported">>;
 message_1(eprototype) -> <<"protocol wrong type for socket">>;
 message_1(erange) -> <<"math result unrepresentable">>;
 message_1(erefused) -> <<"EREFUSED">>;
@@ -164,7 +170,9 @@ message_1(eunatch) -> <<"protocol driver not attached">>;
 message_1(eusers) -> <<"too many users">>;
 message_1(eversion) -> <<"version mismatch">>;
 message_1(ewouldblock) -> <<"operation would block">>;
-message_1(exdev) -> <<"cross-domain link">>;
+message_1(exdev) -> <<"cross-device link">>;
 message_1(exfull) -> <<"message tables full">>;
 message_1(nxdomain) -> <<"non-existing domain">>;
-message_1(_) -> <<"unknown POSIX error">>.
+message_1(exbadport) -> <<"inet_drv bad port state">>;
+message_1(exbadseq) -> <<"inet_drv bad request sequence">>;
+message_1(Other) -> <<"unknown POSIX error: ", (atom_to_binary(Other))/binary>>.

@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2012. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2012-2025. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -23,7 +25,7 @@
 	 init_per_suite/1, end_per_suite/1,
 	 init_per_testcase/2, end_per_testcase/2]).
 
--compile(export_all).
+-export([config/1, depgraphs/1]).
 
 -include_lib("common_test/include/ct.hrl").
 -include("reltool_test_lib.hrl").
@@ -172,7 +174,7 @@ config(Config) ->
     {ok,ServerPid} = reltool:get_server(SysPid),
     unlink(SysPid),
     break("the system window is still alive",
-	  "terminate reltool by hitting 'Ctrl-q' (linux) or clicking the "
+	  "terminate reltool by hitting 'Ctrl+Q' (linux) or clicking the "
 	  "close box on the top fram when system window is active"),
     false = erlang:is_process_alive(SysPid),
     false = erlang:is_process_alive(ServerPid),

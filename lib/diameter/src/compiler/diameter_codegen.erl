@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2010-2015. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2010-2026. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -19,17 +21,19 @@
 %%
 
 -module(diameter_codegen).
+-moduledoc false.
+
+-compile([{nowarn_possibly_unsafe_function, {erlang, list_to_atom, 1}}]).
 
 %%
-%% This module generates erl/hrl files for encode/decode modules
-%% from the orddict parsed from a dictionary file (.dia) by
-%% diameter_dict_util. The generated code is simple (one-liners),
-%% the generated functions being called by code included iin the
-%% generated modules from diameter_gen.hrl. The orddict itself is
-%% returned by dict/0 in the generated module and diameter_dict_util
-%% calls this function when importing dictionaries as a consequence
-%% of @inherits sections. That is, @inherits introduces a dependency
-%% on the beam file of another dictionary.
+%% This module generates erl/hrl files for encode/decode modules from
+%% the orddict parsed from a dictionary file by diameter_dict_util.
+%% The generated code is simple (one-liners), and is called from
+%% diameter_gen. The orddict itself is returned by dict/0 in the
+%% generated module and diameter_dict_util calls this function when
+%% importing dictionaries as a consequence of @inherits sections. That
+%% is, @inherits introduces a dependency on the beam file of another
+%% dictionary.
 %%
 
 -export([from_dict/4,
@@ -143,27 +147,30 @@ gen(erl, ParseD, Mod) ->
 
 erl_forms(Mod, ParseD) ->
     Forms = [[{?attribute, module, Mod},
+              {?attribute, moduledoc, false},
               {?attribute, compile, {parse_transform, diameter_exprecs}},
-              {?attribute, compile, nowarn_unused_function}],
+              {?attribute, compile, nowarn_unused_function},
+              {?attribute, dialyzer, no_return}],
              make_hrl_forms(ParseD),
              [{?attribute, export, [{name, 0},
                                     {id, 0},
                                     {vendor_id, 0},
                                     {vendor_name, 0},
-                                    {decode_avps, 2}, %% in diameter_gen.hrl
-                                    {encode_avps, 2}, %%
+                                    {decode_avps, 3}, %% in diameter_gen.hrl
+                                    {encode_avps, 3}, %%
+                                    {grouped_avp, 4}, %%
                                     {msg_name, 2},
                                     {msg_header, 1},
                                     {rec2msg, 1},
                                     {msg2rec, 1},
                                     {name2rec, 1},
                                     {avp_name, 2},
+                                    {avp_arity, 1},
                                     {avp_arity, 2},
                                     {avp_header, 1},
-                                    {avp, 3},
-                                    {grouped_avp, 3},
+                                    {avp, 4},
                                     {enumerated_avp, 3},
-                                    {empty_value, 1},
+                                    {empty_value, 2},
                                     {dict, 0}]},
               %% diameter.hrl is included for #diameter_avp
               {?attribute, include_lib, "diameter/include/diameter.hrl"},
@@ -178,13 +185,14 @@ erl_forms(Mod, ParseD) ->
               f_msg2rec(ParseD),
               f_name2rec(ParseD),
               f_avp_name(ParseD),
-              f_avp_arity(ParseD),
+              f_avp_arity_1(ParseD),
+              f_avp_arity_2(ParseD),
               f_avp_header(ParseD),
               f_avp(ParseD),
               f_enumerated_avp(ParseD),
               f_empty_value(ParseD),
               f_dict(ParseD),
-              {eof, erl_anno:new(?LINE)}]],
+              {eof, ?LINE}]],
 
     lists:append(Forms).
 
@@ -418,10 +426,32 @@ vendor_id_map(ParseD) ->
                          get_value(grouped, ParseD)).
 
 %%% ------------------------------------------------------------------------
+%%% # avp_arity/1
+%%% ------------------------------------------------------------------------
+
+f_avp_arity_1(ParseD) ->
+    {?function, avp_arity, 1, avp_arities(ParseD) ++ [?BADARG(1)]}.
+
+avp_arities(ParseD) ->
+    Msgs = get_value(messages, ParseD),
+    Groups = get_value(grouped, ParseD)
+          ++ lists:flatmap(fun avps/1, get_value(import_groups, ParseD)),
+    lists:map(fun c_avp_arities/1, Msgs ++ Groups).
+
+c_avp_arities({N,_,_,_,As}) ->
+    c_avp_arities(N,As);
+c_avp_arities({N,_,_,As}) ->
+    c_avp_arities(N,As).
+
+c_avp_arities(Name, Avps) ->
+    Arities = [{?A(N), A} || T <- Avps, {N,A} <- [avp_info(T)]],
+    {?clause, [?Atom(Name)], [], [?TERM(Arities)]}.
+
+%%% ------------------------------------------------------------------------
 %%% # avp_arity/2
 %%% ------------------------------------------------------------------------
 
-f_avp_arity(ParseD) ->
+f_avp_arity_2(ParseD) ->
     {?function, avp_arity, 2, avp_arity(ParseD)}.
 
 avp_arity(ParseD) ->
@@ -452,7 +482,7 @@ c_arity(Name, Avp) ->
 %%% ------------------------------------------------------------------------
 
 f_avp(ParseD) ->
-    {?function, avp, 3, avp(ParseD) ++ [?BADARG(3)]}.
+    {?function, avp, 4, avp(ParseD) ++ [?BADARG(4)]}.
 
 avp(ParseD) ->
     Native     = get_value(avp_types, ParseD),
@@ -491,19 +521,25 @@ avp(Native, Imported, Custom, Enums) ->
 not_in(List, X) ->
     not lists:member(X, List).
 
-c_base_avp({AvpName, T}) ->
-    {?clause, [?VAR('T'), ?VAR('Data'), ?Atom(AvpName)],
+c_base_avp({AvpName, "Enumerated"}) ->
+    {?clause, [?VAR('T'), ?VAR('Data'), ?Atom(AvpName), ?VAR('_')],
      [],
-     [b_base_avp(AvpName, T)]}.
+     [?CALL(enumerated_avp, [?VAR('T'), ?Atom(AvpName), ?VAR('Data')])]};
 
-b_base_avp(AvpName, "Enumerated") ->
-    ?CALL(enumerated_avp, [?VAR('T'), ?Atom(AvpName), ?VAR('Data')]);
+c_base_avp({AvpName, "Grouped"}) ->
+    {?clause, [?VAR('T'), ?VAR('Data'), ?Atom(AvpName), ?VAR('Opts')],
+     [],
+     [?CALL(grouped_avp, [?VAR('T'),
+                          ?Atom(AvpName),
+                          ?VAR('Data'),
+                          ?VAR('Opts')])]};
 
-b_base_avp(AvpName, "Grouped") ->
-    ?CALL(grouped_avp, [?VAR('T'), ?Atom(AvpName), ?VAR('Data')]);
-
-b_base_avp(_, Type) ->
-    ?APPLY(diameter_types, ?A(Type), [?VAR('T'), ?VAR('Data')]).
+c_base_avp({AvpName, Type}) ->
+    {?clause, [?VAR('T'), ?VAR('Data'), ?Atom(AvpName), ?VAR('Opts')],
+     [],
+     [?APPLY(diameter_types, ?A(Type), [?VAR('T'),
+                                        ?VAR('Data'),
+                                        ?VAR('Opts')])]}.
 
 cs_imported_avp({Mod, Avps}, Enums, CustomNames) ->
     lists:map(fun(A) -> imported_avp(Mod, A, Enums) end,
@@ -525,11 +561,13 @@ imported_avp(Mod, {AvpName, _, _, _}, _) ->
     c_imported_avp(Mod, AvpName).
 
 c_imported_avp(Mod, AvpName) ->
-    {?clause, [?VAR('T'), ?VAR('Data'), ?Atom(AvpName)],
+    {?clause, [?VAR('T'), ?VAR('Data'), ?Atom(AvpName), ?VAR('Opts')],
      [],
-     [?APPLY(Mod, avp, [?VAR('T'),
-                        ?VAR('Data'),
-                        ?Atom(AvpName)])]}.
+     [?CALL(avp, [?VAR('T'),
+                  ?VAR('Data'),
+                  ?Atom(AvpName),
+                  ?VAR('Opts'),
+                  ?ATOM(Mod)])]}.
 
 cs_custom_avp({Mod, Key, Avps}, Dict) ->
     lists:map(fun(N) -> c_custom_avp(Mod, Key, N, orddict:fetch(N, Dict)) end,
@@ -537,9 +575,12 @@ cs_custom_avp({Mod, Key, Avps}, Dict) ->
 
 c_custom_avp(Mod, Key, AvpName, Type) ->
     {F,A} = custom(Key, AvpName, Type),
-    {?clause, [?VAR('T'), ?VAR('Data'), ?Atom(AvpName)],
+    {?clause, [?VAR('T'), ?VAR('Data'), ?Atom(AvpName), ?VAR('Opts')],
      [],
-     [?APPLY(?A(Mod), ?A(F), [?VAR('T'), ?Atom(A), ?VAR('Data')])]}.
+     [?APPLY(?A(Mod), ?A(F), [?VAR('T'),
+                              ?Atom(A),
+                              ?VAR('Data'),
+                              ?VAR('Opts')])]}.
 
 custom(custom_types, AvpName, Type) ->
     {AvpName, Type};
@@ -555,9 +596,24 @@ f_enumerated_avp(ParseD) ->
 
 enumerated_avp(ParseD) ->
     Enums = get_value(enum, ParseD),
-    lists:flatmap(fun cs_enumerated_avp/1, Enums)
-        ++ lists:flatmap(fun({M,Es}) -> enumerated_avp(M, Es, Enums) end,
-                         get_value(import_enums, ParseD)).
+    CurrentEnums = lists:flatmap(fun cs_enumerated_avp/1, Enums),
+    ImportedEnums = lists:flatmap(fun({M,Es}) -> enumerated_avp(M, Es, Enums) end,
+                         get_value(import_enums, ParseD)),
+    %% Remove duplicate clauses in the imported enums. This is important to generate correct
+    %% code when multiple dictionaries in the inheritance chain add values to the same
+    %% enumerated AVP. The last in the list is the one that is closest to the current module
+    %% in the inheritance chain and the one which should be kept.
+    Fun = fun({_, Id, [_, {_, _, Name}, _], _, _} = Elem, AccIn) ->
+                  case lists:search(fun({_, SId, [_, {_, _, SName}, _], _, _}) ->
+                                            Id == SId andalso Name == SName end, AccIn) of
+                      {value, Previous} ->
+                          lists:delete(Previous, AccIn) ++ [Elem];
+                      false ->
+                          AccIn ++ [Elem]
+                  end
+          end,
+    FilteredEnums = lists:foldl(Fun, [], ImportedEnums),
+    CurrentEnums ++ FilteredEnums.
 
 enumerated_avp(Mod, Es, Enums) ->
     lists:flatmap(fun({N,_}) ->
@@ -568,7 +624,11 @@ enumerated_avp(Mod, Es, Enums) ->
                   Es).
 
 cs_enumerated_avp(true, Mod, Name) ->
-    [c_imported_avp(Mod, Name)];
+    [{?clause, [?VAR('T'), ?Atom(Name), ?VAR('Data')],
+     [],
+     [?APPLY(Mod, enumerated_avp, [?VAR('T'),
+                                   ?Atom(Name),
+                                   ?VAR('Data')])]}];
 cs_enumerated_avp(false, _, _) ->
     [].
 
@@ -682,7 +742,7 @@ v(false, _, _, _) ->
 %%% ------------------------------------------------------------------------
 
 f_empty_value(ParseD) ->
-    {?function, empty_value, 1, empty_value(ParseD)}.
+    {?function, empty_value, 2, empty_value(ParseD)}.
 
 empty_value(ParseD) ->
     Imported = lists:flatmap(fun avps/1, get_value(import_enums, ParseD)),
@@ -691,16 +751,30 @@ empty_value(ParseD) ->
     Enums = [T || {N,_} = T <- get_value(enum, ParseD),
                   not lists:keymember(N, 1, Imported)]
         ++ Imported,
-    lists:map(fun c_empty_value/1, Groups ++ Enums)
-        ++ [{?clause, [?VAR('Name')], [], [?CALL(empty, [?VAR('Name')])]}].
+    %% Here we need to remove duplicate empty_value clauses that are generated when
+    %% multiple dictionaries in the inheritance chain define values for the same
+    %% enumerated AVP.
+    lists:foldl(fun(Elem, AccIn) ->
+                        Name = element(1, Elem),
+                        case lists:any(fun({clause, _, [{_, _, SearchName}, _], _, _}) ->
+                                               ?A(Name) == SearchName end, AccIn) of
+                            true ->
+                                AccIn;
+                            false ->
+                                AccIn ++ [c_empty_value(Elem)]
+                        end
+                end, [], Groups ++ Enums)
+        ++ [{?clause, [?VAR('Name'), ?VAR('Opts')],
+             [],
+             [?CALL(empty, [?VAR('Name'), ?VAR('Opts')])]}].
 
 c_empty_value({Name, _, _, _}) ->
-    {?clause, [?Atom(Name)],
+    {?clause, [?Atom(Name), ?VAR('Opts')],
      [],
-     [?CALL(empty_group, [?Atom(Name)])]};
+     [?CALL(empty_group, [?Atom(Name), ?VAR('Opts')])]};
 
 c_empty_value({Name, _}) ->
-    {?clause, [?Atom(Name)],
+    {?clause, [?Atom(Name), ?VAR('_')],
      [],
      [?TERM(<<0:32>>)]}.
 
@@ -790,20 +864,7 @@ header() ->
     ("%% -------------------------------------------------------------------\n"
      "%% This is a generated file.\n"
      "%% -------------------------------------------------------------------\n"
-     "\n"
-     "%%\n"
-     "%% Copyright (c) Ericsson AB. All rights reserved.\n"
-     "%%\n"
-     "%% The information in this document is the property of Ericsson.\n"
-     "%%\n"
-     "%% Except as specifically authorized in writing by Ericsson, the\n"
-     "%% receiver of this document shall keep the information contained\n"
-     "%% herein confidential and shall protect the same in whole or in\n"
-     "%% part from disclosure and dissemination to third parties.\n"
-     "%%\n"
-     "%% Disclosure and disseminations to the receivers employees shall\n"
-     "%% only be made on a strict need to know basis.\n"
-     "%%\n\n").
+     "\n").
 
 hrl_header(Name) ->
     header() ++ "-hrl_name('" ++ ?S(Name) ++ ".hrl').\n".

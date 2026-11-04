@@ -1,9 +1,11 @@
 #-*-makefile-*-   ; force emacs to enter makefile-mode
 
 # %CopyrightBegin%
-# 
-# Copyright Ericsson AB 2004-2012. All Rights Reserved.
-# 
+#
+# SPDX-License-Identifier: Apache-2.0
+#
+# Copyright Ericsson AB 2004-2025. All Rights Reserved.
+#
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
 # You may obtain a copy of the License at
@@ -15,7 +17,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-# 
+#
 # %CopyrightEnd%
 
 include $(ERL_TOP)/make/target.mk
@@ -43,11 +45,12 @@ RELSYSDIR = $(RELEASE_PATH)/lib/snmp-$(VSN)
 
 include modules.mk
 
-ERL_FILES = $(MODULES:%=%.erl)
+ERL_FILES = $(BEHAVIOUR_MODULES:%=%.erl) $(MODULES:%=%.erl)
 
 HRL_FILES = $(INTERNAL_HRL_FILES:%=%.hrl)
 
-TARGET_FILES = $(MODULES:%=$(EBIN)/%.$(EMULATOR))
+BEHAVIOUR_TARGET_FILES = $(BEHAVIOUR_MODULES:%=$(EBIN)/%.$(EMULATOR))
+TARGET_FILES =           $(MODULES:%=$(EBIN)/%.$(EMULATOR))
 
 
 # ----------------------------------------------------
@@ -68,10 +71,22 @@ endif
 # FLAGS
 # ----------------------------------------------------
 
-ERL_COMPILE_FLAGS += -pa $(ERL_TOP)/lib/snmp/ebin
+ERL_COMPILE_FLAGS += -pa $(ERL_TOP)/lib/snmp/ebin +nowarn_deprecated_catch
 
-ifeq ($(WARN_UNUSED_VARS),true)
-ERL_COMPILE_FLAGS += +warn_unused_vars
+ifeq ($(SNMP_WARNING_AS_ERROR),)
+  ERL_COMPILE_FLAGS += -Werror
+else
+  ifeq ($(SNMP_WARNING_AS_ERROR),true)
+    ERL_COMPILE_FLAGS += -Werror
+  endif
+endif
+
+ifeq ($(WARN_UNUSED_VARS),)
+  ERL_COMPILE_FLAGS += +warn_unused_vars
+else
+  ifeq ($(WARN_UNUSED_VARS),true)
+    ERL_COMPILE_FLAGS += +warn_unused_vars
+  endif
 endif
 
 ERL_COMPILE_FLAGS += -I../../include \
@@ -87,22 +102,30 @@ ERL_COMPILE_FLAGS += -I../../include \
 # Targets
 # ----------------------------------------------------
 
-debug:
-	@$(MAKE) TYPE=debug opt
+$(filter-out opt, $(TYPES)):
+	@${MAKE} TYPE=$@ opt
 
-opt: $(TARGET_FILES)
+opt:
+	@$(MAKE) behaviour_targets
+	@$(MAKE) targets
+
+behaviour_targets: $(BEHAVIOUR_TARGET_FILES)
+
+targets: $(TARGET_FILES)
 
 
 clean:
+	rm -f $(BEHAVIOUR_TARGET_FILES) 
 	rm -f $(TARGET_FILES) 
 	rm -f core *~
 
 docs:
 
 info:
-	@echo "ERL_FILES: $(ERL_FILES)"
-	@echo "HRL_FILES: $(HRL_FILES)"
-	@echo "TARGET_FILES: $(TARGET_FILES)"
+	@echo "ERL_FILES:              $(ERL_FILES)"
+	@echo "HRL_FILES:              $(HRL_FILES)"
+	@echo "BEHAVIOUR_TARGET_FILES: $(BEHAVIOUR_TARGET_FILES)"
+	@echo "TARGET_FILES:           $(TARGET_FILES)"
 	@echo ""
 
 
@@ -116,7 +139,7 @@ release_spec: opt
 	$(INSTALL_DIR) "$(RELSYSDIR)/src/manager"
 	$(INSTALL_DATA) $(ERL_FILES) $(HRL_FILES) "$(RELSYSDIR)/src/manager"
 	$(INSTALL_DIR) "$(RELSYSDIR)/ebin"
-	$(INSTALL_DATA) $(TARGET_FILES) "$(RELSYSDIR)/ebin"
+	$(INSTALL_DATA) $(BEHAVIOUR_TARGET_FILES) $(TARGET_FILES) "$(RELSYSDIR)/ebin"
 # 	$(INSTALL_DIR) "$(RELSYSDIR)/include"
 # 	$(INSTALL_DATA) $(EXT_HRL_FILES) "$(RELSYSDIR)/include"
 

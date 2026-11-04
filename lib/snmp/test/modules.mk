@@ -2,7 +2,9 @@
 
 # %CopyrightBegin%
 #
-# Copyright Ericsson AB 2004-2014. All Rights Reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Copyright Ericsson AB 2004-2025. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -19,28 +21,31 @@
 # %CopyrightEnd%
 
 SUITE_MODULES = \
-	snmp_SUITE \
-        snmp_to_snmpnet_SUITE \
-	snmp_app_test \
-	snmp_appup_test \
-	snmp_compiler_test \
-	snmp_conf_test \
-	snmp_log_test \
-	snmp_note_store_test \
-	snmp_pdus_test \
-	snmp_agent_mibs_test \
-	snmp_agent_nfilter_test \
-	snmp_agent_test \
-	snmp_agent_test_lib \
-	snmp_manager_config_test \
-	snmp_manager_user \
-	snmp_manager_user_old \
-	snmp_manager_user_test \
-	snmp_manager_user_test_lib \
-	snmp_manager_test
+	snmp_agent_SUITE \
+	snmp_agent_conf_SUITE \
+	snmp_agent_mibs_SUITE \
+	snmp_agent_nfilter_SUITE \
+	snmp_app_SUITE \
+	snmp_compiler_SUITE \
+	snmp_conf_SUITE \
+	snmp_log_SUITE \
+	snmp_manager_config_SUITE \
+	snmp_manager_user_SUITE \
+	snmp_manager_SUITE \
+	snmp_note_store_SUITE \
+	snmp_pdus_SUITE \
+        snmp_to_snmpnet_SUITE
 
 TEST_UTIL_MODULES = \
 	snmp_test_lib \
+	snmp_agent_test_lib \
+	snmp_agent_test_get \
+	snmp_otp16649_user \
+	snmp_manager_user \
+	snmp_manager_user_old \
+	snmp_manager_user_test_lib \
+	snmp_test_global_sys_monitor \
+	snmp_test_sys_monitor \
 	snmp_test_manager \
 	snmp_test_mgr \
 	snmp_test_mgr_misc \
@@ -49,10 +54,6 @@ TEST_UTIL_MODULES = \
 	klas3 \
 	test1 \
 	test2
-
-TEST_SERVER_MODULES = \
-	snmp_test_server \
-	snmp_test_suite
 
 MODULES = \
 	$(TEST_UTIL_MODULES) \
@@ -81,6 +82,9 @@ MIB_FILES = \
 	Test1.mib \
 	Test2.mib \
 	Test3.mib
+
+NETSNMP_MIB_FILES = \
+	OTP-C64-MIB.mib
 
 SPECS = snmp.spec
 

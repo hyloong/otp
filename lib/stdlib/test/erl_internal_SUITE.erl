@@ -1,8 +1,10 @@
 %%
 %% %CopyrightBegin%
-%% 
-%% Copyright Ericsson AB 1999-2014. All Rights Reserved.
-%% 
+%%
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 1999-2025. All Rights Reserved.
+%%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
 %% You may obtain a copy of the License at
@@ -14,7 +16,7 @@
 %% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 %% See the License for the specific language governing permissions and
 %% limitations under the License.
-%% 
+%%
 %% %CopyrightEnd%
 %%
 -module(erl_internal_SUITE).
@@ -26,9 +28,11 @@
 
 -export([init_per_testcase/2, end_per_testcase/2]).
 
--include_lib("test_server/include/test_server.hrl").
+-include_lib("common_test/include/ct.hrl").
 
-suite() -> [{ct_hooks,[ts_install_cth]}].
+suite() ->
+    [{ct_hooks,[ts_install_cth]},
+     {timetrap,{minutes,2}}].
 
 all() -> 
     [behav].
@@ -49,23 +53,16 @@ end_per_group(_GroupName, Config) ->
     Config.
 
 
--define(default_timeout, ?t:minutes(2)).
-
 init_per_testcase(_Case, Config) ->
-    Dog = test_server:timetrap(?default_timeout),
-    [{watchdog, Dog}|Config].
+    Config.
 
-end_per_testcase(_Case, Config) ->
-    Dog=?config(watchdog, Config),
-    test_server:timetrap_cancel(Dog),
+end_per_testcase(_Case, _Config) ->
     ok.
 
-behav(suite) -> [];
-behav(doc) ->
-    ["Check that the behaviour callbacks are correctly defined"];
+%% Check that the behaviour callbacks are correctly defined.
 behav(_) ->
     Modules = [application, gen_server, gen_fsm, gen_event,
-               supervisor_bridge, supervisor],
+               gen_statem, supervisor_bridge, supervisor],
     lists:foreach(fun check_behav/1, Modules).
 
 check_behav(Module) ->
@@ -81,32 +78,41 @@ check_behav_list([L | L1], L2) ->
     check_behav_list(L1, L3).
 
 callbacks(application) ->
-    [{start,2}, {stop,1}];
+    [{start,2}, {stop,1}, {config_change, 3}, {prep_stop, 1}, {start_phase, 3}];
 callbacks(gen_server) ->
     [{init,1}, {handle_call,3}, {handle_cast,2},
      {handle_info,2}, {terminate,2}, {code_change,3},
-     {format_status,2}];
+     {format_status,1}, {format_status,2}, {handle_continue, 2}];
 callbacks(gen_fsm) ->
-    [{init,1}, {handle_event,3}, {handle_sync_event,4},
+    [{init,1}, {'StateName',2}, {'StateName',3},
+     {handle_event,3}, {handle_sync_event,4},
      {handle_info,3}, {terminate,3}, {code_change,4},
      {format_status,2}];
 callbacks(gen_event) ->
     [{init,1}, {handle_event,2}, {handle_call,2},
      {handle_info,2}, {terminate,2}, {code_change,3},
-     {format_status,2}];
+     {format_status,1}, {format_status,2}];
+callbacks(gen_statem) ->
+    [{init, 1}, {callback_mode, 0}, {'StateName', 3},
+     {handle_event, 4}, {terminate, 3}, {code_change, 4},
+     {format_status, 1}, {format_status, 2}];
 callbacks(supervisor_bridge) ->
     [{init,1}, {terminate,2}];
 callbacks(supervisor) ->
     [{init,1}].
 
 optional_callbacks(application) ->
-    [];
+    [{config_change, 3}, {prep_stop, 1}, {start_phase, 3}];
 optional_callbacks(gen_server) ->
-    [{format_status,2}];
+    [{handle_info, 2}, {handle_continue, 2}, {terminate, 2}, {code_change, 3}, {format_status, 1}, {format_status, 2}];
 optional_callbacks(gen_fsm) ->
-    [{format_status,2}];
+    [{'StateName', 2}, {'StateName', 3},
+     {handle_info, 3}, {terminate, 3}, {code_change, 4}, {format_status, 2}];
 optional_callbacks(gen_event) ->
-    [{format_status,2}];
+    [{handle_info, 2}, {terminate, 2}, {code_change, 3}, {format_status, 1}, {format_status, 2}];
+optional_callbacks(gen_statem) ->
+    [{'StateName', 3}, {handle_event, 4},
+     {terminate, 3}, {code_change, 4}, {format_status, 1}, {format_status, 2}];
 optional_callbacks(supervisor_bridge) ->
     [];
 optional_callbacks(supervisor) ->

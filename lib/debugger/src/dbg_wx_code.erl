@@ -1,8 +1,10 @@
 %%
 %% %CopyrightBegin%
-%% 
-%% Copyright Ericsson AB 2008-2013. All Rights Reserved.
-%% 
+%%
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2008-2025. All Rights Reserved.
+%%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
 %% You may obtain a copy of the License at
@@ -14,11 +16,12 @@
 %% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 %% See the License for the specific language governing permissions and
 %% limitations under the License.
-%% 
+%%
 %% %CopyrightEnd%
 %%
 
 -module(dbg_wx_code).
+-moduledoc false.
 
 -export([code_area/1, 
 	 load_code/2, unload_code/1, 
@@ -73,7 +76,6 @@ code_area(Parent) ->
 	       {?wxSTC_ERLANG_CHARACTER,{236,155,172}},
 	       {?wxSTC_ERLANG_MACRO,    {40,144,170}},
 	       {?wxSTC_ERLANG_RECORD,   {40,100,20}},
-	       {?wxSTC_ERLANG_SEPARATOR,{0,0,0}},
 	       {?wxSTC_ERLANG_NODE_NAME,{0,0,0}},
 	       %% Optional 2.9 stuff
 	       {?wxSTC_ERLANG_COMMENT_FUNCTION, {160,53,35}},
@@ -116,6 +118,10 @@ code_area(Parent) ->
 
     ?stc:connect(Ed, stc_doubleclick),
     ?stc:setReadOnly(Ed, true),
+    %% STC steals keyboard shortcuts on linux for some reason
+    ?stc:cmdKeyClearAll(Ed),
+    ?stc:cmdKeyAssign(Ed, ?wxSTC_KEY_DOWN, ?wxSTC_KEYMOD_NORM, ?wxSTC_CMD_LINEDOWN),
+    ?stc:cmdKeyAssign(Ed, ?wxSTC_KEY_UP, ?wxSTC_KEYMOD_NORM, ?wxSTC_CMD_LINEUP),
     Ed.
 
 load_code(Ed, Code) ->
@@ -127,20 +133,22 @@ load_code(Ed, Code) ->
     %%io:format("~p ~p ~p~n", [Lines, Sz, LW]),
     ?stc:setMarginWidth(Ed, 0, LW+5),
     ?stc:setReadOnly(Ed, true),
-    Ed.
+    ok.
 
 unload_code(Ed) ->
     ?stc:setReadOnly(Ed, false),
     ?stc:setTextRaw(Ed, <<0:8>>),
     ?stc:setReadOnly(Ed, true),
-    Ed.
+    ok.
 
 add_break_to_code(Ed, Line, active) ->
     ?stc:markerDelete(Ed, Line-1, 1),
-    ?stc:markerAdd(Ed, Line-1, 0);
+    ?stc:markerAdd(Ed, Line-1, 0),
+    ok;
 add_break_to_code(Ed, Line, inactive) ->
     ?stc:markerDelete(Ed, Line-1, 0),
-    ?stc:markerAdd(Ed, Line-1, 1).
+    ?stc:markerAdd(Ed, Line-1, 1),
+    ok.
 
 del_break_from_code(Ed,Line) ->
     ?stc:markerDelete(Ed, Line-1, 0),
@@ -188,6 +196,6 @@ find(Ed, Str, Case, Next) ->
    
 keyWords() ->
     L = ["after","begin","case","try","cond","catch","andalso","orelse",
-	 "end","fun","if","let","of","query","receive","when","bnot","not",
+	 "end","fun","if","let","of","receive","when","bnot","not",
 	 "div","rem","band","and","bor","bxor","bsl","bsr","or","xor"],
     lists:flatten([K ++ " " || K <- L] ++ [0]).

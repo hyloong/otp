@@ -1,8 +1,10 @@
 /*
  * %CopyrightBegin%
- * 
- * Copyright Ericsson AB 2001-2014. All Rights Reserved.
- * 
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Copyright Ericsson AB 2001-2025. All Rights Reserved.
+ *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
@@ -14,7 +16,7 @@
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  * See the License for the specific language governing permissions and
  * limitations under the License.
- * 
+ *
  * %CopyrightEnd%
  *
 
@@ -22,10 +24,6 @@
 /*
  * ei_x_encode to encode in a self-expanding buffer
  */
-
-#ifdef VXWORKS
-#include <vxWorks.h>
-#endif
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -71,9 +69,13 @@ int x_fix_buff(ei_x_buff* x, int szneeded)
 {
     int sz = szneeded + ei_x_extra;
     if (sz > x->buffsz) {
-	sz += ei_x_extra;	/* to avoid reallocating each and every time */
-	x->buffsz = sz;
-	x->buff = ei_realloc(x->buff, sz);
+        char* newbuff;
+        sz += ei_x_extra;       /* to avoid reallocating each and every time */
+        newbuff = ei_realloc(x->buff, sz);
+        if (newbuff == NULL)
+            return 0;           /* leave x->buff and x->buffsz intact on failure */
+        x->buff = newbuff;
+        x->buffsz = sz;
     }
     return x->buff != NULL;
 }
@@ -115,6 +117,16 @@ int ei_x_encode_binary(ei_x_buff* x, const void* p, int len)
     if (!x_fix_buff(x, i))
 	return -1;
     return ei_encode_binary(x->buff, &x->index, p, len);
+}
+
+int ei_x_encode_bitstring(ei_x_buff* x, const char* p, size_t bitoffs, size_t bits)
+{
+    int i = x->index;
+    if (ei_encode_bitstring(NULL, &i, p, bitoffs, bits) == -1)
+      return -1;
+    if (!x_fix_buff(x, i))
+	return -1;
+    return ei_encode_bitstring(x->buff, &x->index, p, bitoffs, bits);
 }
 
 int ei_x_encode_long(ei_x_buff* x, long n)

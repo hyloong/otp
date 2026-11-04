@@ -1,37 +1,41 @@
 %%
 %% %CopyrightBegin%
-%% 
-%% Copyright Ericsson AB 2004-2015. All Rights Reserved.
-%% 
-%% The contents of this file are subject to the Erlang Public License,
-%% Version 1.1, (the "License"); you may not use this file except in
-%% compliance with the License. You should have received a copy of the
-%% Erlang Public License along with this software. If not, it can be
-%% retrieved online at http://www.erlang.org/.
-%% 
-%% Software distributed under the License is distributed on an "AS IS"
-%% basis, WITHOUT WARRANTY OF ANY KIND, either express or implied. See
-%% the License for the specific language governing rights and limitations
-%% under the License.
-%% 
+%%
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2004-2026. All Rights Reserved.
+%%
+%% Licensed under the Apache License, Version 2.0 (the "License");
+%% you may not use this file except in compliance with the License.
+%% You may obtain a copy of the License at
+%%
+%%     http://www.apache.org/licenses/LICENSE-2.0
+%%
+%% Unless required by applicable law or agreed to in writing, software
+%% distributed under the License is distributed on an "AS IS" BASIS,
+%% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+%% See the License for the specific language governing permissions and
+%% limitations under the License.
+%%
 %% %CopyrightEnd%
 %%
 %%
 
 -module(ssh_trpt_test_lib).
 
-%%-compile(export_all).
-
 -export([exec/1, exec/2,
+	 instantiate/2,
 	 format_msg/1,
-	 server_host_port/1
+	 server_host_port/1,
+         return_value/1,
+         set_timeout/2
 	]
        ).
 
 -include_lib("common_test/include/ct.hrl").
--include_lib("ssh/src/ssh.hrl").		% ?UINT32, ?BYTE, #ssh{} ...
--include_lib("ssh/src/ssh_transport.hrl").
--include_lib("ssh/src/ssh_auth.hrl").
+-include("ssh.hrl").		% ?UINT32, ?BYTE, #ssh{} ...
+-include("ssh_transport.hrl").
+-include("ssh_auth.hrl").
 
 %%%----------------------------------------------------------------
 -record(s, {
@@ -40,15 +44,22 @@
 	  opts = [],
 	  timeout = 5000,			% ms
 	  seen_hello = false,
-	  enc = <<>>,
 	  ssh = #ssh{},				% #ssh{}
 	  alg_neg = {undefined,undefined},      % {own_kexinit, peer_kexinit}
 	  alg,                                  % #alg{}
 	  vars = dict:new(),
-	  reply = [],				% Some repy msgs are generated hidden in ssh_transport :[
+	  reply = [],				% Some reply msgs are generated hidden in ssh_transport :[
 	  prints = [],
-	  return_value
-	 }).
+	  return_value,
+
+          %% Packet retrieval and decryption
+          decrypted_data_buffer     = <<>>,
+          encrypted_data_buffer     = <<>>,
+          aead_data                 = <<>>,
+          undecrypted_packet_length,
+
+          guess_sent = false
+         }).
 
 -define(role(S), ((S#s.ssh)#ssh.role) ).
 
@@ -69,10 +80,13 @@ exec(L, S) when is_list(L) -> lists:foldl(fun exec/2, S, L);
 exec(Op, S0=#s{}) ->
     S1 = init_op_traces(Op, S0),
     try seqnum_trace(
-	  op(Op, S1))
+	  op(Op, S1), S1)
     of
 	S = #s{} ->
-	    print_traces(S),
+	    case proplists:get_value(silent,S#s.opts) of
+		true -> ok;
+		_ -> print_traces(S)
+	    end,
 	    {ok,S}
     catch
 	{fail,Reason,Se} ->
@@ -81,15 +95,19 @@ exec(Op, S0=#s{}) ->
 
 	throw:Term ->
 	    report_trace(throw, Term, S1),
-	    throw(Term);
+	    throw({Term,Op});
 
-	error:Error ->
+	error:Error:St ->
+            ct:log("Stacktrace=~n~p", [St]),
 	    report_trace(error, Error, S1),
-	    error(Error);
+	    error({Error,Op});
 
 	exit:Exit ->
 	    report_trace(exit, Exit, S1),
-	    exit(Exit)
+	    exit({Exit,Op});
+        Cls:Err ->
+            ct:log("Class=~p, Error=~p", [Cls,Err]),
+            error({"fooooooO",Op})
     end;
 exec(Op, {ok,S=#s{}}) -> exec(Op, S);
 exec(_, Error) -> Error.
@@ -107,20 +125,20 @@ op({accept,Opts}, S) when ?role(S) == server ->
     {ok,Socket} = gen_tcp:accept(S#s.listen_socket, S#s.timeout),
     {Host,_Port} = ok(inet:sockname(Socket)),
     S#s{socket = Socket,
-	ssh = init_ssh(server,Socket,[{host,host(Host)}|Opts]),
+	ssh = init_ssh(server, Socket, host(Host), Opts),
 	return_value = ok};
 
 %%%---- Client ops
 op({connect,Host,Port,Opts}, S) when ?role(S) == undefined -> 
     Socket = ok(gen_tcp:connect(host(Host), Port, mangle_opts([]))),
     S#s{socket = Socket,
-	ssh = init_ssh(client, Socket, [{host,host(Host)}|Opts]),
+	ssh = init_ssh(client, Socket, host(Host), Opts),
 	return_value = ok};
 
 %%%---- ops for both client and server
 op(close_socket, S) ->
-    catch tcp_gen:close(S#s.socket),
-    catch tcp_gen:close(S#s.listen_socket),
+    catch gen_tcp:close(S#s.socket),
+    catch gen_tcp:close(S#s.listen_socket),
     S#s{socket = undefined,
 	listen_socket = undefined,
 	return_value = ok};
@@ -289,13 +307,14 @@ instantiate(X, _S) ->
 
 %%%================================================================
 %%%
-init_ssh(Role, Socket, Options0) ->
-    Options = [{user_interaction,false}
-	       | Options0],
-    ssh_connection_handler:init_ssh(Role,
-				    {2,0},
-				    lists:concat(["SSH-2.0-ErlangTestLib ",Role]),
-				    Options, Socket).
+init_ssh(Role, Socket, Host, UserOptions0) ->
+    UserOptions = [{user_interaction, false},
+                   {vsn, {2,0}},
+                   {id_string, "ErlangTestLib"}
+                   | UserOptions0],
+    Opts = ?PUT_INTERNAL_OPT({host,Host},
+                             ssh_options:handle_options(Role, UserOptions)),
+    ssh_connection_handler:init_ssh_record(Role, Socket, Opts).
 
 mangle_opts(Options) ->
     SysOpts = [{reuseaddr, true},
@@ -306,8 +325,7 @@ mangle_opts(Options) ->
 				   lists:keydelete(K,1,Opts)
 			   end, Options, SysOpts).
     
-host({0,0,0,0}) -> "localhost";
-host(H) -> H.
+host(H) -> ssh_test_lib:ntoa(ssh_test_lib:mangle_connect_address(H)).
 
 %%%----------------------------------------------------------------
 send(S=#s{ssh=C}, hello) ->
@@ -319,6 +337,35 @@ send(S=#s{ssh=C}, hello) ->
 
 send(S0, ssh_msg_kexinit) ->
     {Msg, _Bytes, _C0} = ssh_transport:key_exchange_init_msg(S0#s.ssh),
+    S = maybe_reset_alg_neg_and_guess_sent(S0),
+    send(S, Msg);
+
+send(S0, ssh_msg_kexinit_guess) ->
+    {Msg, _Bytes, _C0} = ssh_transport:key_exchange_init_msg(S0#s.ssh),
+    S = maybe_reset_alg_neg_and_guess_sent(S0),
+    send(S, Msg#ssh_msg_kexinit{first_kex_packet_follows = true});
+
+send(S0, start_incomplete_renegotiation) ->
+    {_Msg, Bytes, Ssh} = ssh_transport:key_exchange_init_msg(S0#s.ssh),
+    send(S0#s{ssh = Ssh}, Bytes);
+
+send(S0, ssh_msg_ignore) ->
+    Msg = #ssh_msg_ignore{data = "unexpected_ignore_message"},
+    send(S0, Msg);
+
+send(S0, ssh_msg_debug) ->
+    Msg = #ssh_msg_debug{
+             always_display = true,
+             message = "some debug message",
+             language = "en"},
+    send(S0, Msg);
+
+send(S0, ssh_msg_unimplemented) ->
+    Msg = #ssh_msg_unimplemented{sequence = 123},
+    send(S0, Msg);
+
+send(S0, ssh_msg_unknown) ->
+    Msg = binary:encode_hex(<<"0000000C060900000000000000000000">>),
     send(S0, Msg);
 
 send(S0=#s{alg_neg={undefined,PeerMsg}}, Msg=#ssh_msg_kexinit{}) ->
@@ -326,14 +373,15 @@ send(S0=#s{alg_neg={undefined,PeerMsg}}, Msg=#ssh_msg_kexinit{}) ->
 	     fun(X) when X==true;X==detail -> {"Send~n~s~n",[format_msg(Msg)]} end),
     S2 = case PeerMsg of
 	     #ssh_msg_kexinit{} ->
-		 try ssh_transport:handle_kexinit_msg(PeerMsg, Msg, S1#s.ssh) of
+		 ReNeg = get_renegotiation_flag(S1),
+		 try ssh_transport:handle_kexinit_msg(PeerMsg, Msg, S1#s.ssh, ReNeg) of
 		     {ok,Cx} when ?role(S1) == server ->
 			 S1#s{alg = Cx#ssh.algorithms};
 		     {ok,_NextKexMsgBin,Cx} when ?role(S1) == client ->
 			 S1#s{alg = Cx#ssh.algorithms}
 		 catch
 		     Class:Exc ->
-			 save_prints({"Algoritm negotiation failed at line ~p:~p~n~p:~s~nPeer: ~s~n Own: ~s~n",
+			 save_prints({"Algorithm negotiation failed at line ~p:~p~n~p:~s~nPeer: ~s~n Own: ~s~n",
 				      [?MODULE,?LINE,Class,format_msg(Exc),format_msg(PeerMsg),format_msg(Msg)]},
 				     S1)
 		 end;
@@ -345,24 +393,30 @@ send(S0=#s{alg_neg={undefined,PeerMsg}}, Msg=#ssh_msg_kexinit{}) ->
 			  alg_neg = {Msg,PeerMsg},
 			  ssh = C});
 
-send(S0, ssh_msg_kexdh_init) when ?role(S0) == client ->
-    {OwnMsg, PeerMsg} = S0#s.alg_neg,
-    {ok, NextKexMsgBin, C} = 
-	try ssh_transport:handle_kexinit_msg(PeerMsg, OwnMsg, S0#s.ssh)
-	catch
-	    Class:Exc ->
-		fail("Algoritm negotiation failed!",
-		     {"Algoritm negotiation failed at line ~p:~p~n~p:~s~nPeer: ~s~n Own: ~s",
-		      [?MODULE,?LINE,Class,format_msg(Exc),format_msg(PeerMsg),format_msg(OwnMsg)]},
-		     S0)
-	end,
-    S = opt(print_messages, S0,
-	    fun(X) when X==true;X==detail -> 
-		    #ssh{keyex_key = {{_Private, Public}, {_G, _P}}} = C,
-		    Msg = #ssh_msg_kexdh_init{e = Public},
-		    {"Send (reconstructed)~n~s~n",[format_msg(Msg)]}
-	    end),
-    send_bytes(NextKexMsgBin, S#s{ssh = C});
+send(S0=#s{alg_neg={OwnMsg, PeerMsg}}, MsgType) when ?role(S0) == client,
+                                                     (MsgType == ssh_msg_kexdh_init orelse
+                                                      MsgType == ssh_msg_kex_ecdh_init orelse
+                                                      MsgType == ssh_msg_kex_hybrid_init) ->
+    {NextKexMsgBin, S} = handle_first_kex_msg_to_send(MsgType, PeerMsg, OwnMsg, S0),
+    send_bytes(NextKexMsgBin, S);
+
+send(S0=#s{alg_neg={OwnMsg, PeerMsg}}, ssh_msg_kexdh_init_dup = MsgType) when ?role(S0) == client ->
+    {NextKexMsgBin, S} = handle_first_kex_msg_to_send(MsgType, PeerMsg, OwnMsg, S0),
+    send_bytes(NextKexMsgBin, S),
+    send_bytes(NextKexMsgBin, S);
+
+send(S0=#s{alg_neg={OwnMsg, PeerMsg}}, MsgType) when ?role(S0) == client,
+                                                     (MsgType == ssh_msg_kexdh_init_guess orelse
+                                                      MsgType == ssh_msg_kex_ecdh_init_guess orelse
+                                                      MsgType == ssh_msg_kex_hybrid_init_guess) ->
+    %% Force our preferred algorithms to be negotiated, this allows client to make an
+    %% incorrect guess
+    #ssh_msg_kexinit{kex_algorithms = OwnKex,
+                     server_host_key_algorithms = OwnPublicKey} = OwnMsg,
+    PeerModified = PeerMsg#ssh_msg_kexinit{kex_algorithms = OwnKex,
+                                           server_host_key_algorithms = OwnPublicKey},
+    {NextKexMsgBin, S} = handle_first_kex_msg_to_send(MsgType, PeerModified, OwnMsg, S0),
+    send_bytes(NextKexMsgBin, S#s{guess_sent = true});
 
 send(S0, ssh_msg_kexdh_reply) ->
     Bytes = proplists:get_value(ssh_msg_kexdh_reply, S0#s.reply),
@@ -382,7 +436,26 @@ send(S0, Line) when is_binary(Line) ->
 	    fun(X) when X==true;X==detail -> {"Send line~n~p~n",[Line]} end),
     send_bytes(Line, S#s{return_value = Line});
 
-%%% Msg = #ssh_msg_*{}
+send(S0, {special,Msg,PacketFun}) when is_tuple(Msg),
+				       is_function(PacketFun,2) ->
+    S = opt(print_messages, S0,
+	    fun(X) when X==true;X==detail -> {"Send~n~s~n",[format_msg(Msg)]} end),
+    {Packet, C} = PacketFun(Msg, S#s.ssh),
+    send_bytes(Packet, S#s{ssh = C, %%inc_send_seq_num(C),
+			   return_value = Msg});
+
+send(S0, #ssh_msg_newkeys{} = Msg) ->
+    S = opt(print_messages, S0,
+	    fun(X) when X==true;X==detail -> {"Send~n~s~n",[format_msg(Msg)]} end),
+    {ok, Packet, C} = ssh_transport:new_keys_message(S#s.ssh),
+    send_bytes(Packet, S#s{ssh = C});
+
+send(S0, #ssh_msg_userauth_success{} = Msg) ->
+    S = opt(print_messages, S0,
+        fun(X) when X==true;X==detail -> {"Send~n~s~n",[format_msg(Msg)]} end),
+    {Packet, C} = ssh_transport:ssh_packet(Msg, S#s.ssh),
+    send_bytes(Packet, S#s{ssh = C#ssh{authenticated = true}, return_value = Msg});
+
 send(S0, Msg) when is_tuple(Msg) ->
     S = opt(print_messages, S0,
 	    fun(X) when X==true;X==detail -> {"Send~n~s~n",[format_msg(Msg)]} end),
@@ -406,7 +479,7 @@ recv(S0 = #s{}) ->
 	    %% Must see hello before binary messages
 	    try_find_crlf(<<>>, S1);
 	true ->
-	    %% Has seen hello, therefore no more crlf-messages are alowed.
+	    %% Has seen hello, therefore no more crlf-messages are allowed.
 	    S = receive_binary_msg(S1),
 	    case PeerMsg = S#s.return_value of
 		#ssh_msg_kexinit{} ->
@@ -416,9 +489,9 @@ recv(S0 = #s{}) ->
 
 			{undefined,_} ->
 			    fail("2 kexint received!!", S);
-					
 			{OwnMsg, _} ->
-			    try ssh_transport:handle_kexinit_msg(PeerMsg, OwnMsg, S#s.ssh) of
+			    ReNeg = get_renegotiation_flag(S),
+			    try ssh_transport:handle_kexinit_msg(PeerMsg, OwnMsg, S#s.ssh, ReNeg) of
 				{ok,C} when ?role(S) == server ->
 				    S#s{alg_neg = {OwnMsg, PeerMsg},
 					alg = C#ssh.algorithms,
@@ -427,24 +500,37 @@ recv(S0 = #s{}) ->
 				    S#s{alg_neg = {OwnMsg, PeerMsg},
 					alg = C#ssh.algorithms}
 			    catch
-				Class:Exc ->
-				    save_prints({"Algoritm negotiation failed at line ~p:~p~n~p:~s~nPeer: ~s~n Own: ~s~n",
-						 [?MODULE,?LINE,Class,format_msg(Exc),format_msg(PeerMsg),format_msg(OwnMsg)]},
+				Class:Exc:Stacktrace ->
+				    save_prints({"Algorithm negotiation failed at line ~p:~p~n~p:~s~nPeer: ~s~n Own: ~s~nStacktrace: ~p~n",
+						 [?MODULE,?LINE,Class,format_msg(Exc),format_msg(PeerMsg),format_msg(OwnMsg), Stacktrace]},
 						S#s{alg_neg = {OwnMsg, PeerMsg}})
 			    end
 		    end;
 
-		#ssh_msg_kexdh_init{} -> % Always the server
-		    {ok, Reply, C} = ssh_transport:handle_kexdh_init(PeerMsg, S#s.ssh),
-		    S#s{ssh = C,
-			reply = [{ssh_msg_kexdh_reply,Reply} | S#s.reply]
-		       };
-		#ssh_msg_kexdh_reply{} ->
-		    {ok, _NewKeys, C} = ssh_transport:handle_kexdh_reply(PeerMsg, S#s.ssh),
-		    S#s{ssh=C#ssh{send_sequence=S#s.ssh#ssh.send_sequence}}; % Back the number
+        #ssh_msg_kexdh_init{} -> % Always the server
+            {ok, Reply, C} = ssh_transport:handle_kexdh_init(PeerMsg, S#s.ssh),
+            save_reply_after_init(ssh_msg_kexdh_reply, Reply, S, C);
+        #ssh_msg_kexdh_reply{} ->
+            {ok, _NewKeys, C} = ssh_transport:handle_kexdh_reply(PeerMsg, S#s.ssh),
+            save_keys_after_reply(S, C);
+        #ssh_msg_kex_ecdh_init{} ->
+            {ok, Reply, C} = ssh_transport:handle_kex_ecdh_init(PeerMsg, S#s.ssh),
+            save_reply_after_init(ssh_msg_kex_ecdh_reply, Reply, S, C);
+        #ssh_msg_kex_ecdh_reply{} ->
+            {ok, _NewKeys, C} = ssh_transport:handle_kex_ecdh_reply(PeerMsg, S#s.ssh),
+            save_keys_after_reply(S, C);
+        #ssh_msg_kex_hybrid_init{} ->
+            {ok, Reply, C} = ssh_transport:handle_kex_hybrid_init(PeerMsg, S#s.ssh),
+            save_reply_after_init(ssh_msg_kex_hybrid_reply, Reply, S, C);
+        #ssh_msg_kex_hybrid_reply{} ->
+            {ok, _NewKeys, C} = ssh_transport:handle_kex_hybrid_reply(PeerMsg, S#s.ssh),
+            save_keys_after_reply(S, C);
 		#ssh_msg_newkeys{} ->
 		    {ok, C} = ssh_transport:handle_new_keys(PeerMsg, S#s.ssh),
 		    S#s{ssh=C};
+		#ssh_msg_userauth_success{} -> % Always the client
+		    C = S#s.ssh,
+		    S#s{ssh = C#ssh{authenticated = true}};
 		_ ->
 		    S
 	    end
@@ -452,11 +538,11 @@ recv(S0 = #s{}) ->
 
 %%%================================================================
 try_find_crlf(Seen, S0) ->
-    case erlang:decode_packet(line,S0#s.enc,[]) of
+    case erlang:decode_packet(line,S0#s.encrypted_data_buffer,[]) of
 	{more,_} ->
-	    Line = <<Seen/binary,(S0#s.enc)/binary>>,
+	    Line = <<Seen/binary,(S0#s.encrypted_data_buffer)/binary>>,
 	    S0#s{seen_hello = {more,Line},
-		 enc = <<>>,	       % didn't find a complete line 
+		 encrypted_data_buffer = <<>>,	       % didn't find a complete line 
 				       % -> no more characters to test
 		 return_value = {more,Line}
 	       };
@@ -467,13 +553,13 @@ try_find_crlf(Seen, S0) ->
 		    S = opt(print_messages, S0, 
 			    fun(X) when X==true;X==detail -> {"Recv info~n~p~n",[Line]} end),
 		    S#s{seen_hello = false,
-			enc = Rest,
+			encrypted_data_buffer = Rest,
 			return_value = {info,Line}};
 		S1=#s{} ->
 		    S = opt(print_messages, S1,
 			fun(X) when X==true;X==detail -> {"Recv hello~n~p~n",[Line]} end),
 		    S#s{seen_hello = true,
-			enc = Rest,
+			encrypted_data_buffer = Rest,
 			return_value = {hello,Line}}
 	    end
     end.
@@ -488,80 +574,92 @@ handle_hello(Bin, S=#s{ssh=C}) ->
 	{{Vp,Vs}, server} ->   S#s{ssh = C#ssh{c_vsn=Vp, c_version=Vs}}
     end.
 
-receive_binary_msg(S0=#s{ssh=C0=#ssh{decrypt_block_size = BlockSize,
-				     recv_mac_size = MacSize
-				    }
-			}) ->
-    case size(S0#s.enc) >= max(8,BlockSize) of
-	false ->
-	    %% Need more bytes to decode the packet_length field
-	    Remaining = max(8,BlockSize) - size(S0#s.enc),
-	    receive_binary_msg( receive_wait(Remaining, S0) );
-	true ->
-	    %% Has enough bytes to decode the packet_length field
-	    {_, <<?UINT32(PacketLen), _/binary>>, _} =
-		ssh_transport:decrypt_blocks(S0#s.enc, BlockSize, C0), % FIXME: BlockSize should be at least 4
+receive_binary_msg(S0=#s{}) ->
+     case ssh_transport:handle_packet_part(
+           S0#s.decrypted_data_buffer,
+           S0#s.encrypted_data_buffer,
+           S0#s.aead_data,
+           S0#s.undecrypted_packet_length,
+           S0#s.ssh)
+     of
+         {packet_decrypted, DecryptedBytes, EncryptedDataRest, Ssh1} ->
+             S1 = S0#s{ssh = Ssh1#ssh{recv_sequence =
+                                          ssh_transport:next_seqnum(undefined,
+                                                                    Ssh1#ssh.recv_sequence,
+                                                                    false)},
+                       decrypted_data_buffer = <<>>,
+                       undecrypted_packet_length = undefined,
+                       aead_data = <<>>,
+                       encrypted_data_buffer = EncryptedDataRest},
+             case
+                 catch ssh_message:decode(set_prefix_if_trouble(DecryptedBytes,S1))
+             of
+                 {'EXIT',_} -> fail(decode_failed,S1);
 
-	    %% FIXME: Check that ((4+PacketLen) rem BlockSize) == 0 ?
-
-	    S1 = if
-		     PacketLen > ?SSH_MAX_PACKET_SIZE ->
-			 fail({too_large_message,PacketLen},S0);        % FIXME: disconnect
-
-		     ((4+PacketLen) rem BlockSize) =/= 0 ->
-			 fail(bad_packet_length_modulo, S0); % FIXME: disconnect
-
-		     size(S0#s.enc) >= (4 + PacketLen + MacSize) ->
-			 %% has the whole packet
-			 S0;
-
-		     true ->
-			 %% need more bytes to get have the whole packet
-			 Remaining = (4 + PacketLen + MacSize) - size(S0#s.enc),
-			 receive_wait(Remaining, S0)
-		 end,
-
-	    %% Decrypt all, including the packet_length part (re-use the initial #ssh{})
-	    {C1, SshPacket = <<?UINT32(_),?BYTE(PadLen),Tail/binary>>, EncRest} = 
-		ssh_transport:decrypt_blocks(S1#s.enc, PacketLen+4, C0),
-	    
-	    PayloadLen = PacketLen - 1 - PadLen,
-	    <<CompressedPayload:PayloadLen/binary, _Padding:PadLen/binary>> = Tail,
-
-	    {C2, Payload} = ssh_transport:decompress(C1, CompressedPayload),
-
-	    <<Mac:MacSize/binary, Rest/binary>> = EncRest,
-
-	    case {ssh_transport:is_valid_mac(Mac, SshPacket, C2),
-		  catch ssh_message:decode(Payload)}
-	    of
-		{false,         _} -> fail(bad_mac,S1);
-		{_,    {'EXIT',_}} -> fail(decode_failed,S1);
-
-		{true, Msg} ->
-		    C3 = case Msg of
-			     #ssh_msg_kexinit{} ->
-				 ssh_transport:key_init(opposite_role(C2), C2, Payload);
-			     _ ->
-				 C2
+                 Msg ->
+                     Ssh2 = case Msg of
+                              #ssh_msg_kexinit{} ->
+                                  ssh_transport:key_init(opposite_role(Ssh1), Ssh1, DecryptedBytes);
+                              _ ->
+                                  Ssh1
 			 end,
-		    S2 = opt(print_messages, S1,
-			     fun(X) when X==true;X==detail -> {"Recv~n~s~n",[format_msg(Msg)]} end),
-		    S3 = opt(print_messages, S2, 
-			     fun(detail) -> {"decrypted bytes ~p~n",[SshPacket]} end),
-		    S3#s{ssh = inc_recv_seq_num(C3),
-			 enc = Rest,
-			 return_value = Msg
-			}
-	    end
-    end.
+                     S2 = opt(print_messages, S1,
+                              fun(X) when X==true;X==detail -> {"Recv~n~s~n",[format_msg(Msg)]} end),
+                     S3 = opt(print_messages, S2, 
+                              fun(detail) -> {"decrypted bytes ~p~n",[DecryptedBytes]} end),
+                     S3#s{ssh = inc_recv_seq_num(Ssh2),
+                          return_value = Msg
+                         }
+             end;
+
+         {get_more, DecryptedBytes, EncryptedDataRest, AeadData, TotalNeeded, Ssh1} ->
+             %% Here we know that there are not enough bytes in
+             %% EncryptedDataRest to use. We must wait for more.
+             Remaining = case TotalNeeded of
+                             undefined -> 8;
+                             _ -> TotalNeeded - size(DecryptedBytes) - size(EncryptedDataRest)
+                         end,
+             receive_binary_msg(
+               receive_wait(Remaining,
+                            S0#s{encrypted_data_buffer = EncryptedDataRest,
+                                 decrypted_data_buffer = DecryptedBytes,
+                                 undecrypted_packet_length = TotalNeeded,
+                                 aead_data = AeadData,
+                                 ssh = Ssh1}
+                           ))
+     end.
+
+
+
+set_prefix_if_trouble(Msg = <<?BYTE(Op),_/binary>>, #s{alg=#alg{kex=Kex}})
+  when Op == 30;
+       Op == 31
+       ->
+    case catch atom_to_list(Kex) of
+        "ecdh-sha2-" ++ _ ->
+            <<"ecdh",Msg/binary>>;
+        "curve25519-" ++ _ ->
+            <<"ecdh",Msg/binary>>;
+        "curve448-" ++ _ ->
+            <<"ecdh",Msg/binary>>;
+        "diffie-hellman-group-exchange-" ++ _ ->
+            <<"dh_gex",Msg/binary>>;
+        "diffie-hellman-group" ++ _ ->
+            <<"dh",Msg/binary>>;
+        "mlkem768x25519" ++ _ ->
+            <<"mlkem",Msg/binary>>;
+        _ ->
+            Msg
+    end;
+set_prefix_if_trouble(Msg, _) ->
+    Msg.
 
 
 receive_poll(S=#s{socket=Sock}) -> 
     inet:setopts(Sock, [{active,once}]),
     receive
 	{tcp,Sock,Data} ->
-	    receive_poll( S#s{enc = <<(S#s.enc)/binary,Data/binary>>} );
+	    receive_poll( S#s{encrypted_data_buffer = <<(S#s.encrypted_data_buffer)/binary,Data/binary>>} );
 	{tcp_closed,Sock} ->
 	    throw({tcp,tcp_closed});
 	{tcp_error, Sock, Reason} ->
@@ -575,7 +673,7 @@ receive_wait(S=#s{socket=Sock,
     inet:setopts(Sock, [{active,once}]),
     receive
 	{tcp,Sock,Data} ->
-	    S#s{enc = <<(S#s.enc)/binary,Data/binary>>};
+	    S#s{encrypted_data_buffer = <<(S#s.encrypted_data_buffer)/binary,Data/binary>>};
 	{tcp_closed,Sock} ->
 	    throw({tcp,tcp_closed});
 	{tcp_error, Sock, Reason} ->
@@ -586,11 +684,11 @@ receive_wait(S=#s{socket=Sock,
 
 receive_wait(N, S=#s{socket=Sock,
 		     timeout=Timeout,
-		     enc=Enc0}) when N>0 ->
+		     encrypted_data_buffer=Enc0}) when N>0 ->
     inet:setopts(Sock, [{active,once}]),
     receive
 	{tcp,Sock,Data} ->
-	    receive_wait(N-size(Data), S#s{enc = <<Enc0/binary,Data/binary>>});
+	    receive_wait(N-size(Data), S#s{encrypted_data_buffer = <<Enc0/binary,Data/binary>>});
 	{tcp_closed,Sock} ->
 	    throw({tcp,tcp_closed});
 	{tcp_error, Sock, Reason} ->
@@ -621,7 +719,7 @@ ok({error,E}) -> erlang:error(E).
 
 %%%================================================================
 %%%
-%%% Formating of records
+%%% Formatting of records
 %%% 
 
 format_msg(M) -> format_msg(M, 0).
@@ -656,6 +754,10 @@ fields(M) ->
 	#ssh_msg_kex_dh_gex_request_old{} -> record_info(fields, ssh_msg_kex_dh_gex_request_old);
 	#ssh_msg_kexdh_init{} -> record_info(fields, ssh_msg_kexdh_init);
 	#ssh_msg_kexdh_reply{} -> record_info(fields, ssh_msg_kexdh_reply);
+	#ssh_msg_kex_ecdh_init{} -> record_info(fields, ssh_msg_kex_ecdh_init);
+	#ssh_msg_kex_ecdh_reply{} -> record_info(fields, ssh_msg_kex_ecdh_reply);
+	#ssh_msg_kex_hybrid_init{} -> record_info(fields, ssh_msg_kex_hybrid_init);
+	#ssh_msg_kex_hybrid_reply{} -> record_info(fields, ssh_msg_kex_hybrid_reply);
 	#ssh_msg_kexinit{} -> record_info(fields, ssh_msg_kexinit);
 	#ssh_msg_newkeys{} -> record_info(fields, ssh_msg_newkeys);
 	#ssh_msg_service_accept{} -> record_info(fields, ssh_msg_service_accept);
@@ -696,23 +798,23 @@ report_trace(Class, Term, S) ->
 	  fun(true) -> {"~s ~p",[Class,Term]} end)
      ).
 
-seqnum_trace(S) ->
+seqnum_trace(S, S0) ->
     opt(print_seqnums, S,
-	fun(true) when S#s.ssh#ssh.send_sequence =/= S#s.ssh#ssh.send_sequence,
-		       S#s.ssh#ssh.recv_sequence =/= S#s.ssh#ssh.recv_sequence ->
+	fun(true) when S0#s.ssh#ssh.send_sequence =/= S#s.ssh#ssh.send_sequence,
+		       S0#s.ssh#ssh.recv_sequence =/= S#s.ssh#ssh.recv_sequence ->
 		{"~p seq num: send ~p->~p,  recv ~p->~p~n",
 		 [?role(S),
-		  S#s.ssh#ssh.send_sequence, S#s.ssh#ssh.send_sequence,
-		  S#s.ssh#ssh.recv_sequence, S#s.ssh#ssh.recv_sequence
+		  S0#s.ssh#ssh.send_sequence, S#s.ssh#ssh.send_sequence,
+		  S0#s.ssh#ssh.recv_sequence, S#s.ssh#ssh.recv_sequence
 		 ]};
-	   (true) when S#s.ssh#ssh.send_sequence =/=  S#s.ssh#ssh.send_sequence ->
+	   (true) when S0#s.ssh#ssh.send_sequence =/=  S#s.ssh#ssh.send_sequence ->
 		{"~p seq num: send ~p->~p~n",
 		 [?role(S),
-		  S#s.ssh#ssh.send_sequence, S#s.ssh#ssh.send_sequence]};
-	   (true) when S#s.ssh#ssh.recv_sequence =/=  S#s.ssh#ssh.recv_sequence ->
+		  S0#s.ssh#ssh.send_sequence, S#s.ssh#ssh.send_sequence]};
+	   (true) when S0#s.ssh#ssh.recv_sequence =/=  S#s.ssh#ssh.recv_sequence ->
 		{"~p seq num: recv ~p->~p~n",
 		 [?role(S),
-		  S#s.ssh#ssh.recv_sequence, S#s.ssh#ssh.recv_sequence]}
+		  S0#s.ssh#ssh.recv_sequence, S#s.ssh#ssh.recv_sequence]}
 	end).
 
 print_traces(S) when S#s.prints == [] -> S;
@@ -724,7 +826,7 @@ print_traces(S) ->
 		      [case Len-length(Acc)-1 of
 			   0 ->
 			       io_lib:format(Fmt,Args);
-			   N ->
+			   _N ->
 			       io_lib:format(lists:concat(['~p --------~n',Fmt]),
 					     [Len-length(Acc)-1|Args])
 		       end | Acc]
@@ -741,3 +843,72 @@ opt(Flag, S, Fun) when is_function(Fun,1) ->
 
 save_prints({Fmt,Args}, S) -> 
     S#s{prints = [{Fmt,Args}|S#s.prints]}.
+
+return_value(#s{return_value = ReturnValue}) ->
+    ReturnValue.
+
+set_timeout(S, Timeout) ->
+    S#s{timeout = Timeout}.
+
+%%% Common part of handling first kex messages that are about to be sent
+handle_first_kex_msg_to_send(MsgType, PeerMsg, OwnMsg, S0) ->
+    ReNeg = get_renegotiation_flag(S0),
+    {ok, NextKexMsgBin, C} =
+        try ssh_transport:handle_kexinit_msg(PeerMsg, OwnMsg, S0#s.ssh, ReNeg)
+        catch
+            Class:Exc ->
+                fail("Algorithm negotiation failed!",
+                     {"Algorithm negotiation failed at line ~p:~p~n~p:~s~nPeer: ~s~n Own: ~s",
+                      [?MODULE,?LINE,Class,format_msg(Exc),format_msg(PeerMsg),format_msg(OwnMsg)]},
+                     S0)
+        end,
+    S = opt(print_messages, S0,
+            fun(X) when X==true;X==detail ->
+                    case MsgType of
+                        Dh when Dh == ssh_msg_kexdh_init;
+                                Dh == ssh_msg_kexdh_init_guess;
+                                Dh == ssh_msg_kexdh_init_dup ->
+                            #ssh{keyex_key = {{_Private, Public}, {_G, _P}}} = C,
+                            Msg = #ssh_msg_kexdh_init{e = Public},
+                            {"Send (reconstructed)~n~s~n",[format_msg(Msg)]};
+                        Ecdh when Ecdh == ssh_msg_kex_ecdh_init;
+                                  Ecdh == ssh_msg_kex_ecdh_init_guess ->
+                            #ssh{keyex_key = {{_Private, Public}, _Curve}} = C,
+                            Msg = #ssh_msg_kex_ecdh_init{q_c = Public},
+                            {"Send (reconstructed)~n~s~n",[format_msg(Msg)]};
+                        Hybrid when Hybrid == ssh_msg_kex_hybrid_init;
+                                    Hybrid == ssh_msg_kex_hybrid_init_guess ->
+                            #ssh{keyex_key = {{mlkem768, {C_publickey2, _C_privkey2}},
+                                              {_Curve, {C_publickey1, _C_privkey1}}}} = C,
+                            Msg = #ssh_msg_kex_hybrid_init{c_init = {C_publickey2, C_publickey1}},
+                            {"Send (reconstructed)~n~s~n",[format_msg(Msg)]}
+                    end
+            end),
+    {NextKexMsgBin, S#s{ssh = C}}.
+
+%%% Functions to update state after messages are received
+save_reply_after_init(ReplyType, Reply, S, C) ->
+    S#s{ssh = C, reply = [{ReplyType, Reply} | S#s.reply]}.
+save_keys_after_reply(S, C) ->
+    S#s{ssh = (S#s.ssh)#ssh{shared_secret = C#ssh.shared_secret,
+                            exchanged_hash = C#ssh.exchanged_hash,
+                            session_id = C#ssh.session_id}}.
+
+%%%================================================================
+%%%
+%%% Guess functionality
+%%%
+
+%%% Check if we're doing renegotiation or we're sending another kex message after guessing wrong
+%%% This will return renegotiate if send_mac is set, or if guess message was sent.
+get_renegotiation_flag(#s{ssh = #ssh{send_mac = none}, guess_sent = false}) ->
+    init;
+get_renegotiation_flag(_) ->
+    renegotiate.
+
+%%% Reset algorithm negotiation state and guess_sent flag if we're starting renegotiation
+maybe_reset_alg_neg_and_guess_sent(#s{ssh = #ssh{send_mac = none}} = S) ->
+    S;
+maybe_reset_alg_neg_and_guess_sent(S) ->
+    S#s{alg_neg = {undefined, undefined}, guess_sent = false}.
+

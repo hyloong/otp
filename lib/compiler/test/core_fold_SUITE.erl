@@ -1,8 +1,10 @@
 %%
 %% %CopyrightBegin%
-%% 
-%% Copyright Ericsson AB 2007-2013. All Rights Reserved.
-%% 
+%%
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2007-2026. All Rights Reserved.
+%%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
 %% You may obtain a copy of the License at
@@ -14,7 +16,7 @@
 %% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 %% See the License for the specific language governing permissions and
 %% limitations under the License.
-%% 
+%%
 %% %CopyrightEnd%
 %%
 -module(core_fold_SUITE).
@@ -25,16 +27,21 @@
 	 eq/1,nested_call_in_case/1,guard_try_catch/1,coverage/1,
 	 unused_multiple_values_error/1,unused_multiple_values/1,
 	 multiple_aliases/1,redundant_boolean_clauses/1,
-	 mixed_matching_clauses/1,unnecessary_building/1]).
+	 mixed_matching_clauses/1,unnecessary_building/1,
+	 no_no_file/1,configuration/1,supplies/1,
+         redundant_stack_frame/1,export_from_case/1,
+         empty_values/1,cover_letrec_effect/1,
+         receive_effect/1,nested_lets/1,
+         map_effect/1]).
 
 -export([foo/0,foo/1,foo/2,foo/3]).
 
--include_lib("test_server/include/test_server.hrl").
+-include_lib("common_test/include/ct.hrl").
+-include_lib("stdlib/include/assert.hrl").
 
 suite() -> [{ct_hooks,[ts_install_cth]}].
 
 all() -> 
-    test_lib:recompile(?MODULE),
     [{group,p}].
 
 groups() -> 
@@ -43,10 +50,15 @@ groups() ->
        eq,nested_call_in_case,guard_try_catch,coverage,
        unused_multiple_values_error,unused_multiple_values,
        multiple_aliases,redundant_boolean_clauses,
-       mixed_matching_clauses,unnecessary_building]}].
-
+       mixed_matching_clauses,unnecessary_building,
+       no_no_file,configuration,supplies,
+       redundant_stack_frame,export_from_case,
+       empty_values,cover_letrec_effect,
+       receive_effect,nested_lets,
+       map_effect]}].
 
 init_per_suite(Config) ->
+    test_lib:recompile(?MODULE),
     Config.
 
 end_per_suite(_Config) ->
@@ -61,8 +73,8 @@ end_per_group(_GroupName, Config) ->
 
 t_element(Config) when is_list(Config) ->
     X = make_ref(),
-    ?line X = id(element(1, {X,y,z})),
-    ?line b = id(element(2, {a,b,c,d})),
+    X = id(element(1, {X,y,z})),
+    b = id(element(2, {a,b,c,d})),
     (fun() ->
 	    case {a,#{k=>X}} of
 		{a,#{k:=X}}=Tuple ->
@@ -73,44 +85,54 @@ t_element(Config) when is_list(Config) ->
     %% No optimization, but should work.
     Tuple = id({x,y,z}),
     Pos = id(3),
-    ?line x = id(element(1, Tuple)),
-    ?line c = id(element(Pos, {a,b,c,d})),
-    ?line X = id(element(Pos, {a,b,X,d})),
-    ?line z = id(element(Pos, Tuple)),
+    x = id(element(1, Tuple)),
+    c = id(element(Pos, {a,b,c,d})),
+    X = id(element(Pos, {a,b,X,d})),
+    z = id(element(Pos, Tuple)),
 
     %% Calls that will fail.
-    ?line {'EXIT',{badarg,_}} = (catch element(5, {a,b,c,d})),
-    ?line {'EXIT',{badarg,_}} = (catch element(5, {a,b,X,d})),
-    ?line {'EXIT',{badarg,_}} = (catch element(5.0, {a,b,X,d})),
-    {'EXIT',{badarg,_}} = (catch element(2, not_a_tuple)),
-    {'EXIT',{badarg,_}} = (catch element(2, [])),
-    {'EXIT',{badarg,_}} = (catch element(2, Tuple == 3)),
+    ?assertError(badarg, element(5, {a,b,c,d})),
+    ?assertError(badarg, element(5, {a,b,X,d})),
+    ?assertError(badarg, element(5.0, {a,b,X,d})),
+    ?assertError(badarg, element(2, not_a_tuple)),
+    ?assertError(badarg, element(2, [])),
+    ?assertError(badarg, element(2, Tuple == 3)),
     case id({a,b,c}) of
 	{_,_,_}=Tup ->
-	    ?line {'EXIT',{badarg,_}} = (catch element(4, Tup))
+            ?assertError(badarg, element(4, Tup))
     end,
-    {'EXIT',{badarg,_}} = (catch element(1, tuple_size(Tuple))),
+    ?assertError(badarg, element(1, tuple_size(Tuple))),
 
     ok.
 
 setelement(Config) when is_list(Config) ->
     X = id(b),
     New = id([1,2,3]),
-    ?line {y,b,c} = id(setelement(1, {a,b,c}, y)),
-    ?line {y,b,c} = id(setelement(1, {a,X,c}, y)),
-    ?line {a,y,c} = id(setelement(2, {a,X,c}, y)),
-    ?line {a,[1,2,3],c} = id(setelement(2, {a,b,c}, New)),
-    ?line {a,[1,2,3],c} = id(setelement(2, {a,X,c}, New)),
-    ?line {a,b,[1,2,3]} = id(setelement(3, {a,b,c}, New)),
-    ?line {a,b,[1,2,3]} = id(setelement(3, {a,X,c}, New)),
+    {y,b,c} = id(setelement(1, {a,b,c}, y)),
+    {y,b,c} = id(setelement(1, {a,X,c}, y)),
+    {a,y,c} = id(setelement(2, {a,X,c}, y)),
+    {a,[1,2,3],c} = id(setelement(2, {a,b,c}, New)),
+    {a,[1,2,3],c} = id(setelement(2, {a,X,c}, New)),
+    {a,b,[1,2,3]} = id(setelement(3, {a,b,c}, New)),
+    {a,b,[1,2,3]} = id(setelement(3, {a,X,c}, New)),
 
-    ?line {'EXIT',{badarg,_}} = (catch setelement_crash({a,b,c,d,e,f})),
-    ?line error = setelement_crash_2({a,b,c,d,e,f}, <<42>>),
+    {{d,c,b,a,x}, {z,c,b,a,x}} = setelement_cover(erlang:make_tuple(5, x)),
 
-    {'EXIT',{badarg,_}} = (catch setelement(1, not_a_tuple, New)),
-    {'EXIT',{badarg,_}} = (catch setelement(3, {a,b}, New)),
+    ?assertError(badarg, setelement_crash({a,b,c,d,e,f})),
+    error = setelement_crash_2({a,b,c,d,e,f}, <<42>>),
+
+    ?assertError(badarg, setelement(1, not_a_tuple, New)),
+    ?assertError(badarg, setelement(3, {a,b}, New)),
 
     ok.
+
+setelement_cover(T0) ->
+    T1 = setelement(4, T0, a),
+    T2 = setelement(3, T1, b),
+    T3 = setelement(2, T2, c),
+    T4 = setelement(1, T3, d),
+    T5 = setelement(1, T3, z),
+    {T4,T5}.
 
 setelement_crash(Tuple) ->
     %% Used to crash the compiler because sys_core_dsetel did not notice that
@@ -132,19 +154,19 @@ setelement_crash_2(Tuple, Bin) ->
 t_length(Config) when is_list(Config) ->
     Blurf = id({blurf,a,b}),
     Tail = id([42,43,44,45]),
-    ?line 0 = id(length([])),
-    ?line 1 = id(length([x])),
-    ?line 2 = id(length([x,Blurf])),
-    ?line 4 = id(length([x,Blurf,a,b])),
+    0 = id(length([])),
+    1 = id(length([x])),
+    2 = id(length([x,Blurf])),
+    4 = id(length([x,Blurf,a,b])),
 
     %% No or partial optimization.
-    ?line 4 = length(Tail),
-    ?line 5 = id(length([x|Tail])),
+    4 = length(Tail),
+    5 = id(length([x|Tail])),
 
     %% Will fail.
-    ?line {'EXIT',{badarg,_}} = (catch id(length([a,b|c]))),
-    ?line {'EXIT',{badarg,_}} = (catch id(length([a,Blurf|c]))),
-    ?line {'EXIT',{badarg,_}} = (catch id(length(atom))),
+    ?assertError(badarg, id(length([a,b|c]))),
+    ?assertError(badarg, id(length([a,Blurf|c]))),
+    ?assertError(badarg, id(length(atom))),
 
     ok.
 
@@ -156,34 +178,34 @@ t_length(Config) when is_list(Config) ->
 
 append(Config) when is_list(Config) ->
     A = id(0),
-    ?line [a,b,c,d,e,f,g,h,i,j,k] = id(?APPEND([a,b,c,d,e,f],[g,h,i,j,k])),
-    ?line [a,b,c,d,e] = id(?APPEND([a,b,c],id([d,e]))),
-    ?line [0,1,2,3,4,5,6] = id(?APPEND([A,1,2,3],[4,5,6])),
-    ?line {'EXIT',{badarg,_}} = (catch id(?APPEND([A|blurf],[4,5,6]))),
+    [a,b,c,d,e,f,g,h,i,j,k] = id(?APPEND([a,b,c,d,e,f],[g,h,i,j,k])),
+    [a,b,c,d,e] = id(?APPEND([a,b,c],id([d,e]))),
+    [0,1,2,3,4,5,6] = id(?APPEND([A,1,2,3],[4,5,6])),
+    ?assertError(badarg, id(?APPEND([A|blurf],[4,5,6]))),
     ok.
 
 t_apply(Config) when is_list(Config) ->
-    ?line ok = apply(?MODULE, foo, []),
-    ?line 4 = apply(?MODULE, foo, [3]),
-    ?line 7 = apply(?MODULE, foo, [3,4]),
-    ?line 12 = apply(?MODULE, foo, [id(8),4]),
-    ?line 21 = apply(?MODULE, foo, [8,id(9),4]),
-    ?line 20 = apply(?MODULE, foo, [8,8,id(4)]),
-    ?line 24 = apply(?MODULE, foo, [id(10),10,4]),
+    ok = apply(?MODULE, foo, []),
+    4 = apply(?MODULE, foo, [3]),
+    7 = apply(?MODULE, foo, [3,4]),
+    12 = apply(?MODULE, foo, [id(8),4]),
+    21 = apply(?MODULE, foo, [8,id(9),4]),
+    20 = apply(?MODULE, foo, [8,8,id(4)]),
+    24 = apply(?MODULE, foo, [id(10),10,4]),
 
     M = id(?MODULE),
-    ?line ok = apply(M, foo, []),
-    ?line 4 = apply(M, foo, [3]),
-    ?line 16.0 = apply(M, foo, [12.0,4]),
+    ok = apply(M, foo, []),
+    4 = apply(M, foo, [3]),
+    16.0 = apply(M, foo, [12.0,4]),
 
     %% Will fail.
-    ?line {'EXIT',{badarg,_}} = (catch apply([a,b,c], foo, [])),
-    ?line {'EXIT',{badarg,_}} = (catch apply(42, foo, [])),
-    ?line {'EXIT',{badarg,_}} = (catch apply(?MODULE, 45, [xx])),
-    ?line {'EXIT',{badarg,_}} = (catch apply(?MODULE, foo, {a,b})),
-    ?line {'EXIT',{badarg,_}} = (catch apply(M, M, [1009|10010])),
-    ?line {'EXIT',{badarg,_}} = (catch apply(?MODULE, foo, [10000|9999])),
-    ?line {'EXIT',{badarg,_}} = (catch apply(?MODULE, foo, a)),
+    ?assertError(badarg, apply([a,b,c], foo, [])),
+    ?assertError(badarg, apply(42, foo, [])),
+    ?assertError(badarg, apply(?MODULE, 45, [xx])),
+    ?assertError(badarg, apply(?MODULE, foo, {a,b})),
+    ?assertError(badarg, apply(M, M, [1009|10010])),
+    ?assertError(badarg, apply(?MODULE, foo, [10000|9999])),
+    ?assertError(badarg, apply(?MODULE, foo, a)),
 
     ok.
 
@@ -206,17 +228,22 @@ bifs(Config) when is_list(Config) ->
     {ok,#{K:=V}} = id(list_to_tuple([ok,#{K=>V}])),
     ok.
 
--define(CMP_SAME(A0, B), (fun(A) -> true = A == B, false = A /= B end)(id(A0))).
--define(CMP_DIFF(A0, B), (fun(A) -> false = A == B, true = A /= B end)(id(A0))).
-	       
-eq(Config) when is_list(Config) ->
-    ?line ?CMP_SAME([a,b,c], [a,b,c]),
-    ?line ?CMP_SAME([42.0], [42.0]),
-    ?line ?CMP_SAME([42], [42]),
-    ?line ?CMP_SAME([42.0], [42]),
+-define(CMP_SAME0(A0, B), (fun(A) -> true = A == B, false = A /= B end)(id(A0))).
+-define(CMP_SAME1(A0, B), (fun(A) -> false = A /= B, true = A == B end)(id(A0))).
+-define(CMP_SAME(A0, B), (true = ?CMP_SAME0(A0, B) =:= not ?CMP_SAME1(A0, B))).
 
-    ?line ?CMP_DIFF(a, [a]),
-    ?line ?CMP_DIFF(a, {1,2,3}),
+-define(CMP_DIFF0(A0, B), (fun(A) -> false = A == B, true = A /= B end)(id(A0))).
+-define(CMP_DIFF1(A0, B), (fun(A) -> true = A /= B, false = A == B end)(id(A0))).
+-define(CMP_DIFF(A0, B), (true = ?CMP_DIFF0(A0, B) =:= not ?CMP_DIFF1(A0, B))).
+
+eq(Config) when is_list(Config) ->
+    ?CMP_SAME([a,b,c], [a,b,c]),
+    ?CMP_SAME([42.0], [42.0]),
+    ?CMP_SAME([42], [42]),
+    ?CMP_SAME([42.0], [42]),
+
+    ?CMP_DIFF(a, [a]),
+    ?CMP_DIFF(a, {1,2,3}),
 
     ?CMP_SAME(#{a=>1.0,b=>2}, #{b=>2.0,a=>1}),
     ?CMP_SAME(#{a=>[1.0],b=>[2]}, #{b=>[2.0],a=>[1]}),
@@ -232,7 +259,7 @@ eq(Config) when is_list(Config) ->
 
 %% OTP-7117.
 nested_call_in_case(Config) when is_list(Config) ->
-    PrivDir = ?config(priv_dir, Config),
+    PrivDir = proplists:get_value(priv_dir, Config),
     Dir = test_lib:get_data_dir(Config),
     Core = filename:join(Dir, "nested_call_in_case"),
     Opts = [from_core,{outdir,PrivDir}|test_lib:opt_opts(?MODULE)],
@@ -240,7 +267,7 @@ nested_call_in_case(Config) when is_list(Config) ->
     {ok,Mod} = c:c(Core, Opts),
     yes = Mod:a([1,2,3], 2),
     no = Mod:a([1,2,3], 4),
-    {'EXIT',_} = (catch Mod:a(not_a_list, 42)),
+    ?assertError(_, Mod:a(not_a_list, 42)),
     _ = code:delete(Mod),
     _ = code:purge(Mod),
     ok.
@@ -265,13 +292,15 @@ do_guard_try_catch(K, V) ->
 -record(cover_opt_guard_try, {list=[]}).
 
 coverage(Config) when is_list(Config) ->
-    ?line {'EXIT',{{case_clause,{a,b,c}},_}} =
+    {'EXIT',{{case_clause,{a,b,c}},_}} =
 	(catch cover_will_match_list_type({a,b,c})),
-    ?line {'EXIT',{{case_clause,{a,b,c,d}},_}} =
+    {'EXIT',{{case_clause,{a,b,c,d}},_}} =
 	(catch cover_will_match_list_type({a,b,c,d})),
-    ?line a = cover_remove_non_vars_alias({a,b,c}),
-    ?line error = cover_will_match_lit_list(),
+    a = cover_remove_non_vars_alias({a,b,c}),
+    error = cover_will_match_lit_list(),
     {ok,[a]} = cover_is_safe_bool_expr(a),
+    false = cover_is_safe_bool_expr2(a),
+    ok = cover_eval_is_function(fun id/1),
 
     ok = cover_opt_guard_try(#cover_opt_guard_try{list=[a]}),
     error = cover_opt_guard_try(#cover_opt_guard_try{list=[]}),
@@ -294,6 +323,13 @@ coverage(Config) when is_list(Config) ->
 		{_,_} ->
 		    Tuple =:= true
 	    end,
+
+    %% Cover is literal_fun/1.
+    ?assertError({case_clause,42}, cover_is_literal_fun()),
+
+    %% Cover core_lib.
+    ok = cover_core_lib([ok,nok]),
+
     ok.
 
 cover_will_match_list_type(A) ->
@@ -335,6 +371,15 @@ cover_is_safe_bool_expr(X) ->
 	    false
     end.
 
+cover_is_safe_bool_expr2(X) ->
+    try
+	V = [X],
+    is_function(V, 1)
+    catch
+	_:_ ->
+	    false
+    end.
+
 cover_opt_guard_try(Msg) ->
     if
 	length(Msg#cover_opt_guard_try.list) =/= 1 ->
@@ -343,16 +388,37 @@ cover_opt_guard_try(Msg) ->
 	    ok
     end.
 
+cover_eval_is_function(X) ->
+    case X of
+        {a,_} -> is_function(X);
+        _ -> ok
+    end.
+
 bsm_an_inlined(<<_:8>>, _) -> ok;
 bsm_an_inlined(_, _) -> error.
 
+cover_is_literal_fun() ->
+    [case id(42) of
+         [] ->
+             try right of
+                 wrong -> true
+             catch
+                 error:_ -> error
+             end
+     end]().
+
+cover_core_lib(Modules) ->
+    R = id(Modules),
+    _ = [id(Error) || Error <- R, element(1, Error) =/= ok],
+    ok.
+
 unused_multiple_values_error(Config) when is_list(Config) ->
-    PrivDir = ?config(priv_dir, Config),
+    PrivDir = proplists:get_value(priv_dir, Config),
     Dir = test_lib:get_data_dir(Config),
     Core = filename:join(Dir, "unused_multiple_values_error"),
-    Opts = [no_copt,clint,return,from_core,{outdir,PrivDir}
+    Opts = [no_copt,clint,ssalint,return,from_core,{outdir,PrivDir}
 	   |test_lib:opt_opts(?MODULE)],
-    {error,[{unused_multiple_values_error,
+    {error,[{"unused_multiple_values_error",
 	     [{none,core_lint,{return_mismatch,{hello,1}}}]}],
      []} = c:c(Core, Opts),
     ok.
@@ -453,5 +519,362 @@ do_unnecessary_building_2({a,_,_}=T) ->
     {b,
      [_,_] = [T,none],
      x}.
+
+%% This test tests that v3_core has provided annotations and that
+%% sys_core_fold retains them, so that warnings produced by
+%% sys_core_fold will have proper filenames and line numbers. Thus, no
+%% "no_file" warnings.
+no_no_file(_Config) ->
+    ?assertError({case_clause,0}, source(true, any)),
+    surgery = (tim(#{reduction => any}))(),
+
+    false = soul(#{[] => true}),
+    ?assertError({case_clause,true}, soul(#{[] => false})),
+
+    ok = experiment(),
+    ok.
+
+source(true, Activities) ->
+    case 0 of
+	Activities when [] ->
+	    Activities
+    end.
+
+tim(#{reduction := _Emergency}) ->
+    try
+	fun() -> surgery end
+    catch
+	_ when [] ->
+	    planet
+    end.
+
+soul(#{[] := Properly}) ->
+    not case true of
+	    Properly -> true;
+	    Properly -> 0
+	end.
+
+experiment() ->
+    case kingdom of
+	_ ->
+	    +case "map" of
+		 _ -> 0.0
+	     end
+    end,
+    ok.
+
+
+%% Make sure we don't try to move a fun into a guard.
+configuration(_Config) ->
+    ?assertError(_, configuration()),
+    ok.
+
+configuration() ->
+    [forgotten || _Components <- enemy, is_tuple(fun art/0)].
+
+art() ->
+ creating.
+
+%% core_lint would complain after optimization. A call to error/1
+%% must not occur unconditionally in a guard.
+supplies(_Config) ->
+    case ?MODULE of
+	core_fold_inline_SUITE ->
+	    %% Other error behaviour when inlined.
+	    ok;
+	_ ->
+            ?assertError(function_clause, do_supplies(#{1 => <<1,2,3>>})),
+            ?assertError(function_clause, do_supplies(#{1 => a})),
+            ?assertError(function_clause, do_supplies(42)),
+	    ok
+    end.
+
+do_supplies(#{1 := Value}) when byte_size(Value), byte_size(kg) -> working.
+
+redundant_stack_frame(_Config) ->
+    {1,2} = do_redundant_stack_frame(#{x=>1,y=>2}),
+    ?assertError({badkey,_,x}, do_redundant_stack_frame(#{y=>2})),
+    ?assertError({badkey,_,y}, do_redundant_stack_frame(#{x=>1})),
+    ok.
+
+do_redundant_stack_frame(Map) ->
+    %% There should not be a stack frame for this function.
+    X = case Map of
+            #{x := X0} ->
+                X0;
+            #{} ->
+                erlang:error({badkey, Map, x})
+        end,
+    Y = case Map of
+            #{y := Y0} ->
+                Y0;
+            #{} ->
+                erlang:error({badkey, Map, y})
+        end,
+    {X, Y}.
+
+%% Cover some clauses in sys_core_fold:remove_first_value/2.
+
+-record(export_from_case, {val}).
+
+export_from_case(_Config) ->
+    a = export_from_case_1(true),
+    b = export_from_case_1(false),
+
+    R = #export_from_case{val=0},
+    {ok,R} = export_from_case_2(false, R),
+    {ok,#export_from_case{val=42}} = export_from_case_2(true, R),
+
+    ok.
+
+export_from_case_1(Bool) ->
+    case Bool of
+        true ->
+            id(42),
+            Result = a;
+        false ->
+            Result = b
+    end,
+    id(Result).
+
+export_from_case_2(Bool, Rec) ->
+    case Bool of
+        false ->
+            Result = Rec;
+        true ->
+            Result = Rec#export_from_case{val=42}
+    end,
+    {ok,Result}.
+
+empty_values(_Config) ->
+    case ?MODULE of
+        core_fold_inline_SUITE ->
+            ?assertError(_, do_empty_values());
+        _ ->
+            ?assertError(function_clause, do_empty_values())
+    end,
+    ok.
+
+do_empty_values() when (#{})#{} ->
+    c.
+
+cover_letrec_effect(_Config) ->
+    self() ! {tag,42},
+    _ = try
+            try
+                ignore
+            after
+                receive
+                    {tag,Int}=Term ->
+                        Res = #{k => {Term,<<Int:16>>}},
+                        self() ! Res
+                end
+            end
+        after
+            ok
+        end,
+    receive
+        Any ->
+            #{k := {{tag,42},<<42:16>>}} = Any
+    end,
+
+    _ = catch cover_letrec_effect_1(),
+    _ = catch cover_letrec_effect_2(),
+
+    ok.
+
+cover_letrec_effect_1() ->
+    try
+        _ = catch ""
+    after
+        case any_atom of
+            31 when any_atom, force ->
+                true
+        end,
+        case "RG" of
+            1 when car, cdr, 3; 3, 4 ->
+                false
+        end
+    end.
+
+cover_letrec_effect_2() ->
+    maybe
+	<< ok || ok, _ <- (catch ok)>>,
+	ok
+    end.
+
+receive_effect(_Config) ->
+    self() ! whatever,
+    {} = do_receive_effect(),
+    ok.
+
+do_receive_effect() ->
+    {} = receive _ -> {} = {} end.
+
+nested_lets(_Config) ->
+    ?assertError({case_clause,ok}, nested_lets_1(<<42>>)),
+    ?assertError(badarith, nested_lets_2(id(0), id(0))),
+    ?assertError(badarith, nested_lets_3()),
+    ?assertError(undef, nested_lets_4()),
+    ?assertError({case_clause,_}, nested_lets_5()),
+    ?assertError(badarith, nested_lets_6()),
+
+    ok.
+
+%% GH-6572: Deeply nested `let` expressions caused `sys_core_fold` to generate
+%% unsafe code that it would attempt to fix up later. Unfortunately it did so
+%% through a limited fixpoint iteration, and would leak said code once the
+%% limit was hit.
+nested_lets_1(<<X>>) ->
+    Y =
+        case ok of
+            X ->
+                true = (ok > (Y = -1)),
+                <<>> =
+                    {id(
+                       <<
+                         (ok - ok),
+                         (bnot ok),
+                         (nested_lets_1_f() band ok),
+                         (nested_lets_1_f()),
+                         (not ok),
+                         (ok or nested_lets_1_f()),
+                         (id(
+                            id(
+                              <<
+                                (id(
+                                   <<
+                                     (id(
+                                        <<0 || _ <- []>>
+                                       ))
+                                   >>
+                                  ) * ok)
+                              >>
+                             )
+                           ))
+                       >>
+                      )}
+        end.
+
+nested_lets_1_f() ->
+    ok.
+
+%% GH-6612: A variant of GH-6572 that slipped through the initial fix.
+nested_lets_2(X, 0) ->
+    try
+        0 = {
+             _ = 0 + 0,
+             Z = bnot ok,
+             {(_ = ok), (_ = X)}#{ok => ok},
+             ok +
+                 (nested_lets_2_f(
+                    ok +
+                        nested_lets_2_f(
+                          ok +
+                              (nested_lets_2_f(
+                                                (Y =
+                                                     -nested_lets_2_f(
+                                                        #{
+                                                            (ok +
+                                                                 (ok +
+                                                                      nested_lets_2_f(
+                                                                        case
+                                                                            try ok of
+                                                                                _ ->
+                                                                                    fun(_) ->
+                                                                                            ok
+                                                                                    end
+                                                                            after
+                                                                                ok
+                                                                            end
+                                                                        of
+                                                                            #{} ->
+                                                                                ok
+                                                                        end
+                                                                       ))) => ok
+                                                         } > ok
+                                                       ))
+                                ) + ok)
+                         ) >
+                        ok
+                   ))
+            }
+    of
+        _ ->
+            Z;
+        _ ->
+            Y
+    after
+        ok
+    end.
+
+nested_lets_2_f(_) ->
+    ok.
+
+nested_lets_3() ->
+    try ((true = [X | _]) = (ok * (_ = ok))) of
+        _ ->
+            X
+    after
+        ok
+    end.
+
+nested_lets_4() ->
+    try
+        not (case {(_ = ok), (Y = ?MODULE:undef())} of
+            a ->
+                ok;
+            0 ->
+                ok
+        end)
+    of
+        _ ->
+            Y
+    after
+        ok
+    end.
+
+%% GH-6633.
+nested_lets_5() ->
+    case self() of
+        [_ | X] ->
+            ok;
+        false ->
+            {ok#{
+                (X = ok) :=
+                    ((ok /=
+                        maybe
+                            ok
+                        end) =/= ok)
+            }}
+    end,
+    X.
+
+%% GH-6635.
+nested_lets_6() ->
+    try {not (false orelse (ok#{(1 / 0) := ok})), X = ok} of
+        X ->
+            ok
+    after
+        ok
+    end.
+
+map_effect(_Config) ->
+    ?assertError({badkey,key}, map_effect_1()),
+
+    ?assertError({badkey,key}, map_effect_2(#{})),
+    ?assertError({badmap,no_map}, map_effect_2(no_map)),
+
+    ok.
+
+map_effect_1() ->
+    #{}#{key := value},
+    ok.
+
+map_effect_2(Map) ->
+    Map#{key := value},
+    ok.
+
+%%% Common utility functions.
 
 id(I) -> I.

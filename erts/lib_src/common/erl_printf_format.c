@@ -1,7 +1,9 @@
 /*
  * %CopyrightBegin%
+ *
+ * SPDX-License-Identifier: Apache-2.0
  * 
- * Copyright Ericsson AB 2005-2013. All Rights Reserved.
+ * Copyright Ericsson AB 2005-2025. All Rights Reserved.
  * 
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -31,19 +33,8 @@
  *  sz: 8 | 16 | 32 | 64 | p | e
  */
 
-/* Without this, variable argument lists break on VxWorks */
-#ifdef VXWORKS
-#include <vxWorks.h>
-#endif
-
 #ifdef HAVE_CONFIG_H
 #include "config.h"
-#endif
-
-#ifdef __WIN32__
-#undef WIN32_LEAN_AND_MEAN
-#define WIN32_LEAN_AND_MEAN
-#include <windows.h>
 #endif
 
 #include <ctype.h>
@@ -55,6 +46,17 @@
 #include <limits.h>
 #include "erl_printf.h"
 #include "erl_printf_format.h"
+
+
+/* Taken from https://best.openssf.org/Compiler-Hardening-Guides/Compiler-Options-Hardening-Guide-for-C-and-C++.html#warn-about-implicit-fallthrough-in-switch-statements */
+#ifdef __has_attribute
+#  if __has_attribute(__fallthrough__)
+#   define FALLTHROUGH()                    __attribute__((__fallthrough__))
+#  endif
+#endif
+#ifndef FALLTHROUGH
+# define FALLTHROUGH()                    do {} while (0)  /* fallthrough */
+#endif
 
 #ifdef DEBUG
 #include <assert.h>
@@ -78,15 +80,7 @@
 #endif
 
 #ifndef ERTS_SIZEOF_ETERM
-#  ifdef HALFWORD_HEAP_EMULATOR
-#    if SIZEOF_VOID_P == 8
-#      define ERTS_SIZEOF_ETERM 4
-#    else
-#      error "HALFWORD_HEAP_EMULATOR only allowed on 64-bit architecture"
-#    endif
-#  else
-#    define ERTS_SIZEOF_ETERM SIZEOF_VOID_P
-#  endif
+#define ERTS_SIZEOF_ETERM SIZEOF_VOID_P
 #endif
 
 #if defined(__GNUC__)
@@ -102,7 +96,7 @@
 #endif
 
 #define FMTC_d    0x0000
-#define FMTC_R    0x0001
+/*empty           0x0001 was RELATIVE */
 #define FMTC_o    0x0002
 #define FMTC_u    0x0003
 #define FMTC_x    0x0004
@@ -166,7 +160,7 @@ static char heX[] = "0123456789ABCDEF";
 #define SIGN(X) ((X) > 0 ? 1 : ((X) < 0 ? -1 : 0)) 
 #define USIGN(X) ((X) == 0 ? 0 : 1)
 
-int (*erts_printf_eterm_func)(fmtfn_t, void*, ErlPfEterm, long, ErlPfEterm*) = NULL;
+int (*erts_printf_eterm_func)(fmtfn_t, void*, ErlPfEterm, long) = NULL;
 
 static int
 noop_fn(void *vfp, char* buf, size_t len)
@@ -253,6 +247,7 @@ static int fmt_uword(fmtfn_t fn,void* arg,int sign,ErlPfUWord uval,
 	break;
     case FMTC_X:
 	dc = heX;
+        FALLTHROUGH();
     case FMTC_x:
 	base = 16;
 	break;
@@ -305,6 +300,7 @@ static int fmt_long_long(fmtfn_t fn,void* arg,int sign,
 	break;
     case FMTC_X:
 	dc = heX;
+        FALLTHROUGH();
     case FMTC_x:
 	base = 16;
 	break;
@@ -334,18 +330,14 @@ static int fmt_double(fmtfn_t fn,void*arg,double val,
 {
     int res;
     int fi = 0;
-    char format_str[7];
+    char format_str[8];
     char sbuf[32];
     char *bufp = sbuf;
     double dexp;
     int exp;
-    size_t max_size = 1;
+    size_t max_size = 2;  /* including possible sign */
     int size;
     int new_fmt = fmt;
-    int fpe_was_unmasked;
-
-    fpe_was_unmasked = erts_printf_block_fpe ? (*erts_printf_block_fpe)() : 0;
-
     if (val < 0.0)
 	dexp = log10(-val);
     else if (val == 0.0)
@@ -436,7 +428,14 @@ static int fmt_double(fmtfn_t fn,void*arg,double val,
 	}
     }
 
+#ifdef HAVE_GCC_DIAG_IGNORE_WFORMAT_NONLITERAL
+_Pragma("GCC diagnostic push");
+_Pragma("GCC diagnostic ignored \"-Wformat-nonliteral\"");
+#endif
     size = sprintf(bufp, format_str, precision, val);
+#ifdef HAVE_GCC_DIAG_IGNORE_WFORMAT_NONLITERAL
+_Pragma("GCC diagnostic pop");
+#endif
     if (size < 0) {
 	if (errno > 0)
 	    res = -errno;
@@ -453,8 +452,6 @@ static int fmt_double(fmtfn_t fn,void*arg,double val,
     if (bufp != sbuf)
 	free((void *) bufp);
 
-    if (erts_printf_unblock_fpe)
-	(*erts_printf_unblock_fpe)(fpe_was_unmasked);
     return res;
 }
 
@@ -587,6 +584,7 @@ int erts_printf_format(fmtfn_t fn, void* arg, char* fmt, va_list ap)
 #else
 #error No 16-bit integer datatype found
 #endif
+                        break;
 		    case 8:
 #if SIZEOF_CHAR == 1
 			fmt |= FMTL_hh;
@@ -645,7 +643,6 @@ int erts_printf_format(fmtfn_t fn, void* arg, char* fmt, va_list ap)
 	    case 'p': ptr++; fmt |= FMTC_p; break;
 	    case 'n': ptr++; fmt |= FMTC_n; break;
 	    case 'T': ptr++; fmt |= FMTC_T; break;
-	    case 'R': ptr++; fmt |= FMTC_R; break;
 	    case '%':
 		FMT(fn,arg,ptr,1,count);
 		ptr++;
@@ -820,11 +817,9 @@ int erts_printf_format(fmtfn_t fn, void* arg, char* fmt, va_list ap)
 		default: *va_arg(ap,int*) = count; break;
 		}
 		break;
-	    case FMTC_T:    /* Eterm */
-	    case FMTC_R: {  /* Eterm, Eterm* base  (base ignored if !HALFWORD_HEAP) */
+	    case FMTC_T: {    /* Eterm */
 		long prec;
 		ErlPfEterm eterm;
-		ErlPfEterm* eterm_base;
 		
 		if (!erts_printf_eterm_func)
 		    return -EINVAL;
@@ -835,16 +830,14 @@ int erts_printf_format(fmtfn_t fn, void* arg, char* fmt, va_list ap)
 		else
 		    prec = (long) precision;
 		eterm = va_arg(ap, ErlPfEterm);
-		eterm_base = ((fmt & FMTC_MASK) == FMTC_R) ?
-		    va_arg(ap, ErlPfEterm*) : NULL;
 		if (width > 0 && !(fmt & FMTF_adj)) {
-		    res = (*erts_printf_eterm_func)(noop_fn, NULL, eterm, prec, eterm_base);
+		    res = (*erts_printf_eterm_func)(noop_fn, NULL, eterm, prec);
 		    if (res < 0)
 			return res;
 		    if (width > res)
 			BLANKS(fn, arg, width - res, count);
 		}
-		res = (*erts_printf_eterm_func)(fn, arg, eterm, prec, eterm_base);
+		res = (*erts_printf_eterm_func)(fn, arg, eterm, prec);
 		if (res < 0)
 		    return res;
 		count += res;
@@ -949,6 +942,66 @@ erts_printf_sword(fmtfn_t fn, void *arg, char conv, int pad, int width,
     if (res < 0)
 	return res;
     return count;
+}
+
+int
+erts_printf_uword64(fmtfn_t fn, void *arg, char conv, int pad, int width,
+		    ErlPfUWord64 val)
+{
+#if SIZEOF_LONG_LONG
+    int count = 0;
+    int res;
+    int fmt = 0;
+    int prec = -1;
+    switch (conv) {
+    case 'o': fmt |= FMTC_o; break;
+    case 'u': fmt |= FMTC_u; break;
+    case 'x': fmt |= FMTC_x; break;
+    case 'X': fmt |= FMTC_X; break;
+    case 'p': fmt |= FMTC_p; break;
+    default:
+	return -EINVAL;
+    }
+    if (pad)
+	prec = width;
+    res = fmt_long_long(fn, arg, USIGN(val), val, width, prec, fmt, &count);
+    if (res < 0)
+	return res;
+    return count;
+#else
+    return -ENOTSUP;
+#endif
+}
+
+int
+erts_printf_sword64(fmtfn_t fn, void *arg, char conv, int pad, int width,
+		    ErlPfSWord64 val)
+{
+#if SIZEOF_LONG_LONG
+    int count = 0;
+    int res;
+    int fmt = 0;
+    int prec = -1;
+    ErlPfUWord64 ul_val;
+    switch (conv) {
+    case 'd': fmt |= FMTC_d; break;
+    case 'i': fmt |= FMTC_d; break;
+    case 'o': fmt |= FMTC_o; break;
+    case 'x': fmt |= FMTC_x; break;
+    case 'X': fmt |= FMTC_X; break;
+    default:
+	return -EINVAL;
+    }
+    if (pad)
+	prec = width;
+    ul_val = (ErlPfUWord64) (val < 0 ? -val : val);
+    res = fmt_long_long(fn, arg, SIGN(val), ul_val, width, prec, fmt, &count);
+    if (res < 0)
+	return res;
+    return count;
+#else
+    return -ENOTSUP;
+#endif
 }
 
 int

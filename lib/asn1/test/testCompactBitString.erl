@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2001-2013. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2001-2026. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -40,10 +42,10 @@ compact_bit_string(Rules) ->
 	      {0,<<75,80,248,215,49,149,42,213>>}),
 
     roundtrip('Bs1', [1,1,1,1,1,1,1,1], {0,<<255>>}),
-    roundtrip('Bs1', [0,1,0,0,1,0], {2,<<16#48>>}),
-    roundtrip('Bs1', [1,0,0,0,0,0,0,0,0], {7,<<16#80,0>>}),
-    roundtrip('Bs1', [0,1,0,0,1,0,1,1,1,1,1,0,0,0,1,0,0,1,1],
-	      {5,<<75,226,96>>}),
+
+    (Rules =/= jer) andalso roundtrip('Bs1', [0,1,0,0,1,0], {2,<<16#48>>}),
+    (Rules =/= jer) andalso roundtrip('Bs1', [1,0,0,0,0,0,0,0,0], {7,<<16#80,0>>}),
+    roundtrip('Bs1', [0,1,0,0,1,0,1,1,1,1,1,0,0,0,1,0,0,1,1], {5,<<75,226,96>>}),
     
     case Rules of
 	ber ->
@@ -75,7 +77,7 @@ compact_bit_string(Rules) ->
     %%==========================================================
     
     roundtrip('Bs3', [mo,tu,fr]),
-    roundtrip('Bs3', [0,1,1,0,0,1,0], [mo,tu,fr]),
+    (Rules =/= jer) andalso roundtrip('Bs3', [0,1,1,0,0,1,0], [mo,tu,fr]),
     
     %%==========================================================
     %% BsPri ::= [PRIVATE 61] BIT STRING
@@ -122,12 +124,31 @@ compact_bit_string(Rules) ->
 	    ok
     end,
 
+
+    %%==========================================================
+    %% BS255 ::= BIT STRING (SIZE (255))
+    %%==========================================================
+
+    roundtrip('BS255', 2#1011_1101, {1,<<2#1011_1101:256/little>>}),
+
+    %%==========================================================
+    %% BSUPTO255 ::= BIT STRING (SIZE (1..255))
+    %%==========================================================
+
+    roundtrip('BSUPTO255', 4, {5,<<2#00100000>>}),
+
+    %%==========================================================
+    %% TransportLayerAddress 	::= BIT STRING (SIZE (1..160, ...))
+    %%==========================================================
+    roundtrip('TransportLayerAddress', 4, {5,<<2#00100000>>}),
+
     ok.
 
 ticket_7734(_) ->
     BS = {0,list_to_binary(lists:duplicate(128, 0))},
     roundtrip('BS1024', BS).
 
+bit_string_unnamed(jer) -> ok;
 bit_string_unnamed(_Rules) ->
     roundtrip('TransportLayerAddress', [0,1,1,0], {4,<<96>>}).
 
@@ -153,4 +174,12 @@ roundtrip_1(Mod, Type, In, Out) ->
     {ok,Out} = Mod:decode(Type, Encoded),
     %% Test that compact BIT STRINGs can be encoded.
     {ok,Encoded} = Mod:encode(Type, Out),
+    case Out of
+        {N,Bin} when is_binary(Bin) ->
+            %% Also test that modern bitstrings can be encoded.
+            <<Bits:(bit_size(Bin)-N)/bits,_/bits>> = Bin,
+            {ok,Encoded} = Mod:encode(Type, Bits);
+        _ ->
+            ok
+    end,
     ok.

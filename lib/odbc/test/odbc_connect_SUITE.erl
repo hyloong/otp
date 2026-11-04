@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2002-2014. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2002-2026. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -26,7 +28,6 @@
 -compile(export_all).
 
 -include_lib("common_test/include/ct.hrl").
--include("test_server_line.hrl").
 -include("odbc_test.hrl").
 
 -define(MAX_SEQ_TIMEOUTS, 10).
@@ -47,12 +48,13 @@ suite() -> [{ct_hooks,[ts_install_cth]}].
 all() -> 
     case odbc_test_lib:odbc_check() of
 	ok ->
-	    [not_exist_db, commit, rollback, not_explicit_commit,
-	     no_c_executable, port_dies, control_process_dies,
-	     {group, client_dies}, connect_timeout, timeout,
-	     many_timeouts, timeout_reset, disconnect_on_timeout,
-	     connection_closed, disable_scrollable_cursors,
-	     return_rows_as_lists, api_missuse, extended_errors];
+            [not_exist_db, commit, rollback, not_explicit_commit,
+             no_c_executable, port_dies, control_process_dies,
+             {group, client_dies}, connect_timeout, timeout,
+             many_timeouts, timeout_reset, disconnect_on_timeout,
+             connection_closed, disable_scrollable_cursors,
+             return_rows_as_lists, api_missuse, extended_errors,
+             max_long_column_size];
 	Other -> {skip, Other}
     end.
 
@@ -90,6 +92,7 @@ init_per_suite(Config) when is_list(Config) ->
 					    [{auto_commit, off}] ++ odbc_test_lib:platform_options()) of
 			{ok, Ref} ->
 			    odbc:disconnect(Ref),
+			    ct:timetrap(?default_timeout),
 			    [{tableName, odbc_test_lib:unique_table_name()} | Config];
 			_  ->
 			    {skip, "ODBC is not properly setup"}
@@ -130,11 +133,8 @@ init_per_testcase(_TestCase, Config) ->
     init_per_testcase_common(Config).
 
 init_per_testcase_common(Config) ->
-    test_server:format("ODBCINI = ~p~n", [os:getenv("ODBCINI")]),
-    Dog = test_server:timetrap(?default_timeout),
-    Temp = lists:keydelete(connection_ref, 1, Config),
-    NewConfig = lists:keydelete(watchdog, 1, Temp),
-    [{watchdog, Dog} | NewConfig].
+    ct:pal("ODBCINI = ~p~n", [os:getenv("ODBCINI")]),
+    lists:keydelete(connection_ref, 1, Config).
 
 %%--------------------------------------------------------------------
 %% Function: end_per_testcase(Case, Config) -> _
@@ -154,25 +154,22 @@ end_per_testcase(_TestCase, Config) ->
     end_per_testcase_common(Config).
 
 end_per_testcase_common(Config) ->
-    Table = ?config(tableName, Config),
+    Table = proplists:get_value(tableName, Config),
     {ok, Ref} = odbc:connect(?RDBMS:connection_string(), odbc_test_lib:platform_options()),
     Result = odbc:sql_query(Ref, "DROP TABLE " ++ Table),
     io:format("Drop table: ~p ~p~n", [Table, Result]),
-    odbc:disconnect(Ref),
-    Dog = ?config(watchdog, Config),
-    test_server:timetrap_cancel(Dog).
+    odbc:disconnect(Ref).
 
 %%-------------------------------------------------------------------------
 %% Test cases starts here.
 %%-------------------------------------------------------------------------
-commit(doc)->
-    ["Test the use of explicit commit"];
-commit(suite) -> [];
+commit()->
+    [{doc,"Test the use of explicit commit"}].
 commit(Config)  ->
     {ok, Ref} =  odbc:connect(?RDBMS:connection_string(), 
 			      [{auto_commit, off}] ++ odbc_test_lib:platform_options()),
 
-    Table = ?config(tableName, Config),
+    Table = proplists:get_value(tableName, Config),
     TransStr = transaction_support_str(?RDBMS),
 
     {updated, _} = 
@@ -206,14 +203,13 @@ commit(Config)  ->
     ok = odbc:disconnect(Ref).
 %%-------------------------------------------------------------------------
 
-rollback(doc)->
-    ["Test the use of explicit rollback"];
-rollback(suite) -> [];
+rollback()->
+    [{doc,"Test the use of explicit rollback"}].
 rollback(Config)  ->
     {ok, Ref} =  odbc:connect(?RDBMS:connection_string(),
 			      [{auto_commit, off}] ++ odbc_test_lib:platform_options()),
 
-    Table = ?config(tableName, Config),
+    Table = proplists:get_value(tableName, Config),
 
     TransStr = transaction_support_str(?RDBMS),
 
@@ -246,9 +242,8 @@ rollback(Config)  ->
     ok = odbc:disconnect(Ref).
 
 %%-------------------------------------------------------------------------
-not_explicit_commit(doc) ->
-    ["Test what happens if you try using commit on a auto_commit connection."];
-not_explicit_commit(suite) -> [];
+not_explicit_commit() ->
+    [{doc,"Test what happens if you try using commit on a auto_commit connection."}].
 not_explicit_commit(_Config) ->
     {ok, Ref} = 
 	odbc:connect(?RDBMS:connection_string(), [{auto_commit, on}] ++
@@ -257,19 +252,17 @@ not_explicit_commit(_Config) ->
     ok = odbc:disconnect(Ref).
 
 %%-------------------------------------------------------------------------
-not_exist_db(doc) ->
-    ["Tests valid data format but invalid data in the connection parameters."];
-not_exist_db(suite) -> [];
+not_exist_db() ->
+    [{doc,"Tests valid data format but invalid data in the connection parameters."}].
 not_exist_db(_Config)  ->
     {error, _} = odbc:connect("DSN=foo;UID=bar;PWD=foobar",
 			      odbc_test_lib:platform_options()),
-    %% So that the odbc control server can be stoped "in the correct way"
-    test_server:sleep(100).
+    %% So that the odbc control server can be stopped "in the correct way"
+    ct:sleep(100).
 
 %%-------------------------------------------------------------------------
-no_c_executable(doc) ->
-    "Test what happens if the port-program can not be found";
-no_c_executable(suite) -> [];
+no_c_executable() ->
+    [{doc,"Test what happens if the port-program cannot be found"}].
 no_c_executable(_Config) ->
     process_flag(trap_exit, true),
     Dir = filename:nativename(filename:join(code:priv_dir(odbc), 
@@ -294,9 +287,8 @@ no_c_executable(_Config) ->
     end.
 %%------------------------------------------------------------------------
 
-port_dies(doc) ->
-    "Tests what happens if the port program dies";
-port_dies(suite) -> [];
+port_dies() ->
+    [{doc,"Tests what happens if the port program dies"}].
 port_dies(_Config) ->
     {ok, Ref} =  odbc:connect(?RDBMS:connection_string(), odbc_test_lib:platform_options()),
     {status, _} = process_info(Ref, status),   
@@ -308,7 +300,7 @@ port_dies(_Config) ->
 	    %% Wait for exit_status from port 5000 ms (will not get a exit
 	    %% status in this case), then wait a little longer to make sure
 	    %% the port and the controlprocess has had time to terminate.
-	    test_server:sleep(10000),
+	    ct:sleep(10000),
 	    undefined = process_info(Ref, status);
 	[] ->
 	    ct:fail([erlang:port_info(P, name) || P <- erlang:ports()])  
@@ -316,9 +308,8 @@ port_dies(_Config) ->
 
 
 %%-------------------------------------------------------------------------
-control_process_dies(doc) ->
-    "Tests what happens if the Erlang control process dies";
-control_process_dies(suite) -> [];
+control_process_dies() ->
+    [{doc,"Tests what happens if the Erlang control process dies"}].
 control_process_dies(_Config) ->
     {ok, Ref} =  odbc:connect(?RDBMS:connection_string(), odbc_test_lib:platform_options()),
     process_flag(trap_exit, true),
@@ -327,7 +318,7 @@ control_process_dies(_Config) ->
 	[Port] ->
 	    {connected, Ref} = erlang:port_info(Port, connected),  
 	    exit(Ref, kill),
-	    test_server:sleep(500),
+	    ct:sleep(500),
 	    undefined = erlang:port_info(Port, connected);
 	%% Check for c-program still running, how?
 	[] ->
@@ -335,9 +326,8 @@ control_process_dies(_Config) ->
     end.
 
 %%-------------------------------------------------------------------------
-client_dies_normal(doc) ->
-    ["Client dies with reason normal."];
-client_dies_normal(suite) -> [];
+client_dies_normal() ->
+    [{doc,"Client dies with reason normal."}].
 client_dies_normal(Config) when is_list(Config) ->
     Pid = spawn(?MODULE, client_normal, [self()]),
 
@@ -353,7 +343,7 @@ client_dies_normal(Config) when is_list(Config) ->
 	{'DOWN', MonitorReference, _Type, _Object, _Info} ->
 	    ok
     after 5000 ->
-	    test_server:fail(control_process_not_stopped)
+	    ct:fail(control_process_not_stopped)
     end.
 
 client_normal(Pid) ->
@@ -367,9 +357,8 @@ client_normal(Pid) ->
 
 
 %%-------------------------------------------------------------------------
-client_dies_timeout(doc) ->
-    ["Client dies with reason timeout."];
-client_dies_timeout(suite) -> [];
+client_dies_timeout() ->
+    [{doc,"Client dies with reason timeout."}].
 client_dies_timeout(Config) when is_list(Config) ->
     Pid = spawn(?MODULE, client_timeout, [self()]),
 
@@ -385,7 +374,7 @@ client_dies_timeout(Config) when is_list(Config) ->
 	{'DOWN', MonitorReference, _Type, _Object, _Info} ->
 	    ok
     after 5000 ->
-	    test_server:fail(control_process_not_stopped)
+	    ct:fail(control_process_not_stopped)
     end.
 
 client_timeout(Pid) ->
@@ -399,9 +388,8 @@ client_timeout(Pid) ->
 
 
 %%-------------------------------------------------------------------------
-client_dies_error(doc) ->
-    ["Client dies with reason error."];
-client_dies_error(suite) -> [];
+client_dies_error() ->
+    [{doc,"Client dies with reason error."}].
 client_dies_error(Config) when is_list(Config) ->
     Pid = spawn(?MODULE, client_error, [self()]),
 
@@ -417,7 +405,7 @@ client_dies_error(Config) when is_list(Config) ->
 	{'DOWN', MonitorReference, _Type, _Object, _Info} ->
 	    ok
     after 5000 ->
-	    test_server:fail(control_process_not_stopped)
+	    ct:fail(control_process_not_stopped)
     end.
 
 client_error(Pid) ->
@@ -431,9 +419,8 @@ client_error(Pid) ->
 
 
 %%-------------------------------------------------------------------------
-connect_timeout(doc) ->
-    ["Test the timeout for the connect function."];
-connect_timeout(suite) -> [];
+connect_timeout() ->
+    [{doc,"Test the timeout for the connect function."}].
 connect_timeout(Config) when is_list(Config) ->
     {'EXIT',timeout} = (catch odbc:connect(?RDBMS:connection_string(),
 					   [{timeout, 0}] ++
@@ -443,10 +430,9 @@ connect_timeout(Config) when is_list(Config) ->
     ok.
 
 %%-------------------------------------------------------------------------
-connect_port_timeout(doc) ->
-    ["Test the timeout for the port program to connect back to the odbc "
-     "application within the connect function."];
-connect_port_timeout(suite) -> [];
+connect_port_timeout() ->
+    [{"Test the timeout for the port program to connect back to the odbc "
+     "application within the connect function."}].
 connect_port_timeout(Config) when is_list(Config) ->
     %% Application environment var 'port_timeout' has been set to 0 by
     %% init_per_testcase/2.
@@ -454,15 +440,14 @@ connect_port_timeout(Config) when is_list(Config) ->
                                    odbc_test_lib:platform_options()).
 
 %%-------------------------------------------------------------------------
-timeout(doc) ->
-    ["Test that timeouts don't cause unwanted behavior sush as receiving"
-     " an anwser to a previously tiemed out query."];
-timeout(suite) -> [];
+timeout() ->
+    [{"Test that timeouts don't cause unwanted behavior sush as receiving"
+     " an answer to a previously timed out query."}].
 timeout(Config)  when is_list(Config) ->
 
     {ok, Ref} =  odbc:connect(?RDBMS:connection_string(),
 			      [{auto_commit, off}]),
-    Table = ?config(tableName, Config),
+    Table = proplists:get_value(tableName, Config),
 
     TransStr = transaction_support_str(?RDBMS),
 
@@ -513,7 +498,7 @@ update_table_timeout(Table, TimeOut, Pid) ->
 	{'EXIT', timeout} ->
 	    Pid ! timout_occurred;
 	{updated, 1} ->
-	    test_server:fail(database_locker_failed)
+	    ct:fail(database_locker_failed)
     end,
 
     receive 
@@ -529,7 +514,7 @@ update_table_timeout(Table, TimeOut, Pid) ->
 
     %% Do not check {updated, 1} as some drivers will return 0
     %% even though the update is done, which is checked by the test
-    %% case when the altered message is recived.
+    %% case when the altered message is received.
     {updated, _} = odbc:sql_query(Ref, UpdateQuery, TimeOut),
 
     ok = odbc:commit(Ref, commit),
@@ -538,15 +523,14 @@ update_table_timeout(Table, TimeOut, Pid) ->
 
     ok = odbc:disconnect(Ref).
 %%-------------------------------------------------------------------------
-many_timeouts(doc) ->
-    ["Tests that many consecutive timeouts lead to that the connection "
-     "is shutdown."];
-many_timeouts(suite) -> [];
+many_timeouts() ->
+    [{doc, "Tests that many consecutive timeouts lead to that the connection "
+     "is shutdown."}].
 many_timeouts(Config) when is_list(Config) ->
     {ok, Ref} =  odbc:connect(?RDBMS:connection_string(),
 			      [{auto_commit, off}] ++ odbc_test_lib:platform_options()),
 
-    Table = ?config(tableName, Config),
+    Table = proplists:get_value(tableName, Config),
     TransStr = transaction_support_str(?RDBMS),
 
     {updated, _} = 
@@ -593,19 +577,18 @@ loop_many_timouts(Ref, UpdateQuery, TimeOut) ->
 	{'EXIT',timeout} ->
 	    loop_many_timouts(Ref, UpdateQuery, TimeOut);
 	{updated, 1} ->
-	    test_server:fail(database_locker_failed);
+	    ct:fail(database_locker_failed);
 	{error, connection_closed} ->
 	    ok
     end.
 %%-------------------------------------------------------------------------
-timeout_reset(doc) ->
-    ["Check that the number of consecutive timouts is reset to 0 when "
-     "a successful call to the database is made."];
-timeout_reset(suite) -> [];
+timeout_reset() ->
+    [{doc, "Check that the number of consecutive timouts is reset to 0 when "
+      "a successful call to the database is made."}].
 timeout_reset(Config) when is_list(Config) ->
     {ok, Ref} =  odbc:connect(?RDBMS:connection_string(),
 			      [{auto_commit, off}] ++ odbc_test_lib:platform_options()),
-    Table = ?config(tableName, Config),
+    Table = proplists:get_value(tableName, Config),
     TransStr = transaction_support_str(?RDBMS),
 
     {updated, _} = 
@@ -671,7 +654,7 @@ update_table_timeout_reset(Table, TimeOut, Pid) ->
 
     %% Do not check {updated, 1} as some drivers will return 0
     %% even though the update is done, which is checked by the test
-    %% case when the altered message is recived.
+    %% case when the altered message is received.
     {updated, _} = odbc:sql_query(Ref, UpdateQuery, TimeOut),
 
     ok = odbc:commit(Ref, commit),
@@ -689,21 +672,20 @@ loop_timout_reset(Ref, UpdateQuery, TimeOut, NumTimeouts) ->
 	    loop_timout_reset(Ref, UpdateQuery, 
 			      TimeOut, NumTimeouts - 1);
 	{updated, 1} ->
-	    test_server:fail(database_locker_failed);
+	    ct:fail(database_locker_failed);
 	{error, connection_closed} ->
-	    test_server:fail(connection_closed_premature)
+	    ct:fail(connection_closed_premature)
     end.
 
 %%-------------------------------------------------------------------------
 
-disconnect_on_timeout(doc) ->
-    ["Check that disconnect after a time out works properly"]; 
-disconnect_on_timeout(suite) -> [];
+disconnect_on_timeout() ->
+    [{doc,"Check that disconnect after a time out works properly"}].
 disconnect_on_timeout(Config) when is_list(Config) ->
 
     {ok, Ref} =  odbc:connect(?RDBMS:connection_string(),
 			      [{auto_commit, off}] ++ odbc_test_lib:platform_options()),
-    Table = ?config(tableName, Config),
+    Table = proplists:get_value(tableName, Config),
     TransStr = transaction_support_str(?RDBMS),
 
     {updated, _} = 
@@ -727,7 +709,7 @@ disconnect_on_timeout(Config) when is_list(Config) ->
 	ok ->
 	    ok = odbc:commit(Ref, commit);
 	nok ->
-	    test_server:fail(database_locker_failed)
+	    ct:fail(database_locker_failed)
     end.
 
 update_table_disconnect_on_timeout(Table, TimeOut, Pid) ->
@@ -745,14 +727,13 @@ update_table_disconnect_on_timeout(Table, TimeOut, Pid) ->
     end.
 
 %%-------------------------------------------------------------------------
-connection_closed(doc) ->
-    ["Checks that you get an appropriate error message if you try to"
-     " use a connection that has been closed"];
-connection_closed(suite) -> [];
+connection_closed() ->
+    [{doc, "Checks that you get an appropriate error message if you try to"
+     " use a connection that has been closed"}].
 connection_closed(Config) when is_list(Config) ->
     {ok, Ref} =  odbc:connect(?RDBMS:connection_string(), odbc_test_lib:platform_options()),
 
-    Table = ?config(tableName, Config), 
+    Table = proplists:get_value(tableName, Config), 
     {updated, _} = 
 	odbc:sql_query(Ref, 
 		       "CREATE TABLE " ++ Table ++
@@ -772,14 +753,13 @@ connection_closed(Config) when is_list(Config) ->
     {error, connection_closed} = odbc:commit(Ref, commit).
 
 %%-------------------------------------------------------------------------
-disable_scrollable_cursors(doc) ->
-    ["Test disabling of scrollable cursors."];
-disable_scrollable_cursors(suite) -> [];
+disable_scrollable_cursors() ->
+    [{doc,"Test disabling of scrollable cursors."}].
 disable_scrollable_cursors(Config) when is_list(Config) ->
     {ok, Ref} =  odbc:connect(?RDBMS:connection_string(),
 			      [{scrollable_cursors, off}]),
 
-    Table = ?config(tableName, Config),
+    Table = proplists:get_value(tableName, Config),
 
     {updated, _} = 
 	odbc:sql_query(Ref, 
@@ -793,10 +773,10 @@ disable_scrollable_cursors(Config) when is_list(Config) ->
 
     NextResult = ?RDBMS:selected_ID(1, next),
 
-    test_server:format("Expected: ~p~n", [NextResult]),
+    ct:pal("Expected: ~p~n", [NextResult]),
 
     Result = odbc:next(Ref),
-    test_server:format("Got: ~p~n", [Result]),
+    ct:pal("Got: ~p~n", [Result]),
     NextResult = Result,
 
     {error, scrollable_cursors_disabled} = odbc:first(Ref),
@@ -810,15 +790,14 @@ disable_scrollable_cursors(Config) when is_list(Config) ->
     {selected, _ColNames,[]} = odbc:select(Ref, next, 1).
 
 %%-------------------------------------------------------------------------
-return_rows_as_lists(doc)->
-    ["Test the option that a row may be returned as a list instead " 
-     "of a tuple. Too be somewhat backward compatible."];
-return_rows_as_lists(suite) -> [];
+return_rows_as_lists()->
+    [{doc,"Test the option that a row may be returned as a list instead " 
+     "of a tuple. Too be somewhat backward compatible."}].
 return_rows_as_lists(Config) when is_list(Config) ->
     {ok, Ref} =  odbc:connect(?RDBMS:connection_string(),
 			      [{tuple_row, off}] ++ odbc_test_lib:platform_options()),
 
-    Table = ?config(tableName, Config),
+    Table = proplists:get_value(tableName, Config),
 
     {updated, _} = 
 	odbc:sql_query(Ref, 
@@ -855,29 +834,28 @@ return_rows_as_lists(Config) when is_list(Config) ->
 
 %%-------------------------------------------------------------------------
 
-api_missuse(doc)->
-    ["Test that behaviour of the control process if the api is abused"];
-api_missuse(suite) -> [];
+api_missuse()->
+    [{doc,"Test that behaviour of the control process if the api is abused"}].
 api_missuse(Config) when is_list(Config)->
 
     {ok, Ref} =  odbc:connect(?RDBMS:connection_string(), odbc_test_lib:platform_options()),
-    %% Serious programming fault, connetion will be shut down 
+    %% Serious programming fault, connection will be shut down 
     gen_server:call(Ref, {self(), foobar, 10}, infinity),
-    test_server:sleep(10),
+    ct:sleep(10),
     undefined = process_info(Ref, status),
 
     {ok, Ref2} =  odbc:connect(?RDBMS:connection_string(),
 			       odbc_test_lib:platform_options()),
-    %% Serious programming fault, connetion will be shut down 
+    %% Serious programming fault, connection will be shut down 
     gen_server:cast(Ref2, {self(), foobar, 10}),
-    test_server:sleep(10),
+    ct:sleep(10),
     undefined = process_info(Ref2, status),
 
     {ok, Ref3} =  odbc:connect(?RDBMS:connection_string(),
 			       odbc_test_lib:platform_options()),
-    %% Could be an innocent misstake the connection lives. 
+    %% Could be an innocent mistake the connection lives. 
     Ref3 ! foobar, 
-    test_server:sleep(10),
+    ct:sleep(10),
     {status, _} = process_info(Ref3, status).
 
 transaction_support_str(mysql) ->
@@ -887,13 +865,13 @@ transaction_support_str(_) ->
 
 
 %%-------------------------------------------------------------------------
-extended_errors(doc)->
-    ["Test the extended errors connection option: When off; the old behaviour of just an error "
-     "string is returned on error. When on, the error string is replaced by a 3 element tuple "
-     "that also exposes underlying ODBC provider error codes."];
-extended_errors(suite)  -> [];
+extended_errors()->
+    [{doc, 
+      "Test the extended errors connection option: When off; the old behaviour of just an error "
+      "string is returned on error. When on, the error string is replaced by a 3 element tuple "
+      "that also exposes underlying ODBC provider error codes."}].
 extended_errors(Config) when is_list(Config)->
-    Table = ?config(tableName, Config),
+    Table = proplists:get_value(tableName, Config),
     {ok, Ref} = odbc:connect(?RDBMS:connection_string(), odbc_test_lib:platform_options()),
     {updated, _} = odbc:sql_query(Ref, "create table " ++ Table ++" ( id integer, data varchar(10))"),
 
@@ -914,6 +892,54 @@ extended_errors(Config) when is_list(Config)->
 
     ok = odbc:disconnect(Ref),
     ok = odbc:disconnect(RefExtended).
+
+%%--------------------------------------------------------------------
+max_long_column_size() ->
+    [{doc,
+      "Test the max_long_column_size connect option: verify that the "
+      "option is accepted and that invalid values are rejected. When "
+      "a database is available, verify that long column data up to the "
+      "configured size is returned without crashing the port."}].
+max_long_column_size(Config) when is_list(Config) ->
+    %% Valid option values are accepted
+    {ok, Ref1} = odbc:connect(?RDBMS:connection_string(),
+                              odbc_test_lib:platform_options() ++
+                                  [{max_long_column_size, 16000}]),
+    ok = odbc:disconnect(Ref1),
+
+    %% Default (0) is accepted
+    {ok, Ref2} = odbc:connect(?RDBMS:connection_string(),
+                              odbc_test_lib:platform_options() ++
+                                  [{max_long_column_size, 0}]),
+    ok = odbc:disconnect(Ref2),
+
+    %% Invalid values are rejected
+    {'EXIT', {bad_option, {max_long_column_size, -1}}} =
+        (catch odbc:connect(?RDBMS:connection_string(),
+                            odbc_test_lib:platform_options() ++
+                                [{max_long_column_size, -1}])),
+    {'EXIT', {bad_option, {max_long_column_size, foo}}} =
+        (catch odbc:connect(?RDBMS:connection_string(),
+                            odbc_test_lib:platform_options() ++
+                                [{max_long_column_size, foo}])),
+
+    %% Verify large data does not crash the port
+    Table = proplists:get_value(tableName, Config),
+    {ok, Ref3} = odbc:connect(?RDBMS:connection_string(),
+                              odbc_test_lib:platform_options() ++
+                                  [{max_long_column_size, 32000}]),
+    {updated, _} = odbc:sql_query(Ref3,
+                                  "CREATE TABLE " ++ Table ++
+                                      " (id INTEGER, data TEXT)"),
+    LargeData = lists:duplicate(10000, $x),
+    {updated, _} = odbc:sql_query(Ref3,
+                                  "INSERT INTO " ++ Table ++
+                                      " VALUES (1, '" ++ LargeData ++ "')"),
+    {selected, _, [{1, ReturnedData}]} =
+        odbc:sql_query(Ref3, "SELECT * FROM " ++ Table),
+    true = length(ReturnedData) > 0,
+    {updated, _} = odbc:sql_query(Ref3, "DROP TABLE " ++ Table),
+    ok = odbc:disconnect(Ref3).
 
 
 is_odbcserver(Name) ->

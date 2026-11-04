@@ -1,8 +1,10 @@
 %%
 %% %CopyrightBegin%
-%% 
-%% Copyright Ericsson AB 1996-2010. All Rights Reserved.
-%% 
+%%
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 1996-2025. All Rights Reserved.
+%%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
 %% You may obtain a copy of the License at
@@ -14,7 +16,7 @@
 %% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 %% See the License for the specific language governing permissions and
 %% limitations under the License.
-%% 
+%%
 %% %CopyrightEnd%
 %%
 -module(dummy_h).
@@ -22,10 +24,12 @@
 %% Test event handler for gen_event_SUITE.erl
 
 -export([init/1, handle_event/2, handle_call/2, handle_info/2,
-	 terminate/2]).
+	 terminate/2, format_status/1]).
 
 init(make_error) ->
     {error, my_error};
+init({state, State}) ->
+    {ok, State};
 init([Parent]) ->
     {ok, Parent};  %% We will send special responses for every handled event.
 init([Parent,hibernate]) ->
@@ -40,6 +44,9 @@ handle_event(do_crash, _State) ->
 handle_event(hibernate, _State) ->
    {ok,[],hibernate};
 handle_event(wakeup, _State) ->
+    {ok,[]};
+handle_event({From, handle_event}, _State) ->
+    From ! handled_event,
     {ok,[]};
 handle_event(Event, Parent) ->
     Parent ! {dummy_h, Event},
@@ -58,6 +65,9 @@ handle_call(hibernate, _State) ->
 handle_call(hibernate_later, _State) ->
     timer:send_after(1000,sleep),
     {ok,later,[]};
+handle_call({delayed_answer, T}, State) ->
+    receive after T -> ok end,
+    {ok, delayed, State};
 handle_call(_Query, State) ->
     {ok, ok, State}.
 
@@ -73,6 +83,9 @@ handle_info(wake, _State) ->
     {ok, []};
 handle_info(gnurf, _State) ->
     {ok, []};
+handle_info({From, handle_info}, _State) ->
+    From ! handled_info,
+    {ok, []};
 handle_info(Info, Parent) ->
     Parent ! {dummy_h, Info},
     {ok, Parent}.
@@ -83,7 +96,11 @@ terminate(swap, State) ->
     {ok, State};
 terminate({error, {return, faulty}}, Parent) ->
     Parent ! {dummy_h, returned_error};
+terminate(_Reason, {undef_in_terminate, {Mod, Fun}}) ->
+    Mod:Fun(),
+    ok;
 terminate(_Reason, _State) ->
     ok.
 
-
+format_status(#{ state := _State } = S) ->
+    S#{ state := "dummy1_h handler state" }.

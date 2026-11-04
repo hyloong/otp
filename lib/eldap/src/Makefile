@@ -1,7 +1,9 @@
 #
 # %CopyrightBegin%
 #
-# Copyright Ericsson AB 2012-2013. All Rights Reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Copyright Ericsson AB 2012-2025. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -60,15 +62,15 @@ APP_TARGET = $(EBIN)/$(APP_FILE)
 # ----------------------------------------------------
 # FLAGS
 # ----------------------------------------------------
-ERL_COMPILE_FLAGS += -I../include -I../ebin -Werror
+ERL_COMPILE_FLAGS += -I../include -I../ebin -Werror +nowarn_deprecated_catch
 
 # ----------------------------------------------------
 # Targets
 # ----------------------------------------------------
 opt: $(TARGET_FILES) $(APP_TARGET) $(APPUP_TARGET)
 
-debug:
-	@${MAKE} TYPE=debug opt
+$(filter-out opt, $(TYPES)):
+	@${MAKE} TYPE=$@ opt
 
 clean:
 	rm -f $(TARGET_FILES) $(GEN_FILES) $(APP_TARGET) $(APPUP_TARGET)
@@ -98,7 +100,7 @@ include $(ERL_TOP)/make/otp_release_targets.mk
 
 release_spec: opt
 	$(INSTALL_DIR) "$(RELSYSDIR)/ebin"
-	$(INSTALL_DATA) $(TARGET_FILES) $(APP_TARGET) $(APPUP_TARGET) "$(RELSYSDIR)/ebin"
+	$(INSTALL_DATA) $(ASN1_HRL) $(TARGET_FILES) $(APP_TARGET) $(APPUP_TARGET) "$(RELSYSDIR)/ebin"
 	$(INSTALL_DIR) "$(RELSYSDIR)/src"
 	$(INSTALL_DATA) $(ERL_FILES) "$(RELSYSDIR)/src"
 	$(INSTALL_DIR) "$(RELSYSDIR)/asn1"
@@ -108,4 +110,7 @@ release_spec: opt
 
 release_docs_spec:
 
-
+# ----------------------------------------------------
+# Dependencies
+# ----------------------------------------------------
+include $(ERL_TOP)/make/dep.mk

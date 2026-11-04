@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 1998-2011. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 1998-2025. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -28,10 +30,24 @@
 
 -module(mnesia_evil_backup).
 -author('dgud@erix.ericsson.se').
--compile(export_all).
 -include("mnesia_test_lib.hrl").
 
-%%-export([Function/Arity, ...]).
+-export([init_per_testcase/2, end_per_testcase/2,
+         init_per_group/2, end_per_group/2,
+         all/0, groups/0]).
+
+-export([backup/1, bad_backup/1, global_backup_checkpoint/1,
+         traverse_backup/1,
+         selective_backup_checkpoint/1,
+         incremental_backup_checkpoint/1, install_fallback/1,
+         uninstall_fallback/1, local_fallback/1,
+         sops_with_checkpoint/1,
+         restore_errors/1, restore_clear/1, restore_keep/1,
+         restore_recreate/1, restore_clear_ram/1,
+         restore_recreate_empty/1
+        ]).
+
+-export([check_tab/2]).
 
 init_per_testcase(Func, Conf) ->
     mnesia_test_lib:init_per_testcase(Func, Conf).
@@ -52,7 +68,7 @@ all() ->
 groups() -> 
     [{restore_tables, [],
       [restore_errors, restore_clear, restore_keep,
-       restore_recreate, restore_clear_ram]}].
+       restore_recreate, restore_clear_ram, restore_recreate_empty]}].
 
 init_per_group(_GroupName, Config) ->
     Config.
@@ -128,7 +144,7 @@ global_backup_checkpoint(Config) when is_list(Config) ->
     ?match(ok, mnesia:backup_checkpoint(cp_name, File)),
     ?match({error, _}, mnesia:backup_checkpoint(cp_name_nonexist, File)),
     ?match(ok, mnesia:backup_checkpoint(cp_name, File2, mnesia_backup)),
-    ?match({error, _}, file:delete(File)),
+    ?match(ok, file:delete(File)),
     ?match(ok, file:delete(File2)),
     ?verify_mnesia(Nodes, []).
 
@@ -232,7 +248,13 @@ restore(Config, Op)  ->
 
     Res21 = [{Tab2, N, N+1} || N <- lists:seq(1, 11)],
     Res31 = [[{Tab3, N, N+1}, {Tab3, N, N+44}] || N <- lists:seq(1, 10)],
-    
+    Check = fun() ->
+		    [disk_log:pid2name(X) ||
+			X <- processes(), Data <- [process_info(X, [current_function])],
+			Data =/= undefined,
+			element(1, element(2, lists:keyfind(current_function, 1, Data)))=:= disk_log]
+	    end,
+    Before = Check(),
     ?match({atomic, [Tab1]}, Restore(File1, [{Op, [Tab1]},
 					     {skip_tables, Tabs -- [Tab1]}])),    
     case Op of 
@@ -319,6 +341,8 @@ restore(Config, Op)  ->
     end,
     ?match(ok, file:delete(File1)),
     ?match(ok, file:delete(File2)),
+    ?match([], Check() -- (Before ++ [{ok, latest_log}, {ok, previous_log}])),
+
     ?verify_mnesia(Nodes, []).
 
 
@@ -383,6 +407,54 @@ restore_clear_ram_loop(N, Nodes = [N1,N2,N3], Bup) when N > 0 ->
     end;
 restore_clear_ram_loop(_,_,_) ->
     ok.
+
+restore_recreate_empty(doc) ->
+    ["Test recreation from empty schema"];
+restore_recreate_empty(suite) -> [];
+restore_recreate_empty(Config) ->
+    Nodes = ?acquire_nodes(1, Config),
+
+    Tab1 = ram_snmp,
+    Def1 = [{snmp, [{key, integer}]}, {ram_copies, Nodes}],
+    Tab2 = disc_index,
+    Def2 = [{type, bag}, {index, [val]}, {disc_copies, Nodes}],
+    Tab3 = dionly,
+    Def3 = [{index, [val]}, {disc_only_copies, Nodes}],
+    ?match({atomic, ok}, mnesia:create_table(Tab1, Def1)),
+    ?match({atomic, ok}, mnesia:create_table(Tab2, Def2)),
+    ?match({atomic, ok}, mnesia:create_table(Tab3, Def3)),
+
+    Res1 = [{Tab1, N, N+42} || N <- lists:seq(1, 10)],
+    Res2 = [{Tab2, N, N+43} || N <- lists:seq(1, 10)],
+    Res3 = [{Tab3, N, N+44} || N <- lists:seq(1, 10)],
+
+    [mnesia:dirty_write(W) || TabW <- [Res1, Res2, Res3], W <- TabW],
+
+    File1 = "recreate.bup",
+    ?match(ok, mnesia:backup(File1)),
+
+    mnesia:dirty_write({Tab1, 12, 12+42}),
+    mnesia:dirty_write({Tab2, 12, 12+43}),
+    mnesia:dirty_write({Tab3, 12, 12+44}),
+
+    stopped = mnesia:stop(),
+    ok = mnesia:delete_schema(Nodes),
+    ok = mnesia:start(),
+
+    ?match({atomic, _Tabs}, mnesia:restore(File1, [{default_op, recreate_tables}])),
+
+    check_tab(Res2, ?LINE),
+    check_tab(Res3, ?LINE),
+
+    ?match([], mnesia:dirty_read({Tab1, 12})),
+    ?match([], mnesia:dirty_read({Tab2, 12})),
+    ?match([], mnesia:dirty_read({Tab3, 12})),
+
+    [?match([{Tab2, N, _}], mnesia:dirty_index_read(Tab2, N+43, val)) || N <- lists:seq(1,10)],
+    [?match([{Tab3, N, _}], mnesia:dirty_index_read(Tab3, N+44, val)) || N <- lists:seq(1,10)],
+
+    ok.
+
 
 traverse_backup(doc) -> 
     ["Testing the traverse_backup interface, the resulting file is not tested though",
@@ -715,18 +787,18 @@ bup_records(File, Mod) ->
 	    exit(Reason)
     end.
 
-sops_with_checkpoint(doc) -> 
+sops_with_checkpoint(doc) ->
     ["Test schema operations during a checkpoint"];
 sops_with_checkpoint(suite) -> [];
 sops_with_checkpoint(Config) when is_list(Config) ->
-    Ns = ?acquire_nodes(2, Config),
-    
+    Ns = [N1,N2] = ?acquire_nodes(2, Config),
+
     ?match({ok, cp1, Ns}, mnesia:activate_checkpoint([{name, cp1},{max,mnesia:system_info(tables)}])),
-    Tab = tab, 
+    Tab = tab,
     ?match({atomic, ok}, mnesia:create_table(Tab, [{disc_copies,Ns}])),
     OldRecs = [{Tab, K, -K} || K <- lists:seq(1, 5)],
     [mnesia:dirty_write(R) || R <- OldRecs],
-    
+
     ?match({ok, cp2, Ns}, mnesia:activate_checkpoint([{name, cp2},{max,mnesia:system_info(tables)}])),
     File1 = "cp1_delete_me.BUP",
     ?match(ok, mnesia:dirty_write({Tab,6,-6})),
@@ -734,16 +806,19 @@ sops_with_checkpoint(Config) when is_list(Config) ->
     ?match(ok, mnesia:dirty_write({Tab,7,-7})),
     File2 = "cp2_delete_me.BUP",
     ?match(ok, mnesia:backup_checkpoint(cp2, File2)),
-    
+
     ?match(ok, mnesia:deactivate_checkpoint(cp1)),
     ?match(ok, mnesia:backup_checkpoint(cp2, File1)),
     ?match(ok, mnesia:dirty_write({Tab,8,-8})),
-    
+
     ?match({atomic,ok}, mnesia:delete_table(Tab)),
+    ?match(true, filelib:is_file(File2)),
     ?match({error,_}, mnesia:backup_checkpoint(cp2, File2)),
+    ?match(true, filelib:is_file(File2)),
+
     ?match({'EXIT',_}, mnesia:dirty_write({Tab,9,-9})),
 
-    ?match({atomic,_}, mnesia:restore(File1, [{default_op, recreate_tables}])), 
+    ?match({atomic,_}, mnesia:restore(File1, [{default_op, recreate_tables}])),
     Test = fun(N) when N > 5 -> ?error("To many records in backup ~p ~n", [N]);
 	      (N) -> case mnesia:dirty_read(Tab,N) of
 			 [{Tab,N,B}] when -B =:= N -> ok;
@@ -751,8 +826,30 @@ sops_with_checkpoint(Config) when is_list(Config) ->
 		     end
 	   end,
     [Test(N) || N <- mnesia:dirty_all_keys(Tab)],
-    ?match({aborted,enoent}, mnesia:restore(File2, [{default_op, recreate_tables}])), 
-    
+    ok = file:delete(File2),
+    ?match({aborted,enoent}, mnesia:restore(File2, [{default_op, recreate_tables}])),
+
+    %% Mnesia crashes when deleting a table during backup
+    ?match([], mnesia_test_lib:stop_mnesia([N2])),
+    Tab2 = ram,
+    ?match({atomic, ok}, mnesia:create_table(Tab2, [{ram_copies,[N1]}])),
+    ?match({ok, cp3, _}, mnesia:activate_checkpoint([{name, cp3},
+                                                     {ram_overrides_dump,true},
+                                                     {min,[Tab2]}])),
+    Write = fun Loop (N) ->
+                   case N > 0 of
+                       true ->
+                           mnesia:dirty_write({Tab2, N+100, N+100}),
+                           Loop(N-1);
+                       false ->
+                           ok
+                   end
+           end,
+    ok = Write(100000),
+    spawn_link(fun() -> ?match({atomic, ok},mnesia:delete_table(Tab2)) end),
+
+    %% We don't check result here, depends on timing of above call
+    mnesia:backup_checkpoint(cp3, File2),
     file:delete(File1), file:delete(File2),
 
-    ?verify_mnesia(Ns, []).
+    ?verify_mnesia([N1], [N2]).

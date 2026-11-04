@@ -1,4 +1,2 @@
-{suites,"../ssl_test",all}.
-{skip_cases, "../ssl_test",
-    ssl_bench_SUITE, [setup_sequential, setup_concurrent, payload_simple],
-    "Benchmarks run separately"}.
+% {merge_tests,false}.
+{suites, "../ssl_test", all}.

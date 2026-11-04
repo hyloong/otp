@@ -1,8 +1,10 @@
 %%
 %% %CopyrightBegin%
-%% 
-%% Copyright Ericsson AB 2004-2009. All Rights Reserved.
-%% 
+%%
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2004-2025. All Rights Reserved.
+%%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
 %% You may obtain a copy of the License at
@@ -14,7 +16,7 @@
 %% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 %% See the License for the specific language governing permissions and
 %% limitations under the License.
-%% 
+%%
 %% %CopyrightEnd%
 %%
 
@@ -77,7 +79,7 @@ Nonterminals
 
 Terminals
 
-    %% 'AddToken'
+    'AddToken'
     %% 'AndAUDITselectToken'  
     'AuditCapToken'
     'AuditToken'
@@ -106,7 +108,7 @@ Terminals
     %% 'EmergencyValueToken' 
     'ErrorToken'
     %% 'EventBufferToken'
-    %% 'EventsToken'
+    'EventsToken'
     %% 'ExternalToken' 
     'FailoverToken'
     'ForcedToken'
@@ -273,7 +275,7 @@ pathName             -> safeToken : ensure_pathName('$1') .
 
 safeToken            -> safeToken2              : make_safe_token('$1') .
 
-%% safeToken2           -> 'AddToken'              : '$1' .
+safeToken2           -> 'AddToken'              : '$1' .
 safeToken2           -> 'AuditToken'            : '$1' .
 safeToken2           -> 'AuditCapToken'         : '$1' .
 safeToken2           -> 'AuditValueToken'       : '$1' .
@@ -298,7 +300,7 @@ safeToken2           -> 'EmbedToken'            : '$1' .
 %% safeToken2           -> 'EmergencyOffToken'     : '$1' .
 safeToken2           -> 'ErrorToken'            : '$1' .
 %% safeToken2           -> 'EventBufferToken'      : '$1' .
-%% safeToken2           -> 'EventsToken'           : '$1' .
+safeToken2           -> 'EventsToken'           : '$1' .
 %% safeToken2           -> 'ExternalToken'         : '$1' . % v3
 safeToken2           -> 'FailoverToken'         : '$1' .
 safeToken2           -> 'ForcedToken'           : '$1' .
@@ -390,10 +392,7 @@ safeToken2           -> 'V91Token'              : '$1' .
 safeToken2           -> 'VersionToken'          : '$1' .
 
 Erlang code.
-
-%% The following directive is needed for (significantly) faster compilation
-%% of the generated .erl file by the HiPE compiler.  Please do not remove.
--compile([{hipe,[{regalloc,linear_scan}]}]).
+-moduledoc false.
 
 -include("megaco_text_mini_parser.hrl").
 

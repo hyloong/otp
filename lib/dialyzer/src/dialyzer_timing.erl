@@ -1,8 +1,11 @@
 %% -*- erlang-indent-level: 2 -*-
-%%-------------------------------------------------------------------
+%%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2006-2012. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright 2004-2010 held by the authors. All Rights Reserved.
+%% Copyright Ericsson AB 2014-2025. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -17,7 +20,6 @@
 %% limitations under the License.
 %%
 %% %CopyrightEnd%
-%%
 
 %%%-------------------------------------------------------------------
 %%% File    : dialyzer_timing.erl
@@ -26,6 +28,7 @@
 %%%-------------------------------------------------------------------
 
 -module(dialyzer_timing).
+-moduledoc false.
 
 -export([init/1, start_stamp/2, send_size_info/3, end_stamp/1, stop/1]).
 

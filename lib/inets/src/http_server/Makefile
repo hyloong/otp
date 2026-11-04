@@ -1,7 +1,9 @@
 #
 # %CopyrightBegin%
 #
-# Copyright Ericsson AB 2005-2015. All Rights Reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Copyright Ericsson AB 2005-2025. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -40,6 +42,10 @@ RELSYSDIR = $(RELEASE_PATH)/lib/$(APPLICATION)-$(VSN)
 # ----------------------------------------------------
 # Target Specs
 # ----------------------------------------------------
+
+BEHAVIOUR_MODULES= \
+        httpd_custom_api
+
 MODULES = \
 	httpd \
 	httpd_acceptor \
@@ -53,6 +59,7 @@ MODULES = \
 	httpd_file\
 	httpd_instance_sup \
 	httpd_log \
+	httpd_logger \
 	httpd_manager \
 	httpd_misc_sup \
 	httpd_request \
@@ -69,14 +76,12 @@ MODULES = \
 	mod_auth_dets \
 	mod_auth_mnesia \
 	mod_auth_server \
-	mod_browser \
 	mod_cgi \
 	mod_dir \
 	mod_disk_log \
 	mod_esi \
 	mod_get \
 	mod_head \
-	mod_htaccess \
 	mod_log \
 	mod_range \
 	mod_responsecontrol \
@@ -86,11 +91,25 @@ MODULES = \
 
 HRL_FILES = httpd.hrl httpd_internal.hrl mod_auth.hrl
 
-ERL_FILES = $(MODULES:%=%.erl)
+ERL_FILES = $(MODULES:%=%.erl)\
+	    $(BEHAVIOUR_MODULES:%=%.erl)
 
 TARGET_FILES= $(MODULES:%=$(EBIN)/%.$(EMULATOR)) 
 
+BEHAVIOUR_TARGET_FILES= $(BEHAVIOUR_MODULES:%=$(EBIN)/%.$(EMULATOR))
+
 INETS_FLAGS = -D'SERVER_SOFTWARE="$(APPLICATION)/$(VSN)"'
+
+DEPDIR=deps
+DEP_FILE=$(DEPDIR)/http_server.d
+$(shell mkdir -p $(dir $(DEP_FILE)) >/dev/null)
+
+ifeq ($(TARGET), win32)
+  # Native path without C: ignore driveletter case
+  ERL_TOP_NATIVE = $(shell w32_path.sh -m $(ERL_TOP) | sed "s@[a-zA-Z]:@:@")
+else
+  ERL_TOP_NATIVE = $(ERL_TOP)
+endif
 
 
 # ----------------------------------------------------
@@ -109,12 +128,16 @@ ERL_COMPILE_FLAGS += \
 # ----------------------------------------------------
 # Targets
 # ----------------------------------------------------
+$(TARGET_FILES): $(BEHAVIOUR_TARGET_FILES)
 
-debug opt: $(TARGET_FILES)
+$(TYPES): $(TARGET_FILES) $(DEP_FILE)
+
+deps: $(DEP_FILE)
 
 clean:
-	rm -f $(TARGET_FILES)
+	rm -f $(TARGET_FILES) $(BEHAVIOUR_TARGET_FILES)
 	rm -f core
+	rm -rf $(DEPDIR)
 
 docs:
 
@@ -129,7 +152,7 @@ release_spec: opt
 	$(INSTALL_DIR)  "$(RELSYSDIR)/src/http_server"
 	$(INSTALL_DATA) $(HRL_FILES) $(ERL_FILES) "$(RELSYSDIR)/src/http_server"
 	$(INSTALL_DIR)  "$(RELSYSDIR)/ebin"
-	$(INSTALL_DATA) $(TARGET_FILES) "$(RELSYSDIR)/ebin"
+	$(INSTALL_DATA) $(TARGET_FILES) $(BEHAVIOUR_TARGET_FILES) "$(RELSYSDIR)/ebin"
 
 release_docs_spec:
 
@@ -138,4 +161,19 @@ info:
 	@echo "INETS_DEBUG       = $(INETS_DEBUG)"
 	@echo "INETS_FLAGS       = $(INETS_FLAGS)"
 	@echo "ERL_COMPILE_FLAGS = $(ERL_COMPILE_FLAGS)"
+
+$(DEP_FILE): $(ERL_FILES)
+	@echo SED $(TARGET) $(ERL_TOP_NATIVE)
+	$(gen_verbose)erlc -M $(ERL_FILES) \
+	| perl -pe "s@ [a-zA-Z]?$(ERL_TOP_NATIVE)/(?:bootstrap/)?lib/([^/]+)@ ../../../\1@g" 2> /dev/null \
+	| sed "s/\.$(EMULATOR)/\.$$\(EMULATOR\)/" \
+	| sed 's@^httpd@$$(EBIN)/httpd@' \
+	| sed 's@^mod_@$$(EBIN)/mod_@' \
+	> $(DEP_FILE)
+
+
+# ----------------------------------------------------
+# Dependencies
+# ----------------------------------------------------
+-include $(DEP_FILE)
 

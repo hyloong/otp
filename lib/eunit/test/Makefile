@@ -1,7 +1,9 @@
 #
 # %CopyrightBegin%
 #
-# Copyright Ericsson AB 2009-2012. All Rights Reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Copyright Ericsson AB 2009-2026. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -21,9 +23,12 @@ include $(ERL_TOP)/make/target.mk
 include $(ERL_TOP)/make/$(TARGET)/otp.mk
 
 MODULES =  \
+	eunit_test_listener \
 	eunit_SUITE \
+	tc0 \
 	tlatin \
-	tutf8
+	tutf8 \
+	ttimesout
 
 ERL_FILES= $(MODULES:%=%.erl)
 
@@ -41,8 +46,9 @@ RELSYSDIR = $(RELEASE_PATH)/eunit_test
 # ----------------------------------------------------
 # FLAGS
 # ----------------------------------------------------
-ERL_MAKE_FLAGS += -pa $(ERL_TOP)/lib/test_server/ebin
-ERL_COMPILE_FLAGS += -I$(ERL_TOP)/lib/test_server/include
+ERL_MAKE_FLAGS +=
+ERL_COMPILE_FLAGS += +nowarn_missing_spec_documented
+ERL_COMPILE_FLAGS := $(filter-out +deterministic,$(ERL_COMPILE_FLAGS))
 
 EBIN = .
 
@@ -55,7 +61,7 @@ make_emakefile:
 	$(ERL_TOP)/make/make_emakefile $(ERL_COMPILE_FLAGS) -o$(EBIN) \
 		$(MODULES) > $(EMAKEFILE)
 
-tests debug opt: make_emakefile
+tests $(TYPES): make_emakefile
 	erl $(ERL_MAKE_FLAGS) -make
 
 clean:
@@ -81,5 +87,7 @@ release_tests_spec: make_emakefile
 	$(INSTALL_DATA) eunit.spec $(EMAKEFILE) \
 		$(COVERFILE) $(ERL_FILES) \
 		"$(RELSYSDIR)"
+	(cd ..; tar cf - examples | (cd "$(RELSYSDIR)/"; tar xf -))
+	chmod -R ug+w "$(RELSYSDIR)/examples"
 
 release_docs_spec:

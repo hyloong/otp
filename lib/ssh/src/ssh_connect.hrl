@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2005-2014. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2005-2026. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -22,12 +24,10 @@
 
 %%% Description : SSH connection protocol 
 
--type channel_id()           :: integer().
+-define(DEFAULT_PACKET_SIZE, 65536).
+-define(DEFAULT_WINDOW_SIZE, 10*?DEFAULT_PACKET_SIZE).
 
--define(DEFAULT_PACKET_SIZE, 32768).
--define(DEFAULT_WINDOW_SIZE, 2*?DEFAULT_PACKET_SIZE).
--define(DEFAULT_TIMEOUT, 5000).
--define(MAX_PROTO_VERSION, 255).
+-define(MAX_PROTO_VERSION, 255).      % Max length of the hello string
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %%
@@ -182,8 +182,8 @@
 -define(VEOL,6).        %% End-of-line character in addition to carriage return
                         %% or,and). linefeed.
 -define(VEOL2,7).       %% Additional end-of-line character.
--define(VSTART,8).      %% Continues paused output (normally control-Q).
--define(VSTOP,9).       %% Pauses output (normally control-S).
+-define(VSTART,8).      %% Continues paused output (normally Ctrl+Q).
+-define(VSTOP,9).       %% Pauses output (normally Ctrl+S).
 -define(VSUSP,10).      %% Suspends the current program.
 -define(VDSUSP,11).     %% Another suspend character.
 -define(VREPRINT,12).   %% Reprints the current input line.
@@ -207,6 +207,7 @@
 -define(IXANY,39).      %% Any char will restart after stop.
 -define(IXOFF,40).      %% Enable input flow control.
 -define(IMAXBEL,41).    %% Ring bell on input queue full.
+-define(IUTF8,42).      %% Terminal input and output is assumed to be encoded in UTF-8.
 -define(ISIG,50).       %% Enable signals INTR, QUIT, [D]SUSP.
 -define(ICANON,51).     %% Canonicalize input lines.
 -define(XCASE,52).      %% Enable input and output of uppercase characters by
@@ -240,14 +241,17 @@
 
 -record(channel,
 	{
-	  type,          %% "session", "x11", "forwarded-tcpip", "direct-tcpip"
-	  sys,           %% "none", "shell", "exec" "subsystem"
+	  type,          %% "session"
+         sys,           %% "none", "ssh", "shell", "exec", "subsystem", "env", "pty"
 	  user,          %% "user" process id (default to cm user)
 	  flow_control, 
 
 	  local_id,           %% local channel id
 
 	  recv_window_size,
+	  recv_window_pending = 0, %% Sum of window size updates that has not
+	                           %% yet been sent. This limits the number
+	                           %% of sent update msgs.
 	  recv_packet_size,
 	  recv_close = false,
 
@@ -261,14 +265,11 @@
 -record(connection, {
 	  requests = [], %% [{ChannelId, Pid}...] awaiting reply on request,
 	  channel_cache,
-	  port_bindings,
 	  channel_id_seed,
 	  cli_spec,
-	  address, 
-	  port,
 	  options,
+          suggest_window_size,
+          suggest_packet_size,
 	  exec,
-	  system_supervisor,
-	  sub_system_supervisor,
 	  connection_supervisor
 	 }).

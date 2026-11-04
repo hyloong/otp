@@ -1,8 +1,10 @@
 %%
 %% %CopyrightBegin%
-%% 
-%% Copyright Ericsson AB 2006-2013. All Rights Reserved.
-%% 
+%%
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2006-2025. All Rights Reserved.
+%%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
 %% You may obtain a copy of the License at
@@ -14,18 +16,18 @@
 %% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 %% See the License for the specific language governing permissions and
 %% limitations under the License.
-%% 
+%%
 %% %CopyrightEnd%
 %%
 
-%%% @doc Common Test Framework Event Handler
+%%% Common Test Framework Event Handler
 %%%
-%%% <p>This module implements an event handler that CT uses to
+%%% This module implements an event handler that CT uses to
 %%% handle status and progress notifications during test runs.
 %%% The notifications are handled locally (per node) and passed
 %%% on to ct_master when CT runs in distributed mode. This
 %%% module may be used as a template for other event handlers
-%%% that can be plugged in to handle local logging and reporting.</p>
+%%% that can be plugged in to handle local logging and reporting.
 -module(simple_evh).
 
 -behaviour(gen_event).

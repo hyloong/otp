@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2002-2010. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2002-2025. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -195,9 +197,9 @@ plain_process_info(E) when is_record(E, event) ->
 
 %plain_process_info_nolink
 plain_process_info_nolink(E) when is_record(E, event) ->
-    (E#event.label /= link) and
-    (E#event.label /= unlink) and
-    (E#event.label /= getting_linked) and
+    E#event.label /= link andalso
+    E#event.label /= unlink andalso
+    E#event.label /= getting_linked andalso
     plain_process_info(E). 
 %plain_process_info_nolink
 
@@ -290,7 +292,7 @@ msg_to_label(E) when is_record(E, event) ->
 
 mnesia_msg_to_label(Msg, Label) ->
     case Msg of
-        {mnesia_tm, _Node, Reply} ->
+        {mnesia_tm, Node, Reply} ->
             case Reply of
                 ok                                 -> ok;
                 store_erased                       -> store_erased;
@@ -301,11 +303,11 @@ mnesia_msg_to_label(Msg, Label) ->
                 {dirty_res, _Res}                  -> dirty_res;
                 {error, _Reason}                   -> error;
                 {info, _Part, _Coord}              -> info;
-                {mnesia_tm, _Node, {'EXIT', _Reason}}   -> 'EXIT';
-                {mnesia_tm, _Node, {dirty_res, _Reply}} -> dirty_res;
+                {mnesia_tm, Node, {'EXIT', _Reason}}   -> 'EXIT';
+                {mnesia_tm, Node, {dirty_res, _Reply}} -> dirty_res;
                 {new_store, _Etab}                 -> new_store;
                 {new_tid, _Tid, _Etab}             -> new_tid;
-                {ok, _Name, _IgnoreNew, _Node}     -> ok;
+                {ok, _Name, _IgnoreNew, Node}     -> ok;
                 {restarted, _Tid}                  -> restarted;
                 {vote_yes, _Tid, _Self}            -> vote_yes;
                 {vote_yes, _Tid}                   -> vote_yes;

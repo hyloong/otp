@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2013. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2013-2025. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -17,6 +19,7 @@
 %%
 %% %CopyrightEnd%
 -module(cdv_proc_cb).
+-moduledoc false.
 
 -export([col_to_elem/1,
 	 col_spec/0,
@@ -71,13 +74,13 @@ get_details(Id, _) ->
 	    Proplist0 =
 		crashdump_viewer:to_proplist(record_info(fields,proc),Info),
 	    Proplist = [{expand_table,Tab}|Proplist0],
-	    Title = io_lib:format("~s (~s)",[Info#proc.name, Id]),
+	    Title = io_lib:format("~ts (~s)",[Info#proc.name, Id]),
 	    {ok,{Title,Proplist,TW}};
 	{error,{other_node,NodeId}} ->
 	    Info = "The process you are searching for was residing on "
 		"a remote node. No process information is available. "
 		"Show information about the remote node?",
-	    Fun = fun() -> cdv_virtual_list_wx:start_detail_win(NodeId, port) end,
+	    Fun = fun() -> cdv_virtual_list_wx:start_detail_win(NodeId, node) end,
 	    {yes_no, Info, Fun};
 	{error,not_found} ->
 	    Info = "The process you are searching for could not be found.",
@@ -108,7 +111,7 @@ init_stack_page(Parent, Info) ->
 init_memory_page(Parent, Info0, Tag, Heading) ->
     Info = proplists:get_value(Tag,Info0),
     Tab = proplists:get_value(expand_table,Info0),
-    Html = observer_html_lib:expandable_term(Heading,Info,Tab),
+    Html = observer_html_lib:expandable_term(Heading,Info,Tab, observer_lib:colors(Parent)),
     cdv_html_wx:start_link(Parent,{expand,Html,Tab}).
 
 init_ets_page(Parent, Info) ->
@@ -149,7 +152,11 @@ info_fields() ->
        {"Old Heap",         old_heap},
        {"Heap Unused",      heap_unused},
        {"Old Heap Unused",  old_heap_unused},
-       {"Number of Heap Fragements", num_heap_frag},
+       {"Binary vheap",     bin_vheap},
+       {"Old Binary vheap", old_bin_vheap},
+       {"Binary vheap unused",  bin_vheap_unused},
+       {"Old Binary vheap unused", old_bin_vheap_unused},
+       {"Number of Heap Fragments", num_heap_frag},
        {"Heap Fragment Data",heap_frag_data},
        {"New Heap Start",   new_heap_start},
        {"New Heap Top",     new_heap_top},

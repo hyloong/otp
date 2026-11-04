@@ -1,9 +1,11 @@
 #-*-makefile-*-   ; force emacs to enter makefile-mode
 
 # %CopyrightBegin%
-# 
-# Copyright Ericsson AB 2007-2009. All Rights Reserved.
-# 
+#
+# SPDX-License-Identifier: Apache-2.0
+#
+# Copyright Ericsson AB 2007-2025. All Rights Reserved.
+#
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
 # You may obtain a copy of the License at
@@ -15,7 +17,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-# 
+#
 # %CopyrightEnd%
 
 MODULES = \
@@ -25,9 +27,6 @@ EXTERNAL_HRL_FILES = \
         ../../include/megaco.hrl \
         ../../include/megaco_message_v1.hrl \
         ../../include/megaco_message_v2.hrl \
-        ../../include/megaco_message_prev3a.hrl \
-        ../../include/megaco_message_prev3b.hrl \
-        ../../include/megaco_message_prev3c.hrl \
         ../../include/megaco_message_v3.hrl \
         ../../include/megaco_sdp.hrl
 

@@ -1,7 +1,9 @@
 /*
  * %CopyrightBegin%
  *
- * Copyright Ericsson AB 2001-2013. All Rights Reserved.
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Copyright Ericsson AB 2001-2026. All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -23,10 +25,6 @@
  * Function:
  * ei_print_term to print out a binary coded term
  */
-
-#ifdef VXWORKS
-#include <vxWorks.h>
-#endif
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -62,12 +60,15 @@ static void xputc(char c, FILE* fp, ei_x_buff* x)
 	ei_x_append_buf(x, &c, 1);
 }
 
-static void xputs(const char* s, FILE* fp, ei_x_buff* x)
+static int xputs(const char* s, FILE* fp, ei_x_buff* x)
 {
+    const int slen = strlen(s);
+
     if (fp != NULL)
 	fputs(s, fp);
     else
-	ei_x_append_buf(x, s, strlen(s));
+        ei_x_append_buf(x, s, slen);
+    return slen;
 }
 
 static int xprintf(FILE* fp, ei_x_buff* x, const char* fmt, ...)
@@ -78,9 +79,9 @@ static int xprintf(FILE* fp, ei_x_buff* x, const char* fmt, ...)
     if (fp != NULL) {
 	r = vfprintf(fp, fmt, ap);
     } else {
-	/* FIXME always enough in buffer??? */
+        /* We assume output is reasonable bounded */
 	char tmpbuf[2000];
-	r = vsprintf(tmpbuf, fmt, ap);
+        r = vsnprintf(tmpbuf, sizeof(tmpbuf), fmt, ap);
 	ei_x_append_buf(x, tmpbuf, strlen(tmpbuf));
     }
     va_end(ap);
@@ -91,24 +92,73 @@ static char *ei_big_to_str(erlang_big *b)
 {
     int buf_len;
     char *s,*buf;
+    unsigned int no_digits;
     unsigned short *sp;
     int i;
+    int printed;
 
-    buf_len = 64+b->is_neg+10*b->arity;
+    /* Number of 16-bit digits */
+    no_digits = (b->arity + 1) / 2;
+
+    if (no_digits <= 4) {
+        EI_ULONGLONG val;
+        buf_len = 22;
+        s = buf = malloc(buf_len);
+        if (!buf)
+            return NULL;
+        val = 0;
+        sp=b->digits;
+        for (i = 0; i < no_digits; i++)
+            val |= ((EI_ULONGLONG) sp[i]) << (i*16);
+        if (b->is_neg)
+            s += sprintf(s,"-");
+        sprintf(s, "%llu", val);
+        return buf;
+    }
+
+    /* big nums this large gets printed in base 16... */
+    buf_len = (!!b->is_neg /* "-" */
+               + 3 /* "16#" */
+               + 4*no_digits /* 16-bit digits in base 16 */
+               + 1); /* \0 */
     if ( (buf=malloc(buf_len)) == NULL) return NULL;
-
-    memset(buf,(char)0,buf_len);
 
     s = buf;
     if ( b->is_neg ) 
-        s += sprintf(s,"-");
-    s += sprintf(s,"#integer(%d) = {",b->arity);
-    for(sp=b->digits,i=0;i<b->arity;i++) {
-        s += sprintf(s,"%d",sp[i]);
-        if ( (i+1) != b->arity ) 
-            s += sprintf(s,",");
+        *(s++) = '-';
+    *(s++) = '1';
+    *(s++) = '6';
+    *(s++) = '#';
+
+    sp = b->digits;
+    printed = 0;
+    for (i = no_digits - 1; i >= 0; i--) {
+        unsigned short val = sp[i];
+        int j;
+
+        for (j = 3; j >= 0; j--) {
+            char c = (char) ((val >> (j*4)) & 0xf);
+            if (c < 10)
+                c += '0';
+            else
+                c += 'A' - 10;
+            
+            if (printed)
+                *(s++) = c;
+            else if (c != '0') {
+                *(s++) = c;
+                printed = !0;
+            }
+        }
     }
-    s += sprintf(s,"}");
+
+    if (!printed) {
+        /* very strange to encode zero like this... */
+        *(s++) = '0';
+    }
+        
+
+    *s = '\0';
     return buf;
 }
 
@@ -121,8 +171,10 @@ static int print_term(FILE* fp, ei_x_buff* x,
     erlang_pid pid;
     erlang_port port;
     erlang_ref ref;
+    erlang_fun fun;
     double d;
     long l;
+    const char* delim;
 
     int tindex = *index;
 
@@ -131,7 +183,7 @@ static int print_term(FILE* fp, ei_x_buff* x,
     if (fp == NULL && x == NULL) return -1;
 
     doquote = 0;
-    ei_get_type_internal(buf, index, &ty, &n);
+    ei_get_type(buf, index, &ty, &n);
     switch (ty) {
     case ERL_ATOM_EXT:   
     case ERL_ATOM_UTF8_EXT:
@@ -151,15 +203,18 @@ static int print_term(FILE* fp, ei_x_buff* x,
 	}
 	break;
     case ERL_PID_EXT:
+    case ERL_NEW_PID_EXT:
 	if (ei_decode_pid(buf, index, &pid) < 0) goto err;
 	ch_written += xprintf(fp, x, "<%s.%d.%d>", pid.node,
 			      pid.num, pid.serial);
 	break;
     case ERL_PORT_EXT:
+    case ERL_NEW_PORT_EXT:
 	if (ei_decode_port(buf, index, &port) < 0) goto err;
 	ch_written += xprintf(fp, x, "#Port<%d.%d>", port.id, port.creation);
 	break;
     case ERL_NEW_REFERENCE_EXT:
+    case ERL_NEWER_REFERENCE_EXT:
     case ERL_REFERENCE_EXT:
 	if (ei_decode_ref(buf, index, &ref) < 0) goto err;
 	ch_written += xprintf(fp, x, "#Ref<");
@@ -186,7 +241,7 @@ static int print_term(FILE* fp, ei_x_buff* x,
 		xputs(", ", fp, x); ch_written += 2;
 	    }
 	}
-	if (ei_get_type_internal(buf, &tindex, &ty, &n) < 0) goto err;
+	if (ei_get_type(buf, &tindex, &ty, &n) < 0) goto err;
 	if (ty != ERL_NIL_EXT) {
 	    xputs(" | ", fp, x); ch_written += 3;
 	    r = print_term(fp, x, buf, &tindex);
@@ -236,16 +291,50 @@ static int print_term(FILE* fp, ei_x_buff* x,
 	    m = BINPRINTSIZE;
 	else
 	    m = l;
-	--m;
+        delim = "";
 	for (i = 0; i < m; ++i) {
-	    ch_written += xprintf(fp, x, "%d,", p[i]);
+	    ch_written += xprintf(fp, x, "%s%u", delim, (unsigned char)p[i]);
+            delim = ",";
 	}
-	ch_written += xprintf(fp, x, "%d", p[i]);
 	if (l > BINPRINTSIZE)
 	    ch_written += xprintf(fp, x, ",...");
 	xputc('>', fp, x); ++ch_written;
 	ei_free(p);
 	break;
+    case ERL_BIT_BINARY_EXT: {
+        const unsigned char* cp;
+        size_t bits;
+        unsigned int bitoffs;
+        int trunc = 0;
+
+        if (ei_decode_bitstring(buf, index, (const char**)&cp, &bitoffs, &bits) < 0
+            || bitoffs != 0) {
+            goto err;
+        }
+        ch_written += xprintf(fp, x, "#Bits<");
+        if ((bits+7) / 8 > BINPRINTSIZE) {
+            m = BINPRINTSIZE;
+            trunc = 1;
+        }
+        else
+            m = bits / 8;
+
+        delim = "";
+        for (i = 0; i < m; ++i) {
+            ch_written += xprintf(fp, x, "%s%u", delim, cp[i]);
+            delim = ",";
+        }
+        if (trunc)
+            ch_written += xprintf(fp, x, ",...");
+        else {
+            bits %= 8;
+            if (bits)
+                ch_written += xprintf(fp, x, "%s%u:%u", delim,
+                                      (cp[i] >> (8-bits)), bits);
+        }
+        xputc('>', fp, x); ++ch_written;
+        break;
+    }
     case ERL_SMALL_INTEGER_EXT:
     case ERL_INTEGER_EXT:
 	if (ei_decode_long(buf, index, &l) < 0) goto err;
@@ -269,17 +358,51 @@ static int print_term(FILE* fp, ei_x_buff* x,
                 goto err;
             }
             
-            ch_written += xprintf(fp, x, ds);
+            ch_written += xputs(ds, fp, x);
             free(ds);
             ei_free_big(b);
             
         }
         break;
-
     case ERL_FLOAT_EXT:
     case NEW_FLOAT_EXT:
 	if (ei_decode_double(buf, index, &d) < 0) goto err;
 	ch_written += xprintf(fp, x, "%f", d);
+	break;
+    case ERL_MAP_EXT:
+	if (ei_decode_map_header(buf, &tindex, &n) < 0) goto err;
+        ch_written += xprintf(fp, x, "#{");
+	for (i = 0; i < n; ++i) {
+	    r = print_term(fp, x, buf, &tindex);
+	    if (r < 0) goto err;
+	    ch_written += r;
+            ch_written += xprintf(fp, x, " => ");
+	    r = print_term(fp, x, buf, &tindex);
+	    if (r < 0) goto err;
+	    ch_written += r;
+	    if (i < n-1) {
+		xputs(", ", fp, x); ch_written += 2;
+	    }
+	}
+	*index = tindex;
+	xputc('}', fp, x); ch_written++;
+	break;
+    case ERL_FUN_EXT:
+    case ERL_NEW_FUN_EXT:
+    case ERL_EXPORT_EXT:
+	if (ei_decode_fun(buf, &tindex, &fun) < 0) goto err;
+        if (fun.type == EI_FUN_EXPORT) {
+            ch_written += xprintf(fp, x, "fun %s:%s/%ld",
+                                  fun.module,
+                                  fun.u.exprt.func,
+                                  fun.arity);
+        } else {
+            ch_written += xprintf(fp, x, "#Fun{%s.%ld.%lu}",
+                                  fun.module,
+                                  fun.u.closure.index,
+                                  fun.u.closure.uniq);
+        }
+	*index = tindex;
 	break;
     default:
 	goto err;

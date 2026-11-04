@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2012-2013. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2012-2025. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -27,13 +29,14 @@
 %%%-------------------------------------------------------------------
 -module(ct_surefire_SUITE).
 
--compile(export_all).
+-compile([export_all, nowarn_export_all]).
 
 -include_lib("common_test/include/ct.hrl").
 -include_lib("common_test/include/ct_event.hrl").
 
 -include_lib("xmerl/include/xmerl.hrl").
 -include_lib("kernel/include/file.hrl").
+-include_lib("stdlib/include/assert.hrl").
 
 -define(eh, ct_test_support_eh).
 
@@ -49,8 +52,11 @@
 %% there will be clashes with logging processes etc).
 %%--------------------------------------------------------------------
 init_per_suite(Config) ->
-    Config1 = ct_test_support:init_per_suite(Config),
-    Config1.
+    DataDir = ?config(data_dir,Config),
+    Hook = "fail_pre_init_per_suite.erl",
+    io:format("Compiling ~p: ~p~n",
+        [Hook, compile:file(Hook,[{outdir,DataDir},debug_info])]),
+    ct_test_support:init_per_suite([{path_dirs,[DataDir]}|Config]).
 
 end_per_suite(Config) ->
     ct_test_support:end_per_suite(Config).
@@ -69,7 +75,11 @@ all() ->
      absolute_path,
      relative_path,
      url,
-     logdir
+     logdir,
+     fail_pre_init_per_suite,
+     skip_init_per_group,
+     skip_case_in_spec,
+     skip_suite_in_spec
     ].
 
 %%--------------------------------------------------------------------
@@ -107,48 +117,84 @@ logdir(Config) when is_list(Config) ->
     Path = "logdir.xml",
     run(logdir,[{cth_surefire,[{path,Path}]}],Path,Config,[{logdir,MyLogDir}]).
 
+fail_pre_init_per_suite(Config) when is_list(Config) ->
+    DataDir = ?config(data_dir,Config),
+    Suites = [filename:join(DataDir,"pass_SUITE"),
+              filename:join(DataDir,"fail_SUITE")],
+    Path = "fail_pre_init_per_suite.xml",
+    run(fail_pre_init_per_suite,[fail_pre_init_per_suite,
+        {cth_surefire,[{path,Path}]}],Path,Config,[],Suites).
+
+skip_init_per_group(Config) when is_list(Config) ->
+    DataDir = ?config(data_dir,Config),
+    Suites = [filename:join(DataDir,"skip_init_per_group_SUITE")],
+    Path = "skip_group.xml",
+    run(skip_init_per_group,[{cth_surefire,[{path,Path}]}],Path,Config,[],Suites).
+
+skip_case_in_spec(Config) ->
+    DataDir = ?config(data_dir,Config),
+    Spec = filename:join(DataDir,"skip_one_case.spec"),
+    Path = "skip_case_in_spec.xml",
+    run_spec(skip_case_in_spec,[{cth_surefire,[{path,Path}]}],Path,Config,Spec).
+
+skip_suite_in_spec(Config) ->
+    DataDir = ?config(data_dir,Config),
+    Spec = filename:join(DataDir,"skip_one_suite.spec"),
+    Path = "skip_suite_in_spec.xml",
+    run_spec(skip_suite_in_spec,[{cth_surefire,[{path,Path}]}],Path,Config,Spec).
+
 %%%-----------------------------------------------------------------
 %%% HELP FUNCTIONS
 %%%-----------------------------------------------------------------
 run(Case,CTHs,Report,Config) ->
     run(Case,CTHs,Report,Config,[]).
+
 run(Case,CTHs,Report,Config,ExtraOpts) ->
     DataDir = ?config(data_dir, Config),
     Suite = filename:join(DataDir, "surefire_SUITE"),
-    {Opts,ERPid} = setup([{suite,Suite},{ct_hooks,CTHs},{label,Case}|ExtraOpts],
-			 Config),
-    ok = execute(Case, Opts, ERPid, Config),
+    run(Case,CTHs,Report,Config,ExtraOpts,Suite).
+
+run(Case,CTHs,Report,Config,ExtraOpts,Suite) ->
+    Test = [{suite,Suite},{ct_hooks,CTHs},{label,Case}|ExtraOpts],
+    do_run(Case, Report, Test, Config).
+
+run_spec(Case,CTHs,Report,Config,Spec) ->
+    Test = [{spec,Spec},{ct_hooks,CTHs},{label,Case}],
+    do_run(Case, Report, Test, Config).
+
+do_run(Case, Report, RunTestOpts0, Config) ->
+    {RunTestOpts,ERPid} = setup(RunTestOpts0, Config),
+    ok = execute(Case, RunTestOpts, ERPid, Config),
     LogDir =
-	case lists:keyfind(logdir,1,Opts) of
+	case lists:keyfind(logdir,1,RunTestOpts) of
 	    {logdir,LD} -> LD;
 	    false -> ?config(priv_dir,Config)
 	end,
     Re = filename:join([LogDir,"*",Report]),
     check_xml(Case,Re).
 
-setup(Test, Config) ->
+setup(RunTestOpts0, Config) ->
     Opts0 = ct_test_support:get_opts(Config),
     Opts1 =
-	case lists:keymember(logdir,1,Test) of
+	case lists:keymember(logdir,1,RunTestOpts0) of
 	    true -> lists:keydelete(logdir,1,Opts0);
 	    false -> Opts0
 	end,
     Level = ?config(trace_level, Config),
     EvHArgs = [{cbm,ct_test_support},{trace_level,Level}],
-    Opts = Opts1 ++ [{event_handler,{?eh,EvHArgs}}|Test],
+    RunTestOpts = Opts1 ++ [{event_handler,{?eh,EvHArgs}}|RunTestOpts0],
     ERPid = ct_test_support:start_event_receiver(Config),
-    {Opts,ERPid}.
+    {RunTestOpts,ERPid}.
 
-execute(Name, Opts, ERPid, Config) ->
-    ok = ct_test_support:run(Opts, Config),
+execute(Case, RunTestOpts, ERPid, Config) ->
+    ok = ct_test_support:run(RunTestOpts, Config),
     Events = ct_test_support:get_events(ERPid, Config),
-
-    ct_test_support:log_events(Name,
+    ct_test_support:log_events(Case,
 			       reformat(Events, ?eh),
 			       ?config(priv_dir, Config),
-			       Opts),
+			       RunTestOpts),
 
-    TestEvents = events_to_check(Name),
+    TestEvents = events_to_check(Case),
     ct_test_support:verify_events(TestEvents, Events, Config).
 
 reformat(Events, EH) ->
@@ -166,10 +212,74 @@ events_to_check(_, 0) ->
 events_to_check(Test, N) ->
     test_events(Test) ++ events_to_check(Test, N-1).
 
-test_events(_) ->
-    [{?eh,start_logging,'_'},
-     {?eh,start_info,{1,1,9}},
-     {?eh,tc_start,{surefire_SUITE,init_per_suite}},
+test_suite_events(fail_SUITE, TestStat) ->
+     [{?eh,tc_start,{ct_framework,init_per_suite}},
+     {?eh,tc_done,{ct_framework,init_per_suite,
+                   {failed,{error,pre_init_per_suite}}}},
+     {?eh,tc_auto_skip,
+      {fail_SUITE,test_case,
+       {failed,{ct_framework,init_per_suite,{failed,pre_init_per_suite}}}}},
+     {?eh,test_stats,TestStat},
+     {?eh,tc_auto_skip,
+      {ct_framework,end_per_suite,
+       {failed,{ct_framework,init_per_suite,{failed,pre_init_per_suite}}}}}].
+
+test_suite_events(fail_SUITE) ->
+    test_suite_events(fail_SUITE, {0,0,{0,1}});
+test_suite_events(pass_SUITE) ->
+     [{?eh,tc_start,{ct_framework,init_per_suite}},
+     {?eh,tc_done,{ct_framework,init_per_suite,ok}},
+     {?eh,tc_start,{pass_SUITE,test_case}},
+     {?eh,tc_done,{pass_SUITE,test_case,ok}},
+     {?eh,test_stats,{1,0,{0,0}}},
+     {?eh,tc_start,{ct_framework,end_per_suite}},
+     {?eh,tc_done,{ct_framework,end_per_suite,ok}}];
+test_suite_events(skip_suite_in_spec) ->
+    [{?eh,tc_user_skip,{surefire_SUITE,all,"skipped in spec"}},
+     {?eh,test_stats,{0,0,{1,0}}}];
+test_suite_events(skip_init_per_group_SUITE) ->
+    [{?eh,tc_start,{ct_framework,init_per_suite}},
+     {?eh,tc_done,{ct_framework,init_per_suite,ok}},
+
+     [{?eh,tc_start,
+       {skip_init_per_group_SUITE,{init_per_group,root,[]}}},
+      {?eh,tc_done,
+       {skip_init_per_group_SUITE,{init_per_group,root,[]},ok}},
+      [{?eh,tc_start,
+        {skip_init_per_group_SUITE,{init_per_group,left,[]}}},
+       {?eh,tc_done,
+        {skip_init_per_group_SUITE,
+         {init_per_group,left,[]},
+         {skipped,skip_on_purpose}}},
+       {?eh,tc_user_skip,
+        {skip_init_per_group_SUITE,{test_case,left},skip_on_purpose}},
+       {?eh,test_stats,{0,0,{1,0}}},
+       {?eh,tc_user_skip,
+         {skip_init_per_group_SUITE,{test_case,nested_group},skip_on_purpose}},
+       {?eh,test_stats,{0,0,{2,0}}},
+       {?eh,tc_user_skip,
+        {skip_init_per_group_SUITE,{end_per_group,left},skip_on_purpose}}],
+
+      [{?eh,tc_start,
+        {skip_init_per_group_SUITE,{init_per_group,right,[]}}},
+       {?eh,tc_done,
+        {skip_init_per_group_SUITE,{init_per_group,right,[]},ok}},
+       {?eh,tc_start,{skip_init_per_group_SUITE,test_case}},
+       {?eh,tc_done,{skip_init_per_group_SUITE,test_case,ok}},
+       {?eh,test_stats,{1,0,{2,0}}},
+       {?eh,tc_start,
+        {skip_init_per_group_SUITE,{end_per_group,right,[]}}},
+       {?eh,tc_done,
+        {skip_init_per_group_SUITE,{end_per_group,right,[]},ok}}],
+      {?eh,tc_start,
+       {skip_init_per_group_SUITE,{end_per_group,root,[]}}},
+      {?eh,tc_done,
+       {skip_init_per_group_SUITE,{end_per_group,root,[]},ok}}],
+
+     {?eh,tc_start,{ct_framework,end_per_suite}},
+     {?eh,tc_done,{ct_framework,end_per_suite,ok}}];
+test_suite_events(Test) ->
+    [{?eh,tc_start,{surefire_SUITE,init_per_suite}},
      {?eh,tc_done,{surefire_SUITE,init_per_suite,ok}},
      {?eh,tc_start,{surefire_SUITE,tc_ok}},
      {?eh,tc_done,{surefire_SUITE,tc_ok,ok}},
@@ -178,54 +288,88 @@ test_events(_) ->
      {?eh,tc_done,{surefire_SUITE,tc_fail,
 		   {failed,{error,{test_case_failed,"this test should fail"}}}}},
      {?eh,test_stats,{1,1,{0,0}}},
-     {?eh,tc_start,{surefire_SUITE,tc_skip}},
-     {?eh,tc_done,{surefire_SUITE,tc_skip,{skipped,"this test is skipped"}}},
-     {?eh,test_stats,{1,1,{1,0}}},
-     {?eh,tc_start,{surefire_SUITE,tc_autoskip_require}},
-     {?eh,tc_done,{surefire_SUITE,tc_autoskip_require,
-		   {auto_skipped,{require_failed,'_'}}}},
-     {?eh,test_stats,{1,1,{1,1}}},
-     [{?eh,tc_start,{surefire_SUITE,{init_per_group,g,[]}}},
-      {?eh,tc_done,{surefire_SUITE,{init_per_group,g,[]},ok}},
-      {?eh,tc_start,{surefire_SUITE,tc_ok}},
-      {?eh,tc_done,{surefire_SUITE,tc_ok,ok}},
-      {?eh,test_stats,{2,1,{1,1}}},
-      {?eh,tc_start,{surefire_SUITE,tc_fail}},
-      {?eh,tc_done,{surefire_SUITE,tc_fail,
-		    {failed,{error,{test_case_failed,"this test should fail"}}}}},
-      {?eh,test_stats,{2,2,{1,1}}},
-      {?eh,tc_start,{surefire_SUITE,tc_skip}},
-      {?eh,tc_done,{surefire_SUITE,tc_skip,{skipped,"this test is skipped"}}},
-      {?eh,test_stats,{2,2,{2,1}}},
-      {?eh,tc_start,{surefire_SUITE,tc_autoskip_require}},
-      {?eh,tc_done,{surefire_SUITE,tc_autoskip_require,
-		    {auto_skipped,{require_failed,'_'}}}},
-      {?eh,test_stats,{2,2,{2,2}}},
-      {?eh,tc_start,{surefire_SUITE,{end_per_group,g,[]}}},
-      {?eh,tc_done,{surefire_SUITE,{end_per_group,g,[]},ok}}],
-     [{?eh,tc_start,{surefire_SUITE,{init_per_group,g_fail,[]}}},
-      {?eh,tc_done,{surefire_SUITE,{init_per_group,g_fail,[]},
-		    {failed,{error,all_cases_should_be_skipped}}}},
-      {?eh,tc_auto_skip,{surefire_SUITE,{tc_ok,g_fail},
-			 {failed,
-			  {surefire_SUITE,init_per_group,
-			   {'EXIT',all_cases_should_be_skipped}}}}},
-      {?eh,test_stats,{2,2,{2,3}}},
-      {?eh,tc_auto_skip,{surefire_SUITE,{end_per_group,g_fail},
-			 {failed,
-			  {surefire_SUITE,init_per_group,
-			   {'EXIT',all_cases_should_be_skipped}}}}}],
-     {?eh,tc_start,{surefire_SUITE,end_per_suite}},
-     {?eh,tc_done,{surefire_SUITE,end_per_suite,ok}},
-     {?eh,stop_logging,[]}].
+     {?eh,tc_start,{surefire_SUITE,tc_badmatch}},
+     {?eh,tc_done,{surefire_SUITE,tc_badmatch,
+                   {failed,{error,{{badmatch,nok},'_'}}}}},
+     {?eh,test_stats,{1,2,{0,0}}}] ++
+        tc_skip_events(Test,undefined) ++
+        [{?eh,test_stats,{1,2,{1,0}}},
+         {?eh,tc_start,{surefire_SUITE,tc_autoskip_require}},
+         {?eh,tc_done,{surefire_SUITE,tc_autoskip_require,
+                       {auto_skipped,{require_failed,'_'}}}},
+         {?eh,test_stats,{1,2,{1,1}}},
+         [{?eh,tc_start,{surefire_SUITE,{init_per_group,g,[]}}},
+          {?eh,tc_done,{surefire_SUITE,{init_per_group,g,[]},ok}},
+          {?eh,tc_start,{surefire_SUITE,tc_ok}},
+          {?eh,tc_done,{surefire_SUITE,tc_ok,ok}},
+          {?eh,test_stats,{2,2,{1,1}}},
+          {?eh,tc_start,{surefire_SUITE,tc_fail}},
+          {?eh,tc_done,{surefire_SUITE,tc_fail,
+                        {failed,{error,{test_case_failed,"this test should fail"}}}}},
+          {?eh,test_stats,{2,3,{1,1}}},
+          {?eh,tc_start,{surefire_SUITE,tc_badmatch}},
+          {?eh,tc_done,{surefire_SUITE,tc_badmatch,
+                        {failed,{error,{{badmatch,nok},'_'}}}}},
+          {?eh,test_stats,{2,4,{1,1}}}] ++
+             tc_skip_events(Test,g) ++
+             [{?eh,test_stats,{2,4,{2,1}}},
+              {?eh,tc_start,{surefire_SUITE,tc_autoskip_require}},
+              {?eh,tc_done,{surefire_SUITE,tc_autoskip_require,
+                            {auto_skipped,{require_failed,'_'}}}},
+              {?eh,test_stats,{2,4,{2,2}}},
+              {?eh,tc_start,{surefire_SUITE,{end_per_group,g,[]}}},
+              {?eh,tc_done,{surefire_SUITE,{end_per_group,g,[]},ok}}],
+         [{?eh,tc_start,{surefire_SUITE,{init_per_group,g_fail,[]}}},
+          {?eh,tc_done,{surefire_SUITE,{init_per_group,g_fail,[]},
+                        {failed,{error,all_cases_should_be_skipped}}}},
+          {?eh,tc_auto_skip,{surefire_SUITE,{tc_ok,g_fail},
+                             {failed,
+                              {surefire_SUITE,init_per_group,
+                               {'EXIT',all_cases_should_be_skipped}}}}},
+          {?eh,test_stats,{2,4,{2,3}}},
+          {?eh,tc_auto_skip,{surefire_SUITE,{end_per_group,g_fail},
+                             {failed,
+                              {surefire_SUITE,init_per_group,
+                               {'EXIT',all_cases_should_be_skipped}}}}}],
+         {?eh,tc_start,{surefire_SUITE,end_per_suite}},
+         {?eh,tc_done,{surefire_SUITE,end_per_suite,ok}}].
 
+tc_skip_events(skip_case_in_spec,Group) ->
+    [{?eh,tc_user_skip,{surefire_SUITE,tc_skip_name(Group),"skipped in spec"}}];
+tc_skip_events(_Test,_Group) ->
+    [{?eh,tc_start,{surefire_SUITE,tc_skip}},
+     {?eh,tc_done,{surefire_SUITE,tc_skip,{skipped,"this test is skipped"}}}].
+
+tc_skip_name(undefined) ->
+    tc_skip;
+tc_skip_name(Group) ->
+    {tc_skip,Group}.
+
+test_events(fail_pre_init_per_suite) ->
+    [{?eh,start_logging,{'DEF','RUNDIR'}},
+     {?eh,start_info,{2,2,2}}] ++
+     test_suite_events(pass_SUITE) ++
+     test_suite_events(fail_SUITE, {1,0,{0,1}}) ++
+     [{?eh,stop_logging,[]}];
+test_events(skip_suite_in_spec) ->
+    [{?eh,start_logging,'_'},{?eh,start_info,{1,1,0}}] ++
+     test_suite_events(skip_suite_in_spec) ++
+     [{?eh,stop_logging,[]}];
+test_events(skip_init_per_group) ->
+    [{?eh,start_logging,'_'},{?eh,start_info,{1,1,3}}] ++
+     test_suite_events(skip_init_per_group_SUITE) ++
+     [{?eh,stop_logging,[]}];
+test_events(Test) ->
+    [{?eh,start_logging,'_'}, {?eh,start_info,{1,1,11}}] ++
+    test_suite_events(Test) ++
+    [{?eh,stop_logging,[]}].
 
 %%%-----------------------------------------------------------------
 %%% Check generated xml log files
 check_xml(Case,XmlRe) ->
     case filelib:wildcard(XmlRe) of
 	[] ->
-	    ct:fail("No xml files found with regexp ~p~n", [XmlRe]);
+	    ct:fail("No xml files found with regexp ~tp~n", [XmlRe]);
 	[_] = Xmls when Case==absolute_path ->
 	    do_check_xml(Case,Xmls);
 	[_,_] = Xmls ->
@@ -247,13 +391,13 @@ check_xml(Case,XmlRe) ->
 %%  ...
 %% </testsuites>
 do_check_xml(Case,[Xml|Xmls]) ->
-    ct:log("Checking <a href=~p>~s</a>~n",[Xml,Xml]),
+    ct:log("Checking <a href=~tp>~ts</a>~n",[Xml,Xml]),
     {E,_} = xmerl_scan:file(Xml),
     Expected = events_to_result(lists:flatten(test_events(Case))),
     ParseResult = testsuites(Case,E),
-    ct:log("Expecting: ~p~n",[[Expected]]),
-    ct:log("Actual   : ~p~n",[ParseResult]),
-    [Expected] = ParseResult,
+    ct:log("Expecting: ~tp~n",[Expected]),
+    ct:log("Actual   : ~tp~n",[ParseResult]),
+    Expected = ParseResult,
     do_check_xml(Case,Xmls);
 do_check_xml(_,[]) ->
     ok.
@@ -265,7 +409,15 @@ testsuites(Case,#xmlElement{name=testsuites,content=TS}) ->
     testsuite(Case,TS).
 
 testsuite(Case,[#xmlElement{name=testsuite,content=TC,attributes=A}|TS]) ->
-    {ET,EF,ES} = events_to_numbers(lists:flatten(test_events(Case))),
+    TestSuiteEvents =
+        test_suite_events(
+          case Case of
+              skip_suite_in_spec ->
+                  skip_suite_in_spec;
+              _ ->
+                  get_ts_name(A)
+          end),
+    {ET,EF,ES} = events_to_numbers(lists:flatten(TestSuiteEvents)),
     {T,E,F,S} = get_numbers_from_attrs(A,false,false,false,false),
     ct:log("Expecting total:~p, error:~p, failure:~p, skipped:~p~n",[ET,0,EF,ES]),
     ct:log("Actual    total:~p, error:~p, failure:~p, skipped:~p~n",[T,E,F,S]),
@@ -283,6 +435,7 @@ testsuite(_Case,[]) ->
 
 testcase(url=Case,[#xmlElement{name=testcase,attributes=A,content=C}|TC]) ->
     R = failed_or_skipped(C),
+    assert_lines(Case,A),
     case R of
 	[s] ->
 	    case lists:keyfind(url,#xmlAttribute.name,A) of
@@ -299,6 +452,7 @@ testcase(url=Case,[#xmlElement{name=testcase,attributes=A,content=C}|TC]) ->
     [R|testcase(Case,TC)];
 testcase(Case,[#xmlElement{name=testcase,attributes=A,content=C}|TC]) ->
     false = lists:keyfind(url,#xmlAttribute.name,A),
+    assert_lines(Case,A),
     R = failed_or_skipped(C),
     [R|testcase(Case,TC)];
 testcase(_Case,[]) ->
@@ -313,19 +467,107 @@ failed_or_skipped([#xmlElement{name=skipped}|E]) ->
 failed_or_skipped([]) ->
     [].
 
+assert_lines(skip_init_per_group, A) ->
+    Name = lists:keyfind(name,#xmlAttribute.name,A),
+    Group = lists:keyfind(group,#xmlAttribute.name,A),
+    VerifyFun =
+        fun ("init_per_group", [{testcase,2}, {testsuite,1}, {testsuites,1}], "root") ->
+                ok;
+            ("init_per_group", [{testcase,3}, {testsuite,1}, {testsuites,1}], "root.left") ->
+                ok;
+            ("test_case", [{testcase,4}, {testsuite,1}, {testsuites,1}], "root.left") ->
+                ok;
+            ("test_case", [{testcase,5}, {testsuite,1}, {testsuites,1}], "root.left.nested_group") ->
+                ok;
+            ("end_per_group", [{testcase,6}, {testsuite,1}, {testsuites,1}], "root.left") ->
+                ok;
+            ("init_per_group", [{testcase,7}, {testsuite,1}, {testsuites,1}], "root.right") ->
+                ok;
+            ("test_case", [{testcase,8}, {testsuite,1}, {testsuites,1}], "root.right") ->
+                ok;
+            ("end_per_group", [{testcase,9}, {testsuite,1}, {testsuites,1}], "root.right") ->
+                ok;
+            ("end_per_group", [{testcase,10}, {testsuite,1}, {testsuites,1}], "root") ->
+                ok;
+            (Tc, TcParents, TcGroupPath) ->
+                exit({wrong_grouppath, [{tc, Tc},
+                                        {tc_parents, TcParents},
+                                        {tc_group_path, TcGroupPath}]})
+        end,
+    case is_record(Group, xmlAttribute) of
+        true ->
+            Tc = Name#xmlAttribute.value,
+            TcParents = Group#xmlAttribute.parents,
+            TcGroupPath = Group#xmlAttribute.value,
+            VerifyFun(Tc, TcParents, TcGroupPath),
+            ok;
+        _ ->
+            ok
+    end;
+assert_lines(Case, A) when Case =/= fail_pre_init_per_suite,
+                           Case =/= skip_case_in_spec,
+                           Case =/= skip_suite_in_spec ->
+    Name = lists:keyfind(name,#xmlAttribute.name,A),
+    File = lists:keyfind(file,#xmlAttribute.name,A),
+    Line = lists:keyfind(line,#xmlAttribute.name,A),
+    ?assertMatch("surefire_SUITE.erl",filename:basename(File#xmlAttribute.value)),
+    case Name#xmlAttribute.value of
+        "init_per_suite" ->
+            ?assertMatch("53", Line#xmlAttribute.value);
+        "end_per_suite" ->
+            ?assertMatch("56", Line#xmlAttribute.value);
+        "tc_ok" ->
+            ?assertMatch("82", Line#xmlAttribute.value);
+        "tc_fail" ->
+            ?assertMatch("87", Line#xmlAttribute.value);
+        "tc_badmatch" ->
+            ?assertMatch("91", Line#xmlAttribute.value);
+        "tc_skip" ->
+            ?assertMatch("93", Line#xmlAttribute.value);
+        "tc_autoskip_require" ->
+            ?assertMatch("98", Line#xmlAttribute.value);
+        "init_per_group" ->
+            ?assertMatch("59", Line#xmlAttribute.value);
+        "end_per_group" ->
+            ?assertMatch("64", Line#xmlAttribute.value)
+    end;
+assert_lines(_, _) ->
+    ok.
+
+
 %% Using the expected events to produce the expected result of the XML scanning.
 %% The result is a list of test suites:
 %% Testsuites = [Testsuite]
 %% Testsuite = [Testcase]
 %% Testcase = [] | [f] | [s], indicating ok, failed and skipped respectively
-events_to_result([{?eh,tc_done,{_Suite,_Case,R}}|E]) ->
-    [result(R)|events_to_result(E)];
-events_to_result([{?eh,tc_auto_skip,_}|E]) ->
-    [[s]|events_to_result(E)];
-events_to_result([_|E]) ->
-    events_to_result(E);
-events_to_result([]) ->
-    [].
+events_to_result(E) ->
+    events_to_result(E, []).
+
+events_to_result([{?eh,tc_user_skip,{_Suite,all,_}}|E], Result) ->
+    events_to_result(E, [[[s]]|Result]);
+events_to_result([{?eh,tc_auto_skip,{_Suite,init_per_suite,_}}|E], Result) ->
+    {Suite,Rest} = events_to_result1(E),
+    events_to_result(Rest, [[[s]|Suite]|Result]);
+events_to_result([{?eh,tc_done,{_Suite,init_per_suite,R}}|E], Result) ->
+    {Suite,Rest} = events_to_result1(E),
+    events_to_result(Rest, [[result(R)|Suite]|Result]);
+events_to_result([_|E], Result) ->
+    events_to_result(E, Result);
+events_to_result([], Result) ->
+    Result.
+
+events_to_result1([{?eh,tc_auto_skip,{_Suite, end_per_suite,_}}|E]) ->
+    {[[s]],E};
+events_to_result1([{?eh,tc_done,{_Suite, end_per_suite,R}}|E]) ->
+    {[result(R)],E};
+events_to_result1([{?eh,tc_done,{_Suite,_Case,R}}|E]) ->
+    {Suite,Rest} = events_to_result1(E),
+    {[result(R)|Suite],Rest};
+events_to_result1([{?eh,Skip,_}|E]) when Skip==tc_auto_skip; Skip==tc_user_skip ->
+    {Suite,Rest} = events_to_result1(E),
+    {[[s]|Suite],Rest};
+events_to_result1([_|E]) ->
+    events_to_result1(E).
 
 result(ok) ->[];
 result({skipped,_}) -> [s];
@@ -374,3 +616,7 @@ del_files(Dir,[F0|Fs] ) ->
     end;
 del_files(_,[]) ->
     ok.
+
+get_ts_name(Attributes) ->
+    {_,name,_,_,_,_,_,_,Name,_} = lists:keyfind(name, 2, Attributes),
+    list_to_atom(Name).

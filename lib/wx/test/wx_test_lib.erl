@@ -1,8 +1,10 @@
 %%
 %% %CopyrightBegin%
-%% 
-%% Copyright Ericsson AB 2008-2013. All Rights Reserved.
-%% 
+%%
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2008-2026. All Rights Reserved.
+%%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
 %% You may obtain a copy of the License at
@@ -14,7 +16,7 @@
 %% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 %% See the License for the specific language governing permissions and
 %% limitations under the License.
-%% 
+%%
 %% %CopyrightEnd%
 %%%-------------------------------------------------------------------
 %%% File    : wx_test_lib.erl
@@ -24,33 +26,36 @@
 %%% Created : 30 Oct 2008 by Dan Gudmundsson <dan.gudmundsson@ericsson.com>
 %%%-------------------------------------------------------------------
 -module(wx_test_lib).
--compile(export_all).
+-export([init_per_suite/1, end_per_suite/1, init_per_testcase/2, end_per_testcase/2]).
+-export([tc_info/1, log/2, log/4, verbose/4, error/4,
+         flush/0, pick_msg/0, user_available/1, wx_destroy/2, wx_close/2, wait_for_close/0,
+         run_test/2, run_test/3, test_case_evaluator/3]).
 
 -include("wx_test_lib.hrl").
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 init_per_suite(Config) ->
-    try 
-	case os:type() of
-	    {unix,darwin} ->
-		exit("Can not test on MacOSX");
-	    {unix, _} ->
-		io:format("DISPLAY ~s~n", [os:getenv("DISPLAY")]),
-		case ct:get_config(xserver, none) of
-		    none -> ignore;
-		    Server -> 
-			os:putenv("DISPLAY", Server)
-		end;
-	    _ -> ignore
-	end,
-	wx:new(),
-	wx:destroy(),
-	Config
-    catch 
-	_:undef ->
-	    {skipped, "No wx compiled for this platform"};
-	_:Reason ->
-	    {skipped, lists:flatten(io_lib:format("Start wx failed: ~p", [Reason]))}
+    try
+        case os:type() of
+            {unix,darwin} ->
+                exit("Can not test on MacOSX");
+            {unix, _} ->
+                io:format("DISPLAY ~s~n", [os:getenv("DISPLAY")]),
+                case ct:get_config(xserver, none) of
+                    none -> ignore;
+                    Server ->
+                        os:putenv("DISPLAY", Server)
+                end;
+            _ -> ignore
+        end,
+        wx:new(),
+        wx:destroy(),
+        Config
+    catch
+        _:undef ->
+            {skipped, "No wx compiled for this platform"};
+        _:Reason ->
+            {skipped, lists:flatten(io_lib:format("Start wx failed: ~p", [Reason]))}
     end.
 
 end_per_suite(_Config) ->
@@ -109,12 +114,12 @@ verbose(Format, Args, File, Line) ->
     end.
 
 error(Format, Args, File, Line) ->
-    global:send(wx_global_logger, {failed, File, Line}),
+    try global:send(wx_global_logger, {failed, File, Line}) catch _:_ -> ok end,
     Fail = {filename:basename(File),Line,Args},
     case global:whereis_name(wx_test_case_sup) of
 	undefined -> ignore;
 	Pid -> Pid ! Fail
-	    %% 	    global:send(wx_test_case_sup, Fail),
+               %% 	    global:send(wx_test_case_sup, Fail),
     end,
     log("<ERROR>~n" ++ Format, Args, File, Line).
 
@@ -144,27 +149,27 @@ wx_close(Frame, Config) ->
 	    timer:sleep(500),
 	    ?m(ok, wxWindow:destroy(Frame));
 	step -> %% Wait for user to close window
-	    ?m(ok, wxEvtHandler:connect(Frame, close_window, [{skip,true}])),
-	    wait_for_close(),
-	    catch wxEvtHandler:disconnect(Frame, close_window),
-	    ok
+            ?m(ok, wxEvtHandler:connect(Frame, close_window, [{skip,true}])),
+            wait_for_close(),
+            try wxEvtHandler:disconnect(Frame, close_window) catch _:_ -> ok end,
+            ok
     end.
 
 wait_for_close() ->
-    receive 
-	#wx{event=#wxClose{}} ->
-	    ?log("Got close~n",[]);
-	#wx{obj=Obj, event=Event} ->
-	    try 
-		Name = wxTopLevelWindow:getTitle(Obj),
-		?log("~p Event: ~p~n", [Name, Event])
-	    catch _:_ ->
-		?log("Event: ~p~n", [Event])
-	    end,
-	    wait_for_close();
-	Other ->
-	    ?log("Unexpected: ~p~n", [Other]),
-	    wait_for_close()
+    receive
+        #wx{event=#wxClose{}} ->
+            ?log("Got close~n",[]);
+        #wx{obj=Obj, event=Event} ->
+            try
+                Name = wxTopLevelWindow:getTitle(Obj),
+                ?log("~p Event: ~p~n", [Name, Event])
+            catch _:_ ->
+                    ?log("Event: ~p~n", [Event])
+            end,
+            wait_for_close();
+        Other ->
+            ?log("Unexpected: ~p~n", [Other]),
+            wait_for_close()
     end.
 
 
@@ -182,14 +187,18 @@ run_test([], _Config) -> [].
 run_test(Module, all, Config) ->
     All = [{Module, Test} || Test <- Module:all()],
     run_test(All, Config);
+run_test(Module, {group, Group}, Config) ->
+    {_, _, TCs} = lists:keyfind(Group, 1, Module:groups()),
+    All = [{Module, Test} || Test <- TCs],
+    run_test(All, Config);
+
 run_test(Module, TestCase, Config) ->
     log("Eval test case: ~w~n", [{Module, TestCase}]),
     Sec = timer:seconds(1) * 1000,
-    {T, Res} =
-	timer:tc(?MODULE, eval_test_case, [Module, TestCase, Config]),
+    {T, Res} = timer:tc(fun() -> eval_test_case(Module, TestCase, Config) end),
     log("Tested ~w in ~w sec~n", [TestCase, T div Sec]),
     {T div Sec, Res}.
-    
+
 eval_test_case(Mod, Fun, Config) ->
     flush(),
     global:register_name(wx_test_case_sup, self()),
@@ -208,24 +217,24 @@ test_case_evaluator(Mod, Fun, [Config]) ->
 
 wait_for_evaluator(Pid, Mod, Fun, Config) ->
     receive
-	{'EXIT', Pid, {test_case_ok, _PidRes}} ->
-	    Errors = flush(),
-	    Res = 
-		case Errors of
-		    [] -> ok;
-		    Errors -> failed
-		end,
-	    {Res, {Mod, Fun}, Errors};
-	{'EXIT', Pid, {skipped, Reason}} ->
-	    log("<WARNING> Test case ~w skipped, because ~p~n",
-		[{Mod, Fun}, Reason]),
-	    Mod:end_per_testcase(Fun, Config),
-	    {skip, {Mod, Fun}, Reason};
-	{'EXIT', Pid, Reason} ->
-	    log("<ERROR> Eval process ~w exited, because ~p~n",
-		[{Mod, Fun}, Reason]),
-	    Mod:end_per_testcase(Fun, Config),
-	    {crash, {Mod, Fun}, Reason}
+        {'EXIT', Pid, {test_case_ok, _PidRes}} ->
+            Errors = flush(),
+            Res =
+                case Errors of
+                    [] -> ok;
+                    Errors -> failed
+                end,
+            {Res, {Mod, Fun}, Errors};
+        {'EXIT', Pid, {skipped, Reason}} ->
+            log("<WARNING> Test case ~w skipped, because ~p~n",
+                [{Mod, Fun}, Reason]),
+            Mod:end_per_testcase(Fun, Config),
+            {skip, {Mod, Fun}, Reason};
+        {'EXIT', Pid, Reason} ->
+            log("<ERROR> Eval process ~w exited, because ~p~n",
+                [{Mod, Fun}, Reason]),
+            Mod:end_per_testcase(Fun, Config),
+            {crash, {Mod, Fun}, Reason}
     end.
 
 flush() ->

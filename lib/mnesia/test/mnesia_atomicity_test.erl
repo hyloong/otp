@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 1997-2011. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 1997-2026. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -22,8 +24,39 @@
 -module(mnesia_atomicity_test).
 -author('hakan@erix.ericsson.se').
 -author('rossi@erix.ericsson.se').
--compile([export_all]).
 -include("mnesia_test_lib.hrl").
+
+-compile([{nowarn_possibly_unsafe_function, {erlang, list_to_atom, 1}}]).
+
+-export([init_per_testcase/2, end_per_testcase/2,
+         init_per_group/2, end_per_group/2,
+         all/0, groups/0]).
+-export([explicit_abort_in_middle_of_trans/1,
+         runtime_error_in_middle_of_trans/1,
+         mnesia_down_during_infinite_trans/1,
+         kill_self_in_middle_of_trans/1, throw_in_middle_of_trans/1,
+         fixtable_released_when_coordinator_dies/1,
+         lock_waiter_sw_r/1, lock_waiter_sw_rt/1, lock_waiter_sw_wt/1,
+         lock_waiter_wr_r/1, lock_waiter_srw_r/1, lock_waiter_sw_sw/1,
+         lock_waiter_sw_w/1, lock_waiter_sw_wr/1, lock_waiter_sw_srw/1,
+         lock_waiter_wr_wt/1, lock_waiter_srw_wt/1,
+         lock_waiter_wr_sw/1, lock_waiter_srw_sw/1, lock_waiter_wr_w/1,
+         lock_waiter_srw_w/1, lock_waiter_r_sw/1, lock_waiter_r_w/1,
+         lock_waiter_r_wt/1, lock_waiter_rt_sw/1, lock_waiter_rt_w/1,
+         lock_waiter_rt_wt/1, lock_waiter_wr_wr/1,
+         lock_waiter_srw_srw/1, lock_waiter_wt_r/1, lock_waiter_wt_w/1,
+         lock_waiter_wt_rt/1, lock_waiter_wt_wt/1, lock_waiter_wt_wr/1,
+         lock_waiter_wt_srw/1, lock_waiter_wt_sw/1, lock_waiter_w_wr/1,
+         lock_waiter_w_srw/1, lock_waiter_w_sw/1, lock_waiter_w_r/1,
+         lock_waiter_w_w/1, lock_waiter_w_rt/1, lock_waiter_w_wt/1,
+         restart_r_one/1, restart_w_one/1, restart_rt_one/1,
+         restart_wt_one/1, restart_wr_one/1, restart_sw_one/1,
+         restart_r_two/1, restart_w_two/1, restart_rt_two/1,
+         restart_wt_two/1, restart_wr_two/1, restart_sw_two/1
+        ]
+       ).
+
+-export([perform_restarted_transaction/1, sync_tid_release/0]).
 
 init_per_testcase(Func, Conf) ->
     mnesia_test_lib:init_per_testcase(Func, Conf).
@@ -36,6 +69,7 @@ all() ->
     [explicit_abort_in_middle_of_trans,
      runtime_error_in_middle_of_trans,
      kill_self_in_middle_of_trans, throw_in_middle_of_trans,
+     fixtable_released_when_coordinator_dies,
      {group, mnesia_down_in_middle_of_trans}].
 
 groups() ->
@@ -83,7 +117,7 @@ explicit_abort_in_middle_of_trans(Config) when is_list(Config) ->
     %% Start a transaction on one node
     {success, [A]} = ?start_activities([Node1]),
 
-    %% store an object in the Tab - first tranaction
+    %% store an object in the Tab - first transaction
     ?start_transactions([A]),
     A ! fun() ->
 		mnesia:write(Rec1A)	% returns ok when successful
@@ -108,7 +142,7 @@ explicit_abort_in_middle_of_trans(Config) when is_list(Config) ->
     %% Start a second  transactionprocess, after the first failed
     {success, [B]} = ?start_activities([Node1]),
 
-    %% check, whether the interupted transaction had no influence on the db
+    %% check, whether the interrupted transaction had no influence on the db
     ?start_transactions([B]),
     B ! fun() ->
 		?match([Rec1A], mnesia:read({Tab, 1})),
@@ -135,7 +169,7 @@ runtime_error_in_middle_of_trans(Config) when is_list(Config) ->
     %% Start a transaction on one node
     {success, [A]} = ?start_activities([Node1]),
 
-    %% store an object in the Tab - first tranaction
+    %% store an object in the Tab - first transaction
     ?start_transactions([A]),
     A ! fun() ->
 		mnesia:write(Rec1A)	% returns ok when successful
@@ -160,7 +194,7 @@ runtime_error_in_middle_of_trans(Config) when is_list(Config) ->
     %% Start a second  transactionprocess, after the first failed
     {success, [B]} = ?start_activities([Node1]),
 
-    %% check, whether the interupted transaction had no influence on the db
+    %% check, whether the interrupted transaction had no influence on the db
     ?start_transactions([B]),
     B ! fun() ->
 		?match([Rec1A], mnesia:read({Tab, 1})),
@@ -187,7 +221,7 @@ kill_self_in_middle_of_trans(Config) when is_list(Config) ->
     %% Start a transaction on one node
     {success, [A]} = ?start_activities([Node1]),
 
-    %% store an object in the Tab - first tranaction
+    %% store an object in the Tab - first transaction
     ?start_transactions([A]),
     A ! fun() ->
 		mnesia:write(Rec1A)	% returns ok when successful
@@ -216,7 +250,7 @@ kill_self_in_middle_of_trans(Config) when is_list(Config) ->
     %% Start a second  transactionprocess, after the first failed
     {success, [B]} = ?start_activities([Node1]),
 
-    %% check, whether the interupted transaction had no influence on the db
+    %% check, whether the interrupted transaction had no influence on the db
     ?start_transactions([B]),
     B ! fun() ->
 		?match([Rec1A], mnesia:read({Tab, 1})),
@@ -225,6 +259,25 @@ kill_self_in_middle_of_trans(Config) when is_list(Config) ->
     ?match_receive({B, ok}),
     B ! end_trans,
     ?match_receive({B, {atomic, end_trans}}),
+
+    ?verify_mnesia(Nodes, []).
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+fixtable_released_when_coordinator_dies(doc) ->
+    ["A table fixed by a transaction is unfixed when the coordinator dies"];
+fixtable_released_when_coordinator_dies(suite) -> [];
+fixtable_released_when_coordinator_dies(Config) when is_list(Config) ->
+    [Node1] = Nodes = ?acquire_nodes(1, Config),
+    Ram = fixtable_released_ram,
+    Disc = fixtable_released_disc,
+
+    ?match({atomic, ok}, mnesia:create_table([{name, Ram}, {type, set},
+                                              {ram_copies, [Node1]}])),
+    ?match({atomic, ok}, mnesia:create_table([{name, Disc}, {type, set},
+                                              {disc_only_copies, [Node1]}])),
+
+    check_fixtable_release(Ram),
+    check_fixtable_release(Disc),
 
     ?verify_mnesia(Nodes, []).
 
@@ -243,7 +296,7 @@ throw_in_middle_of_trans(Config) when is_list(Config) ->
     %% Start a transaction on one node
     {success, [A]} = ?start_activities([Node1]),
 
-    %% store an object in the Tab - first tranaction
+    %% store an object in the Tab - first transaction
     ?start_transactions([A]),
     A ! fun() ->
 		mnesia:write(Rec1A)	% returns ok when successful
@@ -269,7 +322,7 @@ throw_in_middle_of_trans(Config) when is_list(Config) ->
     %% Start a second  transactionprocess, after the first failed
     {success, [B]} = ?start_activities([Node1]),
 
-    %% check, whether the interupted transaction had no influence on the db
+    %% check, whether the interrupted transaction had no influence on the db
     ?start_transactions([B]),
     B ! fun() ->
 		?match([Rec1A], mnesia:read({Tab, 1})),
@@ -514,7 +567,7 @@ start_lock_waiter(BlockOpA, BlockOpB, Config) ->
     io:format("waiting for A (~p on ~p) to be in the queue ~n", [A, [N1, N2]]),
     wait_for_a(A, [N1, N2]),
 
-    io:format("Queus ~p~n",
+    io:format("Queues ~p~n",
 	      [[{N,rpc:call(N, mnesia, system_info, [lock_queue])} || N <- Nodes]]),
 
     KillNode = node(B),
@@ -700,14 +753,22 @@ start_restart_check(RestartOp, ReplicaNeed, Config) ->
 
     %% mnesia shall be killed at that node, where A is reading
     %% the information from
-    kill_where_to_read(TabName, N1, [N2, N3]),
+    Read = kill_where_to_read(TabName, N1, [N2, N3]),
 
     %% wait some time to let mnesia go down and spread those news around
     %% fun A shall be able to finish its job before being restarted
-    wait(500),
+    Wait = fun(Loop) ->
+		   wait(300),
+		   sys:get_status(mnesia_monitor),
+		   case lists:member(Read, mnesia_lib:val({current, db_nodes})) of
+		       true -> Loop(Loop);
+		       false -> ok
+		   end
+	   end,
+    Wait(Wait),
     A ! go_ahead,
 
-    %% the sticky write doesnt work on remote nodes !!!
+    %% the sticky write doesn't work on remote nodes !!!
     ExpectedMsg =
 	case RestartOp of
 	    sw when ReplicaNeed == two ->
@@ -729,7 +790,7 @@ start_restart_check(RestartOp, ReplicaNeed, Config) ->
 
 
     %%  the expected result depends on the transaction of
-    %%  fun A - when that doesnt change the object in the
+    %%  fun A - when that doesn't change the object in the
     %%  table (e.g. it is a read) then the predefined
     %%  value {Tabname, 1, c} is expected to be the result here
 
@@ -772,10 +833,12 @@ kill_where_to_read(TabName, N1, Nodes) ->
     Read = rpc:call(N1,mnesia,table_info, [TabName, where_to_read]),
     case lists:member(Read, Nodes) of
 	true ->
-	    mnesia_test_lib:kill_mnesia([Read]);
+	    mnesia_test_lib:kill_mnesia([Read]),
+	    Read;
 	false ->
 	    ?error("Fault while killing Mnesia: ~p~n", [Read]),
-	    mnesia_test_lib:kill_mnesia(Nodes)
+	    mnesia_test_lib:kill_mnesia(Nodes),
+	    Read
     end.
 
 sync_tid_release() ->
@@ -783,3 +846,42 @@ sync_tid_release() ->
     sys:get_status(whereis(mnesia_locker)),
     ok.
 
+check_fixtable_release(Tab) ->
+    ?match(ok, mnesia:dirty_write({Tab, 1, a})),
+
+    %% a transaction that ends by itself releases its fixes
+    ?match({atomic, ok},
+           mnesia:transaction(fun() -> mnesia:first(Tab), ok end)),
+    ?match({Tab, false}, {Tab, wait_until_fixed(Tab, false)}),
+
+    %% and so must a coordinator that is killed while holding one
+    Coord = spawn(fun() ->
+                          mnesia:transaction(
+                            fun() ->
+                                    mnesia:first(Tab),
+                                    timer:sleep(infinity)
+                            end)
+                  end),
+    ?match({Tab, true}, {Tab, wait_until_fixed(Tab, true)}),
+    exit(Coord, kill),
+    ?match({Tab, false}, {Tab, wait_until_fixed(Tab, false)}).
+
+%% The fix is released asynchronously
+wait_until_fixed(Tab, Expected) ->
+    wait_until_fixed(Tab, Expected, 100).
+
+wait_until_fixed(Tab, _Expected, 0) ->
+    is_fixed(Tab, mnesia:table_info(Tab, storage_type));
+wait_until_fixed(Tab, Expected, N) ->
+    case is_fixed(Tab, mnesia:table_info(Tab, storage_type)) of
+        Expected ->
+            Expected;
+        _ ->
+            timer:sleep(50),
+            wait_until_fixed(Tab, Expected, N - 1)
+    end.
+
+is_fixed(Tab, disc_only_copies) ->
+    dets:info(Tab, safe_fixed_monotonic_time) =/= false;
+is_fixed(Tab, _Storage) ->
+    ets:info(Tab, safe_fixed_monotonic_time) =/= false.

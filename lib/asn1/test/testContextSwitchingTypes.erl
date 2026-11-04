@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2001-2013. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2001-2025. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -20,11 +22,12 @@
 %%
 -module(testContextSwitchingTypes).
 
--export([test/1]).
+-export([test/2]).
 
--include_lib("test_server/include/test_server.hrl").
+-include_lib("common_test/include/ct.hrl").
 
-test(Config) ->
+test(jer,_Config) -> ok;
+test(_Rule,Config) ->
     ValT_1 = 'ContextSwitchingTypes':'val1-T'(),
     check_EXTERNAL(enc_dec('T', ValT_1)),
 
@@ -38,7 +41,7 @@ test(Config) ->
     check_EXTERNAL(enc_dec('T', ValT_4)),
 
     {ok,ValT2} = asn1ct:value('ContextSwitchingTypes', 'T',
-			      [{i,?config(case_dir, Config)}]),
+			      [{i,proplists:get_value(case_dir, Config)}]),
     io:format("ValT2 ~p~n",[ValT2]),
     check_EXTERNAL(enc_dec('T', ValT2)),
 
@@ -90,5 +93,6 @@ check_object_identifier(Tuple) when is_tuple(Tuple) ->
 enc_dec(T, V0) ->
     M = 'ContextSwitchingTypes',
     {ok,Enc} = M:encode(T, V0),
+    asn1_test_lib:map_roundtrip(M, T, Enc),
     {ok,V} = M:decode(T, Enc),
     V.

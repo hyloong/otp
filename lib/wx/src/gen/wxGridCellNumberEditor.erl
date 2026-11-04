@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2009-2014. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0 AND LicenseRef-scancode-wxwindows-free-doc-3
+%%
+%% Copyright Ericsson AB 2009-2026. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -15,99 +17,145 @@
 %% See the License for the specific language governing permissions and
 %% limitations under the License.
 %%
+%% For documentation, wxWindow Free Documentation License, Version 3 applies.
+%% wxWindows Free Documentation Licence, Version 3, as follows.
+%% ===============================================
+%%
+%% Everyone is permitted to copy and distribute verbatim copies
+%% of this licence document, but changing it is not allowed.
+%%
+%%                  WXWINDOWS FREE DOCUMENTATION LICENCE
+%%    TERMS AND CONDITIONS FOR COPYING, DISTRIBUTION AND MODIFICATION
+%%
+%% 1. Permission is granted to make and distribute verbatim copies of this
+%% manual or piece of documentation provided any copyright notice and this
+%% permission notice are preserved on all copies.
+%%
+%% 2. Permission is granted to process this file or document through a
+%% document processing system and, at your option and the option of any third
+%% party, print the results, provided a printed document carries a copying
+%% permission notice identical to this one.
+%%
+%% 3. Permission is granted to copy and distribute modified versions of this
+%% manual or piece of documentation under the conditions for verbatim copying,
+%% provided also that any sections describing licensing conditions for this
+%% manual, such as, in particular, the GNU General Public Licence, the GNU
+%% Library General Public Licence, and any wxWindows Licence are included
+%% exactly as in the original, and provided that the entire resulting derived
+%% work is distributed under the terms of a permission notice identical to
+%% this one.
+%%
+%% 4. Permission is granted to copy and distribute translations of this manual
+%% or piece of documentation into another language, under the above conditions
+%% for modified versions, except that sections related to licensing, including
+%% this paragraph, may also be included in translations approved by the
+%% copyright holders of the respective licence documents in addition to the
+%% original English.
+%%
 %% %CopyrightEnd%
 %% This file is generated DO NOT EDIT
 
-%% @doc See external documentation: <a href="http://www.wxwidgets.org/manuals/2.8.12/wx_wxgridcellnumbereditor.html">wxGridCellNumberEditor</a>.
-%% <p>This class is derived (and can use functions) from:
-%% <br />{@link wxGridCellTextEditor}
-%% <br />{@link wxGridCellEditor}
-%% </p>
-%% @type wxGridCellNumberEditor().  An object reference, The representation is internal
-%% and can be changed without notice. It can't be used for comparsion
-%% stored on disc or distributed for use on other nodes.
-
 -module(wxGridCellNumberEditor).
+-moduledoc """
+Grid cell editor for numeric integer data.
+
+See:
+* `m:wxGridCellEditor`
+
+* `m:wxGridCellBoolEditor`
+
+* `m:wxGridCellChoiceEditor`
+
+* `m:wxGridCellFloatEditor`
+
+* `m:wxGridCellTextEditor`
+
+This class is derived, and can use functions, from:
+
+* `m:wxGridCellTextEditor`
+
+* `m:wxGridCellEditor`
+
+wxWidgets docs: [wxGridCellNumberEditor](https://docs.wxwidgets.org/3.2/classwx_grid_cell_number_editor.html)
+""".
 -include("wxe.hrl").
 -export([destroy/1,getValue/1,new/0,new/1,setParameters/2]).
 
 %% inherited exports
--export([beginEdit/4,endEdit/4,handleReturn/2,isCreated/1,paintBackground/3,
-  parent_class/1,reset/1,setSize/2,show/2,show/3,startingClick/1,startingKey/2]).
+-export([handleReturn/2,isCreated/1,parent_class/1,reset/1,setSize/2,show/2,
+  show/3,startingClick/1,startingKey/2]).
 
+-type wxGridCellNumberEditor() :: wx:wx_object().
 -export_type([wxGridCellNumberEditor/0]).
--compile([{nowarn_deprecated_function, {wxGridCellEditor,endEdit,4}},{nowarn_deprecated_function, {wxGridCellEditor,paintBackground,3}}]).
-
-%% @hidden
+-doc false.
 parent_class(wxGridCellTextEditor) -> true;
 parent_class(wxGridCellEditor) -> true;
 parent_class(_Class) -> erlang:error({badtype, ?MODULE}).
 
--type wxGridCellNumberEditor() :: wx:wx_object().
-%% @equiv new([])
+-doc(#{equiv => new([])}).
 -spec new() -> wxGridCellNumberEditor().
 
 new() ->
   new([]).
 
-%% @doc See <a href="http://www.wxwidgets.org/manuals/2.8.12/wx_wxgridcellnumbereditor.html#wxgridcellnumbereditorwxgridcellnumbereditor">external documentation</a>.
+-doc """
+Allows you to specify the range for acceptable data.
+
+Values equal to -1 for both `min` and `max` indicate that no range checking should be
+done.
+""".
 -spec new([Option]) -> wxGridCellNumberEditor() when
-	Option :: {min, integer()}
-		 | {max, integer()}.
+	Option :: {'min', integer()}
+		 | {'max', integer()}.
 new(Options)
  when is_list(Options) ->
-  MOpts = fun({min, Min}, Acc) -> [<<1:32/?UI,Min:32/?UI>>|Acc];
-          ({max, Max}, Acc) -> [<<2:32/?UI,Max:32/?UI>>|Acc];
-          (BadOpt, _) -> erlang:error({badoption, BadOpt}) end,
-  BinOpt = list_to_binary(lists:foldl(MOpts, [<<0:32>>], Options)),
-  wxe_util:construct(?wxGridCellNumberEditor_new,
-  <<BinOpt/binary>>).
+  MOpts = fun({min, _min} = Arg) -> Arg;
+          ({max, _max} = Arg) -> Arg;
+          (BadOpt) -> erlang:error({badoption, BadOpt}) end,
+  Opts = lists:map(MOpts, Options),
+  wxe_util:queue_cmd(Opts,?get_env(),?wxGridCellNumberEditor_new),
+  wxe_util:rec(?wxGridCellNumberEditor_new).
 
-%% @doc See <a href="http://www.wxwidgets.org/manuals/2.8.12/wx_wxgridcellnumbereditor.html#wxgridcellnumbereditorgetvalue">external documentation</a>.
+-doc "Returns the value currently in the editor control.".
 -spec getValue(This) -> unicode:charlist() when
-	This::wxGridCellNumberEditor().
-getValue(#wx_ref{type=ThisT,ref=ThisRef}) ->
+        This::wxGridCellNumberEditor().
+getValue(#wx_ref{type=ThisT}=This) ->
   ?CLASS(ThisT,wxGridCellNumberEditor),
-  wxe_util:call(?wxGridCellNumberEditor_GetValue,
-  <<ThisRef:32/?UI>>).
+  wxe_util:queue_cmd(This,?get_env(),?wxGridCellNumberEditor_GetValue),
+  wxe_util:rec(?wxGridCellNumberEditor_GetValue).
 
-%% @doc See <a href="http://www.wxwidgets.org/manuals/2.8.12/wx_wxgridcellnumbereditor.html#wxgridcellnumbereditorsetparameters">external documentation</a>.
--spec setParameters(This, Params) -> ok when
-	This::wxGridCellNumberEditor(), Params::unicode:chardata().
-setParameters(#wx_ref{type=ThisT,ref=ThisRef},Params)
- when is_list(Params) ->
+-doc """
+Parameters string format is "min,max".
+""".
+-spec setParameters(This, Params) -> 'ok' when
+        This::wxGridCellNumberEditor(), Params::unicode:chardata().
+setParameters(#wx_ref{type=ThisT}=This,Params)
+ when ?is_chardata(Params) ->
   ?CLASS(ThisT,wxGridCellNumberEditor),
-  Params_UC = unicode:characters_to_binary([Params,0]),
-  wxe_util:cast(?wxGridCellNumberEditor_SetParameters,
-  <<ThisRef:32/?UI,(byte_size(Params_UC)):32/?UI,(Params_UC)/binary, 0:(((8- ((0+byte_size(Params_UC)) band 16#7)) band 16#7))/unit:8>>).
+  Params_UC = unicode:characters_to_binary(Params),
+  wxe_util:queue_cmd(This,Params_UC,?get_env(),?wxGridCellNumberEditor_SetParameters).
 
-%% @doc Destroys this object, do not use object again
--spec destroy(This::wxGridCellNumberEditor()) -> ok.
+-doc "Destroys the object".
+-spec destroy(This::wxGridCellNumberEditor()) -> 'ok'.
 destroy(Obj=#wx_ref{type=Type}) ->
   ?CLASS(Type,wxGridCellNumberEditor),
-  wxe_util:destroy(?wxGridCellNumberEditor_destroy,Obj),
+  wxe_util:queue_cmd(Obj, ?get_env(), ?wxGridCellNumberEditor_destroy),
   ok.
  %% From wxGridCellTextEditor
  %% From wxGridCellEditor
-%% @hidden
+-doc false.
 handleReturn(This,Event) -> wxGridCellEditor:handleReturn(This,Event).
-%% @hidden
+-doc false.
 startingClick(This) -> wxGridCellEditor:startingClick(This).
-%% @hidden
+-doc false.
 startingKey(This,Event) -> wxGridCellEditor:startingKey(This,Event).
-%% @hidden
+-doc false.
 reset(This) -> wxGridCellEditor:reset(This).
-%% @hidden
-endEdit(This,Row,Col,Grid) -> wxGridCellEditor:endEdit(This,Row,Col,Grid).
-%% @hidden
-beginEdit(This,Row,Col,Grid) -> wxGridCellEditor:beginEdit(This,Row,Col,Grid).
-%% @hidden
-paintBackground(This,RectCell,Attr) -> wxGridCellEditor:paintBackground(This,RectCell,Attr).
-%% @hidden
+-doc false.
 show(This,Show, Options) -> wxGridCellEditor:show(This,Show, Options).
-%% @hidden
+-doc false.
 show(This,Show) -> wxGridCellEditor:show(This,Show).
-%% @hidden
+-doc false.
 setSize(This,Rect) -> wxGridCellEditor:setSize(This,Rect).
-%% @hidden
+-doc false.
 isCreated(This) -> wxGridCellEditor:isCreated(This).

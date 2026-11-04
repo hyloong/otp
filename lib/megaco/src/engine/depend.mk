@@ -1,9 +1,11 @@
 #-*-makefile-*-   ; force emacs to enter makefile-mode
 
 # %CopyrightBegin%
-# 
-# Copyright Ericsson AB 2003-2011. All Rights Reserved.
-# 
+#
+# SPDX-License-Identifier: Apache-2.0
+#
+# Copyright Ericsson AB 2003-2025. All Rights Reserved.
+#
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
 # You may obtain a copy of the License at
@@ -15,7 +17,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-# 
+#
 # %CopyrightEnd%
 
 $(EBIN)/megaco_config_misc.$(EMULATOR): megaco_config_misc.erl
@@ -77,6 +79,10 @@ $(EBIN)/megaco_trans_sup.$(EMULATOR): megaco_trans_sup.erl
 $(EBIN)/megaco_transport.$(EMULATOR): megaco_transport.erl 
 
 $(EBIN)/megaco_user.$(EMULATOR): megaco_user.erl
+
+$(EBIN)/megaco_user.$(EMULATOR): megaco_user.erl \
+	../../include/megaco.hrl \
+	../../include/megaco_message_v1.hrl
 
 $(EBIN)/megaco_user_default.$(EMULATOR): megaco_user_default.erl \
 	../../include/megaco.hrl \

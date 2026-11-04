@@ -1,7 +1,9 @@
 #
 # %CopyrightBegin%
 #
-# Copyright Ericsson AB 1997-2012. All Rights Reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Copyright Ericsson AB 1997-2026. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -23,15 +25,17 @@ include $(ERL_TOP)/make/$(TARGET)/otp.mk
 MODULES =  \
 	cover_SUITE \
 	eprof_SUITE \
+	tprof_SUITE \
 	emacs_SUITE \
-	emem_SUITE \
 	fprof_SUITE \
 	cprof_SUITE \
-	instrument_SUITE \
 	lcnt_SUITE \
 	make_SUITE \
 	tools_SUITE \
 	xref_SUITE \
+	prof_bench_SUITE \
+	crashdump_SUITE \
+	tags_SUITE \
 	ignore_cores
 
 ERL_FILES= $(MODULES:%=%.erl)
@@ -41,7 +45,7 @@ INSTALL_PROGS= $(TARGET_FILES)
 
 EMAKEFILE=Emakefile
 
-SPEC_FILES= tools.spec
+SPEC_FILES= tools.spec tools_bench.spec
 COVER_FILE = tools.cover
 
 # ----------------------------------------------------
@@ -52,9 +56,9 @@ RELSYSDIR = $(RELEASE_PATH)/tools_test
 # ----------------------------------------------------
 # FLAGS
 # ----------------------------------------------------
-ERL_MAKE_FLAGS += 
-ERL_COMPILE_FLAGS += -I$(ERL_TOP)/lib/test_server/include \
-	-I$(ERL_TOP)/lib/percept/include
+ERL_MAKE_FLAGS +=
+ERL_COMPILE_FLAGS += +nowarn_missing_spec_documented
+ERL_COMPILE_FLAGS := $(filter-out +deterministic,$(ERL_COMPILE_FLAGS))
 
 EBIN = .
 
@@ -67,7 +71,7 @@ make_emakefile:
 	$(ERL_TOP)/make/make_emakefile $(ERL_COMPILE_FLAGS) -o$(EBIN) $(MODULES)\
 	> $(EMAKEFILE)
 
-tests debug opt: make_emakefile
+tests $(TYPES): make_emakefile
 	erl $(ERL_MAKE_FLAGS) -make
 
 clean:

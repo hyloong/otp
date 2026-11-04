@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2003-2013. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2003-2026. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -18,39 +20,33 @@
 %% %CopyrightEnd%
 %%
 
-%%% @doc Main user interface for the Common Test framework.
-%%%
-%%% <p> This module implements the command line interface for running
-%%% tests and some basic functions for common test case issues
-%%% such as configuration and logging. </p>
-%%%
-%%% <p><strong>Test Suite Support Macros</strong></p>
-%%%
-%%% <p>The <c>config</c> macro is defined in <c>ct.hrl</c>. This
-%%% macro should be used to retrieve information from the
-%%% <c>Config</c> variable sent to all test cases. It is used with two
-%%% arguments, where the first is the name of the configuration
-%%% variable you wish to retrieve, and the second is the <c>Config</c>
-%%% variable supplied to the test case.</p>
-%%%
-%%% <p>Possible configuration variables include:</p>
-%%% <ul>
-%%%   <li><c>data_dir</c>  - Data file directory.</li>
-%%%   <li><c>priv_dir</c>  - Scratch file directory.</li>
-%%%   <li>Whatever added by <c>init_per_suite/1</c> or
-%%%   <c>init_per_testcase/2</c> in the test suite.</li>
-%%% </ul>
-
-%%% @type var_name() = atom(). A variable name which is specified when
-%%% <c>ct:require/2</c> is called,
-%%% e.g. <c>ct:require(mynodename,{node,[telnet]})</c>
-%%%
-%%% @type target_name() = var_name(). The name of a target.
-%%%
-%%% @type handle() = ct_gen_conn:handle() | term(). The identity of a
-%%% specific connection.
-
 -module(ct).
+-moduledoc """
+Main user interface for the `Common Test` framework.
+
+This module implements the command-line interface for running tests and basic
+functions for `Common Test` case issues, such as configuration and logging.
+
+The framework stores configuration values in a property list usually named
+`Config`. The list contains information about the test run added by the
+framework itself and may also contain user-provided values. The configuration is
+passed into individual test cases as well as support functions if defined.
+
+Possible configuration variables include:
+
+- `data_dir` \- Data file directory
+- `priv_dir` \- Scratch file directory
+- Whatever added by [`init_per_suite/1`](`c:ct_suite:init_per_suite/1`) or
+  [`init_per_testcase/2`](`c:ct_suite:init_per_testcase/2`) in the test suite.
+
+> #### Warning {: .warning }
+>
+> The `?config` macro, used to receive individual config values from the
+> `Config` property list, is deprecated. Please use `proplists:get_value/2-3`
+> instead.
+""".
+
+-compile([{nowarn_possibly_unsafe_function, {erlang, list_to_atom, 1}}]).
 
 -include("ct.hrl").
 -include("ct_util.hrl").
@@ -64,9 +60,11 @@
 -export([require/1, require/2,
 	 get_config/1, get_config/2, get_config/3,
 	 reload_config/1,
-	 log/1, log/2, log/3, log/4,
-	 print/1, print/2, print/3, print/4,
-	 pal/1, pal/2, pal/3, pal/4,
+	 escape_chars/1, escape_chars/2,
+	 log/1, log/2, log/3, log/4, log/5,
+	 print/1, print/2, print/3, print/4, print/5,
+	 pal/1, pal/2, pal/3, pal/4, pal/5,
+         set_verbosity/2, get_verbosity/1,
 	 capture_start/0, capture_stop/0, capture_get/0, capture_get/1,
 	 fail/1, fail/2, comment/1, comment/2, make_priv_dir/0,
 	 testcases/2, userdata/2, userdata/3,
@@ -85,210 +83,313 @@
 	 decrypt_config_file/2, decrypt_config_file/3]).
 
 -export([get_target_name/1]).
+-export([get_progname/0]).
 -export([parse_table/1, listenv/1]).
 
-%%%-----------------------------------------------------------------
-%%% @spec install(Opts) -> ok | {error,Reason}
-%%%    Opts = [Opt]
-%%%    Opt = {config,ConfigFiles} | {event_handler,Modules} | 
-%%%          {decrypt,KeyOrFile}
-%%%    ConfigFiles = [ConfigFile]
-%%%    ConfigFile = string()
-%%%    Modules = [atom()]
-%%%    KeyOrFile = {key,Key} | {file,KeyFile}
-%%%    Key = string()
-%%%    KeyFile = string()
-%%% @doc Install config files and event handlers.
-%%%
-%%% <p>Run this function once before first test.</p>
-%%%
-%%% <p>Example:<br/>
-%%% <c>install([{config,["config_node.ctc","config_user.ctc"]}])</c>.</p>
-%%%
-%%% <p>Note that this function is automatically run by the
-%%% <c>ct_run</c> program.</p>
+-export([remaining_test_procs/0]).
+
+%%----------------------------------------------------------------------
+%% Exported types
+%%----------------------------------------------------------------------
+%% For ct_gen_conn
+-export_type([config_key/0,
+	      target_name/0,
+	      key_or_name/0,
+          handle/0]).
+
+%% For cth_conn_log
+-export_type([conn_log_option/0,
+          conn_log_options/0,
+	      conn_log_type/0,
+	      conn_log_mod/0]).
+
+%%------------------------------------------------------------------
+%% Type declarations
+%% ------------------------------------------------------------------
+-doc "A configuration key which exists in a configuration file".
+-type config_key() :: atom(). % Config key which exists in a config file
+-doc """
+A name and association to configuration data introduced through a require
+statement, or a call to [`ct:require/2`](`require/2`), for example,
+`ct:require(mynodename,{node,[telnet]})`.
+""".
+-type target_name() :: atom().% Name associated to a config_key() though 'require'
+-type key_or_name() :: config_key() | target_name().
+-doc "The identity (handle) of a connection.".
+-type handle() :: pid().
+
+%% Types used when logging connections with the 'cth_conn_log' hook
+-doc """
+Options that can be given to the `cth_conn_log` hook, which is used for logging
+of NETCONF and Telnet connections. See [ct_netconfc](`m:ct_netconfc#Logging`) or
+[ct_telnet](`m:ct_telnet#module-logging`) for description and examples of how to use
+this hook.
+""".
+-type conn_log_options() :: [conn_log_option()].
+-type conn_log_option() :: {log_type,conn_log_type()} |
+                           {hosts,[key_or_name()]}.
+-type conn_log_type() :: raw | pretty | html | silent.
+-type conn_log_mod() :: ct_netconfc | ct_telnet.
+%%----------------------------------------------------------------------
+
+
+-doc """
+Installs configuration files and event handlers.
+
+Run this function once before the first test.
+
+_Example:_
+
+```erlang
+install([{config,["config_node.ctc","config_user.ctc"]}])
+```
+
+This function is automatically run by program `ct_run`.
+""".
+-spec install(Opts) -> ok | {error, Reason}
+      when Opts :: [Opt],
+           Opt :: {config, ConfigFiles} | {event_handler, Modules} | {decrypt, KeyOrFile},
+           ConfigFiles :: [ConfigFile],
+           ConfigFile :: string(),
+           Modules :: [atom()],
+           KeyOrFile :: {key, Key} | {file, KeyFile},
+           Key :: string(),
+           KeyFile :: string(),
+           Reason :: term().
 install(Opts) ->
     ct_run:install(Opts).
 
-%%%-----------------------------------------------------------------
-%%% @spec run(TestDir,Suite,Cases) -> Result
-%%%   TestDir = string()
-%%%   Suite = atom()
-%%%   Cases = atom() | [atom()]
-%%%   Result = [TestResult] | {error,Reason}
-%%%
-%%% @doc Run the given test case(s).
-%%%
-%%% <p>Requires that <c>ct:install/1</c> has been run first.</p>
-%%%
-%%% <p>Suites (*_SUITE.erl) files must be stored in
-%%% <c>TestDir</c> or <c>TestDir/test</c>.  All suites
-%%% will be compiled when test is run.</p>
+-doc """
+Runs the specified test cases.
+
+Requires that [`ct:install/1`](`install/1`) has been run first.
+
+Suites (`*_SUITE.erl`) files must be stored in `TestDir` or `TestDir/test`. All
+suites are compiled when the test is run.
+""".
+-spec run(TestDir, Suite, Cases) -> Result
+      when TestDir :: string(),
+           Suite :: atom(),
+           Cases :: atom() | [atom()],
+           Result :: [TestResult] | {error, Reason},
+           TestResult :: term(),
+           Reason :: term().
 run(TestDir,Suite,Cases) ->
     ct_run:run(TestDir,Suite,Cases).
 
-%%%-----------------------------------------------------------------
-%%% @spec run(TestDir,Suite) -> Result
-%%%
-%%% @doc Run all test cases in the given suite.
-%%% @see run/3.
+-doc """
+Runs all test cases in the specified suite.
+
+See also [`ct:run/3`](`run/3`).
+""".
+-spec run(TestDir, Suite) -> Result
+      when TestDir :: string(),
+           Suite :: atom(),
+           Result :: [TestResult] | {error, Reason},
+           TestResult :: term(),
+           Reason :: term().
 run(TestDir,Suite) ->
     ct_run:run(TestDir,Suite).
 
-%%%-----------------------------------------------------------------
-%%% @spec run(TestDirs) -> Result
-%%%   TestDirs = TestDir | [TestDir]
-%%%
-%%% @doc Run all test cases in all suites in the given directories.
-%%% @see run/3.
+-doc """
+Runs all test cases in all suites in the specified directories.
+
+See also [`ct:run/3`](`run/3`).
+""".
+-spec run(TestDirs) -> Result
+      when TestDirs :: TestDir | [TestDir],
+           TestDir :: string(),
+           Result :: [TestResult] | {error, Reason},
+           TestResult :: term(),
+           Reason :: term().
 run(TestDirs) ->
     ct_run:run(TestDirs).
 
-%%%-----------------------------------------------------------------
-%%% @spec run_test(Opts) -> Result
-%%%   Opts = [OptTuples]
-%%%   OptTuples = {dir,TestDirs} | {suite,Suites} | {group,Groups} |
-%%%               {testcase,Cases} | {spec,TestSpecs} | {join_specs,Bool} |
-%%%               {label,Label} | {config,CfgFiles} | {userconfig, UserConfig} |
-%%%               {allow_user_terms,Bool} | {logdir,LogDir} |
-%%%               {silent_connections,Conns} | {stylesheet,CSSFile} |
-%%%               {cover,CoverSpecFile} | {cover_stop,Bool} | {step,StepOpts} |
-%%%               {event_handler,EventHandlers} | {include,InclDirs} |
-%%%               {auto_compile,Bool} | {abort_if_missing_suites,Bool} |
-%%%               {create_priv_dir,CreatePrivDir}  |
-%%%               {multiply_timetraps,M} | {scale_timetraps,Bool} |
-%%%               {repeat,N} | {duration,DurTime} | {until,StopTime} |
-%%%               {force_stop,ForceStop} | {decrypt,DecryptKeyOrFile} |
-%%%               {refresh_logs,LogDir} | {logopts,LogOpts} | 
-%%%               {verbosity,VLevels} | {basic_html,Bool} | 
-%%%               {ct_hooks, CTHs} | {enable_builtin_hooks,Bool} |
-%%%               {release_shell,Bool}
-%%%   TestDirs = [string()] | string()
-%%%   Suites = [string()] | [atom()] | string() | atom()
-%%%   Cases = [atom()] | atom()
-%%%   Groups = GroupNameOrPath | [GroupNameOrPath]
-%%%   GroupNameOrPath = [atom()] | atom() | all
-%%%   TestSpecs = [string()] | string()
-%%%   Label = string() | atom()
-%%%   CfgFiles = [string()] | string()
-%%%   UserConfig = [{CallbackMod,CfgStrings}] | {CallbackMod,CfgStrings}
-%%%   CallbackMod = atom()
-%%%   CfgStrings = [string()] | string()
-%%%   LogDir = string()
-%%%   Conns = all | [atom()]
-%%%   CSSFile = string()
-%%%   CoverSpecFile = string()
-%%%   StepOpts = [StepOpt] | []
-%%%   StepOpt = config | keep_inactive
-%%%   EventHandlers = EH | [EH]
-%%%   EH = atom() | {atom(),InitArgs} | {[atom()],InitArgs}
-%%%   InitArgs = [term()]
-%%%   InclDirs = [string()] | string()
-%%%   CreatePrivDir = auto_per_run | auto_per_tc | manual_per_tc
-%%%   M = integer()
-%%%   N = integer()
-%%%   DurTime = string(HHMMSS)
-%%%   StopTime = string(YYMoMoDDHHMMSS) | string(HHMMSS)
-%%%   ForceStop = skip_rest | Bool
-%%%   DecryptKeyOrFile = {key,DecryptKey} | {file,DecryptFile}
-%%%   DecryptKey = string()
-%%%   DecryptFile = string()
-%%%   LogOpts = [LogOpt]
-%%%   LogOpt = no_nl | no_src
-%%%   VLevels = VLevel | [{Category,VLevel}]
-%%%   VLevel = integer()
-%%%   Category = atom()
-%%%   CTHs = [CTHModule | {CTHModule, CTHInitArgs}]
-%%%   CTHModule = atom()
-%%%   CTHInitArgs = term()
-%%%   Result = {Ok,Failed,{UserSkipped,AutoSkipped}} | TestRunnerPid | {error,Reason}
-%%%   Ok = integer()
-%%%   Failed = integer()
-%%%   UserSkipped = integer()
-%%%   AutoSkipped = integer()
-%%%   TestRunnerPid = pid()
-%%%   Reason = term()
-%%% @doc <p>Run tests as specified by the combination of options in <c>Opts</c>.
-%%% The options are the same as those used with the
-%%% <seealso marker="ct_run#ct_run"><c>ct_run</c></seealso> program.
-%%% Note that here a <c>TestDir</c> can be used to point out the path to 
-%%% a <c>Suite</c>. Note also that the option <c>testcase</c>
-%%% corresponds to the <c>-case</c> option in the <c>ct_run</c> 
-%%% program. Configuration files specified in <c>Opts</c> will be
-%%% installed automatically at startup.</p>
-%%% <p><c>TestRunnerPid</c> is returned if <c>release_shell == true</c>
-%%% (see <c>break/1</c> for details).</p>
-%%% <p><c>Reason</c> indicates what type of error has been encountered.</p>
+-doc """
+Runs tests as specified by the combination of options in `Opts`. The options are
+the same as those used with program `ct_run`, see
+[Run Tests from Command Line](ct_run_cmd.md#ct_run) in the `ct_run` manual page.
+
+Here a `TestDir` can be used to point out the path to a `Suite`. Option
+`testcase` corresponds to option `-case` in program `ct_run`. Configuration
+files specified in `Opts` are installed automatically at startup.
+
+`TestRunnerPid` is returned if `release_shell == true`. For details, see
+[`ct:break/1`](`break/1`).
+
+`Reason` indicates the type of error encountered.
+""".
+-spec run_test(Opts) -> Result
+      when Opts :: [OptTuples],
+           OptTuples :: {dir, TestDirs}
+                      | {suite, Suites}
+                      | {group, Groups}
+                      | {testcase, Cases}
+                      | {spec, TestSpecs}
+                      | {join_specs, boolean()}
+                      | {label, Label}
+                      | {config, CfgFiles}
+                      | {userconfig, UserConfig}
+                      | {allow_user_terms, boolean()}
+                      | {logdir, LogDir}
+                      | {silent_connections, Conns}
+                      | {stylesheet, CSSFile}
+                      | {cover, CoverSpecFile}
+                      | {cover_stop, boolean()}
+                      | {step, StepOpts}
+                      | {event_handler, EventHandlers}
+                      | {include, InclDirs}
+                      | {auto_compile, boolean()}
+                      | {abort_if_missing_suites, boolean()}
+                      | {create_priv_dir, CreatePrivDir}
+                      | {multiply_timetraps, M}
+                      | {scale_timetraps, boolean()}
+                      | {repeat, N}
+                      | {duration, DurTime}
+                      | {until, StopTime}
+                      | {force_stop, ForceStop}
+                      | {decrypt, DecryptKeyOrFile}
+                      | {refresh_logs, LogDir}
+                      | {logopts, LogOpts}
+                      | {verbosity, VLevels}
+                      | {basic_html, boolean()}
+                      | {esc_chars, boolean()}
+                      | {keep_logs,KeepSpec}
+                      | {ct_hooks, CTHs}
+                      | {ct_hooks_order, CTHsOrder}
+                      | {enable_builtin_hooks, boolean()}
+                      | {release_shell, boolean()},
+           TestDirs :: [string()] | string(),
+           Suites :: [string()] | [atom()] | string() | atom(),
+           Cases :: [atom()] | atom(),
+           Groups :: GroupNameOrPath | [GroupNameOrPath],
+           GroupNameOrPath :: [atom()] | atom() | all,
+           TestSpecs :: [string()] | string(),
+           Label :: string() | atom(),
+           CfgFiles :: [string()] | string(),
+           UserConfig :: [{CallbackMod, CfgStrings}] | {CallbackMod, CfgStrings},
+           CallbackMod :: atom(),
+           CfgStrings :: [string()] | string(),
+           LogDir :: string(),
+           Conns :: all | [atom()],
+           CSSFile :: string(),
+           CoverSpecFile :: string(),
+           StepOpts :: [StepOpt],
+           StepOpt :: config | keep_inactive,
+           EventHandlers :: EH | [EH],
+           EH :: atom() | {atom(), InitArgs} | {[atom()], InitArgs},
+           InitArgs :: [term()],
+           InclDirs :: [string()] | string(),
+           CreatePrivDir :: auto_per_run | auto_per_tc | manual_per_tc,
+           M :: integer(),
+           N :: integer(),
+           DurTime :: HHMMSS,
+           HHMMSS :: string(),
+           StopTime :: YYMoMoDDHHMMSS | HHMMSS,
+           YYMoMoDDHHMMSS :: string(),
+           ForceStop :: skip_rest | boolean(),
+           DecryptKeyOrFile :: {key, DecryptKey} | {file, DecryptFile},
+           DecryptKey :: string(),
+           DecryptFile :: string(),
+           LogOpts :: [LogOpt],
+           LogOpt :: no_nl | no_src,
+           VLevels :: VLevel | [{Category, VLevel}],
+           VLevel :: integer(),
+           Category :: atom(),
+           KeepSpec :: all | pos_integer(),
+           CTHs :: [CTHModule | {CTHModule, CTHInitArgs}],
+           CTHsOrder :: atom(),
+           CTHModule :: atom(),
+           CTHInitArgs :: term(),
+           Result :: {Ok, Failed, {UserSkipped, AutoSkipped}} | TestRunnerPid | {error, Reason},
+           Ok :: integer(),
+           Failed :: integer(),
+           UserSkipped :: integer(),
+           AutoSkipped :: integer(),
+           TestRunnerPid :: pid(),
+           Reason :: term().
 run_test(Opts) ->
     ct_run:run_test(Opts).
 
-%%%-----------------------------------------------------------------
-%%% @spec run_testspec(TestSpec) -> Result
-%%%   TestSpec = [term()]
-%%%   Result = {Ok,Failed,{UserSkipped,AutoSkipped}} | {error,Reason}
-%%%   Ok = integer()
-%%%   Failed = integer()
-%%%   UserSkipped = integer()
-%%%   AutoSkipped = integer()
-%%%   Reason = term()
-%%% @doc Run test specified by <c>TestSpec</c>. The terms are
-%%% the same as those used in test specification files.
-%%% <p><c>Reason</c> indicates what type of error has been encountered.</p>
+-doc """
+Runs a test specified by `TestSpec`. The same terms are used as in test
+specification files.
+
+`Reason` indicates the type of error encountered.
+""".
+-spec run_testspec(TestSpec) -> Result
+      when TestSpec :: [term()],
+           Result :: {Ok, Failed, {UserSkipped, AutoSkipped}} | {error, Reason},
+           Ok :: integer(),
+           Failed :: integer(),
+           UserSkipped :: integer(),
+           AutoSkipped :: integer(),
+           Reason :: term().
 run_testspec(TestSpec) ->
     ct_run:run_testspec(TestSpec).
     
-%%%-----------------------------------------------------------------
-%%% @spec step(TestDir,Suite,Case) -> Result
-%%%   Case = atom()
-%%%
-%%% @doc Step through a test case with the debugger.
-%%% @see run/3
+-doc """
+Steps through a test case with the debugger.
+
+See also [`ct:run/3`](`run/3`).
+""".
+-spec step(TestDir, Suite, Case) -> Result
+      when TestDir :: string(),
+           Suite :: atom(),
+           Case :: atom(),
+           Result :: term().
 step(TestDir,Suite,Case) ->
     ct_run:step(TestDir,Suite,Case).
 
-%%%-----------------------------------------------------------------
-%%% @spec step(TestDir,Suite,Case,Opts) -> Result
-%%%   Case = atom()
-%%%   Opts = [Opt] | []
-%%%   Opt = config | keep_inactive
-%%%
-%%% @doc Step through a test case with the debugger. If the
-%%% <c>config</c> option has been given, breakpoints will
-%%% be set also on the configuration functions in <c>Suite</c>.
-%%% @see run/3
+-doc """
+Steps through a test case with the debugger. If option `config` has been
+specified, breakpoints are also set on the configuration functions in `Suite`.
+
+See also [`ct:run/3`](`run/3`).
+""".
+-spec step(TestDir, Suite, Case, Opts) -> Result
+      when TestDir :: string(),
+           Suite :: atom(),
+           Case :: atom(),
+           Opts :: [Opt],
+           Opt :: config | keep_inactive,
+           Result :: term().
 step(TestDir,Suite,Case,Opts) ->
     ct_run:step(TestDir,Suite,Case,Opts).
 
-%%%-----------------------------------------------------------------
-%%% @spec start_interactive() -> ok
-%%%
-%%% @doc Start CT in interactive mode.
-%%%
-%%% <p>From this mode all test case support functions can be executed
-%%% directly from the erlang shell. The interactive mode can also be
-%%% started from the OS command line with <c>ct_run -shell
-%%% [-config File...]</c>.</p>
-%%%
-%%% <p>If any functions using "required config data" (e.g. telnet or
-%%% ftp functions) are to be called from the erlang shell, config data
-%%% must first be required with <c>ct:require/2</c>.</p>
-%%%
-%%% <p>Example:<br/>
-%%% <c>&gt; ct:require(unix_telnet, unix).</c><br/>
-%%% <c>ok</c><br/>
-%%% <c>&gt; ct_telnet:open(unix_telnet).</c><br/>
-%%% <c>{ok,&lt;0.105.0&gt;}</c><br/>
-%%% <c>&gt; ct_telnet:cmd(unix_telnet, "ls .").</c><br/>
-%%% <c>{ok,["ls","file1  ...",...]}</c></p>
+-doc """
+Starts `Common Test` in interactive mode.
+
+From this mode, all test case support functions can be executed directly from
+the Erlang shell. The interactive mode can also be started from the OS command
+line with `ct_run -shell [-config File...]`.
+
+If any functions (for example, Telnet or FTP) using "required configuration
+data" are to be called from the Erlang shell, configuration data must first be
+required with [`ct:require/2`](`require/2`).
+
+_Example:_
+
+```erlang
+> ct:require(unix_telnet, unix).
+ok
+> ct_telnet:open(unix_telnet).
+{ok,<0.105.0>}
+> ct_telnet:cmd(unix_telnet, "ls .").
+{ok,["ls","file1  ...",...]}
+```
+""".
+-spec start_interactive() -> ok.
 start_interactive() ->
-    ct_util:start(interactive),
+    _ = ct_util:start(interactive),
     ok.
 
-%%%-----------------------------------------------------------------
-%%% @spec stop_interactive() -> ok
-%%%
-%%% @doc Exit the interactive mode.
-%%% @see start_interactive/0
+-doc """
+Exits the interactive mode.
+
+See also [`ct:start_interactive/0`](`start_interactive/0`).
+""".
+-spec stop_interactive() -> ok.
 stop_interactive() ->
     ct_util:stop(normal),
     ok.
@@ -297,181 +398,220 @@ stop_interactive() ->
 %%% MISC INTERFACE
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
-%%%-----------------------------------------------------------------
-%%% @spec require(Required) -> ok | {error,Reason}
-%%%      Required = Key | {Key,SubKeys} | {Key,SubKey,SubKeys}
-%%%      Key = atom()
-%%%      SubKeys = SubKey | [SubKey]
-%%%      SubKey = atom()
-%%%
-%%% @doc Check if the required configuration is available. It is possible
-%%% to specify arbitrarily deep tuples as <c>Required</c>. Note that it is
-%%% only the last element of the tuple which can be a list of <c>SubKey</c>s.
-%%%
-%%% <p>Example 1: require the variable <c>myvar</c>:</p>
-%%% <pre>ok = ct:require(myvar).</pre>
-%%%
-%%% <p>In this case the config file must at least contain:</p>
-%%% <pre>{myvar,Value}.</pre>
-%%% 
-%%% <p>Example 2: require the key <c>myvar</c> with
-%%% subkeys <c>sub1</c> and <c>sub2</c>:</p>
-%%% <pre>ok = ct:require({myvar,[sub1,sub2]}).</pre>
-%%%
-%%% <p>In this case the config file must at least contain:</p>
-%%% <pre>{myvar,[{sub1,Value},{sub2,Value}]}.</pre>
-%%%
-%%% <p>Example 3: require the key <c>myvar</c> with
-%%% subkey <c>sub1</c> with <c>subsub1</c>:</p>
-%%% <pre>ok = ct:require({myvar,sub1,sub2}).</pre>
-%%%
-%%% <p>In this case the config file must at least contain:</p>
-%%% <pre>{myvar,[{sub1,[{sub2,Value}]}]}.</pre>
-%%%
-%%% @see require/2
-%%% @see get_config/1
-%%% @see get_config/2
-%%% @see get_config/3
+-doc """
+Checks if the required configuration is available. Arbitrarily deep tuples can
+be specified as `Required`. Only the last element of the tuple can be a list of
+`SubKey`s.
+
+_Example 1._ Require the variable `myvar`:
+
+```erlang
+ok = ct:require(myvar).
+```
+
+In this case the configuration file must at least contain:
+
+```erlang
+{myvar,Value}.
+```
+
+_Example 2._ Require key `myvar` with subkeys `sub1` and `sub2`:
+
+```erlang
+ok = ct:require({myvar,[sub1,sub2]}).
+```
+
+In this case the configuration file must at least contain:
+
+```erlang
+{myvar,[{sub1,Value},{sub2,Value}]}.
+```
+
+_Example 3._ Require key `myvar` with subkey `sub1` with `subsub1`:
+
+```erlang
+ok = ct:require({myvar,sub1,sub2}).
+```
+
+In this case the configuration file must at least contain:
+
+```erlang
+{myvar,[{sub1,[{sub2,Value}]}]}.
+```
+
+See also [`ct:get_config/1`](`get_config/1`),
+[`ct:get_config/2`](`get_config/2`), [`ct:get_config/3`](`get_config/3`),
+[`ct:require/2`](`require/2`).
+""".
+-spec require(Required) -> ok | {error, Reason}
+      when Required :: Key | {Key, SubKeys} | {Key, SubKey, SubKeys},
+           Key :: atom(),
+           SubKeys :: SubKey | [SubKey],
+           SubKey :: atom(),
+           Reason :: term().
 require(Required) ->
     ct_config:require(Required).
 
-%%%-----------------------------------------------------------------
-%%% @spec require(Name,Required) -> ok | {error,Reason}
-%%%      Name = atom()
-%%%      Required = Key | {Key,SubKey} | {Key,SubKey,SubKey}
-%%%      SubKey = Key
-%%%      Key = atom()
-%%%
-%%% @doc Check if the required configuration is available, and give it
-%%% a name. The semantics for <c>Required</c> is the same as in
-%%% <c>required/1</c> except that it is not possible to specify a list
-%%% of <c>SubKey</c>s.
-%%%
-%%% <p>If the requested data is available, the sub entry will be
-%%% associated with <c>Name</c> so that the value of the element
-%%% can be read with <c>get_config/1,2</c> provided
-%%% <c>Name</c> instead of the whole <c>Required</c> term.</p>
-%%%
-%%% <p>Example: Require one node with a telnet connection and an
-%%% ftp connection. Name the node <c>a</c>:
-%%% <pre>ok = ct:require(a,{machine,node}).</pre>
-%%% All references to this node may then use the node name.
-%%% E.g. you can fetch a file over ftp like this:</p>
-%%% <pre>ok = ct:ftp_get(a,RemoteFile,LocalFile).</pre>
-%%%
-%%% <p>For this to work, the config file must at least contain:</p>
-%%% <pre>{machine,[{node,[{telnet,IpAddr},{ftp,IpAddr}]}]}.</pre>
-%%%
-%%% <note><p>The behaviour of this function changed radically in common_test
-%%% 1.6.2. In order too keep some backwards compatability it is still possible
-%%% to do: <br/><c>ct:require(a,{node,[telnet,ftp]}).</c><br/>
-%%% This will associate the name <c>a</c> with the top level <c>node</c> entry.
-%%% For this to work, the config file must at least contain:<br/>
-%%% <c>{node,[{telnet,IpAddr},{ftp,IpAddr}]}.</c></p></note>
-%%%
-%%% @see require/1
-%%% @see get_config/1
-%%% @see get_config/2
-%%% @see get_config/3
+-doc """
+Checks if the required configuration is available and gives it a name. The
+semantics for `Required` is the same as in [`ct:require/1`](`require/1`) except
+that a list of `SubKey`s cannot be specified.
+
+If the requested data is available, the subentry is associated with `Name` so
+that the value of the element can be read with
+[`ct:get_config/1,2`](`get_config/1`) provided `Name` is used instead of the
+whole `Required` term.
+
+_Example:_
+
+Require one node with a Telnet connection and an FTP connection. Name the node
+`a`:
+
+```erlang
+ok = ct:require(a,{machine,node}).
+```
+
+All references to this node can then use the node name. For example, a file over
+FTP is fetched like follows:
+
+```erlang
+ok = ct:ftp_get(a,RemoteFile,LocalFile).
+```
+
+For this to work, the configuration file must at least contain:
+
+```erlang
+{machine,[{node,[{telnet,IpAddr},{ftp,IpAddr}]}]}.
+```
+
+> #### Note {: .info }
+>
+> The behavior of this function changed radically in `Common Test` 1\.6.2. To
+> keep some backwards compatibility, it is still possible to do:
+> `ct:require(a,{node,[telnet,ftp]}).` This associates the name `a` with the
+> top-level `node` entry. For this to work, the configuration file must at least
+> contain: `{node,[{telnet,IpAddr},{ftp,IpAddr}]}.`
+
+See also [`ct:get_config/1`](`get_config/1`),
+[`ct:get_config/2`](`get_config/2`), [`ct:get_config/3`](`get_config/3`),
+[`ct:require/1`](`require/1`).
+""".
+-spec require(Name, Required) -> ok | {error, Reason}
+      when Name :: atom(),
+           Required :: Key | {Key, SubKey} | {Key, SubKey, SubKey},
+           SubKey :: Key,
+           Key :: atom(),
+           Reason :: term().
 require(Name,Required) ->
     ct_config:require(Name,Required).
 
-%%%-----------------------------------------------------------------
-%%% @spec get_config(Required) -> Value
-%%% @equiv get_config(Required,undefined,[])
+-doc(#{equiv => get_config(Required, undefined, [])}).
+-spec get_config(Required) -> Value
+      when Required :: KeyOrName | {KeyOrName, SubKey} | {KeyOrName, SubKey, SubKey},
+           KeyOrName :: key_or_name(),
+           SubKey :: atom(),
+           Value :: term().
 get_config(Required) ->
     ct_config:get_config(Required,undefined,[]).
 
-%%%-----------------------------------------------------------------
-%%% @spec get_config(Required,Default) -> Value
-%%% @equiv get_config(Required,Default,[])
+-doc(#{equiv => get_config(Required, Default, [])}).
+-spec get_config(Required, Default) -> Value
+      when Required :: KeyOrName | {KeyOrName, SubKey} | {KeyOrName, SubKey, SubKey},
+           KeyOrName :: key_or_name(),
+           SubKey :: atom(),
+           Default :: term(),
+           Value :: term().
 get_config(Required,Default) ->
     ct_config:get_config(Required,Default,[]).
 
-%%%-----------------------------------------------------------------
-%%% @spec get_config(Required,Default,Opts) -> ValueOrElement
-%%%      Required = KeyOrName | {KeyOrName,SubKey} | {KeyOrName,SubKey,SubKey}
-%%%      KeyOrName = atom()
-%%%      SubKey = atom()
-%%%      Default = term()
-%%%      Opts = [Opt] | []
-%%%      Opt = element | all
-%%%      ValueOrElement = term() | Default
-%%%
-%%% @doc Read config data values.
-%%%
-%%% <p>This function returns the matching value(s) or config element(s),
-%%% given a config variable key or its associated name
-%%% (if one has been specified with <c>require/2</c> or a 
-%%% require statement).</p>
-%%%
-%%% <p>Example, given the following config file:</p>
-%%% <pre>
-%%% {unix,[{telnet,IpAddr},
-%%%        {user,[{username,Username},
-%%%               {password,Password}]}]}.</pre>
-%%% <p><c>ct:get_config(unix,Default) ->
-%%%                          [{telnet,IpAddr},
-%%%                           {user, [{username,Username},
-%%%                                   {password,Password}]}]</c><br/>
-%%% <c>ct:get_config({unix,telnet},Default) -> IpAddr</c><br/>
-%%% <c>ct:get_config({unix,user,username},Default) -> Username</c><br/>
-%%% <c>ct:get_config({unix,ftp},Default) -> Default</c><br/>
-%%% <c>ct:get_config(unknownkey,Default) -> Default</c></p>
-%%%
-%%% <p>If a config variable key has been associated with a name (by
-%%% means of <c>require/2</c> or a require statement), the name 
-%%% may be used instead of the key to read the value:</p>
-%%%
-%%% <p><c>ct:require(myuser,{unix,user}) -> ok.</c><br/>
-%%% <c>ct:get_config(myuser,Default) ->
-%%%          [{username,Username},
-%%%           {password,Password}]</c></p>
-%%%
-%%% <p>If a config variable is defined in multiple files and you want to
-%%% access all possible values, use the <c>all</c> option. The
-%%% values will be returned in a list and the order of the elements
-%%% corresponds to the order that the config files were specified at 
-%%% startup.</p>
-%%%
-%%% <p>If you want config elements (key-value tuples) returned as result 
-%%% instead of values, use the <c>element</c> option. 
-%%% The returned elements will then be on the form <c>{Required,Value}</c></p>
-%%%
-%%% @see get_config/1
-%%% @see get_config/2
-%%% @see require/1
-%%% @see require/2
+-doc """
+Reads configuration data values.
+
+Returns the matching values or configuration elements, given a configuration
+variable key or its associated name (if one has been specified with
+[`ct:require/2`](`require/2`) or a `require` statement).
+
+_Example:_
+
+Given the following configuration file:
+
+```erlang
+{unix,[{telnet,IpAddr},
+       {user,[{username,Username},
+              {password,Password}]}]}.
+```
+
+Then:
+
+```erlang
+ct:get_config(unix,Default) -> [{telnet,IpAddr},
+ {user, [{username,Username}, {password,Password}]}]
+ct:get_config({unix,telnet},Default) -> IpAddr
+ct:get_config({unix,user,username},Default) -> Username
+ct:get_config({unix,ftp},Default) -> Default
+ct:get_config(unknownkey,Default) -> Default
+```
+
+If a configuration variable key has been associated with a name (by
+[`ct:require/2`](`require/2`) or a `require` statement), the name can be used
+instead of the key to read the value:
+
+```erlang
+ct:require(myuser,{unix,user}) -> ok.
+ct:get_config(myuser,Default) -> [{username,Username}, {password,Password}]
+```
+
+If a configuration variable is defined in multiple files, use option `all` to
+access all possible values. The values are returned in a list. The order of the
+elements corresponds to the order that the configuration files were specified at
+startup.
+
+If configuration elements (key-value tuples) are to be returned as result
+instead of values, use option `element`. The returned elements are then on the
+form `{Required,Value}`.
+
+See also [`ct:get_config/1`](`get_config/1`),
+[`ct:get_config/2`](`get_config/2`), [`ct:require/1`](`require/1`),
+[`ct:require/2`](`require/2`).
+""".
+-spec get_config(Required, Default, Opts) -> ValueOrElement
+      when Required :: KeyOrName | {KeyOrName, SubKey} | {KeyOrName, SubKey, SubKey},
+           KeyOrName :: key_or_name(),
+           SubKey :: atom(),
+           Default :: term(),
+           Opts :: [Opt],
+           Opt :: element | all,
+           ValueOrElement :: term() | Default.
 get_config(Required,Default,Opts) ->
     ct_config:get_config(Required,Default,Opts).
 
-%%%-----------------------------------------------------------------
-%%% @spec reload_config(Required) -> ValueOrElement
-%%%      Required = KeyOrName | {KeyOrName,SubKey} | {KeyOrName,SubKey,SubKey}
-%%%      KeyOrName = atom()
-%%%      SubKey = atom()
-%%%      ValueOrElement = term()
-%%%
-%%% @doc Reload config file which contains specified configuration key.
-%%%
-%%% <p>This function performs updating of the configuration data from which the
-%%% given configuration variable was read, and returns the (possibly) new
-%%% value of this variable.</p>
-%%% <p>Note that if some variables were present in the configuration but are not loaded
-%%% using this function, they will be removed from the configuration table together
-%%% with their aliases.</p>
-%%%
+-doc """
+Reloads configuration file containing specified configuration key.
+
+This function updates the configuration data from which the specified
+configuration variable was read, and returns the (possibly) new value of this
+variable.
+
+If some variables were present in the configuration, but are not loaded using
+this function, they are removed from the configuration table together with their
+aliases.
+""".
+-doc(#{since => <<"OTP R14B">>}).
+-spec reload_config(Required) -> ValueOrElement | {error, Reason}
+      when Required :: KeyOrName | {KeyOrName, SubKey} | {KeyOrName, SubKey, SubKey},
+           KeyOrName :: key_or_name(),
+           SubKey :: atom(),
+           ValueOrElement :: term(),
+           Reason :: term().
 reload_config(Required)->
     ct_config:reload_config(Required).
 
-%%%-----------------------------------------------------------------
-%%% @spec get_testspec_terms() -> TestSpecTerms | undefined
-%%%      TestSpecTerms = [{Tag,Value}]
-%%%      Value = [term()]
-%%%
-%%% @doc Get a list of all test specification terms used to
-%%% configure and run this test.
-%%%
+-doc "Gets a list of all test specification terms used to configure and run this test.".
+-doc(#{since => <<"OTP 18.0">>}).
+-spec get_testspec_terms() -> TestSpecTerms | undefined
+      when TestSpecTerms :: [{Tag, Value}],
+           Tag :: atom(),
+           Value :: [term()].
 get_testspec_terms() ->
     case ct_util:get_testdata(testspec) of
 	undefined ->
@@ -480,25 +620,27 @@ get_testspec_terms() ->
 	    ct_testspec:testspec_rec2list(CurrSpecRec)
     end.
 
-%%%-----------------------------------------------------------------
-%%% @spec get_testspec_terms(Tags) -> TestSpecTerms | undefined
-%%%      Tags = [Tag] | Tag
-%%%      Tag = atom()
-%%%      TestSpecTerms = [{Tag,Value}] | {Tag,Value}
-%%%      Value = [{Node,term()}] | [term()]
-%%%      Node = atom()
-%%%
-%%% @doc Read one or more terms from the test specification used
-%%% to configure and run this test. Tag is any valid test specification
-%%% tag, such as e.g. <c>label</c>, <c>config</c>, <c>logdir</c>.
-%%% User specific terms are also available to read if the
-%%% <c>allow_user_terms</c> option has been set. Note that all value tuples
-%%% returned, except user terms, will have the node name as first element.
-%%% Note also that in order to read test terms, use <c>Tag = tests</c>
-%%% (rather than <c>suites</c>, <c>groups</c> or <c>cases</c>). Value is
-%%% then the list of *all* tests on the form:
-%%% <c>[{Node,Dir,[{TestSpec,GroupsAndCases1},...]},...], where
-%%% GroupsAndCases = [{Group,[Case]}] | [Case]</c>.
+-doc """
+Reads one or more terms from the test specification used to configure and run
+this test. `Tag` is any valid test specification tag, for example, `label`,
+`config`, or `logdir`. User-specific terms are also available to read if option
+`allow_user_terms` is set.
+
+All value tuples returned, except user terms, have the node name as first
+element.
+
+To read test terms, use `Tag = tests` (rather than `suites`, `groups`, or
+`cases`). `Value` is then the list of _all_ tests on the form
+`[{Node,Dir,[{TestSpec,GroupsAndCases1},...]},...]`, where
+`GroupsAndCases = [{Group,[Case]}] | [Case]`.
+""".
+-doc(#{since => <<"OTP 18.0">>}).
+-spec get_testspec_terms(Tags) -> TestSpecTerms | undefined
+      when Tags :: [Tag] | Tag,
+           Tag :: atom(),
+           TestSpecTerms :: [{Tag, Value}] | {Tag, Value},
+           Value :: [{Node, term()}] | [term()],
+           Node :: atom().
 get_testspec_terms(Tags) ->
     case ct_util:get_testdata(testspec) of
 	undefined ->
@@ -507,218 +649,355 @@ get_testspec_terms(Tags) ->
 	    ct_testspec:testspec_rec2list(Tags, CurrSpecRec)
     end.
 
+-doc false.
+escape_chars(IoList) ->
+    ct_logs:escape_chars(IoList).
 
-%%%-----------------------------------------------------------------
-%%% @spec log(Format) -> ok
-%%% @equiv log(default,50,Format,[])
+-doc false.
+escape_chars(Format, Args) ->
+    try io_lib:format(Format, Args) of
+	IoList ->
+	    ct_logs:escape_chars(IoList)
+    catch
+	_:Reason ->
+	    {error,Reason}
+    end.
+
+-doc "Equivalent to [`log(default, ?STD_IMPORTANCE, Format, [], [])`](`log/5`).".
+-spec log(Format) -> ok
+      when Format :: string().
 log(Format) ->
-    log(default,?STD_IMPORTANCE,Format,[]).
+    log(default,?STD_IMPORTANCE,Format,[],[]).
 
-%%%-----------------------------------------------------------------
-%%% @spec log(X1,X2) -> ok
-%%%      X1 = Category | Importance | Format
-%%%      X2 = Format | Args
-%%% @equiv log(Category,Importance,Format,Args)
+-doc(#{equiv => log(Category, Importance, Format, FormatArgs, [])}).
+-spec log(X1, X2) -> ok
+      when X1 :: Category | Importance | Format,
+           X2 :: Format | FormatArgs,
+           Category :: atom() | integer() | string(),
+           Importance :: integer(),
+           Format :: string(),
+           FormatArgs :: list().
 log(X1,X2) ->
     {Category,Importance,Format,Args} = 
 	if is_atom(X1)    -> {X1,?STD_IMPORTANCE,X2,[]};
 	   is_integer(X1) -> {default,X1,X2,[]};
 	   is_list(X1)    -> {default,?STD_IMPORTANCE,X1,X2}
 	end,
-    log(Category,Importance,Format,Args).
+    log(Category,Importance,Format,Args,[]).
 
-%%%-----------------------------------------------------------------
-%%% @spec log(X1,X2,X3) -> ok
-%%%      X1 = Category | Importance
-%%%      X2 = Importance | Format
-%%%      X3 = Format | Args
-%%% @equiv log(Category,Importance,Format,Args)
+-doc(#{equiv => log(Category, Importance, Format, FormatArgs, Opts)}).
+-spec log(X1, X2, X3) -> ok
+      when X1 :: Category | Importance,
+           X2 :: Importance | Format,
+           X3 :: Format | FormatArgs | Opts,
+           Category :: atom() | integer() | string(),
+           Importance :: integer(),
+           Format :: string(),
+           FormatArgs :: list(),
+           Opts :: [Opt],
+           Opt :: {heading,string()} | no_css | esc_chars.
 log(X1,X2,X3) ->
-    {Category,Importance,Format,Args} = 
-	if is_atom(X1), is_integer(X2) -> {X1,X2,X3,[]};
-	   is_atom(X1), is_list(X2)    -> {X1,?STD_IMPORTANCE,X2,X3};
-	   is_integer(X1)              -> {default,X1,X2,X3}
+    {Category,Importance,Format,Args,Opts} = 
+	if is_atom(X1), is_integer(X2) -> {X1,X2,X3,[],[]};
+	   is_atom(X1), is_list(X2)    -> {X1,?STD_IMPORTANCE,X2,X3,[]};
+	   is_integer(X1)              -> {default,X1,X2,X3,[]};
+	   is_list(X1), is_list(X2)    -> {default,?STD_IMPORTANCE,X1,X2,X3}
 	end,
-    log(Category,Importance,Format,Args).
+    log(Category,Importance,Format,Args,Opts).
 
-%%%-----------------------------------------------------------------
-%%% @spec log(Category,Importance,Format,Args) -> ok
-%%%      Category = atom()
-%%%      Importance = integer()
-%%%      Format = string()
-%%%      Args = list()
-%%%
-%%% @doc Printout from a test case to the log file. 
-%%%
-%%% <p>This function is meant for printing a string directly from a
-%%% test case to the test case log file.</p>
-%%%
-%%% <p>Default <c>Category</c> is <c>default</c>,
-%%% default <c>Importance</c> is <c>?STD_IMPORTANCE</c>,
-%%% and default value for <c>Args</c> is <c>[]</c>.</p>
-%%% <p>Please see the User's Guide for details on <c>Category</c>
-%%% and <c>Importance</c>.</p>
-log(Category,Importance,Format,Args) ->
-    ct_logs:tc_log(Category,Importance,Format,Args).
+-doc(#{equiv => log(Category, Importance, Format, FormatArgs, Opts), since => <<"OTP R15B02">>}).
+-spec log(X1, X2, X3, X4) -> ok
+      when X1 :: Category | Importance,
+           X2 :: Importance | Format,
+           X3 :: Format | FormatArgs,
+           X4 :: FormatArgs | Opts,
+           Category :: atom() | integer() | string(),
+           Importance :: integer(),
+           Format :: string(),
+           FormatArgs :: list(),
+           Opts :: [Opt],
+           Opt :: {heading,string()} | no_css | esc_chars.
+log(X1,X2,X3,X4) ->
+    {Category,Importance,Format,Args,Opts} = 
+	if is_atom(X1), is_integer(X2) -> {X1,X2,X3,X4,[]};
+	   is_atom(X1), is_list(X2)    -> {X1,?STD_IMPORTANCE,X2,X3,X4};
+	   is_integer(X1)              -> {default,X1,X2,X3,X4}
+	end,
+    log(Category,Importance,Format,Args,Opts).
 
+-doc """
+Prints from a test case to the log file.
 
-%%%-----------------------------------------------------------------
-%%% @spec print(Format) -> ok
-%%% @equiv print(default,50,Format,[])
+This function is meant for printing a string directly from a test case to the
+test case log file.
+
+Default `Category` is `default`, default `Importance` is `?STD_IMPORTANCE`, and
+default value for `FormatArgs` is `[]`.
+
+For details on `Category`, `Importance` and the `no_css` option, see section
+[Logging - Categories and Verbosity Levels](write_test_chapter.md#logging) in
+the User's Guide.
+
+Common Test will not escape special HTML characters (<, > and &) in the text
+printed with this function, unless the `esc_chars` option is used.
+""".
+-doc(#{since => <<"OTP 18.3">>}).
+-spec log(Category, Importance, Format, FormatArgs, Opts) -> ok
+      when Category :: atom() | integer() | string(),
+           Importance :: integer(),
+           Format :: string(),
+           FormatArgs :: list(),
+           Opts :: [Opt],
+           Opt :: {heading,string()} | no_css | esc_chars.
+log(Category,Importance,Format,Args,Opts) ->
+    ct_logs:tc_log(Category,Importance,Format,Args,Opts).
+
+-doc "Equivalent to [`print(default, ?STD_IMPORTANCE, Format, [], [])`](`print/5`).".
+-spec print(Format) -> ok
+      when Format :: string().
 print(Format) ->
-    print(default,?STD_IMPORTANCE,Format,[]).
+    print(default,?STD_IMPORTANCE,Format,[],[]).
 
-%%%-----------------------------------------------------------------
-%%% @spec print(X1,X2) -> ok
-%%%      X1 = Category | Importance | Format
-%%%      X2 = Format | Args
-%%% @equiv print(Category,Importance,Format,Args)
+-doc(#{equiv => print(Category, Importance, Format, FormatArgs, []), since => <<"OTP R15B02">>}).
+-spec print(X1, X2) -> ok
+      when X1 :: Category | Importance | Format,
+           X2 :: Format | FormatArgs,
+           Category :: atom() | integer() | string(),
+           Importance :: integer(),
+           Format :: string(),
+           FormatArgs :: list().
 print(X1,X2) ->
     {Category,Importance,Format,Args} = 
 	if is_atom(X1)    -> {X1,?STD_IMPORTANCE,X2,[]};
 	   is_integer(X1) -> {default,X1,X2,[]};
 	   is_list(X1)    -> {default,?STD_IMPORTANCE,X1,X2}
 	end,
-    print(Category,Importance,Format,Args).
+    print(Category,Importance,Format,Args,[]).
 
-%%%-----------------------------------------------------------------
-%%% @spec print(X1,X2,X3) -> ok
-%%%      X1 = Category | Importance
-%%%      X2 = Importance | Format
-%%%      X3 = Format | Args
-%%% @equiv print(Category,Importance,Format,Args)
+-doc(#{equiv => print(Category, Importance, Format, FormatArgs, Opts)}).
+-spec print(X1, X2, X3) -> ok
+      when X1 :: Category | Importance,
+           X2 :: Importance | Format,
+           X3 :: Format | FormatArgs | Opts,
+           Category :: atom() | integer() | string(),
+           Importance :: integer(),
+           Format :: string(),
+           FormatArgs :: list(),
+           Opts :: [Opt],
+           Opt :: {heading,string()}.
 print(X1,X2,X3) ->
-    {Category,Importance,Format,Args} = 
-	if is_atom(X1), is_integer(X2) -> {X1,X2,X3,[]};
-	   is_atom(X1), is_list(X2)    -> {X1,?STD_IMPORTANCE,X2,X3};
-	   is_integer(X1)              -> {default,X1,X2,X3}
+    {Category,Importance,Format,Args,Opts} = 
+	if is_atom(X1), is_integer(X2) -> {X1,X2,X3,[],[]};
+	   is_atom(X1), is_list(X2)    -> {X1,?STD_IMPORTANCE,X2,X3,[]};
+	   is_integer(X1)              -> {default,X1,X2,X3,[]};
+	   is_list(X1), is_list(X2)    -> {default,?STD_IMPORTANCE,X1,X2,X3}
 	end,
-    print(Category,Importance,Format,Args).
+    print(Category,Importance,Format,Args,Opts).
 
-%%%-----------------------------------------------------------------
-%%% @spec print(Category,Importance,Format,Args) -> ok
-%%%      Category = atom()
-%%%      Importance = integer()
-%%%      Format = string()
-%%%      Args = list()
-%%%
-%%% @doc Printout from a test case to the console. 
-%%%
-%%% <p>This function is meant for printing a string from a test case
-%%% to the console.</p>
-%%%
-%%% <p>Default <c>Category</c> is <c>default</c>,
-%%% default <c>Importance</c> is <c>?STD_IMPORTANCE</c>,
-%%% and default value for <c>Args</c> is <c>[]</c>.</p>
-%%% <p>Please see the User's Guide for details on <c>Category</c>
-%%% and <c>Importance</c>.</p>
-print(Category,Importance,Format,Args) ->
-    ct_logs:tc_print(Category,Importance,Format,Args).
+-doc(#{equiv => print(Category, Importance, Format, FormatArgs, Opts), since => <<"OTP R15B02">>}).
+-spec print(X1, X2, X3, X4) -> ok
+      when X1 :: Category | Importance,
+           X2 :: Importance | Format,
+           X3 :: Format | FormatArgs,
+           X4 :: FormatArgs | Opts,
+           Category :: atom() | integer() | string(),
+           Importance :: integer(),
+           Format :: string(),
+           FormatArgs :: list(),
+           Opts :: [Opt],
+           Opt :: {heading,string()}.
+print(X1,X2,X3,X4) ->
+    {Category,Importance,Format,Args,Opts} = 
+	if is_atom(X1), is_integer(X2) -> {X1,X2,X3,X4,[]};
+	   is_atom(X1), is_list(X2)    -> {X1,?STD_IMPORTANCE,X2,X3,X4};
+	   is_integer(X1)              -> {default,X1,X2,X3,X4}
+	end,
+    print(Category,Importance,Format,Args,Opts).
 
+-doc """
+Prints from a test case to the console.
 
-%%%-----------------------------------------------------------------
-%%% @spec pal(Format) -> ok
-%%% @equiv pal(default,50,Format,[])
+This function is meant for printing a string from a test case to the console.
+
+Default `Category` is `default`, default `Importance` is `?STD_IMPORTANCE`, and
+default value for `FormatArgs` is `[]`.
+
+For details on `Category` and `Importance`, see section
+[Logging - Categories and Verbosity Levels](write_test_chapter.md#logging) in
+the User's Guide.
+""".
+-doc(#{since => <<"OTP 19.2">>}).
+-spec print(Category, Importance, Format, FormatArgs, Opts) -> ok
+      when Category :: atom() | integer() | string(),
+           Importance :: integer(),
+           Format :: string(),
+           FormatArgs :: list(),
+           Opts :: [Opt],
+           Opt :: {heading,string()}.
+print(Category,Importance,Format,Args,Opts) ->
+    ct_logs:tc_print(Category,Importance,Format,Args,Opts).
+
+-doc "Equivalent to [`pal(default, ?STD_IMPORTANCE, Format, [])`](`pal/4`).".
+-spec pal(Format) -> ok
+      when Format :: string().
 pal(Format) ->
     pal(default,?STD_IMPORTANCE,Format,[]).
 
-%%%-----------------------------------------------------------------
-%%% @spec pal(X1,X2) -> ok
-%%%      X1 = Category | Importance | Format
-%%%      X2 = Format | Args
-%%% @equiv pal(Category,Importance,Format,Args)
+-doc(#{equiv => pal(Category, Importance, Format, FormatArgs, [])}).
+-spec pal(X1, X2) -> ok
+      when X1 :: Category | Importance | Format,
+           X2 :: Format | FormatArgs,
+           Category :: atom() | integer() | string(),
+           Importance :: integer(),
+           Format :: string(),
+           FormatArgs :: list().
 pal(X1,X2) ->
     {Category,Importance,Format,Args} = 
 	if is_atom(X1)    -> {X1,?STD_IMPORTANCE,X2,[]};
 	   is_integer(X1) -> {default,X1,X2,[]};
 	   is_list(X1)    -> {default,?STD_IMPORTANCE,X1,X2}
 	end,
-    pal(Category,Importance,Format,Args).
+    pal(Category,Importance,Format,Args,[]).
 
-%%%-----------------------------------------------------------------
-%%% @spec pal(X1,X2,X3) -> ok
-%%%      X1 = Category | Importance
-%%%      X2 = Importance | Format
-%%%      X3 = Format | Args
-%%% @equiv pal(Category,Importance,Format,Args)
+-doc(#{equiv => pal(Category, Importance, Format, FormatArgs, Opts)}).
+-spec pal(X1, X2, X3) -> ok
+      when X1 :: Category | Importance,
+           X2 :: Importance | Format,
+           X3 :: Format | FormatArgs | Opt,
+           Category :: atom() | integer() | string(),
+           Importance :: integer(),
+           Format :: string(),
+           FormatArgs :: list(),
+           Opt :: {heading,string()} | no_css.
 pal(X1,X2,X3) ->
-    {Category,Importance,Format,Args} = 
-	if is_atom(X1), is_integer(X2) -> {X1,X2,X3,[]};
-	   is_atom(X1), is_list(X2)    -> {X1,?STD_IMPORTANCE,X2,X3};
-	   is_integer(X1)              -> {default,X1,X2,X3}
+    {Category,Importance,Format,Args,Opts} = 
+	if is_atom(X1), is_integer(X2) -> {X1,X2,X3,[],[]};
+	   is_atom(X1), is_list(X2)    -> {X1,?STD_IMPORTANCE,X2,X3,[]};
+	   is_integer(X1)              -> {default,X1,X2,X3,[]};
+	   is_list(X1), is_list(X2)    -> {default,?STD_IMPORTANCE,X1,X2,X3}
 	end,
-    pal(Category,Importance,Format,Args).
+    pal(Category,Importance,Format,Args,Opts).
 
-%%%-----------------------------------------------------------------
-%%% @spec pal(Category,Importance,Format,Args) -> ok
-%%%      Category = atom()
-%%%      Importance = integer()
-%%%      Format = string()
-%%%      Args = list()
-%%%
-%%% @doc Print and log from a test case. 
-%%%
-%%% <p>This function is meant for printing a string from a test case,
-%%% both to the test case log file and to the console.</p>
-%%%
-%%% <p>Default <c>Category</c> is <c>default</c>,
-%%% default <c>Importance</c> is <c>?STD_IMPORTANCE</c>,
-%%% and default value for <c>Args</c> is <c>[]</c>.</p>
-%%% <p>Please see the User's Guide for details on <c>Category</c>
-%%% and <c>Importance</c>.</p>
-pal(Category,Importance,Format,Args) ->
-    ct_logs:tc_pal(Category,Importance,Format,Args).
+-doc(#{equiv => pal(Category, Importance, Format, FormatArgs, Opts), since => <<"OTP R15B02">>}).
+-spec pal(X1, X2, X3, X4) -> ok
+      when X1 :: Category | Importance,
+           X2 :: Importance | Format,
+           X3 :: Format | FormatArgs,
+           X4 :: FormatArgs | Opts,
+           Category :: atom() | integer() | string(),
+           Importance :: integer(),
+           Format :: string(),
+           FormatArgs :: list(),
+           Opts :: [Opt],
+           Opt :: {heading,string()} | no_css.
+pal(X1,X2,X3,X4) ->
+    {Category,Importance,Format,Args,Opts} = 
+	if is_atom(X1), is_integer(X2) -> {X1,X2,X3,X4,[]};
+	   is_atom(X1), is_list(X2)    -> {X1,?STD_IMPORTANCE,X2,X3,X4};
+	   is_integer(X1)              -> {default,X1,X2,X3,X4}
+	end,
+    pal(Category,Importance,Format,Args,Opts).
 
-%%%-----------------------------------------------------------------
-%%% @spec capture_start() -> ok
-%%%
-%%% @doc Start capturing all text strings printed to stdout during
-%%% execution of the test case.
-%%%
-%%% @see capture_stop/0
-%%% @see capture_get/1
+-doc """
+Prints and logs from a test case.
+
+This function is meant for printing a string from a test case, both to the test
+case log file and to the console.
+
+Default `Category` is `default`, default `Importance` is `?STD_IMPORTANCE`, and
+default value for `FormatArgs` is `[]`.
+
+For details on `Category` and `Importance`, see section
+[Logging - Categories and Verbosity Levels](write_test_chapter.md#logging) in
+the User's Guide.
+
+Note that special characters in the text (<, > and &) will be escaped by Common
+Test before the text is printed to the log file.
+""".
+-doc(#{since => <<"OTP 19.2">>}).
+-spec pal(Category, Importance, Format, FormatArgs, Opts) -> ok
+      when Category :: atom() | integer() | string(),
+           Importance :: integer(),
+           Format :: string(),
+           FormatArgs :: list(),
+           Opts :: [Opt],
+           Opt :: {heading,string()} | no_css.
+pal(Category,Importance,Format,Args,Opts) ->
+    ct_logs:tc_pal(Category,Importance,Format,Args,Opts).
+
+-doc """
+Use this function to set, or modify, the verbosity level for a logging category.
+See the [User's Guide](write_test_chapter.md#logging) for details. Use the value
+`default` to set the general verbosity level.
+""".
+-doc(#{since => <<"OTP 19.1">>}).
+-spec set_verbosity(Category, Level) -> ok
+      when Category :: default | atom(),
+           Level :: integer().
+set_verbosity(Category, Level) ->
+    ct_util:set_verbosity({Category,Level}).
+
+-doc """
+This function returns the verbosity level for the specified logging category.
+See the [User's Guide](write_test_chapter.md#logging) for details. Use the value
+`default` to read the general verbosity level.
+""".
+-doc(#{since => <<"OTP 19.1">>}).
+-spec get_verbosity(Category) -> Level | undefined
+      when Category :: default | atom(),
+           Level :: integer().
+get_verbosity(Category) ->
+    ct_util:get_verbosity(Category).
+
+-doc """
+Starts capturing all text strings printed to `stdout` during execution of the
+test case.
+
+See also [`ct:capture_get/1`](`capture_get/1`),
+[`ct:capture_stop/0`](`capture_stop/0`).
+""".
+-doc(#{since => <<"OTP R15B">>}).
+-spec capture_start() -> ok.
 capture_start() ->
     test_server:capture_start().
 
-%%%-----------------------------------------------------------------
-%%% @spec capture_stop() -> ok
-%%%
-%%% @doc Stop capturing text strings (a session started with
-%%% <c>capture_start/0</c>).
-%%%
-%%% @see capture_start/0
-%%% @see capture_get/1
+-doc """
+Stops capturing text strings (a session started with `capture_start/0`).
+
+See also [`ct:capture_get/1`](`capture_get/1`),
+[`ct:capture_start/0`](`capture_start/0`).
+""".
+-doc(#{since => <<"OTP R15B">>}).
+-spec capture_stop() -> ok.
 capture_stop() ->
     test_server:capture_stop().
 
-%%%-----------------------------------------------------------------
-%%% @spec capture_get() -> ListOfStrings
-%%%      ListOfStrings = [string()]
-%%%
-%%% @equiv capture_get([default])
+-doc(#{equiv => capture_get([default]), since => <<"OTP R15B">>}).
+-spec capture_get() -> ListOfStrings
+      when ListOfStrings :: [string()].
 capture_get() ->
     %% remove default log printouts (e.g. ct:log/2 printouts)
     capture_get([default]).
 
-%%%-----------------------------------------------------------------
-%%% @spec capture_get(ExclCategories) -> ListOfStrings
-%%%      ExclCategories = [atom()]
-%%%      ListOfStrings = [string()]
-%%%
-%%% @doc Return and purge the list of text strings buffered
-%%% during the latest session of capturing printouts to stdout.
-%%% With <c>ExclCategories</c> it's possible to specify
-%%% log categories that should be ignored in <c>ListOfStrings</c>.
-%%% If <c>ExclCategories = []</c>, no filtering takes place.
-%%%
-%%% @see capture_start/0
-%%% @see capture_stop/0
-%%% @see log/3
+-doc """
+Returns and purges the list of text strings buffered during the latest session
+of capturing printouts to `stdout`. Log categories that are to be ignored in
+`ListOfStrings` can be specified with `ExclCategories`. If
+`ExclCategories = []`, no filtering takes place.
+
+See also [`ct:capture_start/0`](`capture_start/0`),
+[`ct:capture_stop/0`](`capture_stop/0`), [`ct:log/3`](`log/3`).
+""".
+-doc(#{since => <<"OTP R15B">>}).
+-spec capture_get(ExclCategories) -> ListOfStrings
+      when ExclCategories :: [atom()],
+           ListOfStrings :: [string()].
 capture_get([ExclCat | ExclCategories]) ->
     Strs = test_server:capture_get(),
     CatsStr = [atom_to_list(ExclCat) | 
 	       [[$| | atom_to_list(EC)] || EC <- ExclCategories]],
-    {ok,MP} = re:compile("<div class=\"(" ++ lists:flatten(CatsStr) ++ ")\">.*"),
+    {ok,MP} = re:compile("<div class=\"(" ++ lists:flatten(CatsStr) ++ ")\">.*",
+                         [unicode]),
     lists:flatmap(fun(Str) ->
 			  case re:run(Str, MP) of
 			      {match,_} -> [];
@@ -729,40 +1008,39 @@ capture_get([ExclCat | ExclCategories]) ->
 capture_get([]) ->
     test_server:capture_get().
 
-%%%-----------------------------------------------------------------
-%%% @spec fail(Reason) -> ok
-%%%      Reason = term()
-%%%
-%%% @doc Terminate a test case with the given error
-%%% <c>Reason</c>.
+
+-doc "Terminates a test case with the specified error `Reason`.".
+-spec fail(Reason) -> no_return()
+      when Reason :: term().
 fail(Reason) ->
     try
 	exit({test_case_failed,Reason})
     catch
-	Class:R ->
-	    case erlang:get_stacktrace() of
+	Class:R:S ->
+	    case S of
 		[{?MODULE,fail,1,_}|Stk] -> ok;
 		Stk -> ok
 	    end,
 	    erlang:raise(Class, R, Stk)
     end.
 
-%%%-----------------------------------------------------------------
-%%% @spec fail(Format, Args) -> ok
-%%%      Format = string()
-%%%      Args = list()
-%%%
-%%% @doc Terminate a test case with an error message specified
-%%% by a format string and a list of values (used as arguments to
-%%% <c>io_lib:format/2</c>).
+
+-doc """
+Terminates a test case with an error message specified by a format string and a
+list of values (used as arguments to `io_lib:format/2`).
+""".
+-doc(#{since => <<"OTP R15B">>}).
+-spec fail(Format, Args) -> no_return()
+      when Format :: io:format(),
+           Args :: [term()].
 fail(Format, Args) ->
     try io_lib:format(Format, Args) of
 	Str ->
 	    try
 		exit({test_case_failed,lists:flatten(Str)})
 	    catch
-		Class:R ->
-		    case erlang:get_stacktrace() of
+		Class:R:S ->
+		    case S of
 			[{?MODULE,fail,2,_}|Stk] -> ok;
 			Stk -> ok
 		    end,
@@ -773,42 +1051,52 @@ fail(Format, Args) ->
 	    exit({BadArgs,{?MODULE,fail,[Format,Args]}})
     end.
 
-%%%-----------------------------------------------------------------
-%%% @spec comment(Comment) -> ok
-%%%      Comment = term()
-%%%
-%%% @doc Print the given <c>Comment</c> in the comment field in
-%%% the table on the test suite result page.
-%%%
-%%% <p>If called several times, only the last comment is printed.
-%%% The test case return value <c>{comment,Comment}</c>
-%%% overwrites the string set by this function.</p>
+-doc """
+Prints the specified `Comment` in the comment field in the table on the test
+suite result page.
+
+If called several times, only the last comment is printed. The test case return
+value `{comment,Comment}` overwrites the string set by this function.
+
+> #### Warning {: .warning }
+>
+> This function (and `ct:comment/2`) should only be called from the process running
+> the common_test functions, typically the test case process or its descendant.
+> Be aware that if you spawn a new process in one common_test function (e.g. `init_per_suite`)
+> and then execute `ct:comment/1-2` in that new process while the test execution has moved
+> to another common_test function (e.g. `init_per_testcase` or test case function) the comment
+> might not be printed in the correct place in HTML logs or at all.
+>
+> Calling this function from a process that is neither a common_test process, nor its
+> descendant does not result in the comment being printed anywhere.
+""".
+-spec comment(Comment) -> ok
+      when Comment :: term().
 comment(Comment) when is_list(Comment) ->
     Formatted =
 	case (catch io_lib:format("~ts",[Comment])) of
 	    {'EXIT',_} ->  % it's a list not a string
-		io_lib:format("~p",[Comment]);
+		io_lib:format("~tp",[Comment]);
 	    String ->
 		String
 	end,
     send_html_comment(lists:flatten(Formatted));
 comment(Comment) ->
-    Formatted = io_lib:format("~p",[Comment]),
+    Formatted = io_lib:format("~tp",[Comment]),
     send_html_comment(lists:flatten(Formatted)).
 
-%%%-----------------------------------------------------------------
-%%% @spec comment(Format, Args) -> ok
-%%%      Format = string()
-%%%      Args = list()
-%%%
-%%% @doc Print the formatted string in the comment field in
-%%% the table on the test suite result page.
-%%% 
-%%% <p>The <c>Format</c> and <c>Args</c> arguments are
-%%% used in call to <c>io_lib:format/2</c> in order to create
-%%% the comment string. The behaviour of <c>comment/2</c> is
-%%% otherwise the same as the <c>comment/1</c> function (see
-%%% above for details).</p>
+-doc """
+Prints the formatted string in the comment field in the table on the test suite
+result page.
+
+Arguments `Format` and `Args` are used in a call to `io_lib:format/2` to create
+the comment string. The behavior of [`comment/2`](`comment/2`) is otherwise the
+same as function [`ct:comment/1`](`comment/1`).
+""".
+-doc(#{since => <<"OTP R15B">>}).
+-spec comment(Format, Args) -> ok
+      when Format :: string(),
+           Args :: list().
 comment(Format, Args) when is_list(Format), is_list(Args) ->
     Formatted =
 	case (catch io_lib:format(Format, Args)) of
@@ -824,64 +1112,74 @@ send_html_comment(Comment) ->
     ct_util:set_testdata({{comment,group_leader()},Html}),
     test_server:comment(Html).
 
-%%%-----------------------------------------------------------------
-%%% @spec make_priv_dir() -> ok | {error,Reason}
-%%%      Reason = term()
-%%% @doc If the test has been started with the create_priv_dir 
-%%% option set to manual_per_tc, in order for the test case to use
-%%% the private directory, it must first create it by calling
-%%% this function.
+-doc """
+If the test is started with option `create_priv_dir` set to `manual_per_tc`, in
+order for the test case to use the private directory, it must first create it by
+calling this function.
+""".
+-doc(#{since => <<"OTP R15B01">>}).
+-spec make_priv_dir() -> ok | {error, Reason}
+      when Reason :: term().
 make_priv_dir() ->
     test_server:make_priv_dir().
 
-%%%-----------------------------------------------------------------
-%%% @spec get_target_name(Handle) -> {ok,TargetName} | {error,Reason}
-%%%      Handle = handle()
-%%%      TargetName = target_name()
-%%% @doc Return the name of the target that the given connection
-%%% belongs to.
+-doc "Returns the name of the target that the specified connection belongs to.".
+-spec get_target_name(Handle) -> {ok, TargetName} | {error, Reason}
+      when Handle :: handle(),
+           TargetName :: target_name(),
+           Reason :: term().
 get_target_name(Handle) ->
     ct_util:get_target_name(Handle).
-    
-%%%-----------------------------------------------------------------
-%%% @spec parse_table(Data) -> {Heading,Table}
-%%%       Data = [string()]
-%%%       Heading = tuple()
-%%%       Table = [tuple()]
-%%%
-%%% @doc Parse the printout from an SQL table and return a list of tuples.
-%%%
-%%% <p>The printout to parse would typically be the result of a
-%%% <c>select</c> command in SQL. The returned
-%%% <c>Table</c> is a list of tuples, where each tuple is a row
-%%% in the table.</p>
-%%% 
-%%% <p><c>Heading</c> is a tuple of strings representing the
-%%% headings of each column in the table.</p>
+
+-doc """
+Returns the command used to start this Erlang instance. If this information
+could not be found, the string `"no_prog_name"` is returned.
+""".
+-doc(#{since => <<"OTP 21.0">>}).
+-spec get_progname() -> string().
+get_progname() ->
+    case init:get_argument(progname) of
+	{ok, [[Prog]]} ->
+	    Prog;
+	_Other ->
+	    "no_prog_name"
+    end.
+
+-doc """
+Parses the printout from an SQL table and returns a list of tuples.
+
+The printout to parse is typically the result of a `select` command in SQL. The
+returned `Table` is a list of tuples, where each tuple is a row in the table.
+
+`Heading` is a tuple of strings representing the headings of each column in the
+table.
+""".
+-spec parse_table(Data) -> {Heading, Table}
+      when Data :: [string()],
+           Heading :: tuple(),
+           Table :: [tuple()].
 parse_table(Data) ->
     ct_util:parse_table(Data).
 
-%%%-----------------------------------------------------------------
-%%% @spec listenv(Telnet) -> [Env]
-%%%       Telnet = term()
-%%%       Env = {Key,Value}
-%%%       Key = string()
-%%%       Value = string()
-%%%
-%%% @doc Performs the listenv command on the given telnet connection
-%%% and returns the result as a list of Key-Value pairs.
+-doc """
+Performs command `listenv` on the specified Telnet connection and returns the
+result as a list of key-value pairs.
+""".
+-spec listenv(Telnet) -> {'ok', [Env]} | {'error', Reason}
+              when Telnet :: ct_telnet:connection(),
+                   Env :: {Key, Value},
+                   Key :: string(),
+                   Value :: string(),
+                   Reason :: term().
 listenv(Telnet) ->
     ct_util:listenv(Telnet).
 
-
-%%%-----------------------------------------------------------------
-%%% @spec testcases(TestDir, Suite) -> Testcases | {error,Reason}
-%%%       TestDir = string()
-%%%       Suite = atom()
-%%%       Testcases = list()
-%%%       Reason = term()
-%%%
-%%% @doc Returns all test cases in the specified suite.
+-doc "Returns all test cases in the specified suite.".
+-spec testcases(TestDir, Suite) -> Testcases | {error, Reason}
+      when TestDir :: string(),
+           Suite :: atom(),
+           Testcases :: list(),
+           Reason :: term().
 testcases(TestDir, Suite) ->
     case make_and_load(TestDir, Suite) of
 	E = {error,_} ->
@@ -896,11 +1194,7 @@ testcases(TestDir, Suite) ->
     end.
 
 make_and_load(Dir, Suite) ->
-    EnvInclude =
-	case os:getenv("CT_INCLUDE_PATH") of
-	    false -> [];
-	    CtInclPath -> string:tokens(CtInclPath, [$:,$ ,$,])
-	end,
+    EnvInclude = string:lexemes(os:getenv("CT_INCLUDE_PATH", ""), [$:,$ ,$,]),
     StartInclude =
 	case init:get_argument(include) of
 	    {ok,[Dirs]} -> Dirs;
@@ -921,15 +1215,15 @@ make_and_load(Dir, Suite) ->
 	    end
     end.
 
-%%%-----------------------------------------------------------------
-%%% @spec userdata(TestDir, Suite) -> SuiteUserData | {error,Reason}
-%%%       TestDir = string()
-%%%       Suite = atom()
-%%%       SuiteUserData = [term()]
-%%%       Reason = term()
-%%%
-%%% @doc Returns any data specified with the tag <c>userdata</c> 
-%%% in the list of tuples returned from <c>Suite:suite/0</c>.
+-doc """
+Returns any data specified with tag `userdata` in the list of tuples returned
+from [`suite/0`](`c:ct_suite:suite/0`).
+""".
+-spec userdata(TestDir, Suite) -> SuiteUserData | {error, Reason}
+      when TestDir :: string(),
+           Suite :: atom(),
+           SuiteUserData :: [term()],
+           Reason :: term().
 userdata(TestDir, Suite) ->
     case make_and_load(TestDir, Suite) of
 	E = {error,_} ->
@@ -955,18 +1249,17 @@ get_userdata(List, _) when is_list(List) ->
 get_userdata(_BadTerm, Spec) ->
     {error,list_to_atom(Spec ++ " must return a list")}.
    
-%%%-----------------------------------------------------------------
-%%% @spec userdata(TestDir, Suite, GroupOrCase) -> TCUserData | {error,Reason}
-%%%       TestDir = string()
-%%%       Suite = atom()
-%%%       GroupOrCase = {group,GroupName} | atom()
-%%%       GroupName = atom()
-%%%       TCUserData = [term()]
-%%%       Reason = term()
-%%%
-%%% @doc Returns any data specified with the tag <c>userdata</c>
-%%% in the list of tuples returned from <c>Suite:group(GroupName)</c>
-%%% or <c>Suite:Case()</c>.
+-doc """
+Returns any data specified with tag `userdata` in the list of tuples returned
+from `Suite:group(GroupName)` or `Suite:Case()`.
+""".
+-spec userdata(TestDir, Suite, Case::GroupOrCase) -> TCUserData | {error, Reason}
+      when TestDir :: string(),
+           Suite :: atom(),
+           GroupOrCase :: {group, GroupName} | atom(),
+           GroupName :: atom(),
+           TCUserData :: [term()],
+           Reason :: term().
 userdata(TestDir, Suite, {group,GroupName}) ->
     case make_and_load(TestDir, Suite) of
 	E = {error,_} ->
@@ -985,27 +1278,25 @@ userdata(TestDir, Suite, Case) when is_atom(Case) ->
 	    get_userdata(Info, atom_to_list(Case)++"/0")
     end.
 
-
-%%%-----------------------------------------------------------------
-%%% @spec get_status() -> TestStatus | {error,Reason} | no_tests_running
-%%%       TestStatus = [StatusElem]
-%%%       StatusElem = {current,TestCaseInfo} | {successful,Successful} |
-%%%                    {failed,Failed} | {skipped,Skipped} | {total,Total}
-%%%       TestCaseInfo = {Suite,TestCase} | [{Suite,TestCase}]
-%%%       Suite = atom()
-%%%       TestCase = atom()
-%%%       Successful = integer()
-%%%       Failed = integer()
-%%%       Skipped = {UserSkipped,AutoSkipped}
-%%%       UserSkipped = integer()
-%%%       AutoSkipped = integer()
-%%%       Total = integer()
-%%%       Reason = term()
-%%%
-%%% @doc Returns status of ongoing test. The returned list contains info about
-%%%      which test case is currently executing (a list of cases when a
-%%%      parallel test case group is executing), as well as counters for 
-%%%      successful, failed, skipped, and total test cases so far.
+-doc """
+Returns status of ongoing test. The returned list contains information about
+which test case is executing (a list of cases when a parallel test case group is
+executing), as well as counters for successful, failed, skipped, and total test
+cases so far.
+""".
+-spec get_status() -> TestStatus | {error, Reason} | no_tests_running
+      when TestStatus :: [StatusElem],
+           StatusElem :: {current, TestCaseInfo} | {successful, Successful} | {failed, Failed} | {skipped, Skipped} | {total, Total},
+           TestCaseInfo :: {Suite, TestCase} | [{Suite, TestCase}],
+           Suite :: atom(),
+           TestCase :: atom(),
+           Successful :: integer(),
+           Failed :: integer(),
+           Skipped :: {UserSkipped, AutoSkipped},
+           UserSkipped :: integer(),
+           AutoSkipped :: integer(),
+           Total :: integer(),
+           Reason :: term().
 get_status() ->
     case get_testdata(curr_tc) of
 	{ok,TestCase} ->
@@ -1037,176 +1328,182 @@ get_testdata(Key) ->
 	    {ok,Data}
     end.
 
-%%%-----------------------------------------------------------------
-%%% @spec abort_current_testcase(Reason) -> ok | {error,ErrorReason}
-%%%       Reason = term()
-%%%       ErrorReason = no_testcase_running | parallel_group
-%%%
-%%% @doc <p>When calling this function, the currently executing test case will be aborted.
-%%%      It is the user's responsibility to know for sure which test case is currently
-%%%	 executing. The function is therefore only safe to call from a function which
-%%%	 has been called (or synchronously invoked) by the test case.</p>
-%%%
-%%%      <p><c>Reason</c>, the reason for aborting the test case, is printed
-%%%      in the test case log.</p>
+-doc """
+Aborts the currently executing test case. The user must know with certainty
+which test case is currently executing. The function is therefore only safe to
+call from a function that has been called (or synchronously invoked) by the test
+case.
+
+`Reason`, the reason for aborting the test case, is printed in the test case
+log.
+""".
+-spec abort_current_testcase(Reason) -> ok | {error, ErrorReason}
+      when Reason :: term(),
+           ErrorReason :: no_testcase_running | parallel_group. 
 abort_current_testcase(Reason) ->
     test_server_ctrl:abort_current_testcase(Reason).
 
-%%%-----------------------------------------------------------------
-%%% @spec get_event_mgr_ref() -> EvMgrRef
-%%%       EvMgrRef = atom()
-%%%
-%%% @doc <p>Call this function in order to get a reference to the
-%%%         CT event manager. The reference can be used to e.g. add
-%%%         a user specific event handler while tests are running.
-%%%         Example:
-%%%         <c>gen_event:add_handler(ct:get_event_mgr_ref(), my_ev_h, [])</c></p>
+-doc """
+Gets a reference to the `Common Test` event manager. The reference can be used
+to, for example, add a user-specific event handler while tests are running.
+
+_Example:_
+
+```erlang
+gen_event:add_handler(ct:get_event_mgr_ref(), my_ev_h, [])
+```
+""".
+-doc(#{since => <<"OTP 17.5">>}).
+-spec get_event_mgr_ref() -> EvMgrRef
+      when EvMgrRef :: atom().
 get_event_mgr_ref() ->
     ?CT_EVMGR_REF.
 
-%%%-----------------------------------------------------------------
-%%% @spec encrypt_config_file(SrcFileName, EncryptFileName) -> 
-%%%                                                  ok | {error,Reason}
-%%%       SrcFileName = string()
-%%%       EncryptFileName = string()
-%%%       Reason = term()
-%%%
-%%% @doc <p>This function encrypts the source config file with DES3 and 
-%%%      saves the result in file <c>EncryptFileName</c>. The key,
-%%%      a string, must be available in a text file named 
-%%%      <c>.ct_config.crypt</c> in the current directory, or the 
-%%%      home directory of the user (it is searched for in that order).</p>
-%%%      <p>See the Common Test User's Guide for information about using
-%%%      encrypted config files when running tests.</p>
-%%%      <p>See the <c>crypto</c> application for details on DES3
-%%%      encryption/decryption.</p>
+-doc """
+Encrypts the source configuration file with DES3 and saves the result in file
+`EncryptFileName`. The key, a string, must be available in a text file named
+`.ct_config.crypt`, either in the current directory, or the home directory of
+the user (it is searched for in that order).
+
+For information about using encrypted configuration files when running tests,
+see section
+[Encrypted Configuration Files](config_file_chapter.md#encrypted_config_files)
+in the User's Guide.
+
+For details on DES3 encryption/decryption, see application
+[`Crypto`](`e:crypto:index.html`).
+""".
+-spec encrypt_config_file(SrcFileName, EncryptFileName) -> ok | {error, Reason}
+      when SrcFileName :: string(),
+           EncryptFileName :: string(),
+           Reason :: term().
 encrypt_config_file(SrcFileName, EncryptFileName) ->
     ct_config:encrypt_config_file(SrcFileName, EncryptFileName).
 
-%%%-----------------------------------------------------------------
-%%% @spec encrypt_config_file(SrcFileName, EncryptFileName, KeyOrFile) -> 
-%%%                                                  ok | {error,Reason}
-%%%       SrcFileName = string()
-%%%       EncryptFileName = string()
-%%%       KeyOrFile = {key,string()} | {file,string()}
-%%%       Reason = term()
-%%%
-%%% @doc <p>This function encrypts the source config file with DES3 and
-%%%      saves the result in the target file <c>EncryptFileName</c>. 
-%%%      The encryption key to use is either the value in 
-%%%      <c>{key,Key}</c> or the value stored in the file specified 
-%%%      by <c>{file,File}</c>.</p>
-%%%      <p>See the Common Test User's Guide for information about using
-%%%      encrypted config files when running tests.</p>
-%%%      <p>See the <c>crypto</c> application for details on DES3
-%%%      encryption/decryption.</p>
+-doc """
+Encrypts the source configuration file with DES3 and saves the result in the
+target file `EncryptFileName`. The encryption key to use is either the value in
+`{key,Key}` or the value stored in the file specified by `{file,File}`.
+
+For information about using encrypted configuration files when running tests,
+see section
+[Encrypted Configuration Files](config_file_chapter.md#encrypted_config_files)
+in the User's Guide.
+
+For details on DES3 encryption/decryption, see application
+[`Crypto`](`e:crypto:index.html`).
+""".
+-spec encrypt_config_file(SrcFileName, EncryptFileName, KeyOrFile) -> ok | {error, Reason}
+      when SrcFileName :: string(),
+           EncryptFileName :: string(),
+           KeyOrFile :: {key, string()} | {file, string()},
+           Reason :: term().
 encrypt_config_file(SrcFileName, EncryptFileName, KeyOrFile) ->
     ct_config:encrypt_config_file(SrcFileName, EncryptFileName, KeyOrFile).
 
-%%%-----------------------------------------------------------------
-%%% @spec decrypt_config_file(EncryptFileName, TargetFileName) -> 
-%%%                                                   ok | {error,Reason}
-%%%       EncryptFileName = string()
-%%%       TargetFileName = string()
-%%%       Reason = term()
-%%%
-%%% @doc <p>This function decrypts <c>EncryptFileName</c>, previously 
-%%%      generated with <c>encrypt_config_file/2/3</c>. The original
-%%%      file contents is saved in the target file. The encryption key, a
-%%%      string, must be available in a text file named
-%%%      <c>.ct_config.crypt</c> in the current directory, or the
-%%%      home directory of the user (it is searched for in that order).</p>
+-doc """
+Decrypts `EncryptFileName`, previously generated with
+[`ct:encrypt_config_file/2,3`](`encrypt_config_file/2`). The original file
+contents is saved in the target file. The encryption key, a string, must be
+available in a text file named `.ct_config.crypt`, either in the current
+directory, or the home directory of the user (it is searched for in that order).
+""".
+-spec decrypt_config_file(EncryptFileName, TargetFileName) -> ok | {error, Reason}
+     when EncryptFileName :: string(),
+          TargetFileName :: string(),
+          Reason :: term().
 decrypt_config_file(EncryptFileName, TargetFileName) ->
     ct_config:decrypt_config_file(EncryptFileName, TargetFileName).
 
-%%%-----------------------------------------------------------------
-%%% @spec decrypt_config_file(EncryptFileName, TargetFileName, KeyOrFile) -> 
-%%%                                                   ok | {error,Reason}
-%%%       EncryptFileName = string()
-%%%       TargetFileName = string()
-%%%       KeyOrFile = {key,string()} | {file,string()}
-%%%       Reason = term()
-%%%
-%%% @doc <p>This function decrypts <c>EncryptFileName</c>, previously 
-%%%      generated with <c>encrypt_config_file/2/3</c>. The original
-%%%      file contents is saved in the target file. The key must have the
-%%%      the same value as that used for encryption.</p>
+-doc """
+Decrypts `EncryptFileName`, previously generated with
+[`ct:encrypt_config_file/2,3`](`encrypt_config_file/2`). The original file
+contents is saved in the target file. The key must have the same value as that
+used for encryption.
+""".
+-spec decrypt_config_file(EncryptFileName, TargetFileName, KeyOrFile) -> ok | {error, Reason}
+      when EncryptFileName :: string(),
+           TargetFileName :: string(),
+           KeyOrFile :: {key, string()} | {file, string()},
+           Reason :: term().
 decrypt_config_file(EncryptFileName, TargetFileName, KeyOrFile) ->
     ct_config:decrypt_config_file(EncryptFileName, TargetFileName, KeyOrFile).
 
-
-%%%-----------------------------------------------------------------
-%%% @spec add_config(Callback, Config) -> ok | {error, Reason}
-%%%       Callback = atom()
-%%%       Config = string()
-%%%       Reason = term()
-%%%
-%%% @doc <p>This function loads configuration variables using the
-%%% 	 given callback module and configuration string. Callback module
-%%%	 should be either loaded or present in the code part. Loaded
-%%%	 configuration variables can later be removed using
-%%%	 <c>remove_config/2</c> function.</p>
+-doc """
+Loads configuration variables using the specified callback module and
+configuration string. The callback module is to be either loaded or present in
+the code path. Loaded configuration variables can later be removed using
+function [`ct:remove_config/2`](`remove_config/2`).
+""".
+-doc(#{since => <<"OTP R14B">>}).
+-spec add_config(Callback, Config) -> ok | {error, Reason}
+      when Callback :: atom(),
+           Config :: string(),
+           Reason :: term().
 add_config(Callback, Config)->
     ct_config:add_config(Callback, Config).
 
-%%%-----------------------------------------------------------------
-%%% @spec remove_config(Callback, Config) -> ok
-%%%       Callback = atom()
-%%%       Config = string()
-%%%       Reason = term()
-%%%
-%%% @doc <p>This function removes configuration variables (together with
-%%%	 their aliases) which were loaded with specified callback module and
-%%%	 configuration string.</p>
+-doc """
+Removes configuration variables (together with their aliases) that were loaded
+with specified callback module and configuration string.
+""".
+-doc(#{since => <<"OTP R14B">>}).
+-spec remove_config(Callback, Config) -> ok
+      when Callback :: atom(),
+           Config :: string().
 remove_config(Callback, Config) ->
     ct_config:remove_config(Callback, Config).
 
-%%%-----------------------------------------------------------------
-%%% @spec timetrap(Time) -> ok
-%%%       Time = {hours,Hours} | {minutes,Mins} | {seconds,Secs} | Millisecs | infinity | Func
-%%%       Hours = integer()
-%%%       Mins = integer()
-%%%       Secs = integer()
-%%%       Millisecs = integer() | float()
-%%%       Func = {M,F,A} | fun()
-%%%       M = atom()
-%%%       F = atom()
-%%%       A = list()
-%%%
-%%% @doc <p>Use this function to set a new timetrap for the running test case.
-%%%      If the argument is <c>Func</c>, the timetrap will be triggered
-%%%      when this function returns. <c>Func</c> may also return a new
-%%%      <c>Time</c> value, which in that case will be the value for the
-%%%      new timetrap.</p>
+-doc """
+Sets a new timetrap for the running test case.
+
+If the argument is `Func`, the timetrap is triggered when this function returns.
+`Func` can also return a new `Time` value, which in that case is the value for
+the new timetrap.
+""".
+-doc(#{since => <<"OTP R14B">>}).
+-spec timetrap(Time) -> infinity | pid()
+      when Time :: {hours, Hours} | {minutes, Mins} | {seconds, Secs} | timeout() | Func,
+           Hours :: integer(),
+           Mins :: integer(),
+           Secs :: integer(),
+           Func :: {M, F, A} | function(),
+           M :: atom(),
+           F :: atom(),
+           A :: list().
 timetrap(Time) ->
     test_server:timetrap_cancel(),
     test_server:timetrap(Time).
 
-%%%-----------------------------------------------------------------
-%%% @spec get_timetrap_info() -> {Time,Scale}
-%%%       Time = integer() | infinity
-%%%       Scale = true | false
-%%%
-%%% @doc <p>Read info about the timetrap set for the current test case.
-%%%      <c>Scale</c> indicates if Common Test will attempt to automatically
-%%%      compensate timetraps for runtime delays introduced by e.g. tools like
-%%%      cover.</p>
+-doc """
+Reads information about the timetrap set for the current test case. `Scaling`
+indicates if `Common Test` will attempt to compensate timetraps automatically
+for runtime delays introduced by, for example, tools like cover. `ScaleVal` is
+the value of the current scaling multiplier (always 1 if scaling is disabled).
+Note the `Time` is not the scaled result.
+""".
+-doc(#{since => <<"OTP R15B">>}).
+-spec get_timetrap_info() -> {Time, {Scaling,ScaleVal}}
+      when Time :: timeout(),
+           Scaling :: boolean(),
+           ScaleVal :: integer().
 get_timetrap_info() ->
     test_server:get_timetrap_info().
 
-%%%-----------------------------------------------------------------
-%%% @spec sleep(Time) -> ok
-%%%       Time = {hours,Hours} | {minutes,Mins} | {seconds,Secs} | Millisecs | infinity
-%%%       Hours = integer()
-%%%       Mins = integer()
-%%%       Secs = integer()
-%%%       Millisecs = integer() | float()
-%%%
-%%% @doc <p>This function, similar to <c>timer:sleep/1</c>, suspends the test
-%%%      case for specified time. However, this function also multiplies
-%%%      <c>Time</c> with the 'multiply_timetraps' value (if set) and under
-%%%      certain circumstances also scales up the time automatically
-%%%      if 'scale_timetraps' is set to true (default is false).</p>
+-doc """
+This function, similar to `timer:sleep/1` in STDLIB, suspends the test case for
+a specified time. However, this function also multiplies `Time` with the
+`multiply_timetraps` value (if set) and under certain circumstances also scales
+up the time automatically if `scale_timetraps` is set to `true` (default is
+`false`).
+""".
+-doc(#{since => <<"OTP R14B">>}).
+-spec sleep(Time) -> ok
+      when Time :: {hours, Hours} | {minutes, Mins} | {seconds, Secs} | Millisecs,
+           Hours :: integer(),
+           Mins :: integer(),
+           Secs :: integer(),
+           Millisecs :: timeout() | float().
 sleep({hours,Hs}) ->
     sleep(trunc(Hs * 1000 * 60 * 60));
 sleep({minutes,Ms}) ->
@@ -1216,52 +1513,53 @@ sleep({seconds,Ss}) ->
 sleep(Time) ->
     test_server:adjusted_sleep(Time).
 
-%%%-----------------------------------------------------------------
-%%% @spec notify(Name,Data) -> ok
-%%%       Name = atom()
-%%%       Data = term()
-%%%
-%%% @doc <p>Sends a asynchronous notification of type <c>Name</c> with
-%%%      <c>Data</c>to the common_test event manager. This can later be
-%%%      caught by any installed event manager. </p>
-%%% @see //stdlib/gen_event
+-doc """
+Sends an asynchronous notification of type `Name` with `Data`to the Common Test
+event manager. This can later be caught by any installed event manager.
+
+See also `m:gen_event`.
+""".
+-doc(#{since => <<"OTP R15B02">>}).
+-spec notify(Name, Data) -> ok
+      when Name :: atom(),
+           Data :: term().
 notify(Name,Data) ->
     ct_event:notify(Name, Data).
 
-%%%-----------------------------------------------------------------
-%%% @spec sync_notify(Name,Data) -> ok
-%%%       Name = atom()
-%%%       Data = term()
-%%%
-%%% @doc <p>Sends a synchronous notification of type <c>Name</c> with
-%%%      <c>Data</c>to the common_test event manager. This can later be
-%%%      caught by any installed event manager. </p>
-%%% @see //stdlib/gen_event
+-doc """
+Sends a synchronous notification of type `Name` with `Data` to the `Common Test`
+event manager. This can later be caught by any installed event manager.
+
+See also `m:gen_event`.
+""".
+-doc(#{since => <<"OTP R15B02">>}).
+-spec sync_notify(Name, Data) -> ok
+      when Name :: atom(),
+           Data :: term().
 sync_notify(Name,Data) ->
     ct_event:sync_notify(Name, Data).
 
-%%%-----------------------------------------------------------------
-%%% @spec break(Comment) -> ok | {error,Reason}
-%%%       Comment = string()
-%%%       Reason = {multiple_cases_running,TestCases} |
-%%%                'enable break with release_shell option'
-%%%       TestCases = [atom()]
-%%%
-%%% @doc <p>This function will cancel any active timetrap and pause the
-%%%       execution of the current test case until the user calls the
-%%%       <c>continue/0</c> function. It gives the user the opportunity
-%%%       to interact with the erlang node running the tests, e.g. for
-%%%       debugging purposes or for manually executing a part of the
-%%%       test case. If a parallel group is executing, <c>break/2</c>
-%%%       should be called instead.</p>
-%%%      <p>A cancelled timetrap will not be automatically
-%%%       reactivated after the break, but must be started exlicitly with
-%%%       <c>ct:timetrap/1</c></p>
-%%%      <p>In order for the break/continue functionality to work,
-%%%       Common Test must release the shell process controlling stdin.
-%%%       This is done by setting the <c>release_shell</c> start option
-%%%       to <c>true</c>. See the User's Guide for more information.</p>
+-doc """
+Cancels any active timetrap and pauses the execution of the current test case
+until the user calls function `continue/0`. The user can then interact with the
+Erlang node running the tests, for example, for debugging purposes or for
+manually executing a part of the test case. If a parallel group is executing,
+[`ct:break/2`](`break/2`) is to be called instead.
 
+A cancelled timetrap is not automatically reactivated after the break, but must
+be started explicitly with [`ct:timetrap/1`](`timetrap/1`).
+
+In order for the break/continue functionality to work, `Common Test` must
+release the shell process controlling `stdin`. This is done by setting start
+option `release_shell` to `true`. For details, see section
+[Running Tests from the Erlang Shell or from an Erlang Program](run_test_chapter.md#erlang_shell_or_program)
+in the User's Guide.
+""".
+-doc(#{since => <<"OTP R15B02">>}).
+-spec break(Comment) -> ok | {error, Reason}
+      when Comment :: string(),
+           Reason :: {multiple_cases_running, TestCases} | 'enable break with release_shell option',
+           TestCases :: [atom()].
 break(Comment) ->
     case {ct_util:get_testdata(starter),
 	  ct_util:get_testdata(release_shell)} of
@@ -1284,19 +1582,18 @@ break(Comment) ->
 	    end
     end.
 
-%%%-----------------------------------------------------------------
-%%% @spec break(TestCase, Comment) -> ok | {error,Reason}
-%%%       TestCase = atom()
-%%%       Comment = string()
-%%%       Reason = 'test case not running' |
-%%%                'enable break with release_shell option'
-%%%
-%%% @doc <p>This function works the same way as <c>break/1</c>,
-%%%       only the <c>TestCase</c> argument makes it possible to
-%%%       pause a test case executing in a parallel group. The
-%%%       <c>continue/1</c> function should be used to resume
-%%%       execution of <c>TestCase</c>.</p>
-%%%      <p>See <c>break/1</c> for more details.</p>
+-doc """
+Works the same way as [`ct:break/1`](`break/1`), only argument `TestCase` makes
+it possible to pause a test case executing in a parallel group. Function
+[`ct:continue/1`](`continue/1`) is to be used to resume execution of `TestCase`.
+
+For details, see [`ct:break/1`](`break/1`).
+""".
+-doc(#{since => <<"OTP R15B02">>}).
+-spec break(TestCase, Comment) -> ok | {error, Reason}
+      when TestCase :: atom(),
+           Comment :: string(),
+           Reason :: 'test case not running' | 'enable break with release_shell option'.
 break(TestCase, Comment) ->
     case {ct_util:get_testdata(starter),
 	  ct_util:get_testdata(release_shell)} of
@@ -1323,23 +1620,57 @@ break(TestCase, Comment) ->
 	    end
     end.
 
-%%%-----------------------------------------------------------------
-%%% @spec continue() -> ok
-%%%
-%%% @doc <p>This function must be called in order to continue after a
-%%%      test case (not executing in a parallel group) has called
-%%%      <c>break/1</c>.</p>
+-doc """
+This function must be called to continue after a test case (not executing in a
+parallel group) has called function [`ct:break/1`](`break/1`).
+""".
+-doc(#{since => <<"OTP R15B02">>}).
+-spec continue() -> ok.
 continue() -> 
     test_server:continue().
 
-%%%-----------------------------------------------------------------
-%%% @spec continue(TestCase) -> ok
-%%%       TestCase = atom()
-%%%
-%%% @doc <p>This function must be called in order to continue after a
-%%%      test case has called <c>break/2</c>. If the paused test case,
-%%%      <c>TestCase</c>, executes in a parallel group, this
-%%%      function - rather than <c>continue/0</c> - must be used
-%%%      in order to let the test case proceed.</p>
+-doc """
+This function must be called to continue after a test case has called
+[`ct:break/2`](`break/2`). If the paused test case, `TestCase`, executes in a
+parallel group, this function, rather than `continue/0`, must be used to let the
+test case proceed.
+""".
+-doc(#{since => <<"OTP R15B02">>}).
+-spec continue(TestCase) -> ok
+      when TestCase :: atom().
 continue(TestCase) -> 
     test_server:continue(TestCase).
+
+
+-doc """
+This function will return the identity of test- and group leader processes that
+are still running at the time of this call. `TestProcs` are processes in the
+system that have a Common Test IO process as group leader. `SharedGL` is the
+central Common Test IO process, responsible for printing to log files for
+configuration functions and sequentially executing test cases. `OtherGLs` are
+Common Test IO processes that print to log files for test cases in parallel test
+case groups.
+
+The process information returned by this function may be used to locate and
+terminate remaining processes after tests have finished executing. The function
+would typically by called from Common Test Hook functions.
+
+Note that processes that execute configuration functions or test cases are never
+included in `TestProcs`. It is therefore safe to use post configuration hook
+functions (such as post_end_per_suite, post_end_per_group,
+post_end_per_testcase) to terminate all processes in `TestProcs` that have the
+current group leader process as its group leader.
+
+Note also that the shared group leader (`SharedGL`) must never be terminated by
+the user, only by Common Test. Group leader processes for parallel test case
+groups (`OtherGLs`) may however be terminated in post_end_per_group hook
+functions.
+""".
+-doc(#{since => <<"OTP 20.2">>}).
+-spec remaining_test_procs() -> {TestProcs,SharedGL,OtherGLs}
+      when TestProcs :: [{pid(),GL}],
+           GL :: pid(),
+           SharedGL :: pid(),
+           OtherGLs :: [pid()].
+remaining_test_procs() ->
+    ct_util:remaining_test_procs().

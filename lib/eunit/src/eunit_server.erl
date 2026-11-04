@@ -1,25 +1,38 @@
-%% This library is free software; you can redistribute it and/or modify
-%% it under the terms of the GNU Lesser General Public License as
-%% published by the Free Software Foundation; either version 2 of the
-%% License, or (at your option) any later version.
+%% %CopyrightBegin%
 %%
-%% This library is distributed in the hope that it will be useful, but
-%% WITHOUT ANY WARRANTY; without even the implied warranty of
-%% MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
-%% Lesser General Public License for more details.
+%% SPDX-License-Identifier: Apache-2.0 OR LGPL-2.1-or-later
 %%
-%% You should have received a copy of the GNU Lesser General Public
-%% License along with this library; if not, write to the Free Software
-%% Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307
-%% USA
+%% Copyright 2006 Richard Carlsson
+%% Copyright Ericsson AB 2009-2025. All Rights Reserved.
 %%
-%% @author Richard Carlsson <carlsson.richard@gmail.com>
-%% @copyright 2006 Richard Carlsson
-%% @private
-%% @see eunit
-%% @doc EUnit server process
+%% Licensed under the Apache License, Version 2.0 (the "License");
+%% you may not use this file except in compliance with the License.
+%% You may obtain a copy of the License at
+%%
+%%     http://www.apache.org/licenses/LICENSE-2.0
+%%
+%% Unless required by applicable law or agreed to in writing, software
+%% distributed under the License is distributed on an "AS IS" BASIS,
+%% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+%% See the License for the specific language governing permissions and
+%% limitations under the License.
+%%
+%% Alternatively, you may use this file under the terms of the GNU Lesser
+%% General Public License (the "LGPL") as published by the Free Software
+%% Foundation; either version 2.1, or (at your option) any later version.
+%% If you wish to allow use of your version of this file only under the
+%% terms of the LGPL, you should delete the provisions above and replace
+%% them with the notice and other provisions required by the LGPL; see
+%% <http://www.gnu.org/licenses/>. If you do not delete the provisions
+%% above, a recipient may use your version of this file under the terms of
+%% either the Apache License or the LGPL.
+%%
+%% %CopyrightEnd%
+%%
+%% EUnit server process
 
 -module(eunit_server).
+-moduledoc false.
 
 -export([start/1, stop/1, start_test/4, watch/3, watch_path/3,
 	 watch_regexp/3]).
@@ -157,7 +170,7 @@ server(St) ->
     server_check_exit(St),
     ?MODULE:main(St).
 
-%% @private
+-doc false.
 main(St) ->
     receive
 	{done, auto_test, _Pid} ->
@@ -196,7 +209,10 @@ server_command(From, {start, Job}, St) ->
 server_command(From, stop, St) ->
     %% unregister the server name and let remaining jobs finish
     server_command_reply(From, {error, stopped}),
-    catch unregister(St#state.name),
+    try unregister(St#state.name)
+    catch
+        error:badarg -> ok
+    end,
     server(St#state{stopped = true});
 server_command(From, {watch, Target, _Opts}, St) ->
     %% the code watcher is only started on demand
@@ -238,7 +254,8 @@ start_job(Job, From, Reference, St) ->
     From ! {start, Reference},
     %% The default is to run tests in order unless otherwise specified
     Order = proplists:get_value(order, Job#job.options, inorder),
-    eunit_proc:start(Job#job.test, Order, Job#job.super, Reference),
+    eunit_proc:start(Job#job.test, Order, Job#job.super, Reference,
+                     Job#job.options),
     St#state{jobs = dict:store(Reference, From, St#state.jobs)}.
 
 handle_done(Reference, St) ->

@@ -1,8 +1,11 @@
 %% -*- erlang-indent-level: 2 -*-
-%%-------------------------------------------------------------------
+%%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2006-2015. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2009-2026. All Rights Reserved.
+%% Copyright 2004-2010 held by the authors. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -17,7 +20,6 @@
 %% limitations under the License.
 %%
 %% %CopyrightEnd%
-%%
 
 %%%-------------------------------------------------------------------
 %%% File    : dialyzer_cl.erl
@@ -29,42 +31,62 @@
 %%%-------------------------------------------------------------------
 
 -module(dialyzer_cl).
+-moduledoc false.
 
--export([start/1]).
+-compile([{nowarn_possibly_unsafe_function, {erlang, list_to_atom, 1}}]).
+
+-export([start/1,
+         start_report_modules_analyzed/1,
+         start_report_modules_changed_and_analyzed/1]).
 
 -include("dialyzer.hrl").
 -include_lib("kernel/include/file.hrl").  % needed for #file_info{}
 
 -record(cl_state,
-	{backend_pid                      :: pid(),
+	{backend_pid                      :: pid() | 'undefined',
+         code_server     = none           :: 'none'
+                                           | dialyzer_codeserver:codeserver(),
 	 erlang_mode     = false          :: boolean(),
-	 external_calls  = []             :: [mfa()],
-         external_types  = []             :: [mfa()],
+	 external_calls  = []             :: [{mfa(), warning_info()}],
+         external_types  = []             :: [{mfa(), warning_info()}],
 	 legal_warnings  = ordsets:new()  :: [dial_warn_tag()],
 	 mod_deps        = dict:new()     :: dialyzer_callgraph:mod_deps(),
 	 output          = standard_io	  :: io:device(),
 	 output_format   = formatted      :: format(),
-	 filename_opt    = basename       :: fopt(),
+	 filename_opt    = basename       :: filename_opt(),
+         indent_opt      = ?INDENT_OPT    :: iopt(),
+         error_location  = ?ERROR_LOCATION :: error_location(),
 	 output_plt      = none           :: 'none' | file:filename(),
-	 plt_info        = none           :: 'none' | dialyzer_plt:plt_info(),
+	 plt_info        = none           :: 'none' | #plt_info{},
 	 report_mode     = normal         :: rep_mode(),
 	 return_status= ?RET_NOTHING_SUSPICIOUS	:: dial_ret(),
-	 stored_warnings = []             :: [raw_warning()],
-	 unknown_behaviours = []          :: [dialyzer_behaviours:behaviour()]
+	 stored_warnings = []             :: [raw_warning()]
 	}).
 
 %%--------------------------------------------------------------------
 
 -spec start(#options{}) -> {dial_ret(), [dial_warning()]}.
 
-start(#options{analysis_type = AnalysisType} = Options) ->
+start(Opts) ->
+  {{Ret,Warns}, _ModulesAnalyzed} = start_report_modules_analyzed(Opts),
+  {Ret,Warns}.
+
+-spec start_report_modules_analyzed(#options{}) -> {{dial_ret(), [dial_warning()]}, [module()]}.
+
+start_report_modules_analyzed(Opts) ->
+  {{Ret,Warns}, _ModulesChanged, ModulesAnalyzed} = start_report_modules_changed_and_analyzed(Opts),
+  {{Ret,Warns}, ModulesAnalyzed}.
+
+-spec start_report_modules_changed_and_analyzed(#options{}) -> {{dial_ret(), [dial_warning()]}, undefined | [module()], [module()]}.
+
+start_report_modules_changed_and_analyzed(#options{analysis_type = AnalysisType} = Options) ->
   process_flag(trap_exit, true),
   case AnalysisType of
     plt_check  -> check_plt(Options);
     plt_build  -> build_plt(Options);
     plt_add    -> add_to_plt(Options);
     plt_remove -> remove_from_plt(Options);
-    succ_typings -> do_analysis(Options)
+    succ_typings -> enrich_with_modules_changed(do_analysis(Options), undefined)
   end.
 
 %%--------------------------------------------------------------------
@@ -72,9 +94,9 @@ start(#options{analysis_type = AnalysisType} = Options) ->
 build_plt(Opts) ->
   Opts1 = init_opts_for_build(Opts),
   Files = get_files_from_opts(Opts1),
-  Md5 = dialyzer_plt:compute_md5_from_files(Files),
-  PltInfo = {Md5, dict:new()},
-  do_analysis(Files, Opts1, dialyzer_plt:new(), PltInfo).
+  Md5 = dialyzer_cplt:compute_md5_from_files(Files),
+  PltInfo = #plt_info{files = Md5},
+  enrich_with_modules_changed(do_analysis(Files, Opts1, dialyzer_plt:new(), PltInfo), undefined).
 
 init_opts_for_build(Opts) ->
   case Opts#options.output_plt =:= none of
@@ -83,7 +105,7 @@ init_opts_for_build(Opts) ->
 	[] -> Opts#options{output_plt = get_default_output_plt()};
 	[Plt] -> Opts#options{init_plts = [], output_plt = Plt};
         Plts ->
-          Msg = io_lib:format("Could not build multiple PLT files: ~s\n",
+          Msg = io_lib:format("Could not build multiple PLT files: ~ts\n",
                               [format_plts(Plts)]),
           cl_error(Msg)
       end;
@@ -95,7 +117,16 @@ init_opts_for_build(Opts) ->
 add_to_plt(Opts) ->
   Opts1 = init_opts_for_add(Opts),
   AddFiles = get_files_from_opts(Opts1),
-  plt_common(Opts1, [], AddFiles).
+  case Opts1#options.init_plts of
+    [] -> plt_common(Opts1, [], AddFiles);
+    [_] -> plt_common(Opts1, [], AddFiles);
+    PltFiles ->
+      Plts = [dialyzer_cplt:from_file(F) || F <- PltFiles],
+      % Check merge safety
+      _ = dialyzer_cplt:merge_plts_or_report_conflicts(PltFiles, Plts),
+      _ = [plt_common(Opts#options{init_plts=[Plt]}, [], AddFiles) || Plt <- PltFiles],
+      {{?RET_NOTHING_SUSPICIOUS, []}, [], []}
+  end.
 
 init_opts_for_add(Opts) ->
   case Opts#options.output_plt =:= none of
@@ -105,7 +136,7 @@ init_opts_for_add(Opts) ->
                            init_plts = get_default_init_plt()};
 	[Plt] -> Opts#options{output_plt = Plt};
         Plts ->
-          Msg = io_lib:format("Could not add to multiple PLT files: ~s\n",
+          Msg = io_lib:format("Could not add to multiple PLT files: ~ts\n",
                               [format_plts(Plts)]),
           cl_error(Msg)
       end;
@@ -115,8 +146,6 @@ init_opts_for_add(Opts) ->
 	false -> Opts
       end
   end.
-
-%%--------------------------------------------------------------------
 
 check_plt(#options{init_plts = []} = Opts) ->
   Opts1 = init_opts_for_check(Opts),
@@ -132,10 +161,12 @@ check_plt_aux([_] = Plt, Opts) ->
   plt_common(Opts2, [], []);
 check_plt_aux([Plt|Plts], Opts) ->
   case check_plt_aux([Plt], Opts) of
-    {?RET_NOTHING_SUSPICIOUS, []} -> check_plt_aux(Plts, Opts);
-    {?RET_DISCREPANCIES, Warns} ->
-      {_RET, MoreWarns} = check_plt_aux(Plts, Opts),
-      {?RET_DISCREPANCIES, Warns ++ MoreWarns}
+    {{?RET_NOTHING_SUSPICIOUS, []}, ModulesChanged, ModulesAnalyzed} ->
+      {{Ret, Warns}, MoreModulesChanged, MoreModulesAnalyzed} = check_plt_aux(Plts, Opts),
+      {{Ret, Warns}, ordsets:union(ModulesChanged, MoreModulesChanged), ordsets:union(ModulesAnalyzed, MoreModulesAnalyzed)};
+    {{?RET_DISCREPANCIES, Warns}, ModulesChanged, ModulesAnalyzed} ->
+      {{_RET, MoreWarns}, MoreModulesChanged, MoreModulesAnalyzed} = check_plt_aux(Plts, Opts),
+      {{?RET_DISCREPANCIES, Warns ++ MoreWarns}, ordsets:union(ModulesChanged, MoreModulesChanged), ordsets:union(ModulesAnalyzed, MoreModulesAnalyzed)}
   end.
 
 init_opts_for_check(Opts) ->
@@ -145,6 +176,7 @@ init_opts_for_check(Opts) ->
       Plt -> Plt
     end,
   [OutputPlt] = InitPlt,
+
   Opts#options{files         = [],
 	       files_rec     = [],
 	       analysis_type = plt_check,
@@ -171,7 +203,7 @@ init_opts_for_remove(Opts) ->
                            init_plts = get_default_init_plt()};
 	[Plt] -> Opts#options{output_plt = Plt};
         Plts ->
-          Msg = io_lib:format("Could not remove from multiple PLT files: ~s\n",
+          Msg = io_lib:format("Could not remove from multiple PLT files: ~ts\n",
                               [format_plts(Plts)]),
           cl_error(Msg)
       end;
@@ -198,42 +230,48 @@ plt_common(#options{init_plts = [InitPlt]} = Opts, RemoveFiles, AddFiles) ->
 	quiet -> ok;
 	_ -> io:put_chars(" yes\n")
       end,
-      {?RET_NOTHING_SUSPICIOUS, []};
+      {{?RET_NOTHING_SUSPICIOUS, []}, [], []};
     {old_version, Md5} ->
-      PltInfo = {Md5, dict:new()},
+      PltInfo = #plt_info{files = Md5},
       Files = [F || {F, _} <- Md5],
-      do_analysis(Files, Opts, dialyzer_plt:new(), PltInfo);
+      enrich_with_modules_changed(do_analysis(Files, Opts, dialyzer_plt:new(), PltInfo), undefined);
     {differ, Md5, DiffMd5, ModDeps} ->
       report_failed_plt_check(Opts, DiffMd5),
-      {AnalFiles, RemovedMods, ModDeps1} = 
+      {AnalFiles, RemovedMods, ModDeps1} =
 	expand_dependent_modules(Md5, DiffMd5, ModDeps),
       Plt = clean_plt(InitPlt, RemovedMods),
+      ChangedOrRemovedMods = [ChangedOrRemovedMod || {_, ChangedOrRemovedMod} <- DiffMd5],
       case AnalFiles =:= [] of
 	true ->
 	  %% Only removed stuff. Just write the PLT.
-	  dialyzer_plt:to_file(Opts#options.output_plt, Plt, ModDeps, 
-			       {Md5, ModDeps}),
-	  {?RET_NOTHING_SUSPICIOUS, []};
+	  dialyzer_cplt:to_file(Opts#options.output_plt, Plt, ModDeps1, #plt_info{files=Md5, mod_deps=ModDeps1}),
+	  {{?RET_NOTHING_SUSPICIOUS, []}, ChangedOrRemovedMods, []};
 	false ->
-	  do_analysis(AnalFiles, Opts, Plt, {Md5, ModDeps1})
+	  enrich_with_modules_changed(do_analysis(AnalFiles, Opts, Plt, #plt_info{files=Md5, mod_deps=ModDeps1}), ChangedOrRemovedMods)
       end;
     {error, no_such_file} ->
-      Msg = io_lib:format("Could not find the PLT: ~s\n~s",
+      Msg = io_lib:format("Could not find the PLT: ~ts~n~s",
 			  [InitPlt, default_plt_error_msg()]),
       cl_error(Msg);
     {error, not_valid} ->
-      Msg = io_lib:format("The file: ~s is not a valid PLT file\n~s",
+      Msg = io_lib:format("The file: ~ts is not a valid PLT file~n~s",
 			  [InitPlt, default_plt_error_msg()]),
       cl_error(Msg);
     {error, read_error} ->
-      Msg = io_lib:format("Could not read the PLT: ~s\n~s",
+      Msg = io_lib:format("Could not read the PLT: ~ts~n~s",
 			  [InitPlt, default_plt_error_msg()]),
       cl_error(Msg);
     {error, {no_file_to_remove, F}} ->
-      Msg = io_lib:format("Could not remove the file ~s from the PLT: ~s\n",
+      Msg = io_lib:format("Could not remove the file ~ts from the PLT: ~ts~n",
 			  [F, InitPlt]),
       cl_error(Msg)
   end.
+
+-spec enrich_with_modules_changed({{Ret :: dial_ret(), Warns :: [dial_warning()]}, Analyzed :: [module()]}, Changed :: undefined | [module()]) ->
+    {{dial_ret(), [dial_warning()]}, Changed :: undefined | [module()], Analyzed :: [module()]}.
+
+enrich_with_modules_changed({{Ret,Warns}, Analyzed}, Changed) ->
+  {{Ret,Warns}, Changed, Analyzed}.
 
 default_plt_error_msg() ->
   "Use the options:\n"
@@ -252,7 +290,7 @@ default_plt_error_msg() ->
 %%--------------------------------------------------------------------
 
 check_plt(#options{init_plts = [Plt]} = Opts, RemoveFiles, AddFiles) ->
-  case dialyzer_plt:check_plt(Plt, RemoveFiles, AddFiles) of
+  case dialyzer_cplt:check_plt(Plt, RemoveFiles, AddFiles) of
     {old_version, _MD5} = OldVersion ->
       report_old_version(Opts),
       OldVersion;
@@ -270,7 +308,7 @@ report_check(#options{report_mode = ReportMode, init_plts = [InitPlt]}) ->
   case ReportMode of
     quiet -> ok;
     _ ->
-      io:format("  Checking whether the PLT ~s is up-to-date...", [InitPlt])
+      io:format("  Checking whether the PLT ~ts is up-to-date...", [InitPlt])
   end.
 
 report_old_version(#options{report_mode = ReportMode, init_plts = [InitPlt]}) ->
@@ -278,11 +316,11 @@ report_old_version(#options{report_mode = ReportMode, init_plts = [InitPlt]}) ->
     quiet -> ok;
     _ ->
       io:put_chars(" no\n"),
-      io:format("    (the PLT ~s was built with an old version of Dialyzer)\n",
+      io:format("    (the PLT ~ts was built with an old version of Dialyzer)\n",
 		[InitPlt])
   end.
 
-report_failed_plt_check(#options{analysis_type = AnalType, 
+report_failed_plt_check(#options{analysis_type = AnalType,
 				 report_mode = ReportMode}, DiffMd5) ->
   case AnalType =:= plt_check of
     true ->
@@ -306,29 +344,23 @@ report_analysis_start(#options{analysis_type = Type,
 	plt_add ->
           [InitPlt] = InitPlts,
 	  case InitPlt =:= OutputPlt of
-	    true -> io:format("Adding information to ~s...", [OutputPlt]);
-	    false -> io:format("Adding information from ~s to ~s...", 
+	    true -> io:format("Adding information to ~ts...", [OutputPlt]);
+	    false -> io:format("Adding information from ~ts to ~ts...",
 			       [InitPlt, OutputPlt])
 	  end;
 	plt_build ->
-	  io:format("Creating PLT ~s ...", [OutputPlt]);
+	  io:format("Creating PLT ~ts ...", [OutputPlt]);
 	plt_check ->
-	  io:format("Rebuilding the information in ~s...", [OutputPlt]);
+	  io:format("Rebuilding the information in ~ts...", [OutputPlt]);
 	plt_remove ->
           [InitPlt] = InitPlts,
 	  case InitPlt =:= OutputPlt of
-	    true -> io:format("Removing information from ~s...", [OutputPlt]);
-	    false -> io:format("Removing information from ~s to ~s...", 
+	    true -> io:format("Removing information from ~ts...", [OutputPlt]);
+	    false -> io:format("Removing information from ~ts to ~ts...",
 			       [InitPlt, OutputPlt])
 	  end;
 	succ_typings -> io:format("Proceeding with analysis...")
       end
-  end.
-
-report_native_comp(#options{report_mode = ReportMode}) ->
-  case ReportMode of
-    quiet -> ok;
-    _ -> io:format("  Compiling some key modules to native code...")
   end.
 
 report_elapsed_time(T1, T2, #options{report_mode = ReportMode}) ->
@@ -355,10 +387,10 @@ report_md5_diff(List) ->
 %%--------------------------------------------------------------------
 
 get_default_init_plt() ->
-  [dialyzer_plt:get_default_plt()].
+  [dialyzer_cplt:get_default_cplt_filename()].
 
 get_default_output_plt() ->
-  dialyzer_plt:get_default_plt().
+  dialyzer_cplt:get_default_cplt_filename().
 
 %%--------------------------------------------------------------------
 
@@ -373,14 +405,13 @@ do_analysis(Options) ->
   case Options#options.init_plts of
     [] -> do_analysis(Files, Options, dialyzer_plt:new(), none);
     PltFiles ->
-      Plts = [dialyzer_plt:from_file(F) || F <- PltFiles],
-      Plt = dialyzer_plt:merge_plts_or_report_conflicts(PltFiles, Plts),
+      Plts = [dialyzer_cplt:from_file(F) || F <- PltFiles],
+      Plt = dialyzer_cplt:merge_plts_or_report_conflicts(PltFiles, Plts),
       do_analysis(Files, Options, Plt, none)
   end.
-  
+
 do_analysis(Files, Options, Plt, PltInfo) ->
   assert_writable(Options#options.output_plt),
-  hipe_compile(Files, Options),
   report_analysis_start(Options),
   State0 = new_state(),
   State1 = init_output(State0, Options),
@@ -388,7 +419,8 @@ do_analysis(Files, Options, Plt, PltInfo) ->
 			   output_plt = Options#options.output_plt,
 			   plt_info = PltInfo,
 			   erlang_mode = Options#options.erlang_mode,
-			   report_mode = Options#options.report_mode},
+			   report_mode = Options#options.report_mode
+         },
   AnalysisType = convert_analysis_type(Options#options.analysis_type,
 				       Options#options.get_warnings),
   InitAnalysis = #analysis{type = AnalysisType,
@@ -400,23 +432,19 @@ do_analysis(Files, Options, Plt, PltInfo) ->
 			   plt = Plt,
 			   use_contracts = Options#options.use_contracts,
 			   callgraph_file = Options#options.callgraph_file,
+			   mod_deps_file = Options#options.mod_deps_file,
                            solvers = Options#options.solvers},
   State3 = start_analysis(State2, InitAnalysis),
   {T1, _} = statistics(wall_clock),
-  Return = cl_loop(State3),
+  RetAndWarns = cl_loop(State3),
   {T2, _} = statistics(wall_clock),
   report_elapsed_time(T1, T2, Options),
-  Return.
+  {RetAndWarns, lists:usort([path_to_mod(F) || F <- Files])}.
 
-convert_analysis_type(plt_check, true)   -> succ_typings;
-convert_analysis_type(plt_check, false)  -> plt_build;
-convert_analysis_type(plt_add, true)     -> succ_typings;
-convert_analysis_type(plt_add, false)    -> plt_build;
-convert_analysis_type(plt_build, true)   -> succ_typings;
-convert_analysis_type(plt_build, false)  -> plt_build;
-convert_analysis_type(plt_remove, true)  -> succ_typings;
-convert_analysis_type(plt_remove, false) -> plt_build;
-convert_analysis_type(succ_typings, _)   -> succ_typings.
+-spec convert_analysis_type(anal_type1(), boolean()) -> succ_typings | plt_build.
+convert_analysis_type(succ_typings, _) -> succ_typings;
+convert_analysis_type(_, true) -> succ_typings;
+convert_analysis_type(_, false) -> plt_build.
 
 %%--------------------------------------------------------------------
 
@@ -426,7 +454,7 @@ assert_writable(PltFile) ->
   case check_if_writable(PltFile) of
     true -> ok;
     false ->
-      Msg = io_lib:format("    The PLT file ~s is not writable", [PltFile]),
+      Msg = io_lib:format("    The PLT file ~ts is not writable", [PltFile]),
       cl_error(Msg)
   end.
 
@@ -435,10 +463,20 @@ check_if_writable(PltFile) ->
     true -> is_writable_file_or_dir(PltFile);
     false ->
       case filelib:is_dir(PltFile) of
-	true -> false;
-	false ->
-	  DirName = filename:dirname(PltFile),
-	  filelib:is_dir(DirName) andalso is_writable_file_or_dir(DirName)
+        true -> false;
+        false ->
+          DirName = filename:dirname(PltFile),
+          case filelib:is_dir(DirName) of
+            false ->
+              case filelib:ensure_dir(PltFile) of
+                ok ->
+                  true;
+                {error, _} ->
+                  false
+              end;
+            true ->
+              is_writable_file_or_dir(DirName)
+          end
       end
   end.
 
@@ -454,7 +492,7 @@ is_writable_file_or_dir(PltFile) ->
 
 clean_plt(PltFile, RemovedMods) ->
   %% Clean the plt from the removed modules.
-  Plt = dialyzer_plt:from_file(PltFile),
+  Plt = dialyzer_cplt:from_file(PltFile),
   sets:fold(fun(M, AccPlt) -> dialyzer_plt:delete_module(AccPlt, M) end,
 	    Plt, RemovedMods).
 
@@ -465,9 +503,9 @@ expand_dependent_modules(Md5, DiffMd5, ModDeps) ->
   BigList = sets:to_list(BigSet),
   ExpandedSet = expand_dependent_modules_1(BigList, BigSet, ModDeps),
   NewModDeps = dialyzer_callgraph:strip_module_deps(ModDeps, BigSet),
-  AnalyzeMods = sets:subtract(ExpandedSet, RemovedMods),  
+  AnalyzeMods = sets:subtract(ExpandedSet, RemovedMods),
   FilterFun = fun(File) ->
-		  Mod = list_to_atom(filename:basename(File, ".beam")),
+		  Mod = path_to_mod(File),
 		  sets:is_element(Mod, AnalyzeMods)
 	      end,
   {[F || {F, _} <- Md5, FilterFun(F)], BigSet, NewModDeps}.
@@ -475,12 +513,12 @@ expand_dependent_modules(Md5, DiffMd5, ModDeps) ->
 expand_dependent_modules_1([Mod|Mods], Included, ModDeps) ->
   case dict:find(Mod, ModDeps) of
     {ok, Deps} ->
-      NewDeps = sets:subtract(sets:from_list(Deps), Included), 
+      NewDeps = sets:subtract(sets:from_list(Deps), Included),
       case sets:size(NewDeps) =:= 0 of
 	true -> expand_dependent_modules_1(Mods, Included, ModDeps);
-	false -> 
+	false ->
 	  NewIncluded = sets:union(Included, NewDeps),
-	  expand_dependent_modules_1(sets:to_list(NewDeps) ++ Mods, 
+	  expand_dependent_modules_1(sets:to_list(NewDeps) ++ Mods,
 				     NewIncluded, ModDeps)
       end;
     error ->
@@ -489,122 +527,32 @@ expand_dependent_modules_1([Mod|Mods], Included, ModDeps) ->
 expand_dependent_modules_1([], Included, _ModDeps) ->
   Included.
 
--define(MIN_PARALLELISM, 7).
--define(MIN_FILES_FOR_NATIVE_COMPILE, 20).
-
--spec hipe_compile([file:filename()], #options{}) -> 'ok'.
-
-hipe_compile(Files, #options{erlang_mode = ErlangMode} = Options) ->
-  NoNative = (get(dialyzer_options_native) =:= false),
-  FewFiles = (length(Files) < ?MIN_FILES_FOR_NATIVE_COMPILE),
-  case NoNative orelse FewFiles orelse ErlangMode of
-    true -> ok;
-    false ->
-      case erlang:system_info(hipe_architecture) of
-	undefined -> ok;
-	_ ->
-	  Mods = [lists, dict, digraph, digraph_utils, ets,
-		  gb_sets, gb_trees, ordsets, sets, sofs,
-		  cerl, erl_types, cerl_trees, erl_bif_types,
-		  dialyzer_analysis_callgraph, dialyzer, dialyzer_behaviours,
-		  dialyzer_codeserver, dialyzer_contracts,
-		  dialyzer_coordinator, dialyzer_dataflow, dialyzer_dep,
-		  dialyzer_plt, dialyzer_succ_typings, dialyzer_typesig,
-		  dialyzer_worker],
-	  report_native_comp(Options),
-	  {T1, _} = statistics(wall_clock),
-	  Cache = (get(dialyzer_options_native_cache) =/= false),
-	  native_compile(Mods, Cache),
-	  {T2, _} = statistics(wall_clock),
-	  report_elapsed_time(T1, T2, Options)
-      end
-  end.
-
-native_compile(Mods, Cache) ->
-  case dialyzer_utils:parallelism() > ?MIN_PARALLELISM of
-    true ->
-      Parent = self(),
-      Pids = [spawn(fun () -> Parent ! {self(), hc(M, Cache)} end) || M <- Mods],
-      lists:foreach(fun (Pid) -> receive {Pid, Res} -> Res end end, Pids);
-    false ->
-      lists:foreach(fun (Mod) -> hc(Mod, Cache) end, Mods)
-  end.
-
-hc(Mod, Cache) ->
-  {module, Mod} = code:ensure_loaded(Mod),
-  case code:is_module_native(Mod) of
-    true -> ok;
-    false ->
-      %% io:format(" ~w", [Mod]),
-      case Cache of
-	false ->
-	  {ok, Mod} = hipe:c(Mod),
-	  ok;
-	true ->
-	  hc_cache(Mod)
-      end
-  end.
-
-hc_cache(Mod) ->
-  CacheBase = cache_base_dir(),
-  %% Use HiPE architecture and version in directory name, to avoid
-  %% clashes between incompatible binaries.
-  HipeArchVersion =
-    lists:concat(
-      [erlang:system_info(hipe_architecture), "-",
-       hipe:version(), "-",
-       hipe_bifs:system_crc()]),
-  CacheDir = filename:join(CacheBase, HipeArchVersion),
-  OrigBeamFile = code:which(Mod),
-  {ok, {Mod, <<Checksum:128>>}} = beam_lib:md5(OrigBeamFile),
-  CachedBeamFile = filename:join(CacheDir, lists:concat([Mod, "-", Checksum, ".beam"])),
-  ok = filelib:ensure_dir(CachedBeamFile),
-  ModBin =
-    case filelib:is_file(CachedBeamFile) of
-      true ->
-	{ok, BinFromFile} = file:read_file(CachedBeamFile),
-	BinFromFile;
-      false ->
-	{ok, Mod, CompiledBin} = compile:file(OrigBeamFile, [from_beam, native, binary]),
-	ok = file:write_file(CachedBeamFile, CompiledBin),
-	CompiledBin
-    end,
-  code:unstick_dir(filename:dirname(OrigBeamFile)),
-  {module, Mod} = code:load_binary(Mod, CachedBeamFile, ModBin),
-  true = code:is_module_native(Mod),
-  ok.
-
-cache_base_dir() ->
-  %% http://standards.freedesktop.org/basedir-spec/basedir-spec-0.7.html
-  %% If XDG_CACHE_HOME is set to an absolute path, use it as base.
-  XdgCacheHome = os:getenv("XDG_CACHE_HOME"),
-  CacheHome =
-    case is_list(XdgCacheHome) andalso filename:pathtype(XdgCacheHome) =:= absolute of
-      true ->
-	XdgCacheHome;
-      false ->
-	%% Otherwise, the default is $HOME/.cache.
-	{ok, [[Home]]} = init:get_argument(home),
-	filename:join(Home, ".cache")
-    end,
-  filename:join([CacheHome, "dialyzer_hipe_cache"]).
+path_to_mod(File) ->
+  list_to_atom(filename:basename(File, ".beam")).
 
 new_state() ->
   #cl_state{}.
 
 init_output(State0, #options{output_file = OutFile,
 			     output_format = OutFormat,
-			     filename_opt = FOpt}) ->
-  State = State0#cl_state{output_format = OutFormat, filename_opt = FOpt},
+			     filename_opt = FOpt,
+                             indent_opt = IOpt,
+                             error_location = EOpt}) ->
+  State = State0#cl_state{output_format = OutFormat,
+                          filename_opt = FOpt,
+                          indent_opt = IOpt,
+                          error_location = EOpt},
   case OutFile =:= none of
     true ->
       State;
     false ->
       case file:open(OutFile, [write]) of
 	{ok, File} ->
+          %% Warnings and errors can include Unicode characters.
+          ok = io:setopts(File, [{encoding, unicode}]),
 	  State#cl_state{output = File};
 	{error, Reason} ->
-	  Msg = io_lib:format("Could not open output file ~p, Reason: ~p\n",
+	  Msg = io_lib:format("Could not open output file ~tp, Reason: ~p\n",
 			      [OutFile, Reason]),
 	  cl_error(State, lists:flatten(Msg))
       end
@@ -625,7 +573,7 @@ maybe_close_output_file(State) ->
 
 -define(LOG_CACHE_SIZE, 10).
 
-%%-spec cl_loop(#cl_state{}) -> 
+%%-spec cl_loop(#cl_state{}) ->
 cl_loop(State) ->
   cl_loop(State, []).
 
@@ -638,8 +586,8 @@ cl_loop(State, LogCache) ->
     {BackendPid, warnings, Warnings} ->
       NewState = store_warnings(State, Warnings),
       cl_loop(NewState, LogCache);
-    {BackendPid, unknown_behaviours, Behaviours} ->
-      NewState = store_unknown_behaviours(State, Behaviours),
+    {BackendPid, cserver, CodeServer, _Plt} -> % Plt is ignored
+      NewState = State#cl_state{code_server = CodeServer},
       cl_loop(NewState, LogCache);
     {BackendPid, done, NewPlt, _NewDocPlt} ->
       return_value(State, NewPlt);
@@ -676,17 +624,12 @@ failed_anal_msg(Reason, LogCache) ->
 %%
 format_log_cache(LogCache) ->
   Str = lists:append(lists:reverse(LogCache)),
-  string:join(string:tokens(Str, "\n"), "\n  ").
+  lists:join("\n  ", string:lexemes(Str, "\n")).
 
 -spec store_warnings(#cl_state{}, [raw_warning()]) -> #cl_state{}.
 
 store_warnings(#cl_state{stored_warnings = StoredWarnings} = St, Warnings) ->
   St#cl_state{stored_warnings = StoredWarnings ++ Warnings}.
-
--spec store_unknown_behaviours(#cl_state{}, [dialyzer_behaviours:behaviour()]) -> #cl_state{}.
-
-store_unknown_behaviours(#cl_state{unknown_behaviours = Behs} = St, Beh) ->
-  St#cl_state{unknown_behaviours = Beh ++ Behs}.
 
 -spec cl_error(string()) -> no_return().
 
@@ -698,22 +641,33 @@ cl_error(Msg) ->
 cl_error(State, Msg) ->
   case State#cl_state.output of
     standard_io -> ok;
-    Outfile -> io:format(Outfile, "\n~s\n", [Msg])
+    Outfile -> io:format(Outfile, "\n~ts\n", [Msg])
   end,
   maybe_close_output_file(State),
   throw({dialyzer_error, lists:flatten(Msg)}).
 
-return_value(State = #cl_state{erlang_mode = ErlangMode,
-			       mod_deps = ModDeps,
-			       output_plt = OutputPlt,
-			       plt_info = PltInfo,
-			       stored_warnings = StoredWarnings},
-	     Plt) ->
-  case OutputPlt =:= none of
-    true -> ok;
-    false -> dialyzer_plt:to_file(OutputPlt, Plt, ModDeps, PltInfo)
-  end,
+return_value(#cl_state{code_server = CodeServer,
+                       erlang_mode = ErlangMode,
+                       mod_deps = ModDeps,
+                       output_plt = OutputPlt,
+                       plt_info = PltInfo,
+                       error_location = EOpt,
+                       stored_warnings = StoredWarnings}=State,
+             Plt) ->
   UnknownWarnings = unknown_warnings(State),
+  %% Just for now:
+  case CodeServer =:= none of
+    true ->
+      ok;
+    false ->
+      dialyzer_codeserver:delete(CodeServer)
+  end,
+  case OutputPlt =:= none of
+    true ->
+      dialyzer_plt:delete(Plt);
+    false ->
+      dialyzer_cplt:to_file(OutputPlt, Plt, ModDeps, PltInfo)
+  end,
   RetValue =
     case StoredWarnings =:= [] andalso UnknownWarnings =:= [] of
       true -> ?RET_NOTHING_SUSPICIOUS;
@@ -721,43 +675,57 @@ return_value(State = #cl_state{erlang_mode = ErlangMode,
     end,
   case ErlangMode of
     false ->
-      print_warnings(State),
-      print_ext_calls(State),
-      print_ext_types(State),
-      print_unknown_behaviours(State),
-      maybe_close_output_file(State),
+      Fns = [ fun print_warnings/1, fun print_ext_calls/1
+            , fun print_ext_types/1, fun maybe_close_output_file/1],
+      lists:foreach(fun (F) -> F(State) end, Fns),
       {RetValue, []};
-    true -> 
-      AllWarnings =
-        UnknownWarnings ++ process_warnings(StoredWarnings),
-      {RetValue, set_warning_id(AllWarnings)}
+    true ->
+      ResultingWarnings = process_warnings(StoredWarnings ++ UnknownWarnings),
+      {RetValue, set_warning_id(ResultingWarnings, EOpt)}
   end.
 
-unknown_warnings(State = #cl_state{legal_warnings = LegalWarnings}) ->
-  Unknown = case ordsets:is_element(?WARN_UNKNOWN, LegalWarnings) of
-              true ->
-                unknown_functions(State) ++
-                  unknown_types(State) ++
-                  unknown_behaviours(State);
-              false -> []
-            end,
-  WarningInfo = {_Filename = "", _Line = 0, _MorMFA = ''},
-  [{?WARN_UNKNOWN, WarningInfo, W} || W <- Unknown].
+unknown_warnings(State) ->
+  [Warning || {_M, Warning} <- unknown_warnings_by_module(State)].
 
-unknown_functions(#cl_state{external_calls = Calls}) ->
-  [{unknown_function, MFA} || MFA <- Calls].
+unknown_warnings_by_module(#cl_state{legal_warnings = LegalWarnings} = State) ->
+  case ordsets:is_element(?WARN_UNKNOWN, LegalWarnings) of
+    true ->
+      lists:sort(unknown_functions(State)) ++
+        lists:sort(unknown_types(State));
+    false -> []
+  end.
 
-set_warning_id(Warnings) ->
-  lists:map(fun({Tag, {File, Line, _MorMFA}, Msg}) ->
-                {Tag, {File, Line}, Msg}
+unknown_functions(#cl_state{ external_calls = Calls
+                           , code_server = CodeServer}) ->
+  [{Mod, {?WARN_UNKNOWN, WarningInfo, {unknown_function, MFA}}} || { MFA, WarningInfo = {_, _, {Mod, _, _}=WarnMFA}} <- Calls
+                                                                   , not dialyzer_codeserver:is_member_meta_info(WarnMFA, CodeServer)].
+
+unknown_types(#cl_state{external_types = Types}) ->
+  [{Mod, {?WARN_UNKNOWN, WarningInfo, {unknown_type, MFA}}} ||
+    {MFA, WarningInfo = {_, _, {Mod, _, _}}} <- Types].
+
+set_warning_id(Warnings, EOpt) ->
+  lists:map(fun({Tag, {File, Location, _MorMFA}, Msg}) ->
+                {Tag, {File, set_location(Location, EOpt)}, Msg}
             end, Warnings).
+
+set_location({Line, _}, line) ->
+  Line;
+set_location(Location, _EOpt) ->
+  Location.
 
 print_ext_calls(#cl_state{report_mode = quiet}) ->
   ok;
-print_ext_calls(#cl_state{output = Output,
-			  external_calls = Calls,
-			  stored_warnings = Warnings,
-			  output_format = Format}) ->
+print_ext_calls(#cl_state{legal_warnings = LegalWarnings}=State) ->
+  case ordsets:is_element(?WARN_UNKNOWN, LegalWarnings) of
+    true -> print_ext_calls_1(State);
+    false -> ok
+  end.
+
+print_ext_calls_1(#cl_state{output = Output,
+			    external_calls = Calls,
+			    stored_warnings = Warnings,
+			    output_format = Format}) ->
   case Calls =:= [] of
     true -> ok;
     false ->
@@ -765,32 +733,37 @@ print_ext_calls(#cl_state{output = Output,
 	true -> io:nl(Output); %% Need to do a newline first
 	false -> ok
       end,
+      Calls1 = limit_unknown(Calls),
       case Format of
 	formatted ->
 	  io:put_chars(Output, "Unknown functions:\n"),
-	  do_print_ext_calls(Output, Calls, "  ");
+	  do_print_ext_calls(Output, Calls1, "  ");
 	raw ->
 	  io:put_chars(Output, "%% Unknown functions:\n"),
-	  do_print_ext_calls(Output, Calls, "%%  ")
+	  do_print_ext_calls(Output, Calls1, "%%  ")
       end
   end.
 
-do_print_ext_calls(Output, [{M,F,A}|T], Before) ->
-  io:format(Output, "~s~p:~p/~p\n", [Before,M,F,A]),
+do_print_ext_calls(Output, [{{M,F,A},{File,Location,_FromMFA}}|T], Before) ->
+  io:format(Output, "~s~tp:~tp/~p (~ts)\n",
+            [Before,M,F,A,file_pos(File, Location)]),
   do_print_ext_calls(Output, T, Before);
 do_print_ext_calls(_, [], _) ->
   ok.
 
-unknown_types(#cl_state{external_types = Types}) ->
-  [{unknown_type, MFA} || MFA <- Types].
-
 print_ext_types(#cl_state{report_mode = quiet}) ->
   ok;
-print_ext_types(#cl_state{output = Output,
-                          external_calls = Calls,
-                          external_types = Types,
-                          stored_warnings = Warnings,
-                          output_format = Format}) ->
+print_ext_types(#cl_state{legal_warnings = LegalWarnings}=State) ->
+  case ordsets:is_element(?WARN_UNKNOWN, LegalWarnings) of
+    true -> print_ext_types_1(State);
+    false -> ok
+  end.
+
+print_ext_types_1(#cl_state{output = Output,
+                            external_calls = Calls,
+                            external_types = Types,
+                            stored_warnings = Warnings,
+                            output_format = Format}) ->
   case Types =:= [] of
     true -> ok;
     false ->
@@ -798,89 +771,78 @@ print_ext_types(#cl_state{output = Output,
         true -> io:nl(Output); %% Need to do a newline first
         false -> ok
       end,
+      Types1 = limit_unknown(Types),
       case Format of
         formatted ->
           io:put_chars(Output, "Unknown types:\n"),
-          do_print_ext_types(Output, Types, "  ");
+          do_print_ext_types(Output, Types1, "  ");
         raw ->
           io:put_chars(Output, "%% Unknown types:\n"),
-          do_print_ext_types(Output, Types, "%%  ")
+          do_print_ext_types(Output, Types1, "%%  ")
       end
   end.
 
-do_print_ext_types(Output, [{M,F,A}|T], Before) ->
-  io:format(Output, "~s~p:~p/~p\n", [Before,M,F,A]),
+do_print_ext_types(Output, [{{M,F,A},{File,Location,_}}|T], Before) ->
+  io:format(Output, "~s~tp:~tp/~p (~ts)\n",
+            [Before,M,F,A,file_pos(File, Location)]),
   do_print_ext_types(Output, T, Before);
 do_print_ext_types(_, [], _) ->
   ok.
 
-unknown_behaviours(#cl_state{unknown_behaviours = DupBehaviours,
-                             legal_warnings = LegalWarnings}) ->
-  case ordsets:is_element(?WARN_BEHAVIOUR, LegalWarnings) of
-    false -> [];
-    true ->
-      Behaviours = lists:usort(DupBehaviours),
-      [{unknown_behaviour, B} || B <- Behaviours]
-  end.
+file_pos(File, 0) ->
+  io_lib:format("~ts", [File]);
+file_pos(File, Pos) ->
+  io_lib:format("~ts:~s", [File, pos(Pos)]).
 
-%%print_unknown_behaviours(#cl_state{report_mode = quiet}) ->
-%%  ok;
-print_unknown_behaviours(#cl_state{output = Output,
-				   external_calls = Calls,
-				   external_types = Types,
-				   stored_warnings = Warnings,
-				   unknown_behaviours = DupBehaviours,
-				   legal_warnings = LegalWarnings,
-				   output_format = Format}) ->
-  case ordsets:is_element(?WARN_BEHAVIOUR, LegalWarnings)
-    andalso DupBehaviours =/= [] of
-    false -> ok;
-    true ->
-      Behaviours = lists:usort(DupBehaviours),
-      case Warnings =:= [] andalso Calls =:= [] andalso Types =:= [] of
-	true -> io:nl(Output); %% Need to do a newline first
-	false -> ok
-      end,
-      {Prompt, Prefix} =
-	case Format of
-	  formatted -> {"Unknown behaviours:\n","  "};
-	  raw -> {"%% Unknown behaviours:\n","%%  "}
-	end,
-      io:put_chars(Output, Prompt),
-      do_print_unknown_behaviours(Output, Behaviours, Prefix)
-  end.
+pos({Line,Col}) ->
+    io_lib:format("~w:~w", [Line,Col]);
+pos(Line) ->
+    io_lib:format("~w", [Line]).
 
-do_print_unknown_behaviours(Output, [B|T], Before) ->
-  io:format(Output, "~s~p\n", [Before,B]),
-  do_print_unknown_behaviours(Output, T, Before);
-do_print_unknown_behaviours(_, [], _) ->
-  ok.
+%%
+%% Keep one warning per MFA and File. Often too many warnings otherwise.
+%%
+limit_unknown(Unknowns) ->
+  L = [{{MFA, File}, {FromMFA, Line}} || {MFA, {File, Line, FromMFA}} <- Unknowns],
+  [{MFA, {File, Line, FromMFA}} || {{MFA, File}, [{FromMFA, Line}|_]} <-
+                            dialyzer_utils:family(L)].
+%% Keep one warning per MFA. This is how it used to be before Erlang/OTP 24.
+%% limit_unknown(Unknowns) ->
+%%   F = dialyzer_utils:family(Unknowns),
+%%   [{MFA, {File, Line}} || {MFA, [{File, Line}|_]} <- F].
 
 print_warnings(#cl_state{stored_warnings = []}) ->
   ok;
 print_warnings(#cl_state{output = Output,
 			 output_format = Format,
 			 filename_opt = FOpt,
+                         indent_opt = IOpt,
+                         error_location = EOpt,
 			 stored_warnings = Warnings}) ->
   PrWarnings = process_warnings(Warnings),
   case PrWarnings of
     [] -> ok;
     [_|_] ->
+      PrWarningsId = set_warning_id(PrWarnings, EOpt),
       S = case Format of
 	    formatted ->
-	      [dialyzer:format_warning(W, FOpt) || W <- PrWarnings];
+              Opts = [{filename_opt, FOpt},
+                      {indent_opt, IOpt},
+                      {error_location, EOpt}],
+	      [dialyzer:format_warning(W, Opts) || W <- PrWarningsId];
 	    raw ->
-	      [io_lib:format("~p. \n",
-                             [W]) || W <- set_warning_id(PrWarnings)]
+	      [io_lib:format("~tp. \n",
+                             [W]) || W <- set_warning_id(PrWarningsId, EOpt)]
 	  end,
-      io:format(Output, "\n~s", [S])
+      io:format(Output, "\n~ts", [S])
   end.
 
 -spec process_warnings([raw_warning()]) -> [raw_warning()].
-  
+
 process_warnings(Warnings) ->
-  Warnings1 = lists:keysort(2, Warnings), %% Sort on file/line (and m/mfa..)
-  remove_duplicate_warnings(Warnings1, []).
+  Warnings1 = lists:keysort(3, Warnings), %% First sort on Warning
+  Warnings2 = lists:keysort(2, Warnings1), %% Sort on file/location (and m/mfa..)
+  remove_duplicate_warnings(Warnings2, []).
 
 remove_duplicate_warnings([Duplicate, Duplicate|Left], Acc) ->
   remove_duplicate_warnings([Duplicate|Left], Acc);
@@ -903,7 +865,7 @@ add_files(Files, From) ->
 
 add_files(Files, From, Rec) ->
   Files1 = [filename:absname(F) || F <- Files],
-  Files2 = ordsets:from_list(Files1), 
+  Files2 = ordsets:from_list(Files1),
   Dirs = ordsets:filter(fun(X) -> filelib:is_dir(X) end, Files2),
   Files3 = ordsets:subtract(Files2, Dirs),
   Extension = case From of
@@ -930,9 +892,8 @@ add_file_fun(Extension) ->
 start_analysis(State, Analysis) ->
   Self = self(),
   LegalWarnings = State#cl_state.legal_warnings,
-  Fun = fun() -> 
+  Fun = fun() ->
 	    dialyzer_analysis_callgraph:start(Self, LegalWarnings, Analysis)
 	end,
   BackendPid = spawn_link(Fun),
   State#cl_state{backend_pid = BackendPid}.
-

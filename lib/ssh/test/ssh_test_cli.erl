@@ -1,23 +1,49 @@
+%%
+%% %CopyrightBegin%
+%%
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2008-2025. All Rights Reserved.
+%%
+%% Licensed under the Apache License, Version 2.0 (the "License");
+%% you may not use this file except in compliance with the License.
+%% You may obtain a copy of the License at
+%%
+%%     http://www.apache.org/licenses/LICENSE-2.0
+%%
+%% Unless required by applicable law or agreed to in writing, software
+%% distributed under the License is distributed on an "AS IS" BASIS,
+%% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+%% See the License for the specific language governing permissions and
+%% limitations under the License.
+%%
+%% %CopyrightEnd%
+%%
 -module(ssh_test_cli).
 
 -export([init/1, terminate/2, handle_ssh_msg/2, handle_msg/2]).
 
 -record(state, {
 	  type,
+	  tmpdir,
 	  id, 
 	  ref,
 	  port
 	 }).
 
-init([Type]) ->
-    {ok, #state{type = Type}}.
+
+init([Type]) -> init([Type,"/tmp"]);
+
+init([Type,TmpDir]) ->
+    {ok, #state{type = Type,
+		tmpdir = TmpDir}}.
 
 handle_msg({ssh_channel_up, Id, Ref}, S) ->
     User = get_ssh_user(Ref), 
     ok = ssh_connection:send(Ref,
 			     Id,
 			     << "\r\nYou are accessing a dummy, type \"q\" to exit\r\n\n" >>),
-    Port = run_portprog(User, S#state.type),
+    Port = run_portprog(User, S#state.type, S#state.tmpdir),
     {ok, S#state{port = Port, id = Id, ref = Ref}};
 
 handle_msg({Port, {data, Data}}, S = #state{port = Port}) ->
@@ -68,12 +94,18 @@ handle_ssh_msg({ssh_cm, _, {exit_signal, Id, _, _, _}},
 terminate(_Why, _S) ->
     nop.
 
-run_portprog(User, cli) ->
-    Pty_bin = os:find_executable("cat"), 
-    open_port({spawn_executable, Pty_bin},
-	      [stream, {cd, "/tmp"}, {env, [{"USER", User}]},
-	       {args, []}, binary,
-	       exit_status, use_stdio, stderr_to_stdout]).
+run_portprog(User, cli, TmpDir) ->
+    Cmd = case os:type() of
+              {win32, _} -> "cmd.exe";
+              _ -> "cat"
+          end,
+    Pty_bin = os:find_executable(Cmd),
+    ct:pal("Pty_bin = ~p", [Pty_bin]),
+    ssh_test_lib:open_port({spawn_executable, Pty_bin},
+			   [stream,
+			    {cd, TmpDir},
+			    {env, [{"USER", User}]},
+			    {args, []}]).
 
 get_ssh_user(Ref) ->
     [{user, User}] = ssh:connection_info(Ref, [user]),

@@ -1,8 +1,10 @@
 %%
 %% %CopyrightBegin%
-%% 
-%% Copyright Ericsson AB 2008-2009. All Rights Reserved.
-%% 
+%%
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2008-2025. All Rights Reserved.
+%%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
 %% You may obtain a copy of the License at
@@ -14,10 +16,11 @@
 %% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 %% See the License for the specific language governing permissions and
 %% limitations under the License.
-%% 
+%%
 %% %CopyrightEnd%
 %%
 -module(dbg_wx_src_view).
+-moduledoc false.
 
 -export([code_area/2]).
 -include_lib("wx/include/wx.hrl").
@@ -48,7 +51,6 @@ code_area(Parent, Sizer) ->
 	       {?wxSTC_ERLANG_CHARACTER,{236,155,172}},
 	       {?wxSTC_ERLANG_MACRO,    {92,194,241}},
 	       {?wxSTC_ERLANG_RECORD,   {60,150,40}},
-	       {?wxSTC_ERLANG_SEPARATOR,{0,0,0}},
 	       {?wxSTC_ERLANG_NODE_NAME,{0,0,0}}],
     SetStyle = fun({Style, Color}) ->
 		       ?stc:styleSetFont(Ed, Style, FixedFont),
@@ -56,12 +58,12 @@ code_area(Parent, Sizer) ->
 	       end,
     [SetStyle(Style) || Style <- Styles],
     ?stc:setKeyWords(Ed, 0, keyWords()),
-    wxSizer:add(Sizer, Ed, [{proportion,1}, {flag, ?wxEXPAND}]),
+    _ = wxSizer:add(Sizer, Ed, [{proportion,1}, {flag, ?wxEXPAND}]),
     Ed.
 
 
 keyWords() ->
     L = ["after","begin","case","try","cond","catch","andalso","orelse",
-	 "end","fun","if","let","of","query","receive","when","bnot","not",
+	 "end","fun","if","let","of","receive","when","bnot","not",
 	 "div","rem","band","and","bor","bxor","bsl","bsr","or","xor"],
     lists:flatten([K ++ " " || K <- L] ++ [0]).

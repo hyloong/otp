@@ -1,4 +1,11 @@
-%% ``Licensed under the Apache License, Version 2.0 (the "License");
+%% %CopyrightBegin%
+%%
+%% SPDX-License-Identifier: Apache-2.0 OR LGPL-2.1-or-later
+%%
+%% Copyright Ericsson AB 1999-2026. All Rights Reserved.
+%% Copyright 2001-2006 Richard Carlsson
+%%
+%% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
 %% You may obtain a copy of the License at
 %%
@@ -10,13 +17,19 @@
 %% See the License for the specific language governing permissions and
 %% limitations under the License.
 %%
-%% The Initial Developer of the Original Code is Ericsson Utvecklings
-%% AB. Portions created by Ericsson are Copyright 1999, Ericsson
-%% Utvecklings AB. All Rights Reserved.''
+%% Alternatively, you may use this file under the terms of the GNU Lesser
+%% General Public License (the "LGPL") as published by the Free Software
+%% Foundation; either version 2.1, or (at your option) any later version.
+%% If you wish to allow use of your version of this file only under the
+%% terms of the LGPL, you should delete the provisions above and replace
+%% them with the notice and other provisions required by the LGPL; see
+%% <http://www.gnu.org/licenses/>. If you do not delete the provisions
+%% above, a recipient may use your version of this file under the terms of
+%% either the Apache License or the LGPL.
+%%
+%% %CopyrightEnd%
 %%
 %% @private
-%% @copyright Richard Carlsson 2001-2003. Portions created by Ericsson
-%% are Copyright 1999, Ericsson Utvecklings AB. All Rights Reserved.
 %% @author Richard Carlsson <carlsson.richard@gmail.com>
 %% @see edoc
 %% @end
@@ -33,6 +46,9 @@
 %% Since there are no `full stop' tokens in EDoc specifications, the
 %% `tokens' function *always* returns `{more, Continuation}' unless an
 %% error occurs.
+
+-compile([{nowarn_possibly_unsafe_function, {erlang, list_to_atom, 1}},
+          nowarn_deprecated_catch]).
 
 -export([string/1,string/2,format_error/1]).
 
@@ -86,6 +102,8 @@ scan1([C|Cs], Toks, Pos) when C >= 0, C =< $  -> 	% Skip blanks
     scan1(Cs, Toks, Pos);
 scan1([C|Cs], Toks, Pos) when C >= $a, C =< $z ->	% Unquoted atom
     scan_atom(C, Cs, Toks, Pos);
+scan1([C|Cs], Toks, Pos) when C >= $\337, C =< $\377, C /= $\367 ->
+    scan_atom(C, Cs, Toks, Pos);
 scan1([C|Cs], Toks, Pos) when C >= $0, C =< $9 ->	% Numbers
     scan_number(C, Cs, Toks, Pos);
 scan1([$-,C| Cs], Toks, Pos) when C >= $0, C =< $9 ->	% Signed numbers
@@ -96,6 +114,8 @@ scan1([C|Cs], Toks, Pos) when C >= $A, C =< $Z ->	% Variables
     scan_variable(C, Cs, Toks, Pos);
 scan1([$_|Cs], Toks, Pos) ->				% Variables
     scan_variable($_, Cs, Toks, Pos);
+scan1([C|Cs], Toks, Pos) when C >= $\300, C =< $\336, C /= $\327 ->
+    scan_variable(C, Cs, Toks, Pos);
 scan1([$$|Cs], Toks, Pos) ->			% Character constant
     case scan_char_const(Cs, Toks, Pos) of
 	{ok, Result} ->
@@ -146,6 +166,8 @@ scan1([$>,$>|Cs], Toks, Pos) ->
     scan1(Cs, [{'>>',Pos}|Toks], Pos);
 scan1([$-,$>|Cs], Toks, Pos) ->
     scan1(Cs, [{'->',Pos}|Toks], Pos);
+scan1([$:,$=|Cs], Toks, Pos) ->
+    scan1(Cs, [{':=',Pos}|Toks], Pos);
 scan1([$:,$:|Cs], Toks, Pos) ->
     scan1(Cs, [{'::',Pos}|Toks], Pos);
 scan1([$/,$/|Cs], Toks, Pos) ->
@@ -259,6 +281,15 @@ scan_char([], _Pos) ->
 
 %% The following conforms to Standard Erlang escape sequences.
 
+-define(HEX(C), C >= $0 andalso C =< $9 orelse
+                C >= $A andalso C =< $F orelse
+                C >= $a andalso C =< $f).
+
+-define(UNICODE(C),
+         (C >= 0 andalso C < 16#D800 orelse
+          C > 16#DFFF andalso C < 16#FFFE orelse
+          C > 16#FFFF andalso C =< 16#10FFFF)).
+
 scan_escape([O1, O2, O3 | Cs], Pos) when        % \<1-3> octal digits
   O1 >= $0, O1 =< $3, O2 >= $0, O2 =< $7, O3 >= $0, O3 =< $7 ->
     Val = (O1*8 + O2)*8 + O3 - 73*$0,
@@ -270,6 +301,11 @@ scan_escape([O1, O2 | Cs], Pos) when
 scan_escape([O1 | Cs], Pos) when
   O1 >= $0, O1 =< $7 ->
     {O1 - $0,Cs,Pos};
+scan_escape([$x, ${ | Cs], Pos) ->
+    scan_hex(Cs, Pos, []);
+scan_escape([$x, H1, H2 | Cs], Pos) when ?HEX(H1), ?HEX(H2) ->
+    Val = (H1*16 + H2) - 17*$0,
+    {Val,Cs,Pos};
 scan_escape([$^, C | Cs], Pos) ->    % \^X -> CTL-X
     if C >= $\100, C =< $\137 ->
 	    {C - $\100,Cs,Pos};
@@ -282,6 +318,18 @@ scan_escape([C | Cs], Pos) ->
     end;
 scan_escape([], _Pos) ->
     {error, truncated_char}.
+
+scan_hex([C | Cs], Pos, HCs) when ?HEX(C) ->
+    scan_hex(Cs, Pos, [C | HCs]);
+scan_hex([$} | Cs], Pos, HCs) ->
+    case catch erlang:list_to_integer(lists:reverse(HCs), 16) of
+        Val when ?UNICODE(Val) ->
+            {Val,Cs,Pos};
+        _ ->
+            {error, undefined_escape_sequence}
+    end;
+scan_hex(_Cs, _Pos, _HCs) ->
+    {error, undefined_escape_sequence}.
 
 %% Note that we return $\000 for undefined escapes.
 escape_char($b) -> $\010;		% \b = BS

@@ -1,7 +1,9 @@
 /*
  * %CopyrightBegin%
  *
- * Copyright Ericsson AB 2000-2009. All Rights Reserved.
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Copyright Ericsson AB 2000-2025. All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -122,9 +124,7 @@ public class OtpCookedConnection extends AbstractConnection {
 
         switch (msg.type()) {
         case OtpMsg.linkTag:
-            if (delivered) {
-                links.addLink(msg.getRecipientPid(), msg.getSenderPid());
-            } else {
+            if (!delivered) {
                 try {
                     // no such pid - send exit to sender
                     super.sendExit(msg.getRecipientPid(), msg.getSenderPid(),
@@ -133,13 +133,7 @@ public class OtpCookedConnection extends AbstractConnection {
                 }
             }
             break;
-
-        case OtpMsg.unlinkTag:
-        case OtpMsg.exitTag:
-            links.removeLink(msg.getRecipientPid(), msg.getSenderPid());
-            break;
-
-        case OtpMsg.exit2Tag:
+        default:
             break;
         }
 
@@ -190,7 +184,7 @@ public class OtpCookedConnection extends AbstractConnection {
     }
 
     /*
-     * this one called explicitely by user code => use exit2
+     * this one called explicitly by user code => use exit2
      */
     void exit2(final OtpErlangPid from, final OtpErlangPid to,
             final OtpErlangObject reason) {
@@ -200,27 +194,36 @@ public class OtpCookedConnection extends AbstractConnection {
         }
     }
 
-    /*
-     * snoop for outgoing links and update own table
-     */
-    synchronized void link(final OtpErlangPid from, final OtpErlangPid to)
-            throws OtpErlangExit {
+    void link(final OtpErlangPid from, final OtpErlangPid to)
+        throws OtpErlangExit {
         try {
             super.sendLink(from, to);
-            links.addLink(from, to);
         } catch (final IOException e) {
             throw new OtpErlangExit("noproc", to);
         }
     }
 
-    /*
-     * snoop for outgoing unlinks and update own table
-     */
-    synchronized void unlink(final OtpErlangPid from, final OtpErlangPid to) {
-        links.removeLink(from, to);
+    void unlink(final OtpErlangPid from, final OtpErlangPid to, final long unlink_id) {
         try {
-            super.sendUnlink(from, to);
+            super.sendUnlink(from, to , unlink_id);
         } catch (final IOException e) {
+        }
+    }
+
+    void unlink_ack(final OtpErlangPid from, final OtpErlangPid to, final long unlink_id) {
+        try {
+            super.sendUnlinkAck(from, to , unlink_id);
+        } catch (final IOException e) {
+        }
+    }
+
+    synchronized void node_link(OtpErlangPid local, OtpErlangPid remote, boolean add)
+    {
+        if (add) {
+                links.addLink(local, remote, true);
+        }
+        else {
+            links.removeLink(local, remote);
         }
     }
 

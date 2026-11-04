@@ -1,7 +1,9 @@
 #
 # %CopyrightBegin%
 #
-# Copyright Ericsson AB 2010-2014. All Rights Reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Copyright Ericsson AB 2010-2026. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -96,25 +98,46 @@ APPUP_FILE   = diameter.appup
 APPUP_SRC    = $(APPUP_FILE).src
 APPUP_TARGET = $(EBIN)/$(APPUP_FILE)
 
+ifeq ($(TARGET),win32)
+  EXE_SUFFIX=.exe
+else
+  EXE_SUFFIX=
+endif
+
 # ----------------------------------------------------
 # Flags
 # ----------------------------------------------------
 
 ifeq ($(TYPE),debug)
-ERL_COMPILE_FLAGS += -Ddebug
+ERL_COMPILE_FLAGS += -Ddebug +warn_obsolete_bool_op
+endif
+
+# The "warn" flag is on by default, so unless we add the
+# the "nowarn" flag, that ("warn") is what we get.
+# The "nowarn" flag overrides the "warn" flag if both
+# are present!
+ifeq ($(NOWARN_MISSING_SPEC_DOCUMENTED),true)
+MISSING_SPEC_DOCUMENTED = +nowarn_missing_spec_documented
 endif
 
 ERL_COMPILE_FLAGS += \
+	+warn_export_vars \
+	+warn_unused_vars +nowarn_deprecated_catch \
+	$(MISSING_SPEC_DOCUMENTED) \
 	+'{parse_transform,sys_pre_attributes}' \
 	+'{attribute,insert,app_vsn,"$(APP_VSN)"}' \
-	+warn_export_vars \
-	+warn_unused_vars \
 	-pa $(ABS_EBIN) \
 	-I $(INCDIR) \
 	-I gen \
 	$(STRICT_FLAGS)
 # -pa is to be able to include_lib from the include directory: the
 # path must contain the application name.
+
+ifeq ($(ERL_DETERMINISTIC),yes)
+	DETERMINISM_FLAG = +deterministic
+else
+	DETERMINISM_FLAG =
+endif
 
 # ----------------------------------------------------
 # Targets
@@ -123,7 +146,7 @@ ERL_COMPILE_FLAGS += \
 # erl/hrl from dictionary file.
 gen/diameter_gen_%.erl gen/diameter_gen_%.hrl: dict/%.dia
 	$(dia_verbose) \
-	../bin/diameterc -o gen -i $(EBIN) $<
+	escript$(EXE_SUFFIX) ../bin/diameterc -o gen -i $(EBIN) $<
 
 opt: $(TARGET_FILES)
 
@@ -140,16 +163,16 @@ patch:
 	git diff --exit-code HEAD
 	$(MAKE) opt PRE_VSN="-$(shell git rev-list --max-count=1 HEAD | cut -c 1-8)"
 
-debug:
-	@$(MAKE) TYPE=debug opt
+$(filter-out opt, $(TYPES)):
+	@${MAKE} TYPE=$@ opt
 
 # The dictionary parser.
 gen/$(DICT_YRL).erl: compiler/$(DICT_YRL).yrl
 	$(yecc_verbose) \
-	$(ERLC) -Werror -o $(@D) $<
+	$(ERLC) -Werror $(DETERMINISM_FLAG) -o $(@D) $<
 
 # Generate the app file.
-$(APP_TARGET): $(APP_SRC) ../vsn.mk modules.mk app.sed
+$(APP_TARGET): $(APP_SRC) ../vsn.mk modules.mk
 	$(gen_verbose) \
 	M=`echo $(notdir $(APP_MODULES)) | tr ' ' ,`; \
 	C=`echo $(COMPILER_MODULES) | tr ' ' ,`; \
@@ -160,8 +183,7 @@ $(APP_TARGET): $(APP_SRC) ../vsn.mk modules.mk app.sed
 	    -e "s;%COMPILER%;$$C;" \
 	    -e "s;%INFO%;$$I;" \
 	    -e "s;%REGISTERED%;$$R;" \
-	  $< \
-	| sed -f app.sed > $@
+	  $< > $@
 
 $(APPUP_TARGET): $(APPUP_SRC) ../vsn.mk
 	$(vsn_verbose) \
@@ -200,9 +222,17 @@ info:
 	@echo
 	@$(call list,BINS)
 	@echo ========================================
+	@echo "APP_FILE:          $(APP_FILE)"
+	@echo "APPUP_FILE:        $(APPUP_FILE)"
+	@echo "EXAMPLE_DIRS:      $(EXAMPLE_DIRS)"
+	@echo "NOWARN_MISSING_SPEC_DOCUMENTED: $(NOWARN_MISSING_SPEC_DOCUMENTED)"
+	@echo "MISSING_SPEC_DOCUMENTED: $(MISSING_SPEC_DOCUMENTED)"
+	@echo "ERL_COMPILE_FLAGS: $(ERL_COMPILE_FLAGS)"
+	@echo ========================================
 
 clean:
 	rm -f $(TARGET_FILES) gen/*
+	rm -f $(PLT)
 	rm -f depend.mk
 
 realclean: clean
@@ -211,24 +241,29 @@ realclean: clean
 
 PLT = ./otp.plt
 
-plt:
+plt: $(PLT)
+
+$(PLT):
 	dialyzer --build_plt \
 	         --apps erts stdlib kernel \
 	                xmerl ssl public_key crypto \
 	                compiler syntax_tools runtime_tools \
-	         --output_plt $(PLT) \
+	         --output_plt $@ \
+	         --get_warnings \
+	         --statistics \
 	         --verbose
 
 dialyze: opt $(PLT)
 	dialyzer --plt $(PLT) \
 	         --verbose \
-	         -Wno_improper_lists \
 	         $(EBIN)/diameter_gen_base_rfc3588.$(EMULATOR) \
 	         $(patsubst %, $(EBIN)/%.$(EMULATOR), \
-	                $(notdir $(RT_MODULES) $(CT_MODULES) $(INFO_MODULES)))
-# Omit all but the common dictionary module since these
-# (diameter_gen_relay in particular) generate warning depending on how
-# much of the included diameter_gen.hrl they use.
+	                $(notdir $(DICT_YRL) \
+	                         $(RT_MODULES) \
+	                         $(CT_MODULES) \
+	                         $(DICT_MODULES) \
+	                         $(INFO_MODULES)))
+
 
 # ----------------------------------------------------
 # Release targets
@@ -239,7 +274,7 @@ include $(ERL_TOP)/make/otp_release_targets.mk
 # Can't $(INSTALL_DIR) more than one directory at a time on Solaris.
 
 release_spec: opt
-	for d in bin ebin examples include src/dict; do \
+	for d in bin ebin include src/dict; do \
 	    $(INSTALL_DIR) "$(RELSYSDIR)/$$d"; \
 	done
 	$(INSTALL_SCRIPT) $(BINS:%=../bin/%) "$(RELSYSDIR)/bin"
@@ -247,8 +282,8 @@ release_spec: opt
 	$(INSTALL_DATA) $(EXTERNAL_HRLS:%=../include/%) $(DICT_HRLS) \
 	                "$(RELSYSDIR)/include"
 	$(INSTALL_DATA) $(DICTS:%=dict/%.dia) "$(RELSYSDIR)/src/dict"
-	$(MAKE) $(TARGET_DIRS:%/=release_src_%)
-	$(MAKE) $(EXAMPLE_DIRS:%/=release_examples_%)
+	$(MAKE) ERL_DETERMINISTIC=$(ERL_DETERMINISTIC) $(TARGET_DIRS:%/=release_src_%)
+
 
 $(TARGET_DIRS:%/=release_src_%): release_src_%:
 	$(INSTALL_DIR) "$(RELSYSDIR)/src/$*"
@@ -258,11 +293,13 @@ $(TARGET_DIRS:%/=release_src_%): release_src_%:
 	                "$(RELSYSDIR)/src/$*"
 
 $(EXAMPLE_DIRS:%/=release_examples_%): release_examples_%:
-	$(INSTALL_DIR) "$(RELSYSDIR)/examples/$*"
+	$(INSTALL_DIR) "$(RELSYSDIR)/doc/examples/$*"
 	$(INSTALL_DATA) $(patsubst %, ../examples/%, $(filter $*/%, $(EXAMPLES))) \
-	                "$(RELSYSDIR)/examples/$*"
+	                "$(RELSYSDIR)/doc/examples/$*"
 
 release_docs_spec:
+	$(INSTALL_DIR) "$(RELSYSDIR)/doc/examples"
+	$(MAKE) ERL_DETERMINISTIC=$(ERL_DETERMINISTIC) $(EXAMPLE_DIRS:%/=release_examples_%)
 
 # ----------------------------------------------------
 # Dependencies
@@ -274,9 +311,7 @@ gen/diameter_gen_base_accounting.erl gen/diameter_gen_base_accounting.hrl: \
 gen/diameter_gen_acct_rfc6733.erl gen/diameter_gen_acct_rfc6733.hrl: \
 	$(EBIN)/diameter_gen_base_rfc6733.$(EMULATOR)
 
-gen/diameter_gen_relay.erl gen/diameter_gen_relay.hrl \
-gen/diameter_gen_base_rfc3588.erl gen/diameter_gen_base_rfc3588.hrl \
-gen/diameter_gen_base_rfc6733.erl gen/diameter_gen_base_rfc6733.hrl: \
+$(DICT_ERLS) $(DICT_HRLS): \
 	$(COMPILER_MODULES:%=$(EBIN)/%.$(EMULATOR))
 
 $(DICT_MODULES:gen/%=$(EBIN)/%.$(EMULATOR)): \

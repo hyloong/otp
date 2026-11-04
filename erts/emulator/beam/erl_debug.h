@@ -1,7 +1,9 @@
 /*
  * %CopyrightBegin%
  *
- * Copyright Ericsson AB 2004-2012. All Rights Reserved.
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Copyright Ericsson AB 2004-2025. All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -22,10 +24,6 @@
 #ifdef DEBUG
 
 #include "erl_term.h"
-
-#ifdef HIPE
-#include "hipe_debug.h"
-#endif
 
 /* Heap areas will be filled with this value when they are deallocated
  * after a garbage collection. This value used to be 0xff, but that is
@@ -48,6 +46,7 @@
 #define DEBUG_THREADS      0x0010    /* Thread-related stuff                 */
 #define DEBUG_PROCESSES    0x0020    /* Process creation and removal         */
 #define DEBUG_MEMORY       0x0040    /* Display results of memory checks     */
+#define DEBUG_SHCOPY       0x0080    /* Sharing-preserving copying of terms  */
 
 extern Uint32 verbose;
 
@@ -92,10 +91,4 @@ extern void print_tagged_memory(Eterm *start, Eterm *end);
 extern void print_untagged_memory(Eterm *start, Eterm *end);
 extern void print_memory(Process *p);
 extern void print_memory_info(Process *p);
-#if defined(DEBUG) && !HEAP_ON_C_STACK
-extern Eterm *erts_debug_allocate_tmp_heap(int, Process *);
-extern void erts_debug_use_tmp_heap(int, Process *);
-extern void erts_debug_unuse_tmp_heap(int, Process *);
-#endif
-
 #endif /* _ERL_DEBUG_H_ */

@@ -1,7 +1,9 @@
 /*
  * %CopyrightBegin%
  *
- * Copyright Ericsson AB 2001-2013. All Rights Reserved.
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Copyright Ericsson AB 2001-2025. All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -41,47 +43,90 @@
 #include "external.h"
 #include "packet_parser.h"
 #include "erl_bits.h"
+#include "erl_bif_unique.h"
 #include "dtrace-wrapper.h"
+#include "erl_proc_sig_queue.h"
+#include "erl_osenv.h"
+
+#define HALLOC_EXTRA 200
 
 static Port *open_port(Process* p, Eterm name, Eterm settings, int *err_typep, int *err_nump);
-static byte* convert_environment(Process* p, Eterm env);
+static int merge_global_environment(erts_osenv_t *env, Eterm key_value_pairs);
 static char **convert_args(Eterm);
 static void free_args(char **);
 
 char *erts_default_arg0 = "default";
 
-BIF_RETTYPE open_port_2(BIF_ALIST_2)
+BIF_RETTYPE erts_internal_open_port_2(BIF_ALIST_2)
 {
+    BIF_RETTYPE ret;
     Port *port;
-    Eterm port_id;
+    Eterm res;
     char *str;
     int err_type, err_num;
+    ErtsLink *proc_lnk, *port_lnk;
 
     port = open_port(BIF_P, BIF_ARG_1, BIF_ARG_2, &err_type, &err_num);
     if (!port) {
-	if (err_type == -3) {
+	if (err_type == -4) {
+            /* Invalid settings arguments. */
+            return am_badopt;
+        } else if (err_type == -3) {
 	    ASSERT(err_num == BADARG || err_num == SYSTEM_LIMIT);
-	    BIF_ERROR(BIF_P, err_num);
+	    if (err_num == BADARG)
+                res = am_badarg;
+            else if (err_num == SYSTEM_LIMIT)
+                res = am_system_limit;
+            else
+                /* this is only here to silence gcc, it should not happen */
+                BIF_ERROR(BIF_P, EXC_INTERNAL_ERROR);
 	} else if (err_type == -2) {
 	    str = erl_errno_id(err_num);
+            res = erts_atom_put((byte *) str, sys_strlen(str), ERTS_ATOM_ENC_LATIN1, 1);
 	} else {
-	    str = "einval";
+	    res = am_einval;
 	}
-	BIF_P->fvalue = erts_atom_put((byte *) str, strlen(str), ERTS_ATOM_ENC_LATIN1, 1);
-	BIF_ERROR(BIF_P, EXC_ERROR);
+        BIF_RET(res);
     }
 
-    erts_smp_proc_lock(BIF_P, ERTS_PROC_LOCK_LINK);
+    proc_lnk = erts_link_internal_create(ERTS_LNK_TYPE_PORT, port->common.id);
+    port_lnk = erts_link_internal_create(ERTS_LNK_TYPE_PORT, BIF_P->common.id);
+    /*
+     * This link should not already be present, but can potentially
+     * due to id wrapping...
+     */
+    if (!!erts_link_tree_lookup_insert(&ERTS_P_LINKS(BIF_P), proc_lnk))
+        erts_link_internal_release(proc_lnk);
+    erts_link_tree_insert(&ERTS_P_LINKS(port), port_lnk);
 
-    port_id = port->common.id;
-    erts_add_link(&ERTS_P_LINKS(port), LINK_PID, BIF_P->common.id);
-    erts_add_link(&ERTS_P_LINKS(BIF_P), LINK_PID, port_id);
+    if (port->drv_ptr->flags & ERL_DRV_FLAG_USE_INIT_ACK) {
 
-    erts_smp_proc_unlock(BIF_P, ERTS_PROC_LOCK_LINK);
+        /* Copied from erl_port_task.c */
+        port->async_open_port = erts_alloc(ERTS_ALC_T_PRTSD,
+                                           sizeof(*port->async_open_port));
+        erts_make_ref_in_array(port->async_open_port->ref);
+        port->async_open_port->to = BIF_P->common.id;
+
+        /*
+         * We unconditionally *must* do a receive on a message
+         * containing the reference after this...
+         */
+        erts_msgq_set_save_end(BIF_P);
+
+        res = erts_proc_store_ref(BIF_P, port->async_open_port->ref);
+    } else {
+        res = port->common.id;
+    }
+
+    if (ERTS_IS_P_TRACED_FL(BIF_P, F_TRACE_PROCS))
+        trace_proc(BIF_P, ERTS_PROC_LOCK_MAIN, BIF_P,
+                   am_link, port->common.id);
+
+    ERTS_BIF_PREP_RET(ret, res);
 
     erts_port_release(port);
 
-    BIF_RET(port_id);
+    return ret;
 }
 
 static ERTS_INLINE Port *
@@ -98,6 +143,12 @@ lookup_port(Process *c_p, Eterm id_or_name, Uint32 invalid_flags)
 
 static ERTS_INLINE Port *
 sig_lookup_port(Process *c_p, Eterm id_or_name)
+{
+    return lookup_port(c_p, id_or_name, ERTS_PORT_SFLGS_INVALID_DRIVER_LOOKUP);
+}
+
+/* Non-inline copy of sig_lookup_port to be exported */
+Port *erts_sig_lookup_port(Process *c_p, Eterm id_or_name)
 {
     return lookup_port(c_p, id_or_name, ERTS_PORT_SFLGS_INVALID_DRIVER_LOOKUP);
 }
@@ -119,7 +170,7 @@ BIF_RETTYPE erts_internal_port_command_3(BIF_ALIST_3)
     BIF_RETTYPE res;
     Port *prt;
     int flags = 0;
-    Eterm ref;
+    erts_aint32_t state;
 
     if (is_not_nil(BIF_ARG_3)) {
 	Eterm l = BIF_ARG_3;
@@ -131,60 +182,79 @@ BIF_RETTYPE erts_internal_port_command_3(BIF_ALIST_3)
 	    else if (car == am_nosuspend)
 		flags |= ERTS_PORT_SIG_FLG_NOSUSPEND;
 	    else
-		BIF_RET(am_badarg);
+		BIF_RET(am_badopt);
 	    l = CDR(cons);
 	}
 	if (!is_nil(l))
-	    BIF_RET(am_badarg);
+	    BIF_RET(am_badopt);
     }
 
     prt = sig_lookup_port(BIF_P, BIF_ARG_1);
     if (!prt)
-	BIF_RET(am_badarg);
-
-    if (flags & ERTS_PORT_SIG_FLG_FORCE) {
-	if (!(prt->drv_ptr->flags & ERL_DRV_FLAG_SOFT_BUSY))
-	    BIF_RET(am_notsup);
+        ERTS_BIF_PREP_RET(res, am_badarg);
+    else if ((flags & ERTS_PORT_SIG_FLG_FORCE)
+             && !(prt->drv_ptr->flags & ERL_DRV_FLAG_SOFT_BUSY)) {
+        ERTS_BIF_PREP_RET(res, am_notsup);
     }
-
+    else {
+        Eterm ref;
 #ifdef DEBUG
-    ref = NIL;
+        ref = NIL;
 #endif
 
-    switch (erts_port_output(BIF_P, flags, prt, prt->common.id, BIF_ARG_2, &ref)) {
-    case ERTS_PORT_OP_CALLER_EXIT:
-    case ERTS_PORT_OP_BADARG:
-    case ERTS_PORT_OP_DROPPED:
- 	ERTS_BIF_PREP_RET(res, am_badarg);
-	break;
-    case ERTS_PORT_OP_BUSY:
-	ASSERT(!(flags & ERTS_PORT_SIG_FLG_FORCE));
-	if (flags & ERTS_PORT_SIG_FLG_NOSUSPEND)
-	    ERTS_BIF_PREP_RET(res, am_false);
-	else {
-	    erts_suspend(BIF_P, ERTS_PROC_LOCK_MAIN, prt);
-	    ERTS_BIF_PREP_YIELD3(res, bif_export[BIF_erts_internal_port_command_3],
-				 BIF_P, BIF_ARG_1, BIF_ARG_2, BIF_ARG_3);
+	switch (erts_port_output(BIF_P, flags, prt, prt->common.id,
+				 BIF_ARG_2, &ref)) {
+	case ERTS_PORT_OP_BADARG:
+	case ERTS_PORT_OP_DROPPED:
+	    ERTS_BIF_PREP_RET(res, am_badarg);
+	    break;
+	case ERTS_PORT_OP_BUSY:
+	    ASSERT(!(flags & ERTS_PORT_SIG_FLG_FORCE));
+	    if (flags & ERTS_PORT_SIG_FLG_NOSUSPEND)
+		ERTS_BIF_PREP_RET(res, am_false);
+	    else {
+		erts_suspend(BIF_P, ERTS_PROC_LOCK_MAIN, prt);
+		ERTS_BIF_YIELD3(BIF_TRAP_EXPORT(BIF_erts_internal_port_command_3),
+				BIF_P, BIF_ARG_1, BIF_ARG_2, BIF_ARG_3);
+	    }
+	    break;
+	case ERTS_PORT_OP_BUSY_SCHEDULED:
+	    ASSERT(!(flags & ERTS_PORT_SIG_FLG_FORCE));
+            ERTS_FALLTHROUGH();
+	case ERTS_PORT_OP_SCHEDULED:
+	    ASSERT(is_internal_ordinary_ref(ref));
+	    /* Signal order preserved by reply... */
+	    BIF_RET(ref);
+	    break;
+	case ERTS_PORT_OP_DONE:
+	    ERTS_BIF_PREP_RET(res, am_true);
+	    break;
+	default:
+	    ERTS_INTERNAL_ERROR("Unexpected erts_port_output() result");
+	    break;
 	}
-	break;
-    case ERTS_PORT_OP_BUSY_SCHEDULED:
-	ASSERT(!(flags & ERTS_PORT_SIG_FLG_FORCE));
-	/* Fall through... */
-    case ERTS_PORT_OP_SCHEDULED:
-	ASSERT(is_internal_ref(ref));
-	ERTS_BIF_PREP_RET(res, ref);
-	break;
-    case ERTS_PORT_OP_DONE:
-	ERTS_BIF_PREP_RET(res, am_true);
-	break;
-    default:
-	ERTS_INTERNAL_ERROR("Unexpected erts_port_output() result");
-	break;
     }
 
-    if (ERTS_PROC_IS_EXITING(BIF_P)) {
+    state = erts_atomic32_read_acqb(&BIF_P->state);
+    if (state & ERTS_PSFLG_EXITING) {
 	KILL_CATCHES(BIF_P);	/* Must exit */
 	ERTS_BIF_PREP_ERROR(res, BIF_P, EXC_ERROR);
+    }
+    else {
+        /* Ensure signal order is preserved... */
+        if (state & (ERTS_PSFLG_SIG_Q
+                     | ERTS_PSFLG_NMSG_SIG_IN_Q
+                     | ERTS_PSFLG_MSG_SIG_IN_Q)) {
+            Eterm from;
+            if (is_internal_port(BIF_ARG_1))
+                from = BIF_ARG_1;
+            else if (prt)
+                from = prt->common.id;
+            else
+                from = NIL;
+            ERTS_BIF_PREP_HANDLE_SIGNALS_FROM_RETURN(res, BIF_P,
+                                                     from, res);
+        }
     }
 
     return res;
@@ -195,46 +265,55 @@ BIF_RETTYPE erts_internal_port_call_3(BIF_ALIST_3)
     Port* prt;
     Eterm retval;
     Uint uint_op;
-    unsigned int op;
     erts_aint32_t state;
 
     prt = sig_lookup_port(BIF_P, BIF_ARG_1);
     if (!prt)
-	BIF_RET(am_badarg);
-
-    if (!term_to_Uint(BIF_ARG_2, &uint_op))
-	BIF_RET(am_badarg);
-
-    if (uint_op > (Uint) UINT_MAX)
-	BIF_RET(am_badarg);
-
-    op = (unsigned int) uint_op;
-
-    switch (erts_port_call(BIF_P, prt, op, BIF_ARG_3, &retval)) {
-    case ERTS_PORT_OP_CALLER_EXIT:
-    case ERTS_PORT_OP_DROPPED:
-    case ERTS_PORT_OP_BADARG:
 	retval = am_badarg;
-	break;
-    case ERTS_PORT_OP_SCHEDULED:
-	ASSERT(is_internal_ref(retval));
-	break;
-    case ERTS_PORT_OP_DONE:
-	ASSERT(is_not_internal_ref(retval));
-	break;
-    default:
-	ERTS_INTERNAL_ERROR("Unexpected erts_port_call() result");
-	retval = am_internal_error;
-	break;
+    else if (!term_to_Uint(BIF_ARG_2, &uint_op))
+	retval = am_badarg;
+    else if (uint_op > (Uint) UINT_MAX)
+	retval = am_badarg;
+    else {
+        unsigned int op = (unsigned int) uint_op;
+
+        switch (erts_port_call(BIF_P, prt, op, BIF_ARG_3, &retval)) {
+        case ERTS_PORT_OP_DROPPED:
+        case ERTS_PORT_OP_BADARG:
+            retval = am_badarg;
+            break;
+        case ERTS_PORT_OP_SCHEDULED:
+            ASSERT(is_internal_ordinary_ref(retval));
+            /* Signal order preserved by reply... */
+            BIF_RET(retval);
+            break;
+        case ERTS_PORT_OP_DONE:
+            ASSERT(is_not_internal_ref(retval));
+            break;
+        default:
+            ERTS_INTERNAL_ERROR("Unexpected erts_port_call() result");
+            retval = am_internal_error;
+            break;
+        }
     }
 
-    state = erts_smp_atomic32_read_acqb(&BIF_P->state);
-    if (state & (ERTS_PSFLG_EXITING|ERTS_PSFLG_PENDING_EXIT)) {
-#ifdef ERTS_SMP
-	if (state & ERTS_PSFLG_PENDING_EXIT)
-	    erts_handle_pending_exit(BIF_P, ERTS_PROC_LOCK_MAIN);
-#endif
+    state = erts_atomic32_read_acqb(&BIF_P->state);
+    if (state & ERTS_PSFLG_EXITING)
 	ERTS_BIF_EXITED(BIF_P);
+    else {
+        /* Ensure signal order is preserved... */
+        if (state & (ERTS_PSFLG_SIG_Q
+                     | ERTS_PSFLG_NMSG_SIG_IN_Q
+                     | ERTS_PSFLG_MSG_SIG_IN_Q)) {
+            Eterm from;
+            if (is_internal_port(BIF_ARG_1))
+                from = BIF_ARG_1;
+            else if (prt)
+                from = prt->common.id;
+            else
+                from = NIL;
+            ERTS_BIF_HANDLE_SIGNALS_FROM_RETURN(BIF_P, from, retval);
+        }
     }
 
     BIF_RET(retval);
@@ -245,46 +324,54 @@ BIF_RETTYPE erts_internal_port_control_3(BIF_ALIST_3)
     Port* prt;
     Eterm retval;
     Uint uint_op;
-    unsigned int op;
     erts_aint32_t state;
 
     prt = sig_lookup_port(BIF_P, BIF_ARG_1);
     if (!prt)
-	BIF_RET(am_badarg);
-
-    if (!term_to_Uint(BIF_ARG_2, &uint_op))
-	BIF_RET(am_badarg);
-
-    if (uint_op > (Uint) UINT_MAX)
-	BIF_RET(am_badarg);
-
-    op = (unsigned int) uint_op;
-
-    switch (erts_port_control(BIF_P, prt, op, BIF_ARG_3, &retval)) {
-    case ERTS_PORT_OP_CALLER_EXIT:
-    case ERTS_PORT_OP_BADARG:
-    case ERTS_PORT_OP_DROPPED:
 	retval = am_badarg;
-	break;
-    case ERTS_PORT_OP_SCHEDULED:
-	ASSERT(is_internal_ref(retval));
-	break;
-    case ERTS_PORT_OP_DONE:
-	ASSERT(is_not_internal_ref(retval));
-	break;
-    default:
-	ERTS_INTERNAL_ERROR("Unexpected erts_port_control() result");
-	retval = am_internal_error;
-	break;
+    else if (!term_to_Uint(BIF_ARG_2, &uint_op))
+	retval = am_badarg;
+    else if (uint_op > (Uint) UINT_MAX)
+	retval = am_badarg;
+    else {
+        unsigned int op = (unsigned int) uint_op;
+
+        switch (erts_port_control(BIF_P, prt, op, BIF_ARG_3, &retval)) {
+        case ERTS_PORT_OP_BADARG:
+        case ERTS_PORT_OP_DROPPED:
+            retval = am_badarg;
+            break;
+        case ERTS_PORT_OP_SCHEDULED:
+            ASSERT(is_internal_ordinary_ref(retval));
+            /* Signal order preserved by reply... */
+            BIF_RET(retval);
+        case ERTS_PORT_OP_DONE:
+            ASSERT(is_not_internal_ref(retval));
+            break;
+        default:
+            ERTS_INTERNAL_ERROR("Unexpected erts_port_control() result");
+            retval = am_internal_error;
+            break;
+        }
     }
 
-    state = erts_smp_atomic32_read_acqb(&BIF_P->state);
-    if (state & (ERTS_PSFLG_EXITING|ERTS_PSFLG_PENDING_EXIT)) {
-#ifdef ERTS_SMP
-	if (state & ERTS_PSFLG_PENDING_EXIT)
-	    erts_handle_pending_exit(BIF_P, ERTS_PROC_LOCK_MAIN);
-#endif
+    state = erts_atomic32_read_acqb(&BIF_P->state);
+    if (state & ERTS_PSFLG_EXITING)
 	ERTS_BIF_EXITED(BIF_P);
+    else {
+        /* Ensure signal order is preserved... */
+        if (state & (ERTS_PSFLG_SIG_Q
+                     | ERTS_PSFLG_NMSG_SIG_IN_Q
+                     | ERTS_PSFLG_MSG_SIG_IN_Q)) {
+            Eterm from;
+            if (is_internal_port(BIF_ARG_1))
+                from = BIF_ARG_1;
+            else if (prt)
+                from = prt->common.id;
+            else
+                from = NIL;
+            ERTS_BIF_HANDLE_SIGNALS_FROM_RETURN(BIF_P, from, retval);
+        }
     }
 
     BIF_RET(retval);
@@ -296,32 +383,52 @@ BIF_RETTYPE erts_internal_port_control_3(BIF_ALIST_3)
  */
 BIF_RETTYPE erts_internal_port_close_1(BIF_ALIST_1)
 {
-    Eterm ref;
+    Eterm retval;
     Port *prt;
-
-#ifdef DEBUG
-    ref = NIL;
-#endif
 
     prt = sig_lookup_port(BIF_P, BIF_ARG_1);
     if (!prt)
-	BIF_RET(am_badarg);
+	retval = am_badarg;
+    else {
 
+#ifdef DEBUG
+        retval = NIL;
+#endif
 
-    switch (erts_port_exit(BIF_P, 0, prt, prt->common.id, am_normal, &ref)) {
-    case ERTS_PORT_OP_CALLER_EXIT:
-    case ERTS_PORT_OP_BADARG:
-    case ERTS_PORT_OP_DROPPED:
-	BIF_RET(am_badarg);
-    case ERTS_PORT_OP_SCHEDULED:
-	ASSERT(is_internal_ref(ref));
-	BIF_RET(ref);
-    case ERTS_PORT_OP_DONE:
-	BIF_RET(am_true);
-    default:
-	ERTS_INTERNAL_ERROR("Unexpected erts_port_exit() result");
-	BIF_RET(am_internal_error);
+        switch (erts_port_exit(BIF_P, 0, prt, BIF_P->common.id,
+                               am_normal, &retval)) {
+        case ERTS_PORT_OP_BADARG:
+        case ERTS_PORT_OP_DROPPED:
+            retval = am_badarg;
+            break;
+        case ERTS_PORT_OP_SCHEDULED:
+            ASSERT(is_internal_ordinary_ref(retval));
+            /* Signal order preserved by reply... */
+            BIF_RET(retval);
+            break;
+        case ERTS_PORT_OP_DONE:
+            retval = am_true;
+            break;
+        default:
+            ERTS_INTERNAL_ERROR("Unexpected erts_port_exit() result");
+            retval = am_internal_error;
+            break;
+        }
     }
+
+    /* Ensure signal order is preserved... */
+    if (ERTS_PROC_HAS_INCOMING_SIGNALS(BIF_P)) {
+        Eterm from;
+        if (is_internal_port(BIF_ARG_1))
+            from = BIF_ARG_1;
+        else if (prt)
+            from = prt->common.id;
+        else
+            from = NIL;
+        ERTS_BIF_HANDLE_SIGNALS_FROM_RETURN(BIF_P, from, retval);
+    }
+    
+    BIF_RET(retval);
 }
 
 /*
@@ -330,110 +437,163 @@ BIF_RETTYPE erts_internal_port_close_1(BIF_ALIST_1)
  */
 BIF_RETTYPE erts_internal_port_connect_2(BIF_ALIST_2)
 {
-    Eterm ref;
+    Eterm retval;
     Port* prt;
 
     prt = sig_lookup_port(BIF_P, BIF_ARG_1);
     if (!prt)
-	BIF_RET(am_badarg);
-
+	retval = am_badarg;
+    else {
 #ifdef DEBUG
-    ref = NIL;
+        retval = NIL;
 #endif
 
-    switch (erts_port_connect(BIF_P, 0, prt, prt->common.id, BIF_ARG_2, &ref)) {
-    case ERTS_PORT_OP_CALLER_EXIT:
-    case ERTS_PORT_OP_BADARG:
-    case ERTS_PORT_OP_DROPPED:
-	BIF_RET(am_badarg);
-    case ERTS_PORT_OP_SCHEDULED:
-	ASSERT(is_internal_ref(ref));
-	BIF_RET(ref);
-	break;
-    case ERTS_PORT_OP_DONE:
-	BIF_RET(am_true);
-	break;
-    default:
-	ERTS_INTERNAL_ERROR("Unexpected erts_port_connect() result");
-	BIF_RET(am_internal_error);
+        switch (erts_port_connect(BIF_P, 0, prt, BIF_P->common.id,
+                                  BIF_ARG_2, &retval)) {
+        case ERTS_PORT_OP_BADARG:
+        case ERTS_PORT_OP_DROPPED:
+            retval = am_badarg;
+            break;
+        case ERTS_PORT_OP_SCHEDULED:
+            ASSERT(is_internal_ordinary_ref(retval));
+            /* Signal order preserved by reply... */
+            BIF_RET(retval);
+        case ERTS_PORT_OP_DONE:
+            retval = am_true;
+            break;
+        default:
+            ERTS_INTERNAL_ERROR("Unexpected erts_port_connect() result");
+            retval = am_internal_error;
+            break;
+        }
     }
+
+    /* Ensure signal order is preserved... */
+    if (ERTS_PROC_HAS_INCOMING_SIGNALS(BIF_P)) {
+        Eterm from;
+        if (is_internal_port(BIF_ARG_1))
+            from = BIF_ARG_1;
+        else if (prt)
+            from = prt->common.id;
+        else
+            from = NIL;
+        ERTS_BIF_HANDLE_SIGNALS_FROM_RETURN(BIF_P, from, retval);
+    }
+    
+    BIF_RET(retval);
 }
 
 BIF_RETTYPE erts_internal_port_info_1(BIF_ALIST_1)
 {
     Eterm retval;
-    Port* prt;
+    Port* prt = NULL;
 
     if (is_internal_port(BIF_ARG_1) || is_atom(BIF_ARG_1)) {
 	prt = sig_lookup_port(BIF_P, BIF_ARG_1);
 	if (!prt)
-	    BIF_RET(am_undefined);
+	    retval = am_undefined;
+        else {
+            switch (erts_port_info(BIF_P, prt, THE_NON_VALUE, &retval)) {
+            case ERTS_PORT_OP_BADARG:
+                retval = am_badarg;
+                break;
+            case ERTS_PORT_OP_DROPPED:
+                retval = am_undefined;
+                break;
+            case ERTS_PORT_OP_SCHEDULED:
+                ASSERT(is_internal_ordinary_ref(retval));
+                /* Signal order preserved by reply... */
+                BIF_RET(retval);
+            case ERTS_PORT_OP_DONE:
+                ASSERT(is_not_internal_ref(retval));
+                break;
+            default:
+                ERTS_INTERNAL_ERROR("Unexpected erts_port_info() result");
+                retval = am_internal_error;
+                break;
+            }
+        }
     }
     else if (is_external_port(BIF_ARG_1)) {
 	if (external_port_dist_entry(BIF_ARG_1) == erts_this_dist_entry)
-	    BIF_RET(am_undefined);
+	    retval = am_undefined;
 	else
-	    BIF_RET(am_badarg);
+	    retval = am_badarg;
     }
     else {
-	BIF_RET(am_badarg);
+	retval = am_badarg;
     }
 
-    switch (erts_port_info(BIF_P, prt, THE_NON_VALUE, &retval)) {
-    case ERTS_PORT_OP_CALLER_EXIT:
-    case ERTS_PORT_OP_BADARG:
-	BIF_RET(am_badarg);
-    case ERTS_PORT_OP_DROPPED:
-	BIF_RET(am_undefined);
-    case ERTS_PORT_OP_SCHEDULED:
-	ASSERT(is_internal_ref(retval));
-	BIF_RET(retval);
-    case ERTS_PORT_OP_DONE:
-	ASSERT(is_not_internal_ref(retval));
-	BIF_RET(retval);
-    default:
-	ERTS_INTERNAL_ERROR("Unexpected erts_port_info() result");
-	BIF_RET(am_internal_error);
+    /* Ensure signal order is preserved... */
+    if (ERTS_PROC_HAS_INCOMING_SIGNALS(BIF_P)) {
+        Eterm from;
+        if (is_internal_port(BIF_ARG_1))
+            from = BIF_ARG_1;
+        else if (prt)
+            from = prt->common.id;
+        else
+            from = NIL;
+        ERTS_BIF_HANDLE_SIGNALS_FROM_RETURN(BIF_P, from, retval);
     }
+    
+    BIF_RET(retval);
 }
 
 
 BIF_RETTYPE erts_internal_port_info_2(BIF_ALIST_2)
 {
     Eterm retval;
-    Port* prt;
+    Port* prt = NULL;
 
     if (is_internal_port(BIF_ARG_1) || is_atom(BIF_ARG_1)) {
 	prt = sig_lookup_port(BIF_P, BIF_ARG_1);
 	if (!prt)
-	    BIF_RET(am_undefined);
+	    retval = am_undefined;
+        else {
+            switch (erts_port_info(BIF_P, prt, BIF_ARG_2, &retval)) {
+            case ERTS_PORT_OP_BADARG:
+                retval = am_badarg;
+                break;
+            case ERTS_PORT_OP_DROPPED:
+                retval = am_undefined;
+                break;
+            case ERTS_PORT_OP_SCHEDULED:
+                ASSERT(is_internal_ordinary_ref(retval));
+                /* Signal order preserved by reply... */
+                BIF_RET(retval);
+            case ERTS_PORT_OP_DONE:
+                ASSERT(is_not_internal_ref(retval));
+                break;
+            default:
+                ERTS_INTERNAL_ERROR("Unexpected erts_port_info() result");
+                retval = am_internal_error;
+                break;
+            }
+        }
     }
     else if (is_external_port(BIF_ARG_1)) {
 	if (external_port_dist_entry(BIF_ARG_1) == erts_this_dist_entry)
-	    BIF_RET(am_undefined);
+	    retval = am_undefined;
 	else
-	    BIF_RET(am_badarg);
+	    retval = am_badtype;
     }
     else {
-	BIF_RET(am_badarg);
+	retval = am_badtype;
     }
 
-    switch (erts_port_info(BIF_P, prt, BIF_ARG_2, &retval)) {
-    case ERTS_PORT_OP_CALLER_EXIT:
-    case ERTS_PORT_OP_BADARG:
-	BIF_RET(am_badarg);
-    case ERTS_PORT_OP_DROPPED:
-	BIF_RET(am_undefined);
-    case ERTS_PORT_OP_SCHEDULED:
-	ASSERT(is_internal_ref(retval));
-	BIF_RET(retval);
-    case ERTS_PORT_OP_DONE:
-	ASSERT(is_not_internal_ref(retval));
-	BIF_RET(retval);
-    default:
-	ERTS_INTERNAL_ERROR("Unexpected erts_port_info() result");
-	BIF_RET(am_internal_error);
+    /* Ensure signal order is preserved... */
+    if (ERTS_PROC_HAS_INCOMING_SIGNALS(BIF_P)) {
+        Eterm from;
+        if (is_internal_port(BIF_ARG_1))
+            from = BIF_ARG_1;
+        else if (prt)
+            from = prt->common.id;
+        else
+            from = NIL;
+        ERTS_BIF_HANDLE_SIGNALS_FROM_RETURN(BIF_P, from, retval);
     }
+
+    BIF_RET(retval);
 }
 
 /*
@@ -469,39 +629,35 @@ cleanup_old_port_data(erts_aint_t data)
 	ASSERT(is_immed((Eterm) data));
     }
     else {
-#ifdef ERTS_SMP
 	ErtsPortDataHeap *pdhp = (ErtsPortDataHeap *) data;
 	size_t size;
-	ERTS_SMP_DATA_DEPENDENCY_READ_MEMORY_BARRIER;
+	ERTS_THR_DATA_DEPENDENCY_READ_MEMORY_BARRIER;
 	size = sizeof(ErtsPortDataHeap) + (pdhp->hsize-1)*sizeof(Eterm);
 	erts_schedule_thr_prgr_later_cleanup_op(free_port_data_heap,
 						(void *) pdhp,
 						&pdhp->later_op,
 						size);
-#else
-	free_port_data_heap((void *) data);
-#endif
     }
 }
 
 void
 erts_init_port_data(Port *prt)
 {
-    erts_smp_atomic_init_nob(&prt->data, (erts_aint_t) am_undefined);
+    erts_atomic_init_nob(&prt->data, (erts_aint_t) am_undefined);
 }
 
 void
 erts_cleanup_port_data(Port *prt)
 {
     ASSERT(erts_atomic32_read_nob(&prt->state) & ERTS_PORT_SFLGS_INVALID_LOOKUP);
-    cleanup_old_port_data(erts_smp_atomic_xchg_nob(&prt->data,
+    cleanup_old_port_data(erts_atomic_xchg_nob(&prt->data,
 						   (erts_aint_t) NULL));
 }
 
 Uint
 erts_port_data_size(Port *prt)
 {
-    erts_aint_t data = erts_smp_atomic_read_ddrb(&prt->data);
+    erts_aint_t data = erts_atomic_read_ddrb(&prt->data);
 
     if ((data & 0x3) != 0) {
 	ASSERT(is_immed((Eterm) (UWord) data));
@@ -516,7 +672,7 @@ erts_port_data_size(Port *prt)
 ErlOffHeap *
 erts_port_data_offheap(Port *prt)
 {
-    erts_aint_t data = erts_smp_atomic_read_ddrb(&prt->data);
+    erts_aint_t data = erts_atomic_read_ddrb(&prt->data);
 
     if ((data & 0x3) != 0) {
 	ASSERT(is_immed((Eterm) (UWord) data));
@@ -561,11 +717,11 @@ BIF_RETTYPE port_set_data_2(BIF_ALIST_2)
 	ASSERT((data & 0x3) == 0);
     }
 
-    data = erts_smp_atomic_xchg_wb(&prt->data, data);
+    data = erts_atomic_xchg_wb(&prt->data, data);
 
     if (data == (erts_aint_t)NULL) {
 	/* Port terminated by racing thread */
-	data = erts_smp_atomic_xchg_wb(&prt->data, data);
+	data = erts_atomic_xchg_wb(&prt->data, data);
 	ASSERT(data != (erts_aint_t)NULL);
 	cleanup_old_port_data(data);
 	BIF_ERROR(BIF_P, BADARG);
@@ -588,7 +744,7 @@ BIF_RETTYPE port_get_data_1(BIF_ALIST_1)
     if (!prt)
         BIF_ERROR(BIF_P, BADARG);
 
-    data = erts_smp_atomic_read_ddrb(&prt->data);
+    data = erts_atomic_read_ddrb(&prt->data);
     if (data == (erts_aint_t)NULL)
         BIF_ERROR(BIF_P, BADARG);  /* Port terminated by racing thread */
 
@@ -605,19 +761,41 @@ BIF_RETTYPE port_get_data_1(BIF_ALIST_1)
     BIF_RET(res);
 }
 
+Eterm erts_port_data_read(Port* prt)
+{
+    Eterm res;
+    erts_aint_t data;
+
+    data = erts_atomic_read_ddrb(&prt->data);
+    if (data == (erts_aint_t)NULL)
+        return am_undefined;  /* Port terminated by racing thread */
+
+    if ((data & 0x3) != 0) {
+	res = (Eterm) (UWord) data;
+	ASSERT(is_immed(res));
+    }
+    else {
+	ErtsPortDataHeap *pdhp = (ErtsPortDataHeap *) data;
+	res = pdhp->data;
+    }
+    return res;
+}
+
+
 /* 
  * Open a port. Most of the work is not done here but rather in
  * the file io.c.
  * Error returns: -1 or -2 returned from open_driver (-2 implies
  * that *err_nump contains the error code; -1 means we don't really know what happened),
  * -3 if argument parsing failed or we are out of ports (*err_nump should contain
- * either BADARG or SYSTEM_LIMIT).
+ * either BADARG or SYSTEM_LIMIT),
+ * -4 if port settings were invalid.
  */
 
 static Port *
 open_port(Process* p, Eterm name, Eterm settings, int *err_typep, int *err_nump)
 {
-    int i;
+    int merged_environment = 0;
     Eterm option;
     Uint arity;
     Eterm* tp;
@@ -638,19 +816,25 @@ open_port(Process* p, Eterm name, Eterm settings, int *err_typep, int *err_nump)
     opts.read_write = 0;
     opts.hide_window = 0;
     opts.wd = NULL;
-    opts.envir = NULL;
     opts.exit_status = 0;
     opts.overlapped_io = 0; 
     opts.spawn_type = ERTS_SPAWN_ANY; 
     opts.argv = NULL;
     opts.parallelism = erts_port_parallelism;
+    opts.high_watermark = 8192;
+    opts.low_watermark = opts.high_watermark / 2;
+    opts.port_watermarks_set = 0;
+    opts.msgq_watermarks_set = 0;
+    erts_osenv_init(&opts.envir);
+
     linebuf = 0;
 
     *err_nump = 0;
 
     if (is_not_list(settings) && is_not_nil(settings)) {
-	goto badarg;
+	goto bad_settings;
     }
+
     /*
      * Parse the settings.
      */
@@ -664,7 +848,7 @@ open_port(Process* p, Eterm name, Eterm settings, int *err_typep, int *err_nump)
 		option = *tp++;
 		if (option == am_packet) {
 		    if (is_not_small(*tp)) {
-			goto badarg;
+			goto bad_settings;
 		    }
 		    opts.packet_bytes = signed_val(*tp);
 		    switch (opts.packet_bytes) {
@@ -673,27 +857,32 @@ open_port(Process* p, Eterm name, Eterm settings, int *err_typep, int *err_nump)
 		    case 4:
 			break;
 		    default:
-			goto badarg;
+			goto bad_settings;
 		   }
 		} else if (option == am_line) {
 		    if (is_not_small(*tp)) {
-			goto badarg;
+			goto bad_settings;
 		    }
 		    linebuf = signed_val(*tp);
 		    if (linebuf <= 0) {
-			goto badarg;
+			goto bad_settings;
 		    }
 		} else if (option == am_env) {
-		    byte* bytes;
-		    if ((bytes = convert_environment(p, *tp)) == NULL) {
-			goto badarg;
+		    if (merged_environment) {
+		        /* Ignore previous env option */
+		        erts_osenv_clear(&opts.envir);
 		    }
-		    opts.envir = (char *) bytes;
+
+		    merged_environment = 1;
+
+		    if (merge_global_environment(&opts.envir, *tp)) {
+		        goto bad_settings;
+		    }
 		} else if (option == am_args) {
 		    char **av;
 		    char **oav = opts.argv;
 		    if ((av = convert_args(*tp)) == NULL) {
-			goto badarg;
+			goto bad_settings;
 		    }
 		    opts.argv = av;
 		    if (oav) {
@@ -706,7 +895,7 @@ open_port(Process* p, Eterm name, Eterm settings, int *err_typep, int *err_nump)
 		    char *a0;
 
 		    if ((a0 = erts_convert_filename_to_native(*tp, NULL, 0, ERTS_ALC_T_TMP, 1, 1, NULL)) == NULL) {
-			goto badarg;
+			goto bad_settings;
 		    }
 		    if (opts.argv == NULL) {
 			opts.argv = erts_alloc(ERTS_ALC_T_TMP, 
@@ -727,9 +916,65 @@ open_port(Process* p, Eterm name, Eterm settings, int *err_typep, int *err_nump)
 		    else if (*tp == am_false)
 			opts.parallelism = 0;
 		    else
-			goto badarg;
+			goto bad_settings;
+                } else if (option == am_busy_limits_port) {
+                    Uint high, low;
+                    if (*tp == am_disabled)
+                        low = high = ERL_DRV_BUSY_MSGQ_DISABLED;
+                    else if (!is_tuple_arity(*tp, 2))
+                        goto bad_settings;
+                    else {
+                        Eterm *wtp = tuple_val(*tp);
+                        if (!term_to_Uint(wtp[1], &low))
+                            goto bad_settings;
+                        if (!term_to_Uint(wtp[2], &high))
+                            goto bad_settings;
+                        if (high < ERL_DRV_BUSY_MSGQ_LIM_MIN)
+                            goto bad_settings;
+                        if (high > ERL_DRV_BUSY_MSGQ_LIM_MAX)
+                            goto bad_settings;
+                        if (low < ERL_DRV_BUSY_MSGQ_LIM_MIN)
+                            goto bad_settings;
+                        if (low > ERL_DRV_BUSY_MSGQ_LIM_MAX)
+                            goto bad_settings;
+                        if (high == ~((Uint) 0) || low == ~((Uint) 0))
+                            goto bad_settings;
+                        if (low > high)
+                            low = high;
+                    }
+                    opts.low_watermark = low;
+                    opts.high_watermark = high;
+                    opts.port_watermarks_set = !0;
+                } else if (option == am_busy_limits_msgq) {
+                    Uint high, low;
+                    if (*tp == am_disabled)
+                        low = high = ERL_DRV_BUSY_MSGQ_DISABLED;
+                    else if (!is_tuple_arity(*tp, 2))
+                        goto bad_settings;
+                    else {
+                        Eterm *wtp = tuple_val(*tp);
+                        if (!term_to_Uint(wtp[1], &low))
+                            goto bad_settings;
+                        if (!term_to_Uint(wtp[2], &high))
+                            goto bad_settings;
+                        if (high < ERL_DRV_BUSY_MSGQ_LIM_MIN)
+                            goto bad_settings;
+                        if (high > ERL_DRV_BUSY_MSGQ_LIM_MAX)
+                            goto bad_settings;
+                        if (low < ERL_DRV_BUSY_MSGQ_LIM_MIN)
+                            goto bad_settings;
+                        if (low > ERL_DRV_BUSY_MSGQ_LIM_MAX)
+                            goto bad_settings;
+                        if (high == ~((Uint) 0) || low == ~((Uint) 0))
+                            goto bad_settings;
+                        if (low > high)
+                            low = high;
+                    }
+                    opts.low_msgq_watermark = low;
+                    opts.high_msgq_watermark = high;
+                    opts.msgq_watermarks_set = !0;
 		} else {
-		    goto badarg;
+		    goto bad_settings;
 		}
 	    } else if (*nargs == am_stream) {
 		opts.packet_bytes = 0;
@@ -756,53 +1001,42 @@ open_port(Process* p, Eterm name, Eterm settings, int *err_typep, int *err_nump)
 	    } else if (*nargs == am_overlapped_io) {
 		opts.overlapped_io = 1;
 	    } else {
-		goto badarg;
+		goto bad_settings;
 	    }
 	    if (is_nil(*++nargs)) 
 		break;
 	    if (is_not_list(*nargs)) {
-		goto badarg;
+		goto bad_settings;
 	    }
 	    nargs = list_val(*nargs);
 	}
     }
+
     if (opts.read_write == 0)	/* implement default */
 	opts.read_write = DO_READ|DO_WRITE;
 
     /* Mutually exclusive arguments. */
     if((linebuf && opts.packet_bytes) || 
        (opts.redir_stderr && !opts.use_stdio)) {
-	goto badarg;
+	goto bad_settings;
+    }
+
+    /* If we lacked an env option, fill in the global environment without
+     * changes. */
+    if (!merged_environment) {
+        merge_global_environment(&opts.envir, NIL);
     }
 
     /*
      * Parse the first argument and start the appropriate driver.
      */
-    
-    if (is_atom(name) || (i = is_string(name))) {
-	/* a vanilla port */
-	if (is_atom(name)) {
-	    name_buf = (char *) erts_alloc(ERTS_ALC_T_TMP,
-					   atom_tab(atom_val(name))->len+1);
-	    sys_memcpy((void *) name_buf,
-		       (void *) atom_tab(atom_val(name))->name, 
-		       atom_tab(atom_val(name))->len);
-	    name_buf[atom_tab(atom_val(name))->len] = '\0';
-	} else {
-	    name_buf = (char *) erts_alloc(ERTS_ALC_T_TMP, i + 1);
-	    if (intlist_to_buf(name, name_buf, i) != i)
-		erl_exit(1, "%s:%d: Internal error\n", __FILE__, __LINE__);
-	    name_buf[i] = '\0';
-	}
-	driver = &vanilla_driver;
-    } else {   
 	if (is_not_tuple(name)) {
 	    goto badarg;		/* Not a process or fd port */
 	}
 	tp = tuple_val(name);
 	arity = *tp++;
 
-	if (arity == make_arityval(0)) {
+	if (arity == make_arityval_zero()) {
 	    goto badarg;
 	}
     
@@ -814,7 +1048,7 @@ open_port(Process* p, Eterm name, Eterm settings, int *err_typep, int *err_nump)
 	    name = tp[1];
 	    encoding = erts_get_native_filename_encoding();
 	    /* Do not convert the command to utf-16le yet, do that in win32 specific code */
-	    /* since the cmd is used for comparsion with drivers names and copied to port info */
+	    /* since the cmd is used for comparison with drivers names and copied to port info */
 	    if (encoding == ERL_FILENAME_WIN_WCHAR) {
 		encoding = ERL_FILENAME_UTF8;
 	    }
@@ -831,10 +1065,6 @@ open_port(Process* p, Eterm name, Eterm settings, int *err_typep, int *err_nump)
 
 	    driver = &spawn_driver;
 	} else if (*tp == am_fd) { /* An fd port */
-	    int n;
-	    struct Sint_buf sbuf;
-	    char* p;
-
 	    if (arity != make_arityval(3)) {
 		goto badarg;
 	    }
@@ -844,21 +1074,14 @@ open_port(Process* p, Eterm name, Eterm settings, int *err_typep, int *err_nump)
 	    opts.ifd = unsigned_val(tp[1]);
 	    opts.ofd = unsigned_val(tp[2]);
 
-	    /* Syntesize name from input and output descriptor. */
-	    name_buf = erts_alloc(ERTS_ALC_T_TMP,
-				  2*sizeof(struct Sint_buf) + 2); 
-	    p = Sint_to_buf(opts.ifd, &sbuf);
-	    n = sys_strlen(p);
-	    sys_strncpy(name_buf, p, n);
-	    name_buf[n] = '/';
-	    p = Sint_to_buf(opts.ofd, &sbuf);
-	    sys_strcpy(name_buf+n+1, p);
+            /* Syntesize name from input and output descriptor. */
+            name_buf = erts_alloc(ERTS_ALC_T_TMP, 256);
+            erts_snprintf(name_buf, 256, "%i/%i", opts.ifd, opts.ofd);
 
 	    driver = &fd_driver;
 	} else {
 	    goto badarg;
 	}
-    }
 
     if ((driver != &spawn_driver && opts.argv != NULL) ||
 	(driver == &spawn_driver && 
@@ -878,12 +1101,12 @@ open_port(Process* p, Eterm name, Eterm settings, int *err_typep, int *err_nump)
 	goto badarg;
     }
     
-    if (IS_TRACED_FL(p, F_TRACE_SCHED_PROCS)) {
-        trace_virtual_sched(p, am_out);
+    if (ERTS_IS_P_TRACED_FL(p, F_TRACE_SCHED_PROCS)) {
+        trace_sched(p, ERTS_PROC_LOCK_MAIN, am_out, F_TRACE_SCHED_PROCS);
     }
     
 
-    erts_smp_proc_unlock(p, ERTS_PROC_LOCK_MAIN);
+    erts_proc_unlock(p, ERTS_PROC_LOCK_MAIN);
 
     port = erts_open_driver(driver, p->common.id, name_buf, &opts, err_typep, err_nump);
 #ifdef USE_VM_PROBES
@@ -896,20 +1119,21 @@ open_port(Process* p, Eterm name, Eterm settings, int *err_typep, int *err_nump)
         DTRACE3(port_open, process_str, name_buf, port_str);
     }
 #endif
-    erts_smp_proc_lock(p, ERTS_PROC_LOCK_MAIN);
+
+    if (port && ERTS_IS_P_TRACED_FL(port, F_TRACE_PORTS))
+        trace_port(port, am_getting_linked, p->common.id, F_TRACE_PORTS);
+
+    erts_proc_lock(p, ERTS_PROC_LOCK_MAIN);
+
+    if (ERTS_IS_P_TRACED_FL(p, F_TRACE_SCHED_PROCS)) {
+        trace_sched(p, ERTS_PROC_LOCK_MAIN, am_in, F_TRACE_SCHED_PROCS);
+    }
 
     if (!port) {
 	DEBUGF(("open_driver returned (%d:%d)\n",
 		err_typep ? *err_typep : 4711,
 		err_nump ? *err_nump : 4711));
-    	if (IS_TRACED_FL(p, F_TRACE_SCHED_PROCS)) {
-            trace_virtual_sched(p, am_in);
-    	}
 	goto do_return;
-    }
-    
-    if (IS_TRACED_FL(p, F_TRACE_SCHED_PROCS)) {
-        trace_virtual_sched(p, am_in);
     }
 
     if (linebuf && port->linebuf == NULL){
@@ -921,6 +1145,7 @@ open_port(Process* p, Eterm name, Eterm settings, int *err_typep, int *err_nump)
 	erts_atomic32_read_bor_relb(&port->state, sflgs);
  
  do_return:
+    erts_osenv_clear(&opts.envir);
     if (name_buf)
 	erts_free(ERTS_ALC_T_TMP, (void *) name_buf);
     if (opts.argv) {
@@ -930,7 +1155,13 @@ open_port(Process* p, Eterm name, Eterm settings, int *err_typep, int *err_nump)
 	erts_free(ERTS_ALC_T_TMP, (void *) opts.wd);
     }
     return port;
-    
+
+ bad_settings:
+    if (err_typep)
+	*err_typep = -4;
+    port = NULL;
+    goto do_return;
+
  badarg:
     if (err_typep)
 	*err_typep = -3;
@@ -940,19 +1171,60 @@ open_port(Process* p, Eterm name, Eterm settings, int *err_typep, int *err_nump)
     goto do_return;
 }
 
+/* Merges the global environment and the given {Key, Value} list into env,
+ * unsetting all keys whose value is either 'false' or NIL. The behavior on
+ * NIL is undocumented and perhaps surprising, but the previous implementation
+ * worked in this manner. */
+static int merge_global_environment(erts_osenv_t *env, Eterm key_value_pairs) {
+    const erts_osenv_t *global_env = erts_sys_rlock_global_osenv();
+    erts_osenv_merge(env, global_env, 0);
+    erts_sys_runlock_global_osenv();
+
+    while (is_list(key_value_pairs)) {
+        Eterm *cell, *tuple;
+
+        cell = list_val(key_value_pairs);
+
+        if(!is_tuple_arity(CAR(cell), 2)) {
+            return -1;
+        }
+
+        tuple = tuple_val(CAR(cell));
+        key_value_pairs = CDR(cell);
+
+        if(is_nil(tuple[2]) || tuple[2] == am_false) {
+            if(erts_osenv_unset_term(env, tuple[1]) < 0) {
+                return -1;
+            }
+        } else {
+            if(erts_osenv_put_term(env, tuple[1], tuple[2]) < 0) {
+                return -1;
+            }
+        }
+    }
+
+    if(!is_nil(key_value_pairs)) {
+        return -1;
+    }
+
+    return 0;
+}
+
 /* Arguments can be given i unicode and as raw binaries, convert filename is used to convert */
 static char **convert_args(Eterm l)
 {
     char **pp;
     char *b;
-    int n;
-    int i = 0;
+    Sint n;
+    Sint i = 0;
     Eterm str;
     if (is_not_list(l) && is_not_nil(l)) {
 	return NULL;
     }
 
     n = erts_list_length(l);
+    if (n < 0)
+        return NULL;
     /* We require at least one element in argv[0] + NULL at end */
     pp = erts_alloc(ERTS_ALC_T_TMP, (n + 2) * sizeof(char **));
     pp[i++] = erts_default_arg0;
@@ -984,75 +1256,6 @@ static void free_args(char **av)
     }
     erts_free(ERTS_ALC_T_TMP, av);
 }
-    
-
-static byte* convert_environment(Process* p, Eterm env)
-{
-    Eterm all;
-    Eterm* temp_heap;
-    Eterm* hp;
-    Uint heap_size;
-    int n;
-    Sint size;
-    byte* bytes;
-    int encoding = erts_get_native_filename_encoding();
-
-    if ((n = erts_list_length(env)) < 0) {
-	return NULL;
-    }
-    heap_size = 2*(5*n+1);
-    temp_heap = hp = (Eterm *) erts_alloc(ERTS_ALC_T_TMP, heap_size*sizeof(Eterm));
-    bytes = NULL;		/* Indicating error */
-
-    /*
-     * All errors below are handled by jumping to 'done', to ensure that the memory
-     * gets deallocated. Do NOT return directly from this function.
-     */
-
-    all = CONS(hp, make_small(0), NIL);
-    hp += 2;
-
-    while(is_list(env)) {
-	Eterm tmp;
-	Eterm* tp;
-
-	tmp = CAR(list_val(env));
-	if (is_not_tuple_arity(tmp, 2)) {
-	    goto done;
-	}
-	tp = tuple_val(tmp);
-	tmp = CONS(hp, make_small(0), NIL);
-	hp += 2;
-	if (tp[2] != am_false) {
-	    tmp = CONS(hp, tp[2], tmp);
-	    hp += 2;
-	}
-	tmp = CONS(hp, make_small('='), tmp);
-	hp += 2;
-	tmp = CONS(hp, tp[1], tmp);
-	hp += 2;
-	all = CONS(hp, tmp, all);
-	hp += 2;
-	env = CDR(list_val(env));
-    }
-    if (is_not_nil(env)) {
-	goto done;
-    }
-
-    if ((size = erts_native_filename_need(all,encoding)) < 0) {
-	goto done;
-    }
-
-    /*
-     * Put the result in a binary (no risk for a memory leak that way).
-     */
-    (void) erts_new_heap_binary(p, NULL, size, &bytes);
-    erts_native_filename_put(all,encoding,bytes);
-
- done:
-    erts_free(ERTS_ALC_T_TMP, temp_heap);
-    return bytes;
-}
 
 /* ------------ decode_packet() and friends: */
 
@@ -1060,58 +1263,32 @@ struct packet_callback_args
 {
     Process* p;  /* In */
     Eterm res;   /* Out */
+    ErtsHeapFactory factory;
     int string_as_bin; /* return strings as binaries (http_bin): */
-    byte* aligned_ptr;
-    Uint bin_sz;
+    const byte *aligned_ptr;
     Eterm orig;
-    Uint bin_offs;
-    byte bin_bitoffs;
+    Uint bin_sz;
 };
 
 #define in_area(ptr,start,nbytes) \
     ((UWord)((char*)(ptr) - (char*)(start)) < (nbytes))
 
 static Eterm
-http_bld_string(struct packet_callback_args* pca, Uint **hpp, Uint *szp,
-		const char *str, Sint len)
+http_bld_string(struct packet_callback_args* pca, const char *str, Sint len)
 {
-    Eterm res = THE_NON_VALUE;
-    Uint size;
-    int make_subbin;
-
     if (pca->string_as_bin) {
-	size = heap_bin_size(len);
-	make_subbin = (size > ERL_SUB_BIN_SIZE
-		       && in_area(str, pca->aligned_ptr, pca->bin_sz));
-	if (szp) {
-	    *szp += make_subbin ? ERL_SUB_BIN_SIZE : size;
-	}
-	if (hpp) {
-	    res = make_binary(*hpp);
-	    if (make_subbin) {
-		ErlSubBin* bin = (ErlSubBin*) *hpp;
-		bin->thing_word = HEADER_SUB_BIN;
-		bin->size = len;
-		bin->offs = pca->bin_offs + ((byte*)str - pca->aligned_ptr);
-		bin->orig = pca->orig;
-		bin->bitoffs = pca->bin_bitoffs;
-		bin->bitsize = 0;
-		bin->is_writable = 0;
-		*hpp += ERL_SUB_BIN_SIZE;
-	    }
-	    else {
-		ErlHeapBin* bin = (ErlHeapBin*) *hpp;
-		bin->thing_word = header_heap_bin(len);
-		bin->size = len;
-		memcpy(bin->data, str, len);
-		*hpp += size;
-	    }
-	}
+        if (!ErtsInArea(str, pca->aligned_ptr, pca->bin_sz)) {
+            return erts_new_binary_from_data(pca->p, len, (byte*)str);
+        }
+
+        return erts_make_sub_binary(pca->p,
+                                    pca->orig,
+                                    ((byte*)str - pca->aligned_ptr),
+                                    len);
+    } else {
+        Eterm *hp = erts_produce_heap(&pca->factory, len * 2, HALLOC_EXTRA);
+        return erts_bld_string_n(&hp, NULL, str, len);
     }
-    else {
-	res = erts_bld_string_n(hpp, szp, str, len);
-    }
-    return res;
 }
 
 static int http_response_erl(void *arg, int major, int minor,
@@ -1120,56 +1297,61 @@ static int http_response_erl(void *arg, int major, int minor,
     /* {http_response,{Major,Minor},Status,"Phrase"} */
     struct packet_callback_args* pca = (struct packet_callback_args*) arg;    
     Eterm phrase_term, ver;
-    Uint hsize = 3 + 5;
-    Eterm* hp;
-#ifdef DEBUG
-    Eterm* hend;
-#endif
+    Eterm *hp;
 
-    http_bld_string(pca, NULL, &hsize, phrase, phrase_len);
-    hp = HAlloc(pca->p, hsize);
-#ifdef DEBUG
-    hend = hp + hsize;
-#endif
-    phrase_term = http_bld_string(pca, &hp, NULL, phrase, phrase_len);
-    ver = TUPLE2(hp, make_small(major), make_small(minor));
-    hp += 3;
-    pca->res = TUPLE4(hp, am_http_response, ver, make_small(status), phrase_term);
-    ASSERT(hp+5==hend);
+    phrase_term = http_bld_string(pca, phrase, phrase_len);
+
+    hp = erts_produce_heap(&pca->factory, 3 + 5, HALLOC_EXTRA);
+    ver = TUPLE2(&hp[0], make_small(major), make_small(minor));
+    pca->res = TUPLE4(&hp[3],
+                      am_http_response,
+                      ver,
+                      make_small(status),
+                      phrase_term);
+
     return 1;
-}   
-    
-static Eterm http_bld_uri(struct packet_callback_args* pca,
-			  Eterm** hpp, Uint* szp, const PacketHttpURI* uri)
+}
+
+static Eterm http_bld_uri(struct packet_callback_args* pca, const PacketHttpURI* uri)
 {
     Eterm s1, s2;
+
     if (uri->type == URI_STAR) {
         return am_Times; /* '*' */
     }
 
-    s1 = http_bld_string(pca, hpp, szp, uri->s1_ptr, uri->s1_len);
+    s1 = http_bld_string(pca, uri->s1_ptr, uri->s1_len);
 
     switch (uri->type) {
     case URI_ABS_PATH:
-        return erts_bld_tuple(hpp, szp, 2, am_abs_path, s1);
+        {
+            Eterm *hp = erts_produce_heap(&pca->factory, 3, HALLOC_EXTRA);
+            return TUPLE2(hp, am_abs_path, s1);
+        }
     case URI_HTTP:
     case URI_HTTPS:
-        s2 = http_bld_string(pca, hpp, szp, uri->s2_ptr, uri->s2_len);
-        return erts_bld_tuple
-            (hpp, szp, 5, am_absoluteURI, 
-             ((uri->type==URI_HTTP) ? am_http : am_https),
-             s1, 
-             ((uri->port==0) ? am_undefined : make_small(uri->port)),
-             s2);
-        
+        {
+            Eterm *hp;
+            s2 = http_bld_string(pca, uri->s2_ptr, uri->s2_len);
+            hp = erts_produce_heap(&pca->factory, 6, HALLOC_EXTRA);
+            return TUPLE5(hp,
+                          am_absoluteURI,
+                          ((uri->type==URI_HTTP) ? am_http : am_https),
+                          s1,
+                          ((uri->port==0) ? am_undefined : make_small(uri->port)),
+                          s2);
+        }
     case URI_STRING:
         return s1;
     case URI_SCHEME:
-        s2 = http_bld_string(pca, hpp, szp, uri->s2_ptr, uri->s2_len);
-        return erts_bld_tuple(hpp, szp, 3, am_scheme, s1, s2);
-                              
+        {
+            Eterm *hp;
+            s2 = http_bld_string(pca, uri->s2_ptr, uri->s2_len);
+            hp = erts_produce_heap(&pca->factory, 4, HALLOC_EXTRA);
+            return TUPLE3(hp, am_scheme, s1, s2);
+        }
     default:
-        erl_exit(1, "%s, line %d: type=%u\n", __FILE__, __LINE__, uri->type);
+        erts_exit(ERTS_ERROR_EXIT, "%s, line %d: type=%u\n", __FILE__, __LINE__, uri->type);
     }
 }
 
@@ -1179,67 +1361,53 @@ static int http_request_erl(void* arg, const http_atom_t* meth,
 {
     struct packet_callback_args* pca = (struct packet_callback_args*) arg;    
     Eterm meth_term, uri_term, ver_term;
-    Uint sz = 0;
-    Uint* szp = &sz;
-    Eterm* hp;
-    Eterm** hpp = NULL;
+    Eterm *hp;
 
     /* {http_request,Meth,Uri,Version} */
+    meth_term = (meth != NULL) ?
+        meth->atom :
+        http_bld_string(pca, meth_ptr, meth_len);
+    uri_term = http_bld_uri(pca, uri);
 
-    for (;;) {
-        meth_term = (meth!=NULL) ? meth->atom :
-	    http_bld_string(pca, hpp, szp, meth_ptr, meth_len);
-        uri_term = http_bld_uri(pca, hpp, szp, uri);
-        ver_term = erts_bld_tuple(hpp, szp, 2,
-                                  make_small(major), make_small(minor));
-        pca->res = erts_bld_tuple(hpp, szp, 4, am_http_request, meth_term,
-                                  uri_term, ver_term); 
-        if (hpp != NULL) break;
-        hpp = &hp;
-        hp = HAlloc(pca->p, sz);
-        szp = NULL;        
-    }
+    hp = erts_produce_heap(&pca->factory, 3 + 5, HALLOC_EXTRA);
+    ver_term = TUPLE2(&hp[0], make_small(major), make_small(minor));
+    pca->res = TUPLE4(&hp[3], am_http_request, meth_term, uri_term, ver_term);
+
     return 1;
 }
 
 static int
-http_header_erl(void* arg, const http_atom_t* name, const char* name_ptr,
-                int name_len, const char* value_ptr, int value_len)
+http_header_erl(void* arg, const http_atom_t* name,
+                const char* name_ptr, int name_len,
+                const char* oname_ptr, int oname_len,
+                const char* value_ptr, int value_len)
 {
     struct packet_callback_args* pca = (struct packet_callback_args*) arg;    
-    Eterm bit_term, name_term, val_term;
-    Uint sz = 6;
-    Eterm* hp;
-#ifdef DEBUG
-    Eterm* hend;
-#endif
-    
-    /* {http_header,Bit,Name,IValue,Value} */
+    Eterm bit_term, name_term, oname_term, val_term;
+    Eterm *hp;
 
-    if (name == NULL) {
-	http_bld_string(pca, NULL, &sz, name_ptr, name_len);
-    }
-    http_bld_string(pca, NULL, &sz, value_ptr, value_len);
-
-    hp = HAlloc(pca->p, sz);
-#ifdef DEBUG
-    hend = hp + sz;
-#endif	
-
+    /* {http_header,Bit,Name,Oname,Value} */
     if (name != NULL) {
-	bit_term = make_small(name->index+1);
-	name_term = name->atom;
-    }
-    else {	
-	bit_term = make_small(0);	
-	name_term = http_bld_string(pca, &hp,NULL,name_ptr,name_len);
+        bit_term = make_small(name->index+1);
+        name_term = name->atom;
+    } else {
+        bit_term = make_small(0);
+        name_term = http_bld_string(pca, name_ptr, name_len);
     }
 
-    val_term = http_bld_string(pca, &hp, NULL, value_ptr, value_len);
-    pca->res = TUPLE5(hp, am_http_header, bit_term, name_term, am_undefined, val_term);
-    ASSERT(hp+6==hend);
+    oname_term = http_bld_string(pca, oname_ptr, oname_len);
+    val_term = http_bld_string(pca, value_ptr, value_len);
+
+    hp = erts_produce_heap(&pca->factory, 6, HALLOC_EXTRA);
+    pca->res = TUPLE5(hp,
+                      am_http_header,
+                      bit_term,
+                      name_term,
+                      oname_term,
+                      val_term);
+
     return 1;
-}   
+}
 
 static int http_eoh_erl(void* arg)
 {
@@ -1253,21 +1421,11 @@ static int http_error_erl(void* arg, const char* buf, int len)
 {
     /* {http_error,Line} */
     struct packet_callback_args* pca = (struct packet_callback_args*) arg;
-    Uint sz = 3;
     Eterm* hp;
-#ifdef DEBUG
-    Eterm* hend;
-#endif
 
-    http_bld_string(pca, NULL, &sz, buf, len);
+    hp = erts_produce_heap(&pca->factory, 3, HALLOC_EXTRA);
+    pca->res = TUPLE2(hp, am_http_error, http_bld_string(pca, buf, len));
 
-    hp = HAlloc(pca->p, sz);
-#ifdef DEBUG
-    hend = hp + sz;
-#endif
-    pca->res = erts_bld_tuple(&hp, NULL, 2, am_http_error,
-			      http_bld_string(pca, &hp, NULL, buf, len));
-    ASSERT(hp==hend);
     return 1;
 }
 
@@ -1278,19 +1436,23 @@ int ssl_tls_erl(void* arg, unsigned type, unsigned major, unsigned minor,
     struct packet_callback_args* pca = (struct packet_callback_args*) arg;
     Eterm* hp;
     Eterm ver;
-    Eterm bin = new_binary(pca->p, NULL, plen+len);
-    byte* bin_ptr = binary_bytes(bin);
+    byte* bin_ptr;
 
-    memcpy(bin_ptr+plen, buf, len);
+    Eterm bin = erts_hfact_new_bitstring(&pca->factory,
+                                         0,
+                                         NBITS(plen + len),
+                                         &bin_ptr);
+    sys_memcpy(bin_ptr + plen, buf, len);
+
     if (plen) {
-        memcpy(bin_ptr, prefix, plen);
+        sys_memcpy(bin_ptr, prefix, plen);
     }
 
     /* {ssl_tls,NIL,ContentType,{Major,Minor},Bin} */
-    hp = HAlloc(pca->p, 3+6);
-    ver = TUPLE2(hp, make_small(major), make_small(minor));
-    hp += 3;
-    pca->res = TUPLE5(hp, am_ssl_tls, NIL, make_small(type), ver, bin);
+    hp = erts_produce_heap(&pca->factory, 3 + 6, HALLOC_EXTRA);
+    ver = TUPLE2(&hp[0], make_small(major), make_small(minor));
+    pca->res = TUPLE5(&hp[3], am_ssl_tls, NIL, make_small(type), ver, bin);
+
     return 1;
 }
 
@@ -1313,28 +1475,20 @@ PacketCallbacks packet_callbacks_erl = {
 */
 BIF_RETTYPE decode_packet_3(BIF_ALIST_3)
 {
+
     unsigned max_plen = 0;   /* Packet max length, 0=no limit */
     unsigned trunc_len = 0;  /* Truncate lines if longer, 0=no limit */
     int http_state = 0;      /* 0=request/response 1=header */
-    int packet_sz;           /*-------Binaries involved: ------------------*/
-    byte* bin_ptr;           /*| orig: original binary                     */
-    byte bin_bitsz;          /*| bin: BIF_ARG_2, may be sub-binary of orig */
-	                     /*| packet: prefix of bin                     */
-    char* body_ptr;          /*| body: part of packet to return            */
-    int body_sz;             /*| rest: bin without packet                  */
+    int packet_sz;
+    char* body_ptr;
+    int body_sz;
     struct packet_callback_args pca;
     enum PacketParseType type;
-    Eterm* hp;
-    Eterm* hend;
-    ErlSubBin* rest;
+    const byte *temp_alloc = NULL;
     Eterm res;
-    Eterm options;
-    int code;
+    int   code;
+    char  delimiter = '\n';
 
-    if (!is_binary(BIF_ARG_2) || 
-        (!is_list(BIF_ARG_3) && !is_nil(BIF_ARG_3))) {
-        BIF_ERROR(BIF_P, BADARG);
-    }
     switch (BIF_ARG_1) {
     case make_small(0): case am_raw: type = TCP_PB_RAW; break;
     case make_small(1): type = TCP_PB_1; break;
@@ -1352,116 +1506,113 @@ BIF_RETTYPE decode_packet_3(BIF_ALIST_3)
     case am_httph_bin: type = TCP_PB_HTTPH_BIN; break;
     case am_ssl_tls: type = TCP_PB_SSL_TLS; break;
     default:
+        BIF_P->fvalue = am_badopt;
+        BIF_ERROR(BIF_P, BADARG | EXF_HAS_EXT_INFO);
+    }
+
+    if (!is_bitstring(BIF_ARG_2) ||
+        (!is_list(BIF_ARG_3) && !is_nil(BIF_ARG_3))) {
         BIF_ERROR(BIF_P, BADARG);
     }
 
-    options = BIF_ARG_3;
-    while (!is_nil(options)) {
-        Eterm* cons = list_val(options);
-        if (is_tuple(CAR(cons))) {
-            Eterm* tpl = tuple_val(CAR(cons));
-            Uint val;
-            if (tpl[0] == make_arityval(2) &&
-		term_to_Uint(tpl[2],&val) && val <= UINT_MAX) {
-                switch (tpl[1]) {
-                case am_packet_size:
-                    max_plen = val;
-                    goto next_option;
-                case am_line_length:
-                    trunc_len = val;
-                    goto next_option;
+    for (Eterm options = BIF_ARG_3, *cell = NULL;
+         !is_nil(options);
+         options = CDR(cell)) {
+        if (is_list(options)) {
+            cell = list_val(options);
+
+            if (is_tuple(CAR(cell))) {
+                Eterm *tpl = tuple_val(CAR(cell));
+                Uint val;
+
+                if (tpl[0] == make_arityval(2) &&
+                    term_to_Uint(tpl[2], &val) && val <= UINT_MAX) {
+                    switch (tpl[1]) {
+                    case am_packet_size:
+                        max_plen = val;
+                        continue;
+                    case am_line_length:
+                        trunc_len = val;
+                        continue;
+                    case am_line_delimiter:
+                        if (type == TCP_PB_LINE_LF && val <= 255) {
+                            delimiter = (char)val;
+                            continue;
+                        }
+                    }
                 }
             }
         }
+
         BIF_ERROR(BIF_P, BADARG);
-
-    next_option:       
-        options = CDR(cons);
     }
 
+    pca.orig = BIF_ARG_2;
+    pca.aligned_ptr = erts_get_aligned_binary_bytes(pca.orig,
+                                                    &pca.bin_sz,
+                                                    &temp_alloc);
+    if (pca.aligned_ptr == NULL) {
+        BIF_ERROR(BIF_P, BADARG);
+    }
 
-    pca.bin_sz = binary_size(BIF_ARG_2);
-    ERTS_GET_BINARY_BYTES(BIF_ARG_2, bin_ptr, pca.bin_bitoffs, bin_bitsz);  
-    if (pca.bin_bitoffs != 0) {
-        pca.aligned_ptr = erts_alloc(ERTS_ALC_T_TMP, pca.bin_sz);
-        erts_copy_bits(bin_ptr, pca.bin_bitoffs, 1, pca.aligned_ptr, 0, 1, pca.bin_sz*8);
-    }
-    else {
-        pca.aligned_ptr = bin_ptr;
-    }
     packet_sz = packet_get_length(type, (char*)pca.aligned_ptr, pca.bin_sz,
-                                  max_plen, trunc_len, &http_state);
-    if (!(packet_sz > 0 && packet_sz <= pca.bin_sz)) {
-        if (packet_sz < 0) {
-	    goto error;
+                                  max_plen, trunc_len, delimiter, &http_state);
+
+    if (packet_sz < 0) {
+        Eterm *hp = HAlloc(BIF_P, 3);
+        res = TUPLE2(hp, am_error, am_invalid);
+    } else if (packet_sz == 0 || packet_sz > pca.bin_sz) {
+        Eterm* hp = HAlloc(BIF_P, 3);
+        Eterm required_size = (packet_sz == 0) ?
+            am_undefined :
+            erts_make_integer(packet_sz, BIF_P);
+        res = TUPLE2(hp, am_more, required_size);
+    } else {
+        /* We got a whole packet, parse it */
+        body_ptr = (char*) pca.aligned_ptr;
+        body_sz = packet_sz;
+        packet_get_body(type, (const char**) &body_ptr, &body_sz);
+        ASSERT(body_sz <= packet_sz);
+
+        pca.p = BIF_P;
+        pca.res = THE_NON_VALUE;
+        pca.string_as_bin = (type == TCP_PB_HTTP_BIN ||
+                             type == TCP_PB_HTTPH_BIN);
+
+        erts_factory_proc_init(&pca.factory, BIF_P);
+        code = packet_parse(type, (char*)pca.aligned_ptr, packet_sz,
+                            &http_state, &packet_callbacks_erl, &pca);
+
+        if (code < 0) {
+            Eterm *hp = erts_produce_heap(&pca.factory, 3, 0);
+            res = TUPLE2(hp, am_error, am_invalid);
+        } else {
+            Eterm *hp = erts_produce_heap(&pca.factory, 4, 0);
+            Eterm rest;
+
+            if (code == 0) {
+                /* no special packet parsing, make plain binary */
+                pca.res = erts_make_sub_binary(BIF_P, BIF_ARG_2,
+                                               (body_ptr - (char*)pca.aligned_ptr),
+                                               body_sz);
+            } else {
+                ASSERT(pca.res != THE_NON_VALUE);
+            }
+
+            rest = erts_make_sub_binary(BIF_P, BIF_ARG_2,
+                                        packet_sz,
+                                        pca.bin_sz - packet_sz);
+
+            res = TUPLE3(hp, am_ok, pca.res, rest);
         }
-        else { /* not enough data */
-            Eterm plen = (packet_sz==0) ? am_undefined : 
-                erts_make_integer(packet_sz, BIF_P);
-            Eterm* hp = HAlloc(BIF_P,3);        
-            res = TUPLE2(hp, am_more, plen);
-            goto done;
-        }
-    }
-    /* We got a whole packet */
 
-    body_ptr = (char*) pca.aligned_ptr;
-    body_sz = packet_sz;
-    packet_get_body(type, (const char**) &body_ptr, &body_sz);
-
-    ERTS_GET_REAL_BIN(BIF_ARG_2, pca.orig, pca.bin_offs, pca.bin_bitoffs, bin_bitsz);
-    pca.p = BIF_P;
-    pca.res = THE_NON_VALUE;
-    pca.string_as_bin = (type == TCP_PB_HTTP_BIN || type == TCP_PB_HTTPH_BIN);
-    code = packet_parse(type, (char*)pca.aligned_ptr, packet_sz, &http_state,
-			&packet_callbacks_erl, &pca);
-    if (code == 0) { /* no special packet parsing, make plain binary */
-        ErlSubBin* body;
-        Uint hsz = 2*ERL_SUB_BIN_SIZE + 4;
-        hp = HAlloc(BIF_P, hsz);
-        hend = hp + hsz;
-
-        body = (ErlSubBin *) hp;
-        body->thing_word = HEADER_SUB_BIN;
-        body->size = body_sz;
-        body->offs = pca.bin_offs + (body_ptr - (char*)pca.aligned_ptr);
-        body->orig = pca.orig;
-        body->bitoffs = pca.bin_bitoffs;
-        body->bitsize = 0;
-        body->is_writable = 0;
-        hp += ERL_SUB_BIN_SIZE;
-        pca.res = make_binary(body);
-    }
-    else if (code > 0) {
-	Uint hsz = ERL_SUB_BIN_SIZE + 4;
-	ASSERT(pca.res != THE_NON_VALUE);
-	hp = HAlloc(BIF_P, hsz);
-	hend = hp + hsz;
-    }
-    else {
-error:
-	hp = HAlloc(BIF_P,3);        
-	res = TUPLE2(hp, am_error, am_invalid);
-	goto done;
+        erts_factory_close(&pca.factory);
     }
 
-    rest = (ErlSubBin *) hp;
-    rest->thing_word = HEADER_SUB_BIN;
-    rest->size = pca.bin_sz - packet_sz;
-    rest->offs = pca.bin_offs + packet_sz;
-    rest->orig = pca.orig;
-    rest->bitoffs = pca.bin_bitoffs;
-    rest->bitsize = bin_bitsz;   /* The extra bits go into the rest. */
-    rest->is_writable = 0;
-    hp += ERL_SUB_BIN_SIZE;
-    res = TUPLE3(hp, am_ok, pca.res, make_binary(rest));
-    hp += 4;
-    ASSERT(hp==hend); (void)hend;
-
-done:
-    if (pca.aligned_ptr != bin_ptr) {
-        erts_free(ERTS_ALC_T_TMP, pca.aligned_ptr);
+    if (temp_alloc != NULL) {
+        erts_free_aligned_binary_bytes(temp_alloc);
     }
+
     BIF_RET(res);
 }
 

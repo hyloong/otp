@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2003-2014. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2003-2026. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -20,35 +22,51 @@
 
 -module(crashdump_viewer_SUITE).
 
+-compile([{nowarn_possibly_unsafe_function, {erlang, list_to_atom, 1}}]).
+
 -include_lib("observer/src/crashdump_viewer.hrl").
 
 %% Test functions
 -export([all/0, suite/0,groups/0,init_per_group/2,end_per_group/2,
 	 start_stop/1,load_file/1,not_found_items/1,
-	 non_existing/1,not_a_crashdump/1,old_crashdump/1]).
+	 non_existing/1,not_a_crashdump/1,old_crashdump/1,new_crashdump/1]).
 -export([init_per_suite/1, end_per_suite/1]).
 -export([init_per_testcase/2, end_per_testcase/2]).
 
 -include_lib("common_test/include/ct.hrl").
--include("test_server_line.hrl").
 -include_lib("kernel/include/file.hrl").
 
 -define(failed_file,"failed-cases.txt").
 -define(helper_mod,crashdump_helper).
 
+%% -define(P(F),    print(F)).
+-define(P(F, A), print(F, A)).
 
 
 init_per_testcase(start_stop, Config) ->
     catch crashdump_viewer:stop(),
     try
+        case os:getenv("ERL_CRASH_DUMP_PUBLIC_KEY") of
+             false ->
+                ok;
+             _ ->
+                exit("Crashdump viewer does not support encrypted crash dumps")
+        end,
 	case os:type() of
 	    {unix,darwin} ->
 		exit("Can not test on MacOSX");
+            {unix,sunos} ->
+                exit("Skip on sunos, for now");
 	    {unix, _} ->
-		io:format("DISPLAY ~s~n", [os:getenv("DISPLAY")]),
+                Display = os:getenv("DISPLAY"),
+		io:format("DISPLAY ~s~n", [Display]),
 		case ct:get_config(xserver, none) of
 		    none -> ignore;
-		    Server -> os:putenv("DISPLAY", Server)
+                    Display -> ok;
+		    Server ->
+                        os:putenv("DISPLAY", Server), %% Might work if new node is spawned
+                        io:format("Config sets other x-server than the DISPLAY\n"
+                                  "the DISPLAY variable must be set when starting erlang")
 		end;
 	    _ -> ignore
 	end,
@@ -77,13 +95,14 @@ end_per_testcase(Case, Config) ->
     end,
     ok.
 
-suite() -> [{ct_hooks,[ts_install_cth]}].
+suite() -> [].
 
 all() -> 
     [start_stop,
      non_existing,
      not_a_crashdump,
      old_crashdump,
+     new_crashdump,
      load_file,
      not_found_items
     ].
@@ -102,7 +121,10 @@ end_per_group(_GroupName, Config) ->
 init_per_suite(Config) when is_list(Config) ->
     delete_saved(Config),
     DataDir = ?config(data_dir,Config),
-    Rels = [R || R <- [r16b,'17'], ?t:is_release_available(R)] ++ [current],
+    CurrVsn = list_to_integer(erlang:system_info(otp_release)),
+    OldRels = [R || R <- [CurrVsn-2,CurrVsn-1],
+		    test_server:is_release_available(list_to_atom(integer_to_list(R)))],
+    Rels = OldRels ++ [current],
     io:format("Creating crash dumps for the following releases: ~p", [Rels]),
     AllDumps = create_dumps(DataDir,Rels),
     [{dumps,AllDumps}|Config].
@@ -149,29 +171,41 @@ start_stop(Config) when is_list(Config) ->
     ct:log("CDV procs: ~n~p~n",[Regs]),
     [true=is_pid(P) || {P,_,_} <- Regs],
     timer:sleep(5000), % give some time to live
+    ct:log("try stop crashdump viewer (async)~n"),
     ok = crashdump_viewer:stop(),
+    ct:log("await crashdump viewer processes termination~n"),
     recv_downs(Regs),
+    ct:log("sleep some~n"),
     timer:sleep(2000),
+    ct:log("try get all processes~n"),
     ProcsAfter = processes(),
     NumProcsAfter = length(ProcsAfter),
-    if NumProcsAfter=/=NumProcsBefore ->
-	    ct:log("Before but not after:~n~p~n",
-		   [[{P,process_info(P)} || P <- ProcsBefore -- ProcsAfter]]),
-	    ct:log("After but not before:~n~p~n",
-		   [[{P,process_info(P)} || P <- ProcsAfter -- ProcsBefore]]),
-	    ct:fail("leaking processes");
+    ct:log("try verify crashdump viewer stopped~n"),
+    if (NumProcsAfter =/= NumProcsBefore) ->
+	    ct:log("Leaking processes: "
+                   "~n   Before but not after:"
+                   "~n      ~p"
+                   "~n   After but not before:"
+                   "~n      ~p",
+		   [
+                    [{P,process_info(P)} || P <- ProcsBefore -- ProcsAfter],
+                    [{P,process_info(P)} || P <- ProcsAfter -- ProcsBefore]
+                   ]);
        true ->
 	    ok
     end,
     ok.
 
 recv_downs([]) ->
+    ct:log("'DOWN' received from all registered processes~n", []),
     ok;
 recv_downs(Regs) ->
     receive
-	{'DOWN',Ref,process,_Pid,_} ->
-	    ct:log("Got 'DOWN' for process ~n~p~n",[_Pid]),
-	    recv_downs(lists:keydelete(Ref,3,Regs))
+	{'DOWN', Ref, process, _Pid, _} ->
+            Regs2 = lists:keydelete(Ref, 3, Regs),
+	    ct:log("Got 'DOWN' for process ~p (~w procs remaining)~n",
+                   [_Pid, length(Regs2)]),
+	    recv_downs(Regs2)
     after 30000 ->
 	    ct:log("Timeout waiting for down:~n~p~n",
 		   [[{Reg,process_info(P)} || {P,_,_}=Reg <- Regs]]),
@@ -210,9 +244,28 @@ not_a_crashdump(Config) when is_list(Config) ->
 
     ok = crashdump_viewer:stop().
 
+%% Try to load a file with newer version than this crashdump viewer can handle
+new_crashdump(Config) ->
+    Dump = hd(?config(dumps,Config)),
+    ok = start_backend(Dump),
+    {ok,{MaxVsn,CurrentVsn}} = crashdump_viewer:get_dump_versions(),
+    if MaxVsn =/= CurrentVsn ->
+            ct:fail("Current dump version is not equal to cdv's max version");
+       true ->
+            ok
+    end,
+    ok = crashdump_viewer:stop(),
+    NewerVsn = lists:join($.,[integer_to_list(X+1) || X <- MaxVsn]),
+    PrivDir = ?config(priv_dir,Config),
+    NewDump = filename:join(PrivDir,"new_erl_crash.dump"),
+    ok = file:write_file(NewDump,"=erl_crash_dump:"++NewerVsn++"\n"),
+    {error, Reason} = start_backend(NewDump),
+    "This Crashdump Viewer is too old" ++_ = Reason,
+    ok = crashdump_viewer:stop().
+
 %% Load files into the tool and view all pages
 load_file(Config) when is_list(Config) ->
-    case ?t:is_debug() of
+    case test_server:is_debug() of
 	true ->
 	    {skip,"Debug-compiled emulator -- far too slow"};
 	false ->
@@ -302,7 +355,8 @@ wait_for_progress_done() ->
 %%%-----------------------------------------------------------------
 %%% General check of what is displayed for a dump
 browse_file(File) ->
-    io:format("~nBrowsing file: ~s",[File]),
+    io:format("~n[~s] Browsing file: ~s", [formated_timestamp(), File]),
+    %% io:format("~nBrowsing file: ~s",[File]),
 
     ok = start_backend(File),
 
@@ -320,13 +374,14 @@ browse_file(File) ->
     {ok,Mods,_ModsTW} = crashdump_viewer:loaded_modules(),
     {ok,_Mem,_MemTW} = crashdump_viewer:memory(),
     {ok,_AllocAreas,_AreaTW} = crashdump_viewer:allocated_areas(),
-    {ok,_AllocINfo,_AllocInfoTW} = crashdump_viewer:allocator_info(),
+    {ok,AllocInfo,_AllocInfoTW} = crashdump_viewer:allocator_info(),
     {ok,_HashTabs,_HashTabsTW} = crashdump_viewer:hash_tables(),
     {ok,_IndexTabs,_IndexTabsTW} = crashdump_viewer:index_tables(),
+    {ok,_PTs,_PTsTW} = crashdump_viewer:persistent_terms(),
 
     io:format("  info read",[]),
 
-    lookat_all_pids(Procs),
+    lookat_all_pids(Procs,is_truncated(File),incomplete_allowed(File)),
     io:format("  pids ok",[]),
     lookat_all_ports(Ports),
     io:format("  ports ok",[]),
@@ -335,7 +390,24 @@ browse_file(File) ->
     lookat_all_nodes(Nodes),
     io:format("  nodes ok",[]),
 
+    lookat_alloc_info(AllocInfo,is_truncated(File)),
+    io:format("  alloc info ok",[]),
+
     Procs. % used as second arg to special/2
+
+is_truncated(File) ->
+    case filename:extension(File) of
+        ".trunc"++_ ->
+            true;
+        _ ->
+            false
+    end.
+
+incomplete_allowed(File) ->
+    %% Incomplete heap is allowed for pre OTP-20 (really pre 20.2)
+    %% releases, since literals were not dumped at all then.
+    Rel = get_rel_from_dump_name(File),
+    Rel < 20.
 
 special(File,Procs) ->
     case filename:extension(File) of
@@ -361,6 +433,24 @@ special(File,Procs) ->
 	    {ok,<<_:SSize/binary>>} =
 		crashdump_viewer:expand_binary({SOffset,SSize,SPos}),
 	    io:format("  expand binary ok",[]),
+
+            ProcBins = proplists:get_value(proc_bins,Dict),
+            {['#CDVBin',0,65,ProcBin],
+             ['#CDVBin',65,65,ProcBin],
+             ['#CDVBin',130,125,ProcBin]} = ProcBins,
+            io:format("  ProcBins ok",[]),
+
+
+            Binaries = crashdump_helper:create_binaries(),
+            verify_binaries(Binaries, proplists:get_value(bins,Dict)),
+	    io:format("  binaries ok",[]),
+
+            SubBinaries = crashdump_helper:create_sub_binaries(Binaries),
+            verify_binaries(SubBinaries, proplists:get_value(sub_bins,Dict)),
+	    io:format("  sub binaries ok",[]),
+
+	    #proc{last_calls=LastCalls} = ProcDetails,
+            true = length(LastCalls) =< 4,
 
 	    ['#CDVPid',X1,Y1,Z1] = proplists:get_value(ext_pid,Dict),
 	    ChannelStr1 = integer_to_list(X1),
@@ -411,30 +501,229 @@ special(File,Procs) ->
 			old_attrib=undefined,
 			old_comp_info=undefined}=Mod2,
 	    ok;
-	%% ".strangemodname" ->
-	%%     {ok,Mods,[]} = crashdump_viewer:loaded_modules(),
-	%%     lookat_all_mods(Mods),
-	%%     ok;
-	%% ".sort" ->
-	%%     %% sort ports, atoms and modules ????
-	%%     ok;
-	%% ".trunc" ->
-	%%     %% ????
-	%%     ok;
+        ".trunc_mod" ->
+            ModName = atom_to_list(?helper_mod),
+            {ok,Mod=#loaded_mod{},[TW]} =
+                crashdump_viewer:loaded_mod_details(ModName),
+            "WARNING: The crash dump is truncated here."++_ = TW,
+            #loaded_mod{current_attrib=CA,current_comp_info=CCI,
+                        old_attrib=OA,old_comp_info=OCI} = Mod,
+            case lists:all(fun(undefined) ->
+                                   true;
+                              (S) when is_list(S) ->
+                                   io_lib:printable_unicode_list(lists:flatten(S));
+                              (_) -> false
+                           end,
+                           [CA,CCI,OA,OCI]) of
+                true ->
+                    ok;
+                false ->
+                    ct:fail({should_be_printable_strings_or_undefined,
+                             {CA,CCI,OA,OCI}})
+            end,
+            ok;
+	".trunc_bin1" ->
+            %% This is 'full_dist' truncated after the first
+            %% "=binary:"
+            %% i.e. no binary exist in the dump
+	    [#proc{pid=Pid0}|_Rest] = lists:keysort(#proc.name,Procs),
+	    Pid = pid_to_list(Pid0),
+            %%WarnIncompleteHeap = ["WARNING: This process has an incomplete heap. Some information might be missing."],
+	    {ok,ProcDetails=#proc{},[]} =
+                crashdump_viewer:proc_details(Pid),
+	    io:format("  process details ok",[]),
+
+	    #proc{dict=Dict} = ProcDetails,
+
+	    '#CDVNonexistingBinary' = proplists:get_value(bin,Dict),
+	    '#CDVNonexistingBinary' = proplists:get_value(sub_bin,Dict),
+
+	    io:format("  nonexisting binaries ok",[]),
+            ok;
+	".trunc_bin2" ->
+            %% This is 'full_dist' truncated after the first
+            %% "=binary:Addr\n
+            %%  Size"
+            %% i.e. binaries are truncated
+	    [#proc{pid=Pid0}|_Rest] = lists:keysort(#proc.name,Procs),
+	    Pid = pid_to_list(Pid0),
+	    {ok,ProcDetails=#proc{},[]} = crashdump_viewer:proc_details(Pid),
+	    io:format("  process details ok",[]),
+
+	    #proc{dict=Dict} = ProcDetails,
+
+	    ['#CDVBin',Offset,Size,Pos] = proplists:get_value(bin,Dict),
+            {ok,'#CDVTruncatedBinary'} =
+		crashdump_viewer:expand_binary({Offset,Size,Pos}),
+	    ['#CDVBin',SOffset,SSize,SPos] = proplists:get_value(sub_bin,Dict),
+            {ok,'#CDVTruncatedBinary'} =
+		crashdump_viewer:expand_binary({SOffset,SSize,SPos}),
+
+	    io:format("  expand truncated binary ok",[]),
+            ok;
+	".trunc_bin3" ->
+            %% This is 'full_dist' truncated after the first
+            %% "=binary:Addr\n
+            %%  Size:"
+            %% i.e. same as 'trunc_bin2', except the colon exists also
+	    [#proc{pid=Pid0}|_Rest] = lists:keysort(#proc.name,Procs),
+	    Pid = pid_to_list(Pid0),
+	    {ok,ProcDetails=#proc{},[]} = crashdump_viewer:proc_details(Pid),
+	    io:format("  process details ok",[]),
+
+	    #proc{dict=Dict} = ProcDetails,
+
+	    ['#CDVBin',Offset,Size,Pos] = proplists:get_value(bin,Dict),
+            {ok,'#CDVTruncatedBinary'} =
+		crashdump_viewer:expand_binary({Offset,Size,Pos}),
+	    ['#CDVBin',SOffset,SSize,SPos] = proplists:get_value(sub_bin,Dict),
+            {ok,'#CDVTruncatedBinary'} =
+		crashdump_viewer:expand_binary({SOffset,SSize,SPos}),
+
+	    io:format("  expand truncated binary ok",[]),
+            ok;
+	".trunc_bin4" ->
+            %% This is 'full_dist' truncated after the first
+            %% "=binary:Addr\n
+            %%  Size:BinaryMissinOneByte"
+            %% i.e. the full binary is truncated, but the sub binary is complete
+	    [#proc{pid=Pid0}|_Rest] = lists:keysort(#proc.name,Procs),
+	    Pid = pid_to_list(Pid0),
+	    {ok,ProcDetails=#proc{},[]} = crashdump_viewer:proc_details(Pid),
+	    io:format("  process details ok",[]),
+
+	    #proc{dict=Dict} = ProcDetails,
+
+	    ['#CDVBin',Offset,Size,Pos] = proplists:get_value(bin,Dict),
+            {ok,'#CDVTruncatedBinary'} =
+		crashdump_viewer:expand_binary({Offset,Size,Pos}),
+	    io:format("  expand truncated binary ok",[]),
+	    ['#CDVBin',SOffset,SSize,SPos] = proplists:get_value(sub_bin,Dict),
+            {ok,<<_:SSize/binary>>} =
+		crashdump_viewer:expand_binary({SOffset,SSize,SPos}),
+	    io:format("  expand complete sub binary ok",[]),
+
+            ok;
+        ".trunc_bytes" ->
+            {ok,_,[TW]} = crashdump_viewer:general_info(),
+            {match,_} = re:run(TW,"CRASH DUMP SIZE LIMIT REACHED"),
+	    io:format("  size limit information ok",[]),
+            ok;
+        ".unicode" ->
+            #proc{pid=Pid0} =
+                lists:keyfind("'unicode_reg_name_αβ'",#proc.name,Procs),
+            Pid = pid_to_list(Pid0),
+	    {ok,Proc,[]} = crashdump_viewer:proc_details(Pid),
+            #proc{last_calls=LastCalls,stack_dump=Stk} = Proc,
+            io:format("  unicode registered name ok",[]),
+
+            ["crashdump_helper_unicode:'спутник'/0",
+             "ets:new/2"|_] = lists:reverse(LastCalls),
+            io:format("  last calls ok",[]),
+
+            verify_unicode_stack(Stk),
+            io:format("  unicode stack values ok",[]),
+
+	    {ok,[#ets_table{id="'tab_αβ'",name="'tab_αβ'"}],[]} =
+                crashdump_viewer:ets_tables(Pid),
+            io:format("  unicode table name ok",[]),
+
+            ok;
+        ".maps" ->
+	    %% I registered a process as aaaaaaaa_maps in the map dump
+	    %% to make sure it will be the first in the list when sorted
+	    %% on names.
+	    [#proc{pid=Pid0,name=Name}|_Rest] = lists:keysort(#proc.name,Procs),
+            "aaaaaaaa_maps" = Name,
+	    Pid = pid_to_list(Pid0),
+	    {ok,ProcDetails=#proc{},[]} = crashdump_viewer:proc_details(Pid),
+	    io:format("  process details ok",[]),
+
+	    #proc{dict=Dict} = ProcDetails,
+            %% io:format("~p\n", [Dict]),
+            Maps = crashdump_helper:create_maps(),
+            Maps = proplists:get_value(maps,Dict),
+            io:format("  maps ok",[]),
+            ok;
+        ".persistent_terms" ->
+	    %% I registered a process as aaaaaaaa_persistent_term in
+	    %% the dump to make sure it will be the first in the list
+	    %% when sorted on names.
+	    [#proc{pid=Pid0,name=Name}|_Rest] = lists:keysort(#proc.name,Procs),
+            "aaaaaaaa_persistent_terms" = Name,
+	    Pid = pid_to_list(Pid0),
+	    {ok,ProcDetails=#proc{},[]} = crashdump_viewer:proc_details(Pid),
+	    io:format("  process details ok",[]),
+
+	    #proc{dict=Dict} = ProcDetails,
+            %% io:format("~p\n", [Dict]),
+            Pts = crashdump_helper:create_persistent_terms(),
+            Pts = proplists:get_value(pts,Dict),
+            io:format("  persistent terms ok",[]),
+            ok;
+        ".global_literals" ->
+	    %% I registered a process as aaaaaaaa_global_literals in
+	    %% the dump to make sure it will be the first in the list
+	    %% when sorted on names.
+	    [#proc{pid=Pid0,name=Name}|_Rest] = lists:keysort(#proc.name,Procs),
+            "aaaaaaaa_global_literals" = Name,
+	    Pid = pid_to_list(Pid0),
+	    {ok,ProcDetails=#proc{},[]} = crashdump_viewer:proc_details(Pid),
+	    io:format("  process details ok",[]),
+
+	    #proc{dict=Dict} = ProcDetails,
+            Globals = proplists:get_value(global_literals,Dict),
+            Globals = {os:type(),os:version()},
+            io:format("  global_literals ok",[]),
+            ok;
 	_ ->
 	    ok
     end,
     ok.
 
-
-lookat_all_pids([]) ->
+verify_unicode_stack([{_,{state,Str,Atom,Bin,LongBin}}|_]) ->
+    'unicode_atom_αβ' = Atom,
+    "unicode_string_αβ" = Str,
+    <<"bin αβ"/utf8>> = Bin,
+    <<"long bin αβ - a utf8 binary which can be expanded αβ"/utf8>> = LongBin,
     ok;
-lookat_all_pids([#proc{pid=Pid0}|Procs]) ->
+verify_unicode_stack([_|T]) ->
+    verify_unicode_stack(T).
+
+verify_binaries([H|T1], [H|T2]) ->
+    %% Heap binary.
+    verify_binaries(T1, T2);
+verify_binaries([Bin|T1], [['#CDVBin',Offset,Size,Pos]|T2]) ->
+    %% Refc binary.
+    {ok,<<Bin:Size/binary>>} = crashdump_viewer:expand_binary({Offset,Size,Pos}),
+    verify_binaries(T1, T2);
+verify_binaries([], []) ->
+    ok.
+
+lookat_all_pids([],_,_) ->
+    ok;
+lookat_all_pids([#proc{pid=Pid0}|Procs],TruncAllowed,IncompAllowed) ->
     Pid = pid_to_list(Pid0),
-    {ok,_ProcDetails=#proc{},_ProcTW} = crashdump_viewer:proc_details(Pid),
-    {ok,_Ets,_EtsTW} = crashdump_viewer:ets_tables(Pid),
-    {ok,_Timers,_TimersTW} = crashdump_viewer:timers(Pid),
-    lookat_all_pids(Procs).
+    {ok,_ProcDetails=#proc{},ProcTW} = crashdump_viewer:proc_details(Pid),
+    {ok,_Ets,EtsTW} = crashdump_viewer:ets_tables(Pid),
+    {ok,_Timers,TimersTW} = crashdump_viewer:timers(Pid),
+    case {ProcTW,EtsTW,TimersTW} of
+        {[],[],[]} ->
+            ok;
+        {["WARNING: This process has an incomplete heap."++_],[],[]}
+	when IncompAllowed ->
+            ok;  % native libs, literals might not be included in dump
+        _ when TruncAllowed ->
+            ok; % truncated dump
+        TWs ->
+	    ?P("lookat_all_pids -> unexpected warning"
+	       "~n   Pid:           ~s"
+	       "~n   IncompAllowed: ~p"
+	       "~n   TruncAllowed:  ~p"
+	       "~n   ~p", [Pid, IncompAllowed, TruncAllowed, TWs]),
+            ct:fail({unexpected_warning, Pid, TWs, IncompAllowed, TruncAllowed})
+    end,
+    lookat_all_pids(Procs,TruncAllowed,IncompAllowed).
 
 lookat_all_ports([]) ->
     ok;
@@ -457,6 +746,32 @@ lookat_all_nodes([#nod{channel=Channel0}|Nodes]) ->
     {ok,_Node=#nod{},_NodeTW} = crashdump_viewer:node_info(Channel),
     lookat_all_nodes(Nodes).
 
+lookat_alloc_info(_,true) ->
+    ok;
+lookat_alloc_info([AllocSummary|_],false) ->
+    {"Allocator Summary",
+     ["blocks size", "carriers size", "mseg carriers size"],
+     Data
+    } = AllocSummary,
+
+    %% All values must be integer.
+    Filter = filter_alloc_info_fun(),
+    _ = [list_to_integer(IntStr) || {_,L} <- Data,
+                                    IntStr <- Filter(L)],
+
+    ok.
+
+filter_alloc_info_fun() ->
+    case os:type() of
+        {win32,_} ->
+            fun([A,B,_]) ->
+                    %% The third column is never valid on Windows.
+                    [A,B]
+            end;
+        _ ->
+            fun([_,_,_]=L) -> L end
+    end.
+
 %%%-----------------------------------------------------------------
 %%% 
 create_dumps(DataDir,Rels) ->
@@ -465,7 +780,7 @@ create_dumps(DataDir,[Rel|Rels],Acc) ->
     Fun = fun() -> do_create_dumps(DataDir,Rel) end,
     Pa = filename:dirname(code:which(?MODULE)),
     {Dumps,DosDump} =
-	?t:run_on_shielded_node(Fun, compat_rel(Rel) ++ "-pa \"" ++ Pa ++ "\""),
+	test_server:run_on_shielded_node(Fun, compat_rel(Rel) ++ "-pa \"" ++ Pa ++ "\""),
     create_dumps(DataDir,Rels,Dumps ++ Acc ++ DosDump);
 create_dumps(_DataDir,[],Acc) ->
     Acc.
@@ -480,12 +795,66 @@ do_create_dumps(DataDir,Rel) ->
 	end,
     case Rel of
 	current ->
-	    CD3 = dump_with_args(DataDir,Rel,"instr","+Mim true"),
+	    CD3 = dump_with_args(DataDir,Rel,"instr","+Muatags true"),
 	    CD4 = dump_with_strange_module_name(DataDir,Rel,"strangemodname"),
-	    {[CD1,CD2,CD3,CD4], DosDump};
+            CD5 = dump_with_size_limit_reached(DataDir,Rel,"trunc_bytes"),
+            CD6 = dump_with_unicode_atoms(DataDir,Rel,"unicode"),
+            CD7 = dump_with_maps(DataDir,Rel,"maps"),
+            CD8 = dump_with_persistent_terms(DataDir,Rel,"persistent_terms"),
+            CD9 = dump_with_global_literals(DataDir,Rel,"global_literals"),
+            TruncDumpMod = truncate_dump_mod(CD1),
+            TruncatedDumpsBinary = truncate_dump_binary(CD1),
+	    {[CD1,CD2,CD3,CD4,CD5,CD6,CD7,CD8,CD9,
+              TruncDumpMod|TruncatedDumpsBinary],
+             DosDump};
 	_ ->
 	    {[CD1,CD2], DosDump}
     end.
+
+truncate_dump_mod(File) ->
+    {ok,Bin} = file:read_file(File),
+    ModNameBin = atom_to_binary(?helper_mod,latin1),
+    NewLine = case os:type() of
+                  {win32,_} -> <<"\r\n">>;
+                  _ -> <<"\n">>
+              end,
+    RE = <<NewLine/binary,"=mod:",ModNameBin/binary,
+           NewLine/binary,"Current size: [0-9]*",
+           NewLine/binary,"Current attributes: ...">>,
+    {match,[{Pos,Len}]} = re:run(Bin,RE),
+    Size = Pos + Len,
+    <<Truncated:Size/binary,_/binary>> = Bin,
+    DumpName = filename:rootname(File) ++ ".trunc_mod",
+    file:write_file(DumpName,Truncated),
+    DumpName.
+
+truncate_dump_binary(File) ->
+    {ok,Bin} = file:read_file(File),
+    BinTag = <<"\n=binary:">>,
+    Colon = <<":">>,
+    NewLine = case os:type() of
+                  {win32,_} -> <<"\r\n">>;
+                  _ -> <<"\n">>
+              end,
+    %% Split after "our binary" created by crashdump_helper
+    %% (it may not be the first binary).
+    RE = <<"\n=binary:(?=[0-9A-Z]+",NewLine/binary,"FF:AQID)">>,
+    [StartBin,AfterTag] = re:split(Bin,RE,[{parts,2}]),
+    [AddrAndSize,BinaryAndRest] = binary:split(AfterTag,Colon),
+    [Binary,_Rest] = binary:split(BinaryAndRest,NewLine),
+    TruncSize = byte_size(Binary) - 2,
+    <<TruncBinary:TruncSize/binary,_/binary>> = Binary,
+    TruncName = filename:rootname(File) ++ ".trunc_bin",
+    write_trunc_files(TruncName,StartBin,
+                      [BinTag,AddrAndSize,Colon,TruncBinary],1).
+
+write_trunc_files(TruncName0,Bin,[Part|Parts],N) ->
+    TruncName = TruncName0++integer_to_list(N),
+    Bin1 = <<Bin/binary,Part/binary>>,
+    ok = file:write_file(TruncName,Bin1),
+    [TruncName|write_trunc_files(TruncName0,Bin1,Parts,N+1)];
+write_trunc_files(_,_,[],_) ->
+    [].
 
 
 %% Create a dump which has three visible nodes, one hidden and one
@@ -496,10 +865,10 @@ full_dist_dump(DataDir,Rel) ->
     Opt = rel_opt(Rel),
     Pz = "-pz \"" ++ filename:dirname(code:which(?MODULE)) ++ "\"",
     PzOpt = [{args,Pz}],
-    {ok,N1} = ?t:start_node(n1,peer,Opt ++ PzOpt),
-    {ok,N2} = ?t:start_node(n2,peer,Opt ++ PzOpt),
-    {ok,N3} = ?t:start_node(n3,peer,Opt ++ PzOpt),
-    {ok,N4} = ?t:start_node(n4,peer,Opt ++ [{args,"-hidden " ++ Pz}]),
+    {ok,N1} = test_server:start_node(n1,peer,Opt ++ PzOpt),
+    {ok,N2} = test_server:start_node(n2,peer,Opt ++ PzOpt),
+    {ok,N3} = test_server:start_node(n3,peer,Opt ++ PzOpt),
+    {ok,N4} = test_server:start_node(n4,peer,Opt ++ [{args,"-hidden " ++ Pz}]),
     Creator = self(),
 
     P1 = rpc:call(N1,?helper_mod,n1_proc,[N2,Creator]),
@@ -513,44 +882,44 @@ full_dist_dump(DataDir,Rel) ->
     get_response(P1),
 
     %% start, stop and start a node in order to get multiple 'creations'
-    {ok,N5} = ?t:start_node(n5,peer,Opt ++ PzOpt),
+    {ok,N5} = test_server:start_node(n5,peer,Opt ++ PzOpt),
     P51 = rpc:call(N5,?helper_mod,remote_proc,[P1,Creator]),
     get_response(P51),
-    ?t:stop_node(N5),
-    {ok,N5} = ?t:start_node(n5,peer,Opt ++ PzOpt),
+    test_server:stop_node(N5),
+    {ok,N5} = test_server:start_node(n5,peer,Opt ++ PzOpt),
     P52 = rpc:call(N5,?helper_mod,remote_proc,[P1,Creator]),
     get_response(P52),
 
     {aaaaaaaa,N1} ! {hello,from,other,node}, % distribution message
     
-    ?t:stop_node(N3),
+    test_server:stop_node(N3),
     DumpName = "full_dist",
     CD = dump(N1,DataDir,Rel,DumpName),
 
-    ?t:stop_node(N2),
-    ?t:stop_node(N4),
-    ?t:stop_node(N5),
+    test_server:stop_node(N2),
+    test_server:stop_node(N4),
+    test_server:stop_node(N5),
     CD.
 
 get_response(P) ->
     receive {P,done} -> ok
-    after 3000 -> ?t:fail({get_response_timeout,P,node(P)})
+    after 3000 -> ct:fail({get_response_timeout,P,node(P)})
     end.
 
 
 dump_with_args(DataDir,Rel,DumpName,Args) ->
     RelOpt = rel_opt(Rel),
     Opt = RelOpt ++ [{args,Args}],
-    {ok,N1} = ?t:start_node(n1,peer,Opt),
+    {ok,N1} = test_server:start_node(n1,peer,Opt),
     CD = dump(N1,DataDir,Rel,DumpName),
-    ?t:stop_node(n1),
+    test_server:stop_node(n1),
     CD.
 
 %% This dump is added to test OTP-10090 - regarding URL encoding of
 %% module names in the module detail link.
 dump_with_strange_module_name(DataDir,Rel,DumpName) ->
     Opt = rel_opt(Rel),
-    {ok,N1} = ?t:start_node(n1,peer,Opt),
+    {ok,N1} = test_server:start_node(n1,peer,Opt),
 
     Mod = '<mod ule#with?strange%name>',
     File = atom_to_list(Mod) ++ ".erl",
@@ -560,26 +929,77 @@ dump_with_strange_module_name(DataDir,Rel,DumpName) ->
     {ok,Mod,Bin} = rpc:call(N1,compile,forms,[Forms,[binary]]),
     {module,Mod} = rpc:call(N1,code,load_binary,[Mod,File,Bin]),
     CD = dump(N1,DataDir,Rel,DumpName),
-    ?t:stop_node(n1),
+    test_server:stop_node(n1),
+    CD.
+
+dump_with_size_limit_reached(DataDir,Rel,DumpName) ->
+    Tmp = dump_with_args(DataDir,Rel,DumpName,""),
+    {ok,#file_info{size=Max}} = file:read_file_info(Tmp),
+    ok = file:delete(Tmp),
+    dump_with_size_limit_reached(DataDir,Rel,DumpName,Max).
+
+dump_with_size_limit_reached(DataDir,Rel,DumpName,Max) ->
+    Bytes = max(15,rand:uniform(Max)),
+    CD = dump_with_args(DataDir,Rel,DumpName,
+                        "-env ERL_CRASH_DUMP_BYTES " ++
+                            integer_to_list(Bytes)),
+    {ok,#file_info{size=Size}} = file:read_file_info(CD),
+    if Size =< Bytes ->
+            %% This means that the dump was actually smaller than the
+            %% randomly selected truncation size, so we'll just do it
+            %% again with a smaller number
+            ok = file:delete(CD),
+            dump_with_size_limit_reached(DataDir,Rel,DumpName,Size-3);
+       true ->
+            CD
+    end.
+
+dump_with_unicode_atoms(DataDir,Rel,DumpName) ->
+    Opt = rel_opt(Rel),
+    Pz = "-pz \"" ++ filename:dirname(code:which(?MODULE)) ++ "\"",
+    PzOpt = [{args,Pz}],
+    {ok,N1} = test_server:start_node(n1,peer,Opt ++ PzOpt),
+    {ok,_Pid} = rpc:call(N1,crashdump_helper_unicode,start,[]),
+    CD = dump(N1,DataDir,Rel,DumpName),
+    test_server:stop_node(n1),
+    CD.
+
+dump_with_maps(DataDir,Rel,DumpName) ->
+    Opt = rel_opt(Rel),
+    Pz = "-pz \"" ++ filename:dirname(code:which(?MODULE)) ++ "\"",
+    PzOpt = [{args,Pz}],
+    {ok,N1} = test_server:start_node(n1,peer,Opt ++ PzOpt),
+    {ok,_Pid} = rpc:call(N1,crashdump_helper,dump_maps,[]),
+    CD = dump(N1,DataDir,Rel,DumpName),
+    test_server:stop_node(n1),
+    CD.
+
+dump_with_persistent_terms(DataDir,Rel,DumpName) ->
+    Opt = rel_opt(Rel),
+    Pz = "-pz \"" ++ filename:dirname(code:which(?MODULE)) ++ "\"",
+    PzOpt = [{args,Pz}],
+    {ok,N1} = test_server:start_node(n1,peer,Opt ++ PzOpt),
+    {ok,_Pid} = rpc:call(N1,crashdump_helper,dump_persistent_terms,[]),
+    CD = dump(N1,DataDir,Rel,DumpName),
+    test_server:stop_node(n1),
+    CD.
+
+dump_with_global_literals(DataDir,Rel,DumpName) ->
+    Opt = rel_opt(Rel),
+    Pz = "-pz \"" ++ filename:dirname(code:which(?MODULE)) ++ "\"",
+    PzOpt = [{args,Pz}],
+    {ok,N1} = test_server:start_node(n1,peer,Opt ++ PzOpt),
+    {ok,_Pid} = rpc:call(N1,crashdump_helper,dump_global_literals,[]),
+    CD = dump(N1,DataDir,Rel,DumpName),
+    test_server:stop_node(n1),
     CD.
 
 dump(Node,DataDir,Rel,DumpName) ->
+    Crashdump = filename:join(DataDir, dump_prefix(Rel)++DumpName),
+    rpc:call(Node,os,putenv,["ERL_CRASH_DUMP",Crashdump]),
     rpc:call(Node,erlang,halt,[DumpName]),
-    Crashdump0 = filename:join(filename:dirname(code:which(?t)),
-			       "erl_crash_dump.n1"),
-    Crashdump1 = filename:join(DataDir, dump_prefix(Rel)++DumpName),
-    ok = rename(Crashdump0,Crashdump1),
-    Crashdump1.
-
-rename(From,To) ->
-    ok = check_complete(From),
-    case file:rename(From,To) of
-	{error,exdev} ->
-	    {ok,_} = file:copy(From,To),
-	    ok = file:delete(From);
-	ok ->
-	    ok
-    end.
+    ok = check_complete(Crashdump),
+    Crashdump.
 
 check_complete(File) ->
     check_complete1(File,10).
@@ -612,27 +1032,49 @@ dos_dump(DataDir,Rel,Dump) ->
 	{Port,{exit_status,0}} -> 
 	    [DosDumpName];
 	{Port,{exit_status,_Error}} ->
-	    ?t:comment("Couldn't run \'unix2dos\'"),
+	    test_server:comment("Couldn't run \'unix2dos\'"),
 	    []
     end.
 
+rel_opt(current) ->
+    [];
 rel_opt(Rel) ->
-    case Rel of
-	r16b -> [{erl,[{release,"r16b_latest"}]}];
-	'17' -> [{erl,[{release,"17_latest"}]}];
-	current -> []
-    end.
+    [{erl,[{release,lists:concat([Rel,"_latest"])}]}].
 
+dump_prefix(current) ->
+    dump_prefix(erlang:system_info(otp_release));
 dump_prefix(Rel) ->
-    case Rel of
-	r16b -> "r16b_dump.";
-	'17' -> "r17_dump.";
-	current -> "r18_dump."
-    end.
+    lists:concat(["r",Rel,"_dump."]).
 
+get_rel_from_dump_name(File) ->
+    Name = filename:basename(File),
+    ["r"++Rel|_] = string:split(Name,"_"),
+    list_to_integer(Rel).
+
+compat_rel(current) ->
+    "";
 compat_rel(Rel) ->
-    case Rel of
-	r16b -> "+R16 ";
-	'17' -> "+R17 ";
-	current -> ""
-    end.
+    lists:concat(["+R",Rel," "]).
+
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+%% f(F, A) ->
+%%     lists:flatten(io_lib:format(F, A)).
+
+formated_timestamp() ->
+    format_timestamp(os:timestamp()).
+
+format_timestamp({_N1, _N2, N3} = TS) ->
+    {_Date, Time}   = calendar:now_to_local_time(TS),
+    {Hour, Min, Sec} = Time,
+    FormatTS = io_lib:format("~.2.0w:~.2.0w:~.2.0w.~.3.0w",
+                             [Hour, Min, Sec, N3 div 1000]),  
+    lists:flatten(FormatTS).
+
+%% print(F) ->
+%%     print(F, []).
+
+print(F, A) ->
+    io:format("~s ~p " ++ F ++ "~n", [formated_timestamp(), self() | A]).
+

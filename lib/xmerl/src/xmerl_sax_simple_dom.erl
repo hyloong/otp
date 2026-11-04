@@ -1,9 +1,11 @@
 %%-*-erlang-*-
 %%--------------------------------------------------------------------
 %% %CopyrightBegin%
-%% 
-%% Copyright Ericsson AB 2009. All Rights Reserved.
-%% 
+%%
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2009-2026. All Rights Reserved.
+%%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
 %% You may obtain a copy of the License at
@@ -15,7 +17,7 @@
 %% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 %% See the License for the specific language governing permissions and
 %% limitations under the License.
-%% 
+%%
 %% %CopyrightEnd%
 %%----------------------------------------------------------------------
 %% File    : xmerl_sax_simple_dom.erl
@@ -24,6 +26,9 @@
 %% Created : 17 Apr 2009 
 %%----------------------------------------------------------------------
 -module(xmerl_sax_simple_dom).
+-moduledoc false.
+
+-compile([{nowarn_possibly_unsafe_function, {erlang, list_to_atom, 1}}]).
 
 %%----------------------------------------------------------------------
 %% Include files
@@ -129,8 +134,9 @@ build_dom(endDocument,
 	    State#xmerl_sax_simple_dom_state{dom=[Decl, {Tag, Attributes, 
 						   lists:reverse(Content)}]};
 	_ ->
-	    ?dbg("~p\n", [D]),
-	    ?error("we're not at end the document when endDocument event is encountered.")
+            %% endDocument is also sent by the parser when a fault occur to tell 
+            %% the event receiver that no more input will be sent
+	    State
     end;
 
 %% Element

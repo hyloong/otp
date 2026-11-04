@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2008-2012. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2008-2025. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -22,9 +24,6 @@
 
 %%% Description: Ssh User Authentication Protocol
 
--define(SUPPORTED_AUTH_METHODS, "publickey,keyboard-interactive,password").
-
--define(PREFERRED_PK_ALGS, ['ssh-rsa','ssh-dss']).
 
 -define(SSH_MSG_USERAUTH_REQUEST,  50).
 -define(SSH_MSG_USERAUTH_FAILURE,  51).
@@ -62,7 +61,7 @@
 -record(ssh_msg_userauth_passwd_changereq,
 	{
 	  prompt,     %% string
-	  languge     %% string
+	  language     %% string
 	 }).
 
 -record(ssh_msg_userauth_pk_ok,

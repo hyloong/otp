@@ -1,7 +1,9 @@
 #
 # %CopyrightBegin%
 #
-# Copyright Ericsson AB 2004-2010. All Rights Reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Copyright Ericsson AB 2004-2025. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -17,6 +19,7 @@
 #
 # %CopyrightEnd%
 #
+#
 
 include $(ERL_TOP)/make/target.mk
 include $(ERL_TOP)/make/$(TARGET)/otp.mk
@@ -25,7 +28,7 @@ include $(ERL_TOP)/make/$(TARGET)/otp.mk
 # Macros
 #
 
-SUB_DIRECTORIES = src doc/src
+SUB_DIRECTORIES = src doc
 
 include vsn.mk
 VSN = $(SSH_VSN)
@@ -37,4 +40,6 @@ SPECIAL_TARGETS =
 #
 include $(ERL_TOP)/make/otp_subdir.mk
 
+DIA_PLT_APPS=crypto runtime_tools public_key
 
+include $(ERL_TOP)/make/app_targets.mk

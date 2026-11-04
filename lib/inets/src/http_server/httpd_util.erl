@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 1997-2014. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 1997-2026. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -19,46 +21,106 @@
 %%
 %%
 -module(httpd_util).
--export([ip_address/2, lookup/2, lookup/3, multi_lookup/2,
-	 lookup_mime/2, lookup_mime/3, lookup_mime_default/2,
-	 lookup_mime_default/3, reason_phrase/1, message/3, rfc1123_date/0,
-	 rfc1123_date/1, day/1, month/1,
-	 flatlength/1, split_path/1, split_script_path/1, 
-	 suffix/1, split/3, uniq/1,
-	 make_name/2,make_name/3,make_name/4,strip/1,
-	 hexlist_to_integer/1,integer_to_hexlist/1,
-	 convert_request_date/1,create_etag/1,create_etag/2,
-	 convert_netscapecookie_date/1, enable_debug/1, valid_options/3,
-	 modules_validate/1, module_validate/1, 
-	 dir_validate/2, file_validate/2, mime_type_validate/1, 
-	 mime_types_validate/1, custom_date/0]).
+-moduledoc """
+Miscellaneous utility functions to be used when implementing Erlang web server
+API modules.
 
--export([encode_hex/1, decode_hex/1]).
+This module provides the Erlang web server API module programmer with
+miscellaneous utility functions.
+
+> #### Note {: .info }
+>
+> Note the module is only recommended for using with httpd - for other cases it
+> should be considered as deprecated.
+
+[](){: #convert_request_date }
+
+### See also
+
+`m:httpd`
+""".
+
+-compile([{nowarn_possibly_unsafe_function, {erlang, list_to_atom, 1}}]).
+
+-export([ip_address/2,
+         lookup/2, 
+         lookup/3,
+         multi_lookup/2,
+	 lookup_mime/2,
+         lookup_mime/3,
+         lookup_mime_default/2,
+	 lookup_mime_default/3,
+         reason_phrase/1,
+         message/3,
+         rfc1123_date/0,
+	 rfc1123_date/1,
+         day/1,
+         month/1,
+	 split_path/1,
+         split_script_path/1,
+	 strip_extension_dot/1,
+         split/3,
+         uniq/1,
+	 make_name/2,
+         make_name/3,
+         make_name/4,
+	 convert_request_date/1,
+         create_etag/1,
+         create_etag/2,
+	 convert_netscapecookie_date/1,
+         enable_debug/1,
+         valid_options/3,
+	 modules_validate/1,
+         module_validate/1,
+	 dir_validate/2,
+         file_validate/2,
+         mime_type_validate/1,
+	 mime_types_validate/1,
+         custom_date/0,
+         error_log/2,
+         collapse_slashes/1]).
+
+-removed({flatlength, 1, "use erlang:iolist_size/1 instead"}).
+-removed({hexlist_to_integer, 1, "use erlang:list_to_integer/2 with base 16 instead"}).
+-removed({integer_to_hexlist, 1, "use erlang:integer_to_list/2 with base 16 instead"}).
+-removed({strip, 1, "use string:trim/1 instead"}).
+-removed({suffix, 1, "use filename:extension/1 and string:trim/2 instead"}).
+-removed({decode_hex, 1, "use uri_string:unquote function instead"}).
+-removed({encode_hex, 1, "use uri_string:quote function instead"}).
+
 -include_lib("kernel/include/file.hrl").
+-include_lib("inets/include/httpd.hrl").
 
+-doc false.
 ip_address({_,_,_,_} = Address, _IpFamily) ->
     {ok, Address};
 ip_address({_,_,_,_,_,_,_,_} = Address, _IpFamily) ->
     {ok, Address};
 ip_address(Host, IpFamily) 
   when ((IpFamily =:= inet) orelse (IpFamily =:= inet6)) ->
-    inet:getaddr(Host, IpFamily);
-ip_address(Host, inet6fb4 = _IpFamily) ->
-    Inet = case gen_tcp:listen(0, [inet6]) of
-	       {ok, Dummyport} ->
-		   gen_tcp:close(Dummyport),
-		   inet6;
-	       _ ->
-		   inet
-	   end,
-    inet:getaddr(Host, Inet).
-
+    inet:getaddr(Host, IpFamily).
 
 %% lookup
 
+-doc(#{equiv => lookup/3}).
+-spec lookup(EtsTable,Key) -> Result when
+      EtsTable :: ets:table(),
+      Key :: term(),
+      Result :: term() | undefined.
 lookup(Table,Key) ->
     lookup(Table,Key,undefined).
 
+-doc """
+`lookup` extracts `{Key, Value}` tuples from `ETSTable` and returns the `Value`
+associated with `Key`. If `ETSTable` is of type `bag`, only the first `Value`
+associated with `Key` is returned. `lookup/2` returns `undefined`
+and `lookup/3` returns `Undefined` if no `Value` is found.
+""".
+-spec lookup(EtsTable,Key,Undefined) -> Result when
+      EtsTable :: ets:table(),
+      Key :: term(),
+      Undefined :: term(),
+      Result :: term() | Undefined.
 lookup(Table,Key,Undefined) ->
     case catch ets:lookup(Table,Key) of
 	[{Key,Value}|_] ->
@@ -69,6 +131,14 @@ lookup(Table,Key,Undefined) ->
 
 %% multi_lookup
 
+-doc """
+`multi_lookup` extracts all `{Key, Value}` tuples from an `ETSTable` and returns
+_all_ `Values` associated with `Key` in a list.
+""".
+-spec multi_lookup(EtsTable,Key) -> Result when
+      EtsTable :: ets:tid(),
+      Key :: term(),
+      Result :: list() | [term()].
 multi_lookup(Table,Key) ->
     remove_key(ets:lookup(Table,Key)).
 
@@ -79,9 +149,23 @@ remove_key([{_Key, Value}| Rest]) ->
 
 %% lookup_mime
 
+-doc(#{equiv => lookup_mime/3}).
+-spec lookup_mime(ConfigDB,Suffix) -> MimeType when
+      ConfigDB :: ets:tid(),
+      Suffix :: string(),
+      MimeType :: string() | undefined.
 lookup_mime(ConfigDB,Suffix) ->
     lookup_mime(ConfigDB,Suffix,undefined).
 
+-doc """
+`lookup_mime` returns the MIME type associated with a specific file suffix as
+specified in the file `mime.types` (located in the config directory).
+""".
+-spec lookup_mime(ConfigDB,Suffix,Undefined) -> MimeType when
+      ConfigDB :: ets:tid(),
+      Suffix :: string(),
+      Undefined :: term(),
+      MimeType :: string() | Undefined.
 lookup_mime(ConfigDB,Suffix,Undefined) ->
     [{mime_types,MimeTypesDB}|_]=ets:lookup(ConfigDB,mime_types),
     case ets:lookup(MimeTypesDB,Suffix) of
@@ -93,24 +177,59 @@ lookup_mime(ConfigDB,Suffix,Undefined) ->
 
 %% lookup_mime_default
 
+-doc(#{equiv => lookup_mime_default/3}).
+-spec lookup_mime_default(ConfigDB,Suffix) -> MimeType when
+      ConfigDB :: ets:tid(),
+      Suffix :: string(),
+      MimeType :: string() | undefined.
 lookup_mime_default(ConfigDB,Suffix) ->
     lookup_mime_default(ConfigDB,Suffix,undefined).
 
+-doc """
+`lookup_mime_default` returns the MIME type associated with a specific file
+suffix as specified in the `mime.types` file (located in the config directory).
+If no appropriate association is found, the value of `DefaultType` is returned.
+""".
+-spec lookup_mime_default(ConfigDB,Suffix,Undefined) -> MimeType when
+      ConfigDB :: ets:tid(),
+      Suffix :: string(),
+      Undefined :: term(),
+      MimeType :: string() | Undefined.
 lookup_mime_default(ConfigDB,Suffix,Undefined) ->
     [{mime_types,MimeTypesDB}|_]=ets:lookup(ConfigDB,mime_types),
     case ets:lookup(MimeTypesDB,Suffix) of
 	[] ->
-	    case ets:lookup(ConfigDB,default_type) of
+	    case ets:lookup(ConfigDB,mime_type) of
 		[] ->
-		    Undefined;
-		[{default_type,DefaultType}|_] ->
-		    DefaultType
+		    %% `default_type` is a legacy undocumented property
+		    %% it's left here as a fallback case for backwards compatibility
+		    case ets:lookup(ConfigDB,default_type) of
+			[] ->
+		            Undefined;
+		        [{default_type,DefaultType}|_] ->
+		            DefaultType
+		    end;
+		[{mime_type,DefaultMimeType}|_] ->
+		    DefaultMimeType
 	    end;
 	[{Suffix,MimeType}|_] ->
 	    MimeType
     end.
 
 %%% RFC 2616, HTTP 1.1 Status codes
+-doc """
+`reason_phrase` returns `Description` of an HTTP 1.1 `StatusCode`, for example,
+200 is "OK" and 201 is "Created". For more information, see
+[RFC 2616](http://www.ietf.org/rfc/rfc2616.txt).
+""".
+-spec reason_phrase(StatusCode) -> Description when
+      StatusCode :: 100 | 101 | 102 | 200 | 201 | 202 | 203 | 204 | 205 | 206
+                  | 207 | 226 | 300 | 301 | 302 | 303 | 304 | 305 | 306 | 307
+                  | 308 | 400 | 401 | 402 | 403 | 404 | 405 | 406 | 407 | 408
+                  | 409 | 410 | 411 | 412 | 413 | 414 | 415 | 416 | 417 | 422
+                  | 423 | 424 | 425 | 426 | 500 | 501 | 502 | 503 | 504 | 505
+                  | 507,
+      Description :: string().
 reason_phrase(100) ->   "Continue";
 reason_phrase(101) ->   "Switching Protocols" ;
 reason_phrase(200) ->   "OK" ;
@@ -128,6 +247,7 @@ reason_phrase(304) ->   "Not Modified" ;
 reason_phrase(305) ->   "Use Proxy" ;
 reason_phrase(306) ->   "(unused)" ;
 reason_phrase(307) ->   "Temporary Redirect" ;
+reason_phrase(308) ->   "Permanent Redirect" ;
 reason_phrase(400) ->   "Bad Request";
 reason_phrase(401) ->   "Unauthorized";
 reason_phrase(402) ->   "Payment Required";
@@ -175,8 +295,30 @@ reason_phrase(_) -> "Internal Server Error".
 
 %% message
 
+-doc """
+`message/3` returns an informative HTTP 1.1 status string in
+HTML. Each `StatusCode` requires a specific `PhraseArgs`:
+
+- **`301`** - `t:string/0`: A URL pointing at the new document position.
+
+- **`400 | 401 | 500`** - `none` (no `PhraseArgs`).
+
+- **`403 | 404`** - `t:string/0`: A `Request-URI` as described in
+  [RFC 2616](http://www.ietf.org/rfc/rfc2616.txt).
+
+- **`501`** - `{Method, RequestURI, HTTPVersion}`: The HTTP `Method`,
+  `Request-URI`, and `HTTP-Version` as defined in RFC 2616.
+
+- **`504`** - `t:string/0`: A string describing why the service was unavailable.
+""".
+-spec message(StatusCode,PhraseArgs,ConfigDB) -> Message when
+      StatusCode :: 301 | 304 | 400 | 401 | 403 | 404 | 408 | 412 | 413 | 414
+                  | 500 | 501 | 503 | 504,
+      PhraseArgs :: term(),
+      ConfigDB :: ets:tid(),
+      Message :: string().
 message(301,URL,_) ->
-    "The document has moved <A HREF=\""++ maybe_encode(URL) ++"\">here</A>.";
+    "The document has moved <A HREF=\""++ html_encode(URL) ++"\">here</A>.";
 message(304, _URL,_) ->
     "The document has not been changed.";
 message(400, none, _) ->
@@ -193,11 +335,11 @@ browser doesn't understand how to supply
 the credentials required.";
 message(403,RequestURI,_) ->
     "You don't have permission to access " ++ 
-	html_encode(RequestURI) ++ 
+	html_encode(RequestURI) ++
 	" on this server.";
 message(404,RequestURI,_) ->
     "The requested URL " ++ 
-	html_encode(RequestURI) ++ 
+	html_encode(RequestURI) ++
 	" was not found on this server.";
 message(408, Timeout, _) ->
     Timeout;
@@ -212,7 +354,7 @@ message(500,_,ConfigDB) ->
     "The server encountered an internal error or "
 	"misconfiguration and was unable to complete "
 	"your request.<P>Please contact the server administrator "
-	++ html_encode(ServerAdmin) ++ 
+	++ html_encode(ServerAdmin) ++
 	", and inform them of the time the error occurred "
 	"and anything you might have done that may have caused the error.";
 
@@ -221,12 +363,12 @@ message(501,{Method, RequestURI, HTTPVersion}, _ConfigDB) ->
 	is_atom(Method) ->
 	    atom_to_list(Method) ++
 		" to " ++ 
-		html_encode(RequestURI) ++ 
+		html_encode(RequestURI) ++
 		" (" ++ HTTPVersion ++ ") not supported.";
 	is_list(Method) ->
 	    Method ++
 		" to " ++ 
-		html_encode(RequestURI) ++ 
+		html_encode(RequestURI) ++
 		" (" ++ HTTPVersion ++ ") not supported."
     end;
 
@@ -234,26 +376,20 @@ message(503, String, _ConfigDB) ->
     "This service in unavailable due to: " ++ html_encode(String);
 message(_, ReasonPhrase, _) ->
     html_encode(ReasonPhrase).
-
-maybe_encode(URI) ->
-    Decoded = try http_uri:decode(URI) of
-	N -> N
-    catch
-	error:_ -> URI
-    end,
-    http_uri:encode(Decoded).
-
+                
 html_encode(String) ->
-    try http_uri:decode(String) of
-	Decoded when is_list(Decoded) ->
-	    http_util:html_encode(Decoded)
-    catch 
-	_:_ ->
-	    http_util:html_encode(String)
-    end.
+    http_util:html_encode(String).
 
 %%convert_rfc_date(Date)->{{YYYY,MM,DD},{HH,MIN,SEC}}
 
+-doc """
+`convert_request_date/1` converts `DateString` to
+the Erlang date format. `DateString` must be in one of the three date formats
+defined in [RFC 2616](http://www.ietf.org/rfc/rfc2616.txt).
+""".
+-spec convert_request_date(DateString) -> ErlDate | bad_date when
+      DateString :: string(),
+      ErlDate :: calendar:datetime().
 convert_request_date([D,A,Y,DateType| Rest])->
     Func=case DateType of
 	     $\, ->
@@ -275,7 +411,7 @@ convert_rfc850_date(DateStr) ->
 
 convert_rfc850_date([D1,D2,_,
 		     M,O,N,_,
-		     Y1,Y2|_Rest],[H1,H2,_Col,M1,M2,_Col,S1,S2|_Rest2])->    
+		     Y1,Y2|_Rest],[H1,H2,Col,M1,M2,Col,S1,S2|_Rest2])->    
     Year=list_to_integer([50,48,Y1,Y2]),
     Day=list_to_integer([D1,D2]),
     Month = http_util:convert_month([M,O,N]),
@@ -284,12 +420,12 @@ convert_rfc850_date([D1,D2,_,
     Sec=list_to_integer([S1,S2]),
     {ok,{{Year,Month,Day},{Hour,Min,Sec}}}.
 
-convert_ascii_date([_D,_A,_Y,_SP,
-		    M,O,N,_SP,
-		    D1,D2,_SP,
-		    H1,H2,_Col,
-		    M1,M2,_Col,
-		    S1,S2,_SP,
+convert_ascii_date([_D,_A,_Y,SP,
+		    M,O,N,SP,
+		    D1,D2,SP,
+		    H1,H2,Col,
+		    M1,M2,Col,
+		    S1,S2,SP,
 		    Y1,Y2,Y3,Y4| _Rest])->
     Year=list_to_integer([Y1,Y2,Y3,Y4]),
     Day=case D1 of 
@@ -304,12 +440,12 @@ convert_ascii_date([_D,_A,_Y,_SP,
     Sec=list_to_integer([S1,S2]),
     {ok,{{Year,Month,Day},{Hour,Min,Sec}}}.
 
-convert_rfc1123_date([_D,_A,_Y,_C,_SP,
-		      D1,D2,_SP,
-		      M,O,N,_SP,
-		      Y1,Y2,Y3,Y4,_SP,
-		      H1,H2,_Col,
-		      M1,M2,_Col,
+convert_rfc1123_date([_D,_A,_Y,_C,SP,
+		      D1,D2,SP,
+		      M,O,N,SP,
+		      Y1,Y2,Y3,Y4,SP,
+		      H1,H2,Col,
+		      M1,M2,Col,
 		      S1,S2|_Rest]) -> 
     Year=list_to_integer([Y1,Y2,Y3,Y4]),
     Day=list_to_integer([D1,D2]),
@@ -319,6 +455,7 @@ convert_rfc1123_date([_D,_A,_Y,_C,_SP,
     Sec=list_to_integer([S1,S2]),
     {ok,{{Year,Month,Day},{Hour,Min,Sec}}}.
 
+-doc false.
 convert_netscapecookie_date(Date)->
     case (catch http_util:convert_netscapecookie_date(Date)) of
 	Ret = {ok, _} ->
@@ -330,6 +467,9 @@ convert_netscapecookie_date(Date)->
 
 %% rfc1123_date
 
+-doc(#{equiv => rfc1123_date/1}).
+-spec rfc1123_date() -> RFC1123Date when
+      RFC1123Date :: string().
 rfc1123_date() ->
     {{YYYY,MM,DD},{Hour,Min,Sec}} = calendar:universal_time(),
     DayNumber = calendar:day_of_the_week({YYYY,MM,DD}),
@@ -337,19 +477,29 @@ rfc1123_date() ->
       io_lib:format("~s, ~2.2.0w ~3.s ~4.4.0w ~2.2.0w:~2.2.0w:~2.2.0w GMT",
 		    [day(DayNumber),DD,month(MM),YYYY,Hour,Min,Sec])).
 
+-doc """
+`rfc1123_date/0` returns the current date in RFC 1123 format. `rfc_date/1`
+converts the date in the Erlang format to the RFC 1123 date format.
+""".
+-spec rfc1123_date(LocalTime) -> RFC1123Date when
+      LocalTime :: calendar:datetime() | undefined,
+      RFC1123Date :: string() | undefined.
 rfc1123_date(undefined) ->
     undefined;
 rfc1123_date(LocalTime) ->
     {{YYYY,MM,DD},{Hour,Min,Sec}} = 
 	case calendar:local_time_to_universal_time_dst(LocalTime) of
 	    [Gmt]   -> Gmt;
-	    [_,Gmt] -> Gmt
+	    [_,Gmt] -> Gmt;
+        % Should not happen, but handle the empty list to prevent an error.
+        [] -> LocalTime
 	end,
     DayNumber = calendar:day_of_the_week({YYYY,MM,DD}),
     lists:flatten(
       io_lib:format("~s, ~2.2.0w ~3.s ~4.4.0w ~2.2.0w:~2.2.0w:~2.2.0w GMT",
 		    [day(DayNumber),DD,month(MM),YYYY,Hour,Min,Sec])).
 
+-doc false.
 custom_date() ->
     LocalTime     = calendar:local_time(),
     UniversalTime = calendar:universal_time(),
@@ -373,6 +523,7 @@ sign(_Minutes) ->
 
 %% uniq
 
+-doc false.
 uniq([]) ->
     [];
 uniq([First,First|Rest]) ->
@@ -383,6 +534,15 @@ uniq([First|Rest]) ->
 
 %% day
 
+-doc """
+`day/1` converts the day of the week (`NthDayOfWeek`) from an integer
+(1-7) to an abbreviated string, that is:
+
+1 = "Mon", 2 = "Tue", ..., 7 = "Sat".
+""".
+-spec day(NthDayOfWeek) -> DayOfWeek when
+      NthDayOfWeek :: 1..7,
+      DayOfWeek :: string().
 day(1) -> "Mon";
 day(2) -> "Tue";
 day(3) -> "Wed";
@@ -393,6 +553,15 @@ day(7) -> "Sun".
 
 %% month
 
+-doc """
+`month/1` converts the month `NthMonth` as an integer (1-12) to an
+abbreviated string, that is:
+
+1 = "Jan", 2 = "Feb", ..., 12 = "Dec".
+""".
+-spec month(NthMonth) -> Month when
+      NthMonth :: 1..12,
+      Month :: string().
 month(1) -> "Jan";
 month(2) -> "Feb";
 month(3) -> "Mar";
@@ -406,111 +575,71 @@ month(10) -> "Oct";
 month(11) -> "Nov";
 month(12) -> "Dec".
 
-%% decode_hex
+%% split_path, URI has been decoded once when validate
+%% and should only be decoded once(RFC3986, 2.4).
 
-decode_hex(URI) ->
-    http_uri:decode(URI).
-
-encode_hex(URI) ->
-    http_uri:encode(URI).
-
-%% flatlength
-flatlength(List) ->
-    flatlength(List, 0).
-
-flatlength([H|T],L) when is_list(H) ->
-    flatlength(H,flatlength(T,L));
-flatlength([H|T],L) when is_binary(H) ->
-    flatlength(T,L+size(H));
-flatlength([_H|T],L) ->
-    flatlength(T,L+1);
-flatlength([],L) ->
-    L.
-
-%% split_path
-
-split_path(Path) ->
-    case inets_regexp:match(Path,"[\?].*\$") of
-	%% A QUERY_STRING exists!
-	{match,Start,Length} ->
-	    {http_uri:decode(string:substr(Path,1,Start-1)),
-	     string:substr(Path,Start,Length)};
-	%% A possible PATH_INFO exists!
-	nomatch ->
-	    split_path(Path,[])
+-doc """
+`split_path/1` splits `RequestLine` in a file reference
+(`Path`), and a `QueryString` or a `PathInfo` string as specified in
+[RFC 2616](http://www.ietf.org/rfc/rfc2616.txt). A `QueryString` is isolated
+from `Path` with a question mark (`?`) and `PathInfo` with a slash (/). In the
+case of a `QueryString`, everything before `?` is a `Path` and everything after
+`?` is a `QueryString`. In the case of a `PathInfo`, `RequestLine` is scanned
+from left-to-right on the hunt for longest possible `Path` being a file or a
+directory. Everything after the longest possible `Path`, isolated with a `/`, is
+regarded as `PathInfo`
+""".
+-spec split_path(URIString) -> {Path,QueryStringOrPathInfo} when
+      URIString :: string(),
+      Path :: string(),
+      QueryStringOrPathInfo :: string().
+split_path(URI) -> 
+    case uri_string:parse(URI) of
+       #{fragment := Fragment,
+         path := Path,
+         query := Query} ->
+            {Path, add_hashmark(Query, Fragment)};
+        #{path := Path,
+          query := Query} ->
+            {Path, Query};
+        #{path := Path} ->            
+            {Path, []}
     end.
 
-split_path([],SoFar) ->
-    {http_uri:decode(lists:reverse(SoFar)),[]};
-split_path([$/|Rest],SoFar) ->
-    Path=http_uri:decode(lists:reverse(SoFar)),
-    case file:read_file_info(Path) of
-	{ok,FileInfo} when FileInfo#file_info.type =:= regular ->
-	    {Path,[$/|Rest]};
-	{ok, _FileInfo} ->
-	    split_path(Rest,[$/|SoFar]);
-	{error, _Reason} ->
-	    split_path(Rest,[$/|SoFar])
-    end;
-split_path([C|Rest],SoFar) ->
-    split_path(Rest,[C|SoFar]).
+add_hashmark(Query, Fragment) ->
+    Query ++ "#" ++ Fragment.
+   
+%% split_script_path, URI has been decoded once when validate
+%% and should only be decoded once(RFC3986, 2.4).
 
-%% split_script_path
 
-split_script_path(Path) ->
-    case split_script_path(Path, []) of
-	{Script, AfterPath} ->
-	    {PathInfo, QueryString} = pathinfo_querystring(AfterPath),
-	    {Script, {PathInfo, QueryString}};
-	not_a_script ->
-	    not_a_script
+-doc """
+`split_script_path/1` is equivalent to `split_path/1` with one exception. If
+the longest possible path is not a regular, accessible, and executable file,
+then `not_a_script` is returned.
+""".
+-spec split_script_path(URIString) -> Split when
+      URIString :: string(),
+      Split :: not_a_script | {Path,{PathInfo,QueryString}} | {Path, []},
+      Path :: string(),
+      QueryString :: string(),
+      PathInfo :: string().
+split_script_path(URI) -> 
+    case uri_string:parse(URI) of
+       #{fragment := _Fragment,
+         path := _Path,
+         query := _Query} ->
+            not_a_script;
+        #{path := Path,
+          query := Query} ->
+            {Path, {[], Query}};
+        #{path := Path} ->            
+            {Path, []}
     end.
 
-pathinfo_querystring(Str) ->
-    pathinfo_querystring(Str, []).
-pathinfo_querystring([], SoFar) ->
-    {lists:reverse(SoFar), []};
-pathinfo_querystring([$?|Rest], SoFar) ->
-    {lists:reverse(SoFar), Rest};
-pathinfo_querystring([C|Rest], SoFar) ->
-    pathinfo_querystring(Rest, [C|SoFar]).
-
-split_script_path([$?|QueryString], SoFar) ->
-    Path = http_uri:decode(lists:reverse(SoFar)),
-    case file:read_file_info(Path) of
-	{ok,FileInfo} when FileInfo#file_info.type =:= regular ->
-	    {Path, [$?|QueryString]};
-	{ok, _FileInfo} ->
-	    not_a_script;
-	{error, _Reason} ->
-	    not_a_script
-    end;
-split_script_path([], SoFar) ->
-    Path = http_uri:decode(lists:reverse(SoFar)),
-    case file:read_file_info(Path) of
-	{ok,FileInfo} when FileInfo#file_info.type =:= regular ->
-	    {Path, []};
-	{ok, _FileInfo} ->
-	    not_a_script;
-	{error, _Reason} ->
-	    not_a_script
-    end;
-split_script_path([$/|Rest], SoFar) ->
-    Path = http_uri:decode(lists:reverse(SoFar)),
-    case file:read_file_info(Path) of
-	{ok, FileInfo} when FileInfo#file_info.type =:= regular ->
-	    {Path, [$/|Rest]};
-	{ok, _FileInfo} ->
-	    split_script_path(Rest, [$/|SoFar]);
-	{error, _Reason} ->
-	    split_script_path(Rest, [$/|SoFar])
-    end;
-split_script_path([C|Rest], SoFar) ->
-    split_script_path(Rest,[C|SoFar]).
-
-%% suffix
-
-suffix(Path) ->
+%% strip_extension_dot
+-doc false.
+strip_extension_dot(Path) ->
     case filename:extension(Path) of
 	[] ->
 	    [];
@@ -518,39 +647,21 @@ suffix(Path) ->
 	    tl(Extension)
     end.
 
-
-%% strip
-strip(Value)->
-    lists:reverse(remove_ws(lists:reverse(remove_ws(Value)))).
-	
-remove_ws([$\s|Rest])->
-    remove_ws(Rest);
-remove_ws([$\t|Rest]) ->
-    remove_ws(Rest);
-remove_ws(Rest) ->
-    Rest.
-
 %% split
 
-split(String,RegExp,Limit) ->
-    case inets_regexp:parse(RegExp) of
-	{error,Reason} ->
-	    {error,Reason};
-	{ok,_} ->
-	    {ok,do_split(String,RegExp,Limit)}
-    end.
-
-do_split(String, _RegExp, 1) ->
-    [String];
-
-do_split(String,RegExp,Limit) ->
-    case inets_regexp:first_match(String,RegExp) of 
-	{match,Start,Length} ->
-	    [string:substr(String,1,Start-1)|
-	     do_split(lists:nthtail(Start+Length-1,String),RegExp,Limit-1)];
-	nomatch ->
-	    [String]
-    end.
+-doc """
+`split/3` splits `String` in `N` chunks using `RegExp`. `split/3` is equivalent
+to `re:split/3` with the exception that `N` defines the maximum number of
+fields in `FieldList`.
+""".
+-spec split(String,RegExp,N) -> SplitRes when
+      String :: string(),
+      RegExp :: string(),
+      N :: non_neg_integer(),
+      SplitRes :: {ok, FieldList} | {error, term()},
+      FieldList :: [string()].
+split(String,RegExp,N) ->
+    {ok, re:split(String, RegExp, [{parts, N}, {return, list}])}.
 
 %% make_name/2, make_name/3
 %% Prefix  -> string()
@@ -568,12 +679,15 @@ do_split(String,RegExp,Limit) ->
 %% make_name("httpd","otp.ericsson.se",80) => httpd__otp_ericsson_se__80
 %% make_name("httpd",undefined,8088)       => httpd_8088
 
+-doc false.
 make_name(Prefix,Port) ->
     make_name(Prefix,undefined,Port,"").
 
+-doc false.
 make_name(Prefix,Addr,Port) ->
     make_name(Prefix,Addr,Port,"").
 
+-doc false.
 make_name(Prefix, Addr,Port,Postfix) when is_atom(Postfix)->
     make_name(Prefix, Addr,Port, atom_to_list(Postfix));
 
@@ -612,25 +726,17 @@ search_and_replace(S,A,B) ->
           end,
     lists:map(Fun,S).
 
-
-
-%%----------------------------------------------------------------------
-%% Converts  a string that constists of 0-9,A-F,a-f to a 
-%% integer
-%%----------------------------------------------------------------------
-
-hexlist_to_integer(List)->
-    http_util:hexlist_to_integer(List).
-
-%%----------------------------------------------------------------------
-%%Converts an integer to an hexlist
-%%----------------------------------------------------------------------
-integer_to_hexlist(Num) when is_integer(Num) ->
-    http_util:integer_to_hexlist(Num).
-	    	      
+-doc """
+`create_etag/1` calculates the Etag for a file from its size and time for last
+modification. `FileInfo` is a record defined in `kernel/include/file.hrl`.
+""".
+-spec create_etag(FileInfo) -> Etag when
+      FileInfo :: file:file_info(),
+      Etag :: string().
 create_etag(FileInfo) ->
     create_etag(FileInfo#file_info.mtime,FileInfo#file_info.size).
 
+-doc false.
 create_etag({{Year,Month,Day},{Hour,Min,Sec}},Size)->
     create_part([Year,Month,Day,Hour,Min,Sec])++io_lib:write(Size);
 
@@ -654,12 +760,14 @@ create_part(Values)->
 %%----------------------------------------------------------------------
 %% Validate httpd options
 %%----------------------------------------------------------------------
+-doc false.
 modules_validate([]) ->
     ok;
 modules_validate([Head | Tail]) ->
     ok = module_validate(Head),
     modules_validate(Tail).
 
+-doc false.
 module_validate(Module) when is_atom(Module) ->
     case code:which(Module) of
 	non_existing ->
@@ -671,6 +779,7 @@ module_validate(Module) when is_atom(Module) ->
 module_validate(Module) ->
     throw({module_name_not_atom, Module}).
 
+-doc false.
 dir_validate(ConfDir, Dir) ->
     case filelib:is_dir(Dir) of
 	true ->
@@ -681,6 +790,7 @@ dir_validate(ConfDir, Dir) ->
 	    throw({ConfDir, Dir})
     end.
     
+-doc false.
 file_validate(ConfFile, File) ->
     case filelib:is_file(File) of
 	true ->
@@ -691,6 +801,7 @@ file_validate(ConfFile, File) ->
 	    throw({ConfFile, File})
     end.
 
+-doc false.
 mime_type_validate({Value1, Value2}) 
   when is_list(Value1) andalso is_list(Value2) ->
     ok;
@@ -699,6 +810,7 @@ mime_type_validate({_, _} = Value) ->
 mime_type_validate(MimeFile) ->
     file_validate(mime_types, MimeFile).
 
+-doc false.
 mime_types_validate([{_, _} = Value | Rest]) ->
     ok = mime_types_validate(Value),
     mime_types_validate(Rest);
@@ -708,6 +820,7 @@ mime_types_validate(MimeFile) ->
     mime_type_validate(MimeFile).
 
 
+-doc false.
 valid_options(Debug, AcceptTimeout, Config) ->
     valid_debug(Debug),
     valid_accept_timeout(AcceptTimeout),
@@ -753,6 +866,7 @@ valid_config(_) ->
 %% Enable debugging, 
 %%----------------------------------------------------------------------
 
+-doc false.
 enable_debug([]) ->
     ok;
 enable_debug(Debug) ->
@@ -786,3 +900,55 @@ do_enable_debug([{Level,Modules}|Rest])
 	    ok
     end,
     do_enable_debug(Rest).
+
+
+-doc false.
+error_log(ConfigDB, Report) ->
+    case lookup(ConfigDB, logger) of
+        undefined ->
+            mod_error_logging(mod_log, ConfigDB, Report),
+            mod_error_logging(mod_disk_log, ConfigDB, Report);
+        Logger  ->
+            Domain = proplists:get_value(error, Logger),
+            httpd_logger:log(error, Report, Domain),
+            %% Backwards compat
+            mod_error_logging(mod_log, ConfigDB, Report),
+            mod_error_logging(mod_disk_log, ConfigDB, Report)
+    end.
+
+mod_error_logging(Mod, ConfigDB, Report) ->
+    Modules = httpd_util:lookup(ConfigDB, modules,
+				[mod_get, mod_head, mod_log]),
+    case lists:member(Mod, Modules) of
+	true ->
+            %% Make it oneline string for backwards compatibility
+            Msg = httpd_logger:format(Report),
+            ErrorStr = lists:flatten(logger_formatter:format(#{level => error,
+                                                               msg => Msg,
+                                                               meta => #{}
+                                                              },
+                                                             #{template => [msg]})),
+            Mod:report_error(ConfigDB, ErrorStr);
+	_ ->
+	    ok
+    end.
+
+%%----------------------------------------------------------------------
+%% collapse_slashes(Path) -> Path
+%%
+%% Collapse consecutive slash characters into a single slash.
+%% This ensures the authorization decision (mod_auth, mod_security)
+%% and the file-serving layer (mod_get) see the same canonical path.
+%% Without this, "//secret/file" bypasses mod_auth's re:run directory
+%% check while the OS still serves the file (treating // as /).
+%%----------------------------------------------------------------------
+-doc false.
+collapse_slashes(Path) ->
+    collapse_slashes(Path, []).
+
+collapse_slashes([], Acc) ->
+    lists:reverse(Acc);
+collapse_slashes([$/,$/ | Rest], Acc) ->
+    collapse_slashes([$/ | Rest], Acc);
+collapse_slashes([C | Rest], Acc) ->
+    collapse_slashes(Rest, [C | Acc]).

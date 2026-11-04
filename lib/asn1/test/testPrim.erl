@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 1997-2013. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 1997-2026. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -28,21 +30,19 @@
 -export([null/1]).
 -export([real/1]).
 
--include_lib("test_server/include/test_server.hrl").
+-include_lib("common_test/include/ct.hrl").
 
 bool(Rules) ->
     Types = ['Bool','BoolCon','BoolPri','BoolApp',
 	     'BoolExpCon','BoolExpPri','BoolExpApp'],
     [roundtrip(T, V) || T <- Types, V <- [true,false]],
-    case Rules of
-	ber ->
-	    [begin
-		 {error,{asn1,{encode_boolean,517}}} = enc_error(T, 517)
-	     end || T <- Types],
-	    ok;
-	_ ->
-	    ok
-    end.
+    Tag = case Rules of
+              ber -> encode_boolean;
+              jer -> {encode,'BOOLEAN'};
+              _ -> illegal_boolean
+          end,
+    [{ok,517} = enc_error(Tag,T, 517) || T <- Types],
+    ok.
 
 
 int(Rules) ->
@@ -60,10 +60,23 @@ int(Rules) ->
 	      123456789,12345678901234567890,
 	      -1,-2,-3,-4,-100,-127,-255,-256,-257,
 	      -1234567890,-2147483648],
-    [roundtrip(T, V) ||
-	T <- ['Int','IntCon','IntPri','IntApp',
-	      'IntExpCon','IntExpPri','IntExpApp'],
-	V <- [1|Values]],
+    Types = ['Int','IntCon','IntPri','IntApp',
+             'IntExpCon','IntExpPri','IntExpApp'],
+    _ = [roundtrip(T, V) || T <- Types, V <- [1|Values]],
+    Tag = case Rules of
+              ber -> encode_integer;
+              jer -> '_';
+              _ -> illegal_integer
+          end,
+    _ = [{ok,V} = enc_error(Tag,T, V) ||
+            T <- Types, V <- [atom,42.0,{a,b,c}]],
+    case Rules of
+        ber ->
+            ok;
+        _ ->
+            _ = [{ok,V} = enc_error(Tag,'IntConstrained', V) ||
+                    V <- [atom,-1,256,42.0]]
+    end,
 
     %%==========================================================
     %% IntEnum ::=  INTEGER {first(1),last(31)} 
@@ -78,8 +91,39 @@ int(Rules) ->
     roundtrip('ASeq', {'ASeq',false,250,true,200,true,199,true,77788}),
     roundtrip('ASeq', {'ASeq',true,0,false,0,true,0,true,68789}),
 
+    %%==========================================================
+    %% Longitude ::= INTEGER {
+    %%  oneMicrodegreeEast(10),
+    %%  oneMicrodegreeWest(-10),
+    %%  unavailable(1800000001)
+    %% } (-1799999999..1800000001)
+    %%==========================================================
+
+    Enc10 = encoding(Rules, oneMicrodegreeEast),
+    Enc10 = roundtrip('Longitude', oneMicrodegreeEast),
+    Enc10 = roundtrip('Longitude', 10, oneMicrodegreeEast),
+
+    Enc20 = encoding(Rules, oneMicrodegreeWest),
+    Enc20 = roundtrip('Longitude', oneMicrodegreeWest),
+    Enc20 = roundtrip('Longitude', -10, oneMicrodegreeWest),
+
+    Enc30 = roundtrip('Longitude', unavailable),
+    Enc30 = roundtrip('Longitude', 1800000001, unavailable),
+
     ok.
 
+encoding(jer,oneMicrodegreeEast) -> <<"10">>;
+encoding(jer,oneMicrodegreeWest) -> <<"-10">>;
+encoding(Rule, Val) ->
+    asn1_test_lib:hex_to_bin(encoding_1(Rule, Val)).
+
+encoding_1(ber, oneMicrodegreeEast) -> "02010A";
+encoding_1(per, oneMicrodegreeEast) -> "C06B49D2 09";
+encoding_1(uper, oneMicrodegreeEast) -> "6B49D209";
+
+encoding_1(ber, oneMicrodegreeWest) -> "0201F6";
+encoding_1(per, oneMicrodegreeWest) -> "C06B49D1 F5";
+encoding_1(uper, oneMicrodegreeWest) -> "6B49D1F5".
 
 enum(Rules) ->
 
@@ -90,14 +134,21 @@ enum(Rules) ->
 
     roundtrip('Enum', monday),
     roundtrip('Enum', thursday),
-    {error,{asn1,{_,4}}} = enc_error('Enum', 4),
+    Tag = case Rules of
+              ber -> enumerated_not_in_range;
+              jer -> '_';
+              _ -> illegal_enumerated
+          end,
+    {ok,4} = enc_error(Tag,'Enum', 4),
 
     case Rules of
 	Per when Per =:= per; Per =:= uper ->
 	    <<0>> = roundtrip('SingleEnumVal', true),
 	    <<0>> = roundtrip('SingleEnumValExt', true);
 	ber ->
-	    ok
+	    ok;
+        jer ->
+            ok
     end,
 
     roundtrip('NegEnumVal', neg),
@@ -114,7 +165,28 @@ obj_id(_) ->
     %%==========================================================
 
     [roundtrip('ObjId', V) ||
-	V <- [{0,22,3},{1,39,3},{2,100,3},{2,16303,3},{2,16304,3}]],
+        V <- [{0,22,3},
+              {1,39,3},
+              {2,100,3},
+              {2,16303,3},
+              {2,16304,3},
+              {2,1 bsl (14 * 7),3}]],
+
+    try
+        [roundtrip('ObjId', V) ||
+         V <- [{0,22,3},
+              {1,39,3},
+              {2,100,3},
+              {2,16303,3},
+              {2,16304,3},
+              {2,1 bsl (20 * 7),3}]]
+    of
+        [_|_]=Res -> ct:fail("Failed to reject overlong oid ~p", [Res])
+    catch
+        _:_ ->
+            ok
+    end,
+
     ok.
 
 rel_oid(_Rules) ->
@@ -150,25 +222,41 @@ roundtrip(Type, Value, ExpectedValue) ->
 	    Enc
     end.
 
-enc_error(T, V) ->
-    case get(no_ok_wrapper) of
-	false ->
-	    'Prim':encode(T, V);
-	true ->
-	    try 'Prim':encode(T, V) of
-		_ ->
-		    ?t:fail()
-	    catch
-		_:Reason ->
-		    Reason
-	    end
+enc_error(Tag,T, V) ->
+    {Rtag,Val} = case get(no_ok_wrapper) of
+                     false ->
+                         {error,{asn1,{Reason,Stk}}} = 'Prim':encode(T, V),
+                         [{_,_,_,_}|_] = Stk,
+                         Reason;
+                     true ->
+                         try 'Prim':encode(T, V) of
+                             _ ->
+                                 ct:fail(expected_exception)
+                         catch
+                             _:{error,{asn1,Reason}} ->
+                                 Reason
+                         end
+                 end,
+    case Tag of
+        '_' -> % Any tag is accepted 
+            {ok,Val};
+        Rtag -> % A specific tag given as first argument is accepted
+            {ok,Val}
     end.
 
+real(jer) -> ok; % Temporary workaround
 real(_Rules) ->
     %%==========================================================
     %% AngleInRadians ::= REAL
     %%==========================================================
-    
+
+    %% Zero
+    real_roundtrip('AngleInRadians', 0),
+
+    %% Infinities
+    real_roundtrip('AngleInRadians', 'MINUS-INFINITY'),
+    real_roundtrip('AngleInRadians', 'PLUS-INFINITY'),
+
     %% Base 2
     real_roundtrip('AngleInRadians', {1,2,1}),
     real_roundtrip('AngleInRadians', {129,2,1}),
@@ -189,6 +277,7 @@ real(_Rules) ->
     %% Base 10, string format NR3
 
     real_roundtrip('AngleInRadians', "123.123E123", "123123.E120"),
+    real_roundtrip('AngleInRadians', "+123.123E123", "123123.E120"),
     real_roundtrip('AngleInRadians', "0.0E0", "0.E+0"),
     real_roundtrip('AngleInRadians', "0.0123", "123.E-4"),
     real_roundtrip('AngleInRadians', "0", "0.E+0"),
@@ -197,6 +286,14 @@ real(_Rules) ->
 		   "123456789.E123456789"),
     real_roundtrip('AngleInRadians', "01.000E1", "1.E1"),
     real_roundtrip('AngleInRadians', "120.0001", "1200001.E-4"),
+    real_roundtrip('AngleInRadians', "5", "5.E+0"),
+    real_roundtrip('AngleInRadians', "53", "53.E+0"),
+
+    real_roundtrip('AngleInRadians', "-123.123E123", "-123123.E120"),
+    real_roundtrip('AngleInRadians', "-0.0123", "-123.E-4"),
+    real_roundtrip('AngleInRadians', "-0.73", "-73.E-2"),
+    real_roundtrip('AngleInRadians', "-5", "-5.E+0"),
+    real_roundtrip('AngleInRadians', "-53", "-53.E+0"),
 
     ok.
 

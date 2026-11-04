@@ -1,8 +1,10 @@
 /*
  * %CopyrightBegin%
- * 
- * Copyright Ericsson AB 2014. All Rights Reserved.
- * 
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Copyright Ericsson AB 2014-2025. All Rights Reserved.
+ *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
@@ -14,7 +16,7 @@
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  * See the License for the specific language governing permissions and
  * limitations under the License.
- * 
+ *
  * %CopyrightEnd%
  */
 
@@ -23,14 +25,31 @@
 #define __ERL_MAP_H__
 
 #include "sys.h"
+#include "erl_term_hashing.h"
 
-/* instrinsic wrappers */
-#if ERTS_AT_LEAST_GCC_VSN__(3, 4, 0)
-#define hashmap_clz(x)       ((Uint32) __builtin_clz((unsigned int)(x)))
-#define hashmap_bitcount(x)  ((Uint32) __builtin_popcount((unsigned int) (x)))
+/* intrinsic wrappers */
+#if ERTS_AT_LEAST_GCC_VSN__(3, 4, 0) || __has_builtin(__builtin_clz)
+#  if defined(ARCH_64)
+#    define hashmap_clz(x) \
+    ((erts_ihash_t)__builtin_clzl((erts_ihash_t)(x)))
+#  elif defined(ARCH_32)
+#    define hashmap_clz(x) \
+    ((erts_ihash_t)__builtin_clz((erts_ihash_t)(x)))
+#  endif
 #else
-Uint32 hashmap_clz(Uint32 x);
-Uint32 hashmap_bitcount(Uint32 x);
+erts_ihash_t hashmap_clz(erts_ihash_t x);
+#endif
+
+#if ERTS_AT_LEAST_GCC_VSN__(3, 4, 0) || __has_builtin(__builtin_popcount)
+#  if defined(ARCH_64)
+#    define hashmap_bitcount(x) \
+    ((erts_ihash_t)__builtin_popcountl((erts_ihash_t)(x)))
+#  elif defined(ARCH_32)
+#    define hashmap_bitcount(x) \
+    ((erts_ihash_t)__builtin_popcount((erts_ihash_t)(x)))
+#  endif
+#else
+erts_ihash_t hashmap_bitcount(erts_ihash_t x);
 #endif
 
 /* MAP */
@@ -55,19 +74,19 @@ typedef struct flatmap_s {
 
 /* the head-node is a bitmap or array with an untagged size */
 
-
 #define hashmap_size(x)               (((hashmap_head_t*) hashmap_val(x))->size)
-#define hashmap_size_rel(RTERM, BASE) hashmap_size(rterm2wterm(RTERM, BASE))
-#define hashmap_make_hash(Key)        make_internal_hash(Key)
+#define hashmap_make_hash(Key)        erts_map_hash(Key)
 
-#define hashmap_restore_hash(Heap,Lvl,Key) \
-    (((Lvl) < 8) ? hashmap_make_hash(Key) >> (4*(Lvl)) : hashmap_make_hash(CONS(Heap, make_small((Lvl)>>3), (Key))) >> (4*((Lvl) & 7)))
-#define hashmap_shift_hash(Heap,Hx,Lvl,Key) \
-    (((++(Lvl)) & 7) ? (Hx) >> 4 : hashmap_make_hash(CONS(Heap, make_small((Lvl)>>3), Key)))
+#define hashmap_restore_hash(Lvl, Key)                                        \
+    (ASSERT(Lvl < HAMT_MAX_LEVEL),                                            \
+     hashmap_make_hash(Key) >> (4*(Lvl)))
 
+#define hashmap_shift_hash(Hx, Lvl, Key)                                      \
+    (++(Lvl), ASSERT(Lvl <= HAMT_MAX_LEVEL), /* we allow one level too much */\
+     (Hx) >> 4)
 
 /* erl_term.h stuff */
-#define flatmap_get_values(x)        (((Eterm *)(x)) + 3)
+#define flatmap_get_values(x)        (((Eterm *)(x)) + sizeof(flatmap_t)/sizeof(Eterm))
 #define flatmap_get_keys(x)          (((Eterm *)tuple_val(((flatmap_t *)(x))->keys)) + 1)
 #define flatmap_get_size(x)          (((flatmap_t*)(x))->size)
 
@@ -83,44 +102,37 @@ struct ErtsEStack_;
 Eterm  erts_maps_put(Process *p, Eterm key, Eterm value, Eterm map);
 int    erts_maps_update(Process *p, Eterm key, Eterm value, Eterm map, Eterm *res);
 int    erts_maps_remove(Process *p, Eterm key, Eterm map, Eterm *res);
+int    erts_maps_take(Process *p, Eterm key, Eterm map, Eterm *res, Eterm *value);
 
-Eterm  erts_hashmap_insert(Process *p, Uint32 hx, Eterm key, Eterm value,
+Eterm  erts_hashmap_insert(Process *p, erts_ihash_t hx, Eterm key, Eterm value,
 			   Eterm node, int is_update);
-int    erts_hashmap_insert_down(Uint32 hx, Eterm key, Eterm node, Uint *sz,
+int    erts_hashmap_insert_down(erts_ihash_t hx, Eterm key, Eterm value, Eterm node, Uint *sz,
 			        Uint *upsz, struct ErtsEStack_ *sp, int is_update);
 Eterm  erts_hashmap_insert_up(Eterm *hp, Eterm key, Eterm value,
-			      Uint *upsz, struct ErtsEStack_ *sp);
+			      Uint upsz, struct ErtsEStack_ *sp);
 
 int    erts_validate_and_sort_flatmap(flatmap_t* map);
+void   erts_usort_flatmap(flatmap_t* map);
 void   hashmap_iterator_init(struct ErtsWStack_* s, Eterm node, int reverse);
 Eterm* hashmap_iterator_next(struct ErtsWStack_* s);
 Eterm* hashmap_iterator_prev(struct ErtsWStack_* s);
 int    hashmap_key_hash_cmp(Eterm* ap, Eterm* bp);
 Eterm  erts_hashmap_from_array(ErtsHeapFactory*, Eterm *leafs, Uint n, int reject_dupkeys);
 
-#define erts_hashmap_from_ks_and_vs(P, KS, VS, N) \
-    erts_hashmap_from_ks_and_vs_extra((P), (KS), (VS), (N), THE_NON_VALUE, THE_NON_VALUE);
+#define erts_hashmap_from_ks_and_vs(F, KS, VS, N) \
+    erts_hashmap_from_ks_and_vs_extra((F), (KS), (VS), (N), THE_NON_VALUE, THE_NON_VALUE, 0);
 
-Eterm  erts_hashmap_from_ks_and_vs_extra(Process *p, Eterm *ks, Eterm *vs, Uint n,
-					 Eterm k, Eterm v);
+Eterm erts_map_from_ks_and_vs(ErtsHeapFactory *factory, Eterm *ks, Eterm *vs, Uint n);
+Eterm  erts_hashmap_from_ks_and_vs_extra(ErtsHeapFactory *factory,
+                                         Eterm *ks, Eterm *vs, Uint n,
+                                         Eterm k, Eterm v,
+                                         int reject_dupkeys);
 
-const Eterm *
-#if HALFWORD_HEAP
-erts_maps_get_rel(Eterm key, Eterm map, Eterm *map_base);
-#  define erts_maps_get(A, B) erts_maps_get_rel(A, B, NULL)
-#else
-erts_maps_get(Eterm key, Eterm map);
-#  define erts_maps_get_rel(A, B, B_BASE) erts_maps_get(A, B)
-#endif
+const Eterm *erts_maps_get(Eterm key, Eterm map);
 
-const Eterm *
-#if HALFWORD_HEAP
-erts_hashmap_get_rel(Uint32 hx, Eterm key, Eterm node, Eterm *map_base);
-#  define erts_hashmap_get(Hx, K, M) erts_hashmap_get_rel(Hx, K, M, NULL)
-#else
-erts_hashmap_get(Uint32 hx, Eterm key, Eterm map);
-#  define erts_hashmap_get_rel(Hx, K, M, M_BASE) erts_hashmap_get(Hx, K, M)
-#endif
+const Eterm *erts_hashmap_get(erts_ihash_t hx, Eterm key, Eterm map);
+
+Sint erts_map_size(Eterm map);
 
 /* hamt nodes v2.0
  *
@@ -138,13 +150,13 @@ typedef struct hashmap_head_s {
  *
  * Original HEADER representation:
  *
- *     aaaaaaaaaaaaaaaa aaaaaaaaaatttt00       arity:26, tag:4
+ *     aaaaaaaaaaaaaaaa aaaaaaaaaattttpp       arity:26, tag:4, ptag:2
  *
  * For maps we have:
  *
- *     vvvvvvvvvvvvvvvv aaaaaaaamm111100       val:16, arity:8, mtype:2
+ *     vvvvvvvvvvvvvvvv aaaaaaaamm1111pp       val:16, arity:8, mtype:2, ptag:2
  *
- * unsure about trailing zeros
+ * ptag is always TAG_PRIMARY_HEADER
  *
  * map-tag:
  *     00 - flat map tag (non-hamt) -> val:16 = #items
@@ -153,12 +165,22 @@ typedef struct hashmap_head_s {
  *     11 - map-head (bitmap-node)  -> val:16 = bitmap
  */
 
+/* 2 bits maps tag + subtag mask */
+#define _HEADER_MAP_SUBTAG_MASK       \
+    ((3 << _HEADER_ARITY_OFFS) | _HEADER_SUBTAG_MASK)
+/* As above, but with the lowest bit of the map tag cleared so that it only
+ * covers hashmap heads (whether array or bitmap). */
+#define _HEADER_MAP_HASHMAP_HEAD_MASK \
+    (~(1 << _HEADER_ARITY_OFFS) & _HEADER_MAP_SUBTAG_MASK)
+
 /* erl_map.h stuff */
 
-#define is_hashmap_header_head(x) ((MAP_HEADER_TYPE(x) & (0x2)))
+#define is_hashmap_header_head(x) (MAP_HEADER_TYPE(x) & (0x2))
+#define is_hashmap_header_node(x) (MAP_HEADER_TYPE(x) == 1)
 
 #define MAKE_MAP_HEADER(Type,Arity,Val) \
-    (_make_header(((((Uint16)(Val)) << MAP_HEADER_ARITY_SZ) | (Arity)) << MAP_HEADER_TAG_SZ | (Type) , _TAG_HEADER_MAP))
+    (_make_header(((((Uint16)(Val)) << MAP_HEADER_ARITY_SZ) | \
+     (Arity)) << MAP_HEADER_TAG_SZ | (Type) , _TAG_HEADER_MAP))
 
 #define MAP_HEADER_FLATMAP \
     MAKE_MAP_HEADER(MAP_HEADER_TAG_FLATMAP_HEAD,0x1,0x0)
@@ -172,37 +194,50 @@ typedef struct hashmap_head_s {
 #define MAP_HEADER_HAMT_NODE_BITMAP(Bmp) \
     MAKE_MAP_HEADER(MAP_HEADER_TAG_HAMT_NODE_BITMAP,0x0,Bmp)
 
+#define MAP_HEADER_HAMT_COLLISION_NODE(Arity) make_arityval(Arity)
+
 #define MAP_HEADER_FLATMAP_SZ  (sizeof(flatmap_t) / sizeof(Eterm))
 
 #define HAMT_NODE_ARRAY_SZ      (17)
 #define HAMT_HEAD_ARRAY_SZ      (18)
 #define HAMT_NODE_BITMAP_SZ(n)  (1 + n)
 #define HAMT_HEAD_BITMAP_SZ(n)  (2 + n)
-
-/* 2 bits maps tag + 4 bits subtag + 2 ignore bits */
-#define _HEADER_MAP_SUBTAG_MASK       (0xfc)
-/* 1 bit map tag + 1 ignore bit + 4 bits subtag + 2 ignore bits */
-#define _HEADER_MAP_HASHMAP_HEAD_MASK (0xbc)
+#define HAMT_COLLISION_NODE_SZ(n)     (1 + n)
+/*
+ * Collision nodes are used when all hash bits have been exhausted.
+ * They are normal tuples of arity 2 or larger. The elements of a collision
+ * node tuple contain key-value cons cells like the other nodes,
+ * but they are sorted in map-key order.
+ */
 
 #define HAMT_SUBTAG_NODE_BITMAP  ((MAP_HEADER_TAG_HAMT_NODE_BITMAP << _HEADER_ARITY_OFFS) | MAP_SUBTAG)
 #define HAMT_SUBTAG_HEAD_ARRAY   ((MAP_HEADER_TAG_HAMT_HEAD_ARRAY  << _HEADER_ARITY_OFFS) | MAP_SUBTAG)
 #define HAMT_SUBTAG_HEAD_BITMAP  ((MAP_HEADER_TAG_HAMT_HEAD_BITMAP << _HEADER_ARITY_OFFS) | MAP_SUBTAG)
 #define HAMT_SUBTAG_HEAD_FLATMAP ((MAP_HEADER_TAG_FLATMAP_HEAD << _HEADER_ARITY_OFFS) | MAP_SUBTAG)
 
-#define hashmap_index(hash)      (((Uint32)hash) & 0xf)
+#define hashmap_index(hash)      ((hash) & 0xf)
+
+#define HAMT_MAX_LEVEL ((sizeof(erts_ihash_t) * CHAR_BIT) / 4)
 
 /* hashmap heap size:
    [one cons cell + one list term in parent node] per key
    [one header + one boxed term in parent node] per inner node
    [one header + one size word] for root node
+   Observed average number of nodes per key is about 0.35.
+
+   Amendment: This size estimation does not take collision nodes into account.
+              It should be good enough though, as collision nodes are rare
+              and only make the size smaller compared to unlimited HAMT depth.
 */
-#define HASHMAP_HEAP_SIZE(KEYS,NODES) ((KEYS)*3 + (NODES)*2)
+#define HASHMAP_WORDS_PER_KEY 3
+#define HASHMAP_WORDS_PER_NODE 2
 #ifdef DEBUG
-#  define HASHMAP_ESTIMATED_NODE_COUNT(KEYS) (KEYS)
+#  define HASHMAP_ESTIMATED_TOT_NODE_SIZE(KEYS) \
+    (HASHMAP_WORDS_PER_NODE * (KEYS) * 3/10)   /* slightly under estimated */
 #else
-#  define HASHMAP_ESTIMATED_NODE_COUNT(KEYS) (2*(KEYS)/5)
+#  define HASHMAP_ESTIMATED_TOT_NODE_SIZE(KEYS) \
+    (HASHMAP_WORDS_PER_NODE * (KEYS) * 4/10)   /* slightly over estimated */
 #endif
 #define HASHMAP_ESTIMATED_HEAP_SIZE(KEYS) \
-        HASHMAP_HEAP_SIZE(KEYS,HASHMAP_ESTIMATED_NODE_COUNT(KEYS))
-
+        ((KEYS)*HASHMAP_WORDS_PER_KEY + HASHMAP_ESTIMATED_TOT_NODE_SIZE(KEYS))
 #endif

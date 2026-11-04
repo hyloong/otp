@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2003-2014. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2003-2025. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -32,10 +34,11 @@
 %%---------------------------------------------------------------
 
 -module(ct_telnet_client).
+-moduledoc false.
 
 %%-define(debug, true).
 
--export([open/2, open/3, open/4, open/5, close/1]).
+-export([open/2, open/3, open/4, open/5, open/6, close/1]).
 -export([send_data/2, send_data/3, get_data/1]).
 
 -define(TELNET_PORT, 23).
@@ -70,25 +73,29 @@
 -record(state,{conn_name, get_data, keep_alive=true, log_pos=1}).
 
 open(Server, ConnName) ->
-    open(Server, ?TELNET_PORT, ?OPEN_TIMEOUT, true, ConnName).
+    open(Server, ?TELNET_PORT, ?OPEN_TIMEOUT, true, false, ConnName).
 
 open(Server, Port, ConnName) ->
-    open(Server, Port, ?OPEN_TIMEOUT, true, ConnName).
+    open(Server, Port, ?OPEN_TIMEOUT, true, false, ConnName).
 
 open(Server, Port, Timeout, ConnName) ->
-    open(Server, Port, Timeout, true, ConnName).
+    open(Server, Port, Timeout, true, false, ConnName).
 
 open(Server, Port, Timeout, KeepAlive, ConnName) ->
+    open(Server, Port, Timeout, KeepAlive, false, ConnName).
+
+open(Server, Port, Timeout, KeepAlive, NoDelay, ConnName) ->
     Self = self(),
-    Pid = spawn(fun() ->
-			init(Self, Server, Port, Timeout,
-			     KeepAlive, ConnName)
-		end),
-    receive 
-	{open,Pid} ->
-	    {ok,Pid};
-	{Error,Pid} ->
-	    Error
+    {Pid, MRef} = spawn_monitor(fun() ->
+                                        init(Self, Server, Port, Timeout,
+                                             KeepAlive, NoDelay, ConnName)
+                                end),
+    receive
+        {Result, Pid} ->
+            demonitor(MRef, [flush]),
+            if Result == open -> {ok, Pid}; true -> Result end;
+        {'DOWN', MRef, process, _, _} = T ->
+            {error, T}
     end.
 
 close(Pid) ->
@@ -98,26 +105,33 @@ close(Pid) ->
     end.	    
 
 send_data(Pid, Data) ->
-    send_data(Pid, Data, true).
+    send_data(Pid, Data, "\n").
 send_data(Pid, Data, true) ->
-    send_data(Pid, Data++"\n", false);
+    send_data(Pid, Data, "\n");
+send_data(Pid, Data, Newline) when is_list(Newline) ->
+    send_data(Pid, Data++Newline, false);
 send_data(Pid, Data, false) ->
     Pid ! {send_data, Data},
     ok.
 
 get_data(Pid) ->
-    Pid ! {get_data,self()},
-    receive 
-	{data,Data} ->
-	    {ok,Data}
+    MRef = monitor(process, Pid),
+    Pid ! {get_data, self()},
+    receive
+        {data, Data} ->
+            demonitor(MRef, [flush]),
+            {ok, Data};
+        {'DOWN', MRef, process, _, _} = T ->
+            {error, T}
     end.
 
 %%%-----------------------------------------------------------------
 %%% Internal functions
-init(Parent, Server, Port, Timeout, KeepAlive, ConnName) ->
-    case gen_tcp:connect(Server, Port, [list,{packet,0},{nodelay,true}], Timeout) of
+init(Parent, Server, Port, Timeout, KeepAlive, NoDelay, ConnName) ->
+    ct_util:mark_process(),
+    case gen_tcp:connect(Server, Port, [list,{packet,0},{nodelay,NoDelay}], Timeout) of
 	{ok,Sock} ->
-	    dbg("~p connected to: ~p (port: ~w, keep_alive: ~w)\n",
+	    dbg("~tp connected to: ~tp (port: ~w, keep_alive: ~w)\n",
 		[ConnName,Server,Port,KeepAlive]),
 	    send([?IAC,?DO,?SUPPRESS_GO_AHEAD], Sock, ConnName),	      
 	    Parent ! {open,self()},
@@ -269,7 +283,7 @@ send(Data, Sock, ConnName) ->
 		_:_ -> ok
 	    end
     end,
-    gen_tcp:send(Sock, Data),
+    ok = gen_tcp:send(Sock, Data),
     ok.
 
 %% [IAC,IAC] = buffer data value 255
@@ -281,7 +295,7 @@ check_msg(Sock, [?IAC | Cs], Acc) ->
     case get_cmd(Cs) of
 	{Cmd,Cs1} ->
 	    cmd_dbg("Got",Cmd),
-	    respond_cmd(Cmd, Sock),
+	    ok = respond_cmd(Cmd, Sock),
 	    check_msg(Sock, Cs1, Acc); 
 	error ->
 	    Acc

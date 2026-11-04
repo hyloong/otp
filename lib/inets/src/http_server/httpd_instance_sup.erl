@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2001-2013. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2001-2025. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -25,6 +27,7 @@
 %%----------------------------------------------------------------------
 
 -module(httpd_instance_sup).
+-moduledoc false.
 
 -behaviour(supervisor).
 
@@ -53,22 +56,7 @@ start_link([{_, _}| _] = Config, AcceptTimeout, Debug)  ->
 	{error, Reason} ->
 	    error_logger:error_report(Reason),
 	    {stop, Reason}
-    end;
-
-start_link(ConfigFile, AcceptTimeout, Debug) ->
-    case file_2_config(ConfigFile) of
-	{ok, ConfigList, Address, Port} ->
-	    Profile = proplists:get_value(profile, ConfigList, ?DEFAULT_PROFILE), 
-	    Name    = make_name(Address, Port, Profile),
-	    SupName = {local, Name},
-	    supervisor:start_link(SupName, ?MODULE, 
-				  [ConfigFile, ConfigList, AcceptTimeout,
-				   Debug, Address, Port]);	
-	{error, Reason} ->
-	    error_logger:error_report(Reason),
-	    {stop, Reason}
     end.
-
 
 start_link([{_, _}| _] = Config, AcceptTimeout, ListenInfo, Debug) ->
     case (catch httpd_conf:validate_properties(Config)) of
@@ -84,22 +72,7 @@ start_link([{_, _}| _] = Config, AcceptTimeout, ListenInfo, Debug) ->
 	{error, Reason} ->
 	    error_logger:error_report(Reason),
 	    {stop, Reason}
-    end;
-
-start_link(ConfigFile, AcceptTimeout, ListenInfo, Debug) ->
-    case file_2_config(ConfigFile) of
-	{ok, ConfigList, Address, Port} ->
-	    Profile = proplists:get_value(profile, ConfigList, ?DEFAULT_PROFILE), 
-	    Name    = make_name(Address, Port, Profile),
-	    SupName = {local, Name},
-	    supervisor:start_link(SupName, ?MODULE, 
-				  [ConfigFile, ConfigList, AcceptTimeout,
-				   Debug, Address, Port, ListenInfo]);	
-	{error, Reason} ->
-	    error_logger:error_report(Reason),
-	    {stop, Reason}
     end.
-
 
 %%%=========================================================================
 %%%  Supervisor callback
@@ -109,22 +82,22 @@ init([ConfigFile, ConfigList, AcceptTimeout, Debug, Address, Port]) ->
     Profile = proplists:get_value(profile, ConfigList, ?DEFAULT_PROFILE),
     Flags = {one_for_one, 0, 1},
     Children  = [httpd_connection_sup_spec(Address, Port, Profile), 
-		 httpd_acceptor_sup_spec(Address, Port, Profile, ConfigList, AcceptTimeout,
-					 undefined), 
 		 sup_spec(httpd_misc_sup, Address, Port, Profile), 
 		 worker_spec(httpd_manager, Address, Port, Profile, 
-			     ConfigFile, ConfigList,AcceptTimeout)],
+			     ConfigFile, ConfigList,AcceptTimeout),
+                 httpd_acceptor_sup_spec(Address, Port, Profile, ConfigList, AcceptTimeout,
+                                         undefined)],
     {ok, {Flags, Children}};
 init([ConfigFile, ConfigList, AcceptTimeout, Debug, Address, Port, ListenInfo]) -> 
     httpd_util:enable_debug(Debug), 
     Profile = proplists:get_value(profile, ConfigList, ?DEFAULT_PROFILE),
     Flags = {one_for_one, 0, 1},
     Children  = [httpd_connection_sup_spec(Address, Port, Profile), 
-		 httpd_acceptor_sup_spec(Address, Port, Profile, ConfigList, AcceptTimeout,
-					 ListenInfo), 
 		 sup_spec(httpd_misc_sup, Address, Port, Profile), 
 		 worker_spec(httpd_manager, Address, Port, Profile, ListenInfo, 
-			     ConfigFile, ConfigList, AcceptTimeout)],
+			     ConfigFile, ConfigList, AcceptTimeout),
+		 httpd_acceptor_sup_spec(Address, Port, Profile, ConfigList, AcceptTimeout,
+					 ListenInfo)],
     {ok, {Flags, Children}}.
 
 
@@ -183,18 +156,3 @@ worker_spec(WorkerModule, Address, Port, Profile, ListenInfo, ConfigFile,
 make_name(Address, Port, Profile) ->
     httpd_util:make_name("httpd_instance_sup", Address, Port, Profile).
 
-
-file_2_config(ConfigFile) ->
-    case httpd_conf:load(ConfigFile) of
-	{ok, ConfigList} ->
-	    case (catch httpd_conf:validate_properties(ConfigList)) of
-		{ok, Config} ->
-		    Address = proplists:get_value(bind_address, ConfigList),
-		    Port    = proplists:get_value(port, ConfigList),
-		    {ok, Config, Address, Port};
-		Error ->
-		    Error
-	    end;
-	Error ->
-	    Error
-    end.

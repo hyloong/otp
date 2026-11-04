@@ -1,7 +1,9 @@
 /*
  * %CopyrightBegin%
  *
- * Copyright Ericsson AB 1999-2013. All Rights Reserved.
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Copyright Ericsson AB 1999-2026. All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -26,6 +28,8 @@
 #  include "config.h"
 #endif
 
+#include <stdbool.h>
+
 #include "sys.h"
 #include "erl_vm.h"
 #include "global.h"
@@ -40,153 +44,325 @@
 #include "erl_binary.h"
 #include "erl_thr_progress.h"
 #include "erl_bif_unique.h"
+#include "erl_proc_sig_queue.h"
 
 #define DECL_AM(S) Eterm AM_ ## S = am_atom_put(#S, sizeof(#S) - 1)
 
-const struct trace_pattern_flags   erts_trace_pattern_flags_off = {0, 0, 0, 0, 0};
+const struct trace_pattern_flags erts_trace_pattern_flags_off = {0, 0, 0, 0, 0, 0};
 
-/*
- * The following variables are protected by code write permission.
- */
-static int                         erts_default_trace_pattern_is_on;
-static Binary                     *erts_default_match_spec;
-static Binary                     *erts_default_meta_match_spec;
-static struct trace_pattern_flags  erts_default_trace_pattern_flags;
-static Eterm                       erts_default_meta_tracer_pid;
-
-static struct {			/* Protected by code write permission */
+static struct {			/* Protected by code modification permission */
     int current;
     int install;
     int local;
+    int global;
     BpFunctions f;		/* Local functions */
     BpFunctions e;		/* Export entries */
-#ifdef ERTS_SMP
     Process* stager;
-    ErtsThrPrgrLaterOp lop;
-#endif
+    ErtsCodeBarrier barrier;
 } finish_bp;
 
+Process *erts_trace_cleaner = NULL;
+
+static Eterm trace(Process* p, ErtsTraceSession *session,
+                   Eterm pid_spec, Eterm how, Eterm list);
 static Eterm
-trace_pattern(Process* p, Eterm MFA, Eterm Pattern, Eterm flaglist);
-#ifdef ERTS_SMP
+trace_pattern(Process* p, ErtsTraceSession*, Eterm MFA, Eterm Pattern, Eterm flaglist);
+static void change_on_load_trace_pattern(ErtsTraceSession *s,
+                                         enum erts_break_op on,
+                                         struct trace_pattern_flags flags,
+                                         Binary* match_prog_set,
+                                         ErtsTracer meta_tracer);
+static void clear_on_load_trace_pattern(ErtsTraceSession *s);
+static void prepare_clear_all_trace_pattern(ErtsTraceSession*);
+static int stage_trace_event_pattern(Eterm event, Binary*, int on);
+
 static void smp_bp_finisher(void* arg);
-#endif
 static BIF_RETTYPE
-system_monitor(Process *p, Eterm monitor_pid, Eterm list);
+system_monitor(Process *p, ErtsTraceSession*, Eterm monitor_pid, Eterm list);
+static Eterm trace_session_create(Process*, Eterm name, Eterm tracer_term, Eterm opts);
+static void trace_session_destroy_aux(void *session_v);
+static void trace_session_destroy(ErtsTraceSession*);
+static int tracer_session_destructor(Binary *btid);
+static void free_session(ErtsTraceSession *session);
+static void send_trace_cleaner_notification(void);
+static Eterm handle_trace_clean_rpc(Process *p, void *arg, int *reds, ErlHeapFragment **hf);
+static void send_trace_clean_ack(Process *p);
 
-static void new_seq_trace_token(Process* p); /* help func for seq_trace_2*/
-static int already_traced(Process *p, Process *tracee_p, Eterm tracer);
-static int port_already_traced(Process *p, Port *tracee_port, Eterm tracer);
-static Eterm trace_info_pid(Process* p, Eterm pid_spec, Eterm key);
-static Eterm trace_info_func(Process* p, Eterm pid_spec, Eterm key);
-static Eterm trace_info_on_load(Process* p, Eterm key);
 
-static void reset_bif_trace(void);
-static void setup_bif_trace(void);
+static void new_seq_trace_token(Process* p, int); /* help func for seq_trace_2*/
+static Eterm trace_info(Process*, ErtsTraceSession*, Eterm What, Eterm Key,
+                        bool *to_be_continued_p);
+static Eterm trace_info_pid(Process* p, ErtsTraceSession*, Eterm pid_spec, Eterm key);
+static Eterm trace_info_func(Process* p, ErtsTraceSession*, Eterm pid_spec,
+                             Eterm key, bool *to_be_continued_p);
+static Eterm trace_info_func_epilogue(Process*, ErtsTraceSession*,
+                                      const ErtsCodeMFA *mfa, Eterm key, int want);
+static Eterm trace_info_func_sessions(Process* p, Eterm func_spec, Eterm key);
+static Eterm trace_info_on_load(Process* p, ErtsTraceSession*, Eterm key);
+static Eterm trace_info_sessions(Process* p, Eterm What, Eterm key);
+
+static Eterm trace_info_event(Process* p, ErtsTraceSession*, Eterm event, Eterm key);
+static Eterm trace_info_system(Process* p, ErtsTraceSession*);
+static void clear_event_trace(ErtsTracingEvent *et);
+static void set_event_trace(ErtsTracingEvent *et, Binary* match_spec);
+
 static void install_exp_breakpoints(BpFunctions* f);
 static void uninstall_exp_breakpoints(BpFunctions* f);
 static void clean_export_entries(BpFunctions* f);
+static Eterm system_monitor_get(ErtsTraceSession*, Process*);
+static Eterm system_monitor_make_list(Process*, ErtsTraceSession*, Eterm** hpp, Uint extra);
+static void update_sysmon_globals(ErtsTraceSession*, struct system_monitor_session*);
+
+ErtsTraceSession erts_trace_session_0;
+erts_rwmtx_t erts_trace_session_list_lock;
+erts_refc_t erts_new_procs_trace_cnt;
+erts_refc_t erts_new_ports_trace_cnt;
+
+static ErtsTraceSession* erts_trace_cleaner_wait_list;
+static erts_mtx_t erts_trace_cleaner_lock;
+
+static ErtsTraceSession* erts_trace_cleaner_do_list;
+
+static Eterm trace_info_trap_arg(Process*);
+static int trace_info_trap_destructor(Binary*);
+static void trace_info_finisher(void* null);
+static Export bif_trace_info_finish_export;
+static BIF_RETTYPE bif_trace_info_finish_trap(BIF_ALIST_1);
+
+static
+int erts_trace_session_init(ErtsTraceSession* s, ErtsTracer tracer,
+                            Eterm name_atom)
+{
+    static Uint next_weak_id = 0;
+    int i;
+
+    for (i=0; i<ERTS_NUM_BP_IX; i++) {
+        s->send_tracing[i].on = 1;
+        s->send_tracing[i].match_spec = NULL;
+        s->receive_tracing[i].on = 1;
+        s->receive_tracing[i].match_spec = NULL;
+    }
+    s->on_load_trace_pattern_is_on = 0;
+    s->on_load_match_spec = NULL;
+    s->on_load_meta_match_spec = NULL;
+    s->on_load_trace_pattern_flags = erts_trace_pattern_flags_off;
+    s->on_load_meta_tracer = erts_tracer_nil;
+
+    s->new_procs_trace_flags = F_INITIAL_TRACE_FLAGS;
+    s->new_procs_tracer = erts_tracer_nil;
+    s->new_ports_trace_flags = F_INITIAL_TRACE_FLAGS;
+    s->new_ports_tracer = erts_tracer_nil;
+
+
+    erts_atomic32_init_nob(&s->trace_control_word, 0);
+    s->tracer = tracer;
+    s->name_atom = name_atom;
+    erts_atomic_init_nob(&s->state, ERTS_TRACE_SESSION_ALIVE);
+
+    s->system_monitor.receiver = NIL;
+    for (int i = 0; i < ERTS_SYSMON_LIMIT_CNT; i++) {
+        s->system_monitor.limits[i] = 0;
+    }
+    s->system_monitor.flags.busy_port = false;
+    s->system_monitor.flags.busy_dist_port = false;
+    s->system_monitor.long_msgq_off = -1;
+
+#ifdef DEBUG
+    erts_refc_init(&s->dbg_bp_refc, 0);
+    erts_refc_init(&s->dbg_p_refc, 0);
+#endif
+
+    if(s == &erts_trace_session_0){
+	s->next = NULL;
+	s->prev = NULL;
+        s->weak_id = am_default;
+    }
+    else{
+	/* Link the session into the global list
+	 */
+	erts_rwmtx_rwlock(&erts_trace_session_list_lock);
+
+	s->next = erts_trace_session_0.next;
+	s->prev = &erts_trace_session_0;
+	erts_trace_session_0.next = s;
+	if (s->next) {
+	    s->next->prev = s;
+	}
+        /* We ignore duplicates at wrap around. */
+        s->weak_id = make_small(next_weak_id++);
+	erts_rwmtx_rwunlock(&erts_trace_session_list_lock);
+    }
+    return 1;
+}
+
+/*
+ * Does refc++ on returned trace session.
+ */
+static int term_to_session(Eterm term, ErtsTraceSession **session_p,
+                           bool allow_dead)
+{
+    ErtsTraceSession *s = NULL;
+    Binary *bin;
+    const Eterm *tpl;
+
+    if (!is_tuple_arity(term, 2)) {
+        return 0;
+    }
+    tpl = tuple_val(term);
+
+    if (is_atom(tpl[1]) && is_small(tpl[2])) {
+        const Eterm name = tpl[1];
+        const Eterm weak_id = tpl[2];
+
+        erts_rwmtx_rlock(&erts_trace_session_list_lock);
+        for (s = erts_trace_session_0.next; s; s = s->next) {
+            ASSERT(s != &erts_trace_session_0);
+            if (s->name_atom == name && s->weak_id == weak_id) {
+                if (!allow_dead && !erts_is_trace_session_alive(s)) {
+                    s = NULL;
+                    break;
+                }
+                bin = &ERTS_MAGIC_BIN_FROM_DATA(s)->binary;
+                /*
+                 * Make sure we don't resurrect a dying session with refc==0.
+                 */
+                if (erts_refc_inc_unless(&bin->intern.refc, 0, 0) == 0) {
+                    s =  NULL;
+                }
+                break;
+            }
+        }
+        erts_rwmtx_runlock(&erts_trace_session_list_lock);
+    }
+    else if (is_internal_magic_ref(tpl[1]) && is_tuple_arity(tpl[2], 2)) {
+        const Eterm *weak_tpl = tuple_val(tpl[2]);
+
+        bin = erts_magic_ref2bin(tpl[1]);
+        if (ERTS_MAGIC_BIN_DESTRUCTOR(bin) != tracer_session_destructor)
+            return 0;
+
+        s = (ErtsTraceSession*) ERTS_MAGIC_BIN_DATA(bin);
+        ASSERT(s != &erts_trace_session_0);
+
+        if (s->name_atom != weak_tpl[1]
+            || s->weak_id != weak_tpl[2]
+            || (!allow_dead && !erts_is_trace_session_alive(s))) {
+
+            return 0;
+        }
+
+        erts_refc_inc(&bin->intern.refc, 2);
+    }
+
+    if (!s) {
+        return 0;
+    }
+
+    *session_p = s;
+    return 1;
+}
+
+#define ERTS_TRACE_SESSION_WEAK_REF_SZ 3
+
+Eterm erts_make_trace_session_weak_ref(ErtsTraceSession *s, Eterm **hpp)
+{
+    Eterm weak_ref = TUPLE2(*hpp, s->name_atom, s->weak_id);
+    *hpp += ERTS_TRACE_SESSION_WEAK_REF_SZ;
+    return weak_ref;
+}
 
 void
 erts_bif_trace_init(void)
 {
-    erts_default_trace_pattern_is_on = 0;
-    erts_default_match_spec = NULL;
-    erts_default_meta_match_spec = NULL;
-    erts_default_trace_pattern_flags = erts_trace_pattern_flags_off;
-    erts_default_meta_tracer_pid = NIL;
+    erts_rwmtx_opt_t rwmtx_opts = ERTS_RWMTX_OPT_DEFAULT_INITER;
+    rwmtx_opts.type = ERTS_RWMTX_TYPE_EXTREMELY_FREQUENT_READ;
+    rwmtx_opts.lived = ERTS_RWMTX_LONG_LIVED;
+
+    erts_trace_session_init(&erts_trace_session_0, erts_tracer_nil, am_legacy);
+    erts_rwmtx_init_opt(&erts_trace_session_list_lock, &rwmtx_opts,
+                        "trace_session_list", NIL,
+                        ERTS_LOCK_FLAGS_PROPERTY_STATIC |
+                        ERTS_LOCK_FLAGS_CATEGORY_GENERIC);
+    erts_mtx_init(&erts_trace_cleaner_lock, "trace_cleaner", NIL,
+                    ERTS_LOCK_FLAGS_PROPERTY_STATIC |
+                    ERTS_LOCK_FLAGS_CATEGORY_GENERIC);
+    erts_refc_init(&erts_new_procs_trace_cnt, 0);
+    erts_refc_init(&erts_new_ports_trace_cnt, 0);
+
+
+    erts_init_trap_export(&bif_trace_info_finish_export,
+                          am_erlang, am_trace_info_finish, 1,
+                          &bif_trace_info_finish_trap);
 }
 
 /*
  * Turn on/off call tracing for the given function(s).
  */
-  
+
 Eterm
-trace_pattern_2(BIF_ALIST_2)
+erts_internal_trace_pattern_3(BIF_ALIST_3)
 {
-    return trace_pattern(BIF_P, BIF_ARG_1, BIF_ARG_2, NIL);
+    if (!erts_try_seize_code_mod_permission(BIF_P)) {
+        ERTS_BIF_YIELD3(BIF_TRAP_EXPORT(BIF_erts_internal_trace_pattern_3),
+                        BIF_P, BIF_ARG_1, BIF_ARG_2, BIF_ARG_3);
+    }
+
+    return trace_pattern(BIF_P, &erts_trace_session_0,
+                         BIF_ARG_1, BIF_ARG_2, BIF_ARG_3);
 }
 
 Eterm
-trace_pattern_3(BIF_ALIST_3)
+erts_internal_trace_pattern_4(BIF_ALIST_4)
 {
-    return trace_pattern(BIF_P, BIF_ARG_1, BIF_ARG_2, BIF_ARG_3);
+    ErtsTraceSession* session;
+
+    if (!erts_try_seize_code_mod_permission(BIF_P)) {
+        ERTS_BIF_YIELD4(BIF_TRAP_EXPORT(BIF_erts_internal_trace_pattern_4),
+                        BIF_P, BIF_ARG_1, BIF_ARG_2, BIF_ARG_3, BIF_ARG_4);
+    }
+
+    if (!term_to_session(BIF_ARG_1, &session, false)) {
+        erts_release_code_mod_permission();
+        BIF_P->fvalue = am_session;
+        BIF_ERROR(BIF_P, BADARG | EXF_HAS_EXT_INFO);
+    }
+
+    return trace_pattern(BIF_P, session, BIF_ARG_2, BIF_ARG_3, BIF_ARG_4);
 }
 
 static Eterm
-trace_pattern(Process* p, Eterm MFA, Eterm Pattern, Eterm flaglist)
+trace_pattern(Process* p, ErtsTraceSession *session,
+              Eterm MFA, Eterm Pattern, Eterm flaglist)
 {
-    DeclareTmpHeap(mfa,3,p); /* Not really heap here, but might be when setting pattern */
     int i;
     int matches = -1;
     int specified = 0;
     enum erts_break_op on;
-    Binary* match_prog_set;
+    Binary* match_prog_set = NULL;
     Eterm l;
     struct trace_pattern_flags flags = erts_trace_pattern_flags_off;
     int is_global;
-    Process *meta_tracer_proc = p;
-    Eterm meta_tracer_pid = p->common.id;
+    ErtsTracer meta_tracer = erts_tracer_nil;
+    Uint freason = BADARG;
 
-    if (!erts_try_seize_code_write_permission(p)) {
-	ERTS_BIF_YIELD3(bif_export[BIF_trace_pattern_3], p, MFA, Pattern, flaglist);
-    }
+    ERTS_LC_ASSERT(erts_has_code_mod_permission());
+    ASSERT(erts_staging_trace_session == NULL);
+    erts_staging_trace_session = session;
     finish_bp.current = -1;
 
     UseTmpHeap(3,p);
-    /*
-     * Check and compile the match specification.
-     */
-    
-    if (Pattern == am_false) {
-	match_prog_set = NULL;
-	on = 0;
-    } else if (is_nil(Pattern) || Pattern == am_true) {
-	match_prog_set = NULL;
-	on = 1;
-    } else if (Pattern == am_restart) {
-	match_prog_set = NULL;
-	on = erts_break_reset;
-    } else if (Pattern == am_pause) {
-	match_prog_set = NULL;
-	on = erts_break_stop;
-    } else if ((match_prog_set = erts_match_set_compile(p, Pattern)) != NULL) {
-	MatchSetRef(match_prog_set);
-	on = 1;
-    } else{
-	goto error;
-    }
-    
+
+    p->fvalue = am_badopt;
     is_global = 0;
     for(l = flaglist; is_list(l); l = CDR(list_val(l))) {
-	if (is_tuple(CAR(list_val(l)))) {
-	    Eterm *tp = tuple_val(CAR(list_val(l)));
-	    
-	    if (arityval(tp[0]) != 2 || tp[1] != am_meta) {
-		goto error;
-	    }
-	    meta_tracer_pid = tp[2];
-	    if (is_internal_pid(meta_tracer_pid)) {
-		meta_tracer_proc = erts_pid2proc(NULL, 0, meta_tracer_pid, 0);
-		if (!meta_tracer_proc) {
-		    goto error;
-		}
-	    } else if (is_internal_port(meta_tracer_pid)) {
-		Port *meta_tracer_port;
-		meta_tracer_proc = NULL;
-		meta_tracer_port = (erts_port_lookup(
-					meta_tracer_pid,
-					ERTS_PORT_SFLGS_INVALID_TRACER_LOOKUP));
-		if (!meta_tracer_port)
-		    goto error;
-	    } else {
-		goto error;
-	    }
-	    if (is_global) {
-		goto error;
-	    }
-	    flags.breakpoint = 1;
-	    flags.meta       = 1;
+	if (is_tuple(CAR(list_val(l))) && ERTS_TRACER_IS_NIL(session->tracer)) {
+            meta_tracer = erts_term_to_tracer(am_meta, CAR(list_val(l)));
+            if (meta_tracer == THE_NON_VALUE) {
+                meta_tracer = erts_tracer_nil;
+                goto error;
+            }
+            flags.breakpoint = 1;
+            flags.meta       = 1;
 	} else {
 	    switch (CAR(list_val(l))) {
 	    case am_local:
@@ -202,6 +378,15 @@ trace_pattern(Process* p, Eterm MFA, Eterm Pattern, Eterm flaglist)
 		}
 		flags.breakpoint = 1;
 		flags.meta       = 1;
+                if (ERTS_TRACER_IS_NIL(meta_tracer)) {
+                    if (ERTS_TRACER_IS_NIL(session->tracer)) {
+                        meta_tracer = erts_term_to_tracer(THE_NON_VALUE,
+                                                          p->common.id);
+                    }
+                    else {
+                        erts_tracer_update(&meta_tracer, session->tracer);
+                    }
+                }
 		break;
 	    case am_global:
 		if (flags.breakpoint) {
@@ -223,6 +408,13 @@ trace_pattern(Process* p, Eterm MFA, Eterm Pattern, Eterm flaglist)
 		flags.breakpoint = 1;
 		flags.call_time = 1;
 		break;
+            case am_call_memory:
+		if (is_global) {
+		    goto error;
+		}
+		flags.breakpoint = 1;
+		flags.call_memory = 1;
+		break;
 
 	    default:
 		goto error;
@@ -232,9 +424,38 @@ trace_pattern(Process* p, Eterm MFA, Eterm Pattern, Eterm flaglist)
     if (l != NIL) {
 	goto error;
     }
-    
-    if (match_prog_set && !flags.local && !flags.meta && (flags.call_count || flags.call_time)) {
-	/* A match prog is not allowed with just call_count or call_time*/
+
+    /*
+     * Check and compile the match specification.
+     */
+    if (Pattern == am_false) {
+        on = 0;
+    } else if (is_nil(Pattern) || Pattern == am_true) {
+		/* Shortway of specifying [{'_', [], []}]
+		 */
+        on = 1;
+    } else if (Pattern == am_restart) {
+        on = ERTS_BREAK_RESTART;
+    } else if (Pattern == am_pause) {
+        on = ERTS_BREAK_PAUSE;
+    } else {
+        match_prog_set = erts_match_set_compile_trace(p, Pattern,
+                                                      erts_staging_trace_session,
+                                                      MFA, &freason);
+        if (match_prog_set) {
+            MatchSetRef(match_prog_set);
+            on = 1;
+        } else {
+            p->fvalue = am_match_spec;
+            goto error;
+        }
+    }
+
+    p->fvalue = am_none;
+
+    if (match_prog_set && !flags.local && !flags.meta && (flags.call_count || flags.call_time || flags.call_memory)) {
+	/* A match prog is not allowed with just call_count, call_time or call_memory */
+        p->fvalue = am_call_count;
 	goto error;
     }
 
@@ -243,194 +464,291 @@ trace_pattern(Process* p, Eterm MFA, Eterm Pattern, Eterm flaglist)
      */
 
     if (MFA == am_on_load) {
-	if (flags.local || (! flags.breakpoint)) {
-	    MatchSetUnref(erts_default_match_spec);
-	    erts_default_match_spec = match_prog_set;
-	    MatchSetRef(erts_default_match_spec);
-	}
-	if (flags.meta) {
-	    MatchSetUnref(erts_default_meta_match_spec);
-	    erts_default_meta_match_spec = match_prog_set;
-	    MatchSetRef(erts_default_meta_match_spec);
-	    erts_default_meta_tracer_pid = meta_tracer_pid;
-	    if (meta_tracer_proc) {
-		ERTS_TRACE_FLAGS(meta_tracer_proc) |= F_TRACER;
-	    }
-	} else if (! flags.breakpoint) {
-	    MatchSetUnref(erts_default_meta_match_spec);
-	    erts_default_meta_match_spec = NULL;
-	    erts_default_meta_tracer_pid = NIL;
-	}
-	if (erts_default_trace_pattern_flags.breakpoint &&
-	    flags.breakpoint) { 
-	    /* Breakpoint trace -> breakpoint trace */
-	    ASSERT(erts_default_trace_pattern_is_on);
-	    if (on) {
-		erts_default_trace_pattern_flags.local
-		    |= flags.local;
-		erts_default_trace_pattern_flags.meta
-		    |= flags.meta;
-		erts_default_trace_pattern_flags.call_count
-		    |= (on == 1) ? flags.call_count : 0;
-		erts_default_trace_pattern_flags.call_time
-		    |= (on == 1) ? flags.call_time : 0;
-	    } else {
-		erts_default_trace_pattern_flags.local
-		    &= ~flags.local;
-		erts_default_trace_pattern_flags.meta
-		    &= ~flags.meta;
-		erts_default_trace_pattern_flags.call_count
-		    &= ~flags.call_count;
-		erts_default_trace_pattern_flags.call_time
-		    &= ~flags.call_time;
-		if (! (erts_default_trace_pattern_flags.breakpoint =
-		       erts_default_trace_pattern_flags.local |
-		       erts_default_trace_pattern_flags.meta |
-		       erts_default_trace_pattern_flags.call_count |
-		       erts_default_trace_pattern_flags.call_time)) {
-		    erts_default_trace_pattern_is_on = !!on; /* i.e off */
-		}
-	    }
-	} else if (! erts_default_trace_pattern_flags.breakpoint &&
-		   ! flags.breakpoint) {
-	    /* Global call trace -> global call trace */
-	    erts_default_trace_pattern_is_on = !!on;
-	} else if (erts_default_trace_pattern_flags.breakpoint &&
-		   ! flags.breakpoint) {
-	    /* Breakpoint trace -> global call trace */
-	    if (on) {
-		erts_default_trace_pattern_flags = flags; /* Struct copy */
-		erts_default_trace_pattern_is_on = !!on;
-	    }
-	} else {
-	    ASSERT(! erts_default_trace_pattern_flags.breakpoint &&
-		   flags.breakpoint);
-	    /* Global call trace -> breakpoint trace */
-	    if (on) {
-		if (on != 1) {
-		    flags.call_count = 0;
-		    flags.call_time  = 0;
-		}
-		flags.breakpoint = flags.local | flags.meta | flags.call_count | flags.call_time;
-		erts_default_trace_pattern_flags = flags; /* Struct copy */
-		erts_default_trace_pattern_is_on = !!flags.breakpoint;
-	    }
-	}
-	matches = 0;
+        change_on_load_trace_pattern(erts_staging_trace_session, on, flags,
+                                     match_prog_set, meta_tracer);
+        matches = 0;
     } else if (is_tuple(MFA)) {
-	Eterm *tp = tuple_val(MFA);
-	if (tp[0] != make_arityval(3)) {
+        ErtsCodeMFA mfa;
+        Eterm *tp = tuple_val(MFA);
+        if (tp[0] != make_arityval(3)) {
+            goto error;
+	}
+	if (!is_atom(tp[1]) || !is_atom(tp[2]) ||
+	    (!is_small(tp[3]) && tp[3] != am_Underscore)) {
 	    goto error;
 	}
-	mfa[0] = tp[1];
-	mfa[1] = tp[2];
-	mfa[2] = tp[3];
-	if (!is_atom(mfa[0]) || !is_atom(mfa[1]) ||
-	    (!is_small(mfa[2]) && mfa[2] != am_Underscore)) {
-	    goto error;
-	}
-	for (i = 0; i < 3 && mfa[i] != am_Underscore; i++, specified++) {
+	for (i = 0; i < 3 && tp[i+1] != am_Underscore; i++, specified++) {
 	    /* Empty loop body */
 	}
 	for (i = specified; i < 3; i++) {
-	    if (mfa[i] != am_Underscore) {
+	    if (tp[i+1] != am_Underscore) {
 		goto error;
 	    }
 	}
-	if (is_small(mfa[2])) {
-	    mfa[2] = signed_val(mfa[2]);
-	}
-    
-	if (meta_tracer_proc) {
-	    ERTS_TRACE_FLAGS(meta_tracer_proc) |= F_TRACER;
+	mfa.module   = tp[1];
+	mfa.function = tp[2];
+	if (specified == 3) {
+            mfa.arity = signed_val(tp[3]);
 	}
 
-	matches = erts_set_trace_pattern(p, mfa, specified,
+	matches = erts_set_trace_pattern(&mfa, specified,
 					 match_prog_set, match_prog_set,
-					 on, flags, meta_tracer_pid, 0);
+					 on, flags, meta_tracer, 0);
+    } else if (is_atom(MFA)) {
+        if (is_global || flags.breakpoint || on > ERTS_BREAK_SET) {
+            goto error;
+        }
+        matches = stage_trace_event_pattern(MFA, match_prog_set, on);
     }
 
  error:
     MatchSetUnref(match_prog_set);
-    UnUseTmpHeap(3,p);
 
-#ifdef ERTS_SMP
+    ERTS_TRACER_CLEAR(&meta_tracer);
+
     if (finish_bp.current >= 0) {
 	ASSERT(matches >= 0);
 	ASSERT(finish_bp.stager == NULL);
 	finish_bp.stager = p;
-	erts_schedule_thr_prgr_later_op(smp_bp_finisher, NULL, &finish_bp.lop);
+	erts_schedule_code_barrier(&finish_bp.barrier, smp_bp_finisher, NULL);
 	erts_proc_inc_refc(p);
 	erts_suspend(p, ERTS_PROC_LOCK_MAIN, NULL);
 	ERTS_BIF_YIELD_RETURN(p, make_small(matches));
     }
-#endif
+    else {
+        erts_deref_trace_session(erts_staging_trace_session);
+    }
 
-    erts_release_code_write_permission();
+#ifdef DEBUG
+    erts_staging_trace_session = NULL;
+#endif
+    erts_release_code_mod_permission();
 
     if (matches >= 0) {
 	return make_small(matches);
     }
     else {
-	BIF_ERROR(p, BADARG);    
+	BIF_ERROR(p, freason | EXF_HAS_EXT_INFO);
     }
 }
 
-#ifdef ERTS_SMP
 static void smp_bp_finisher(void* null)
 {
     if (erts_finish_breakpointing()) { /* Not done */
-	/* Arrange for being called again */
-	erts_schedule_thr_prgr_later_op(smp_bp_finisher, NULL, &finish_bp.lop);
+        /* Arrange for being called again */
+        erts_schedule_code_barrier(&finish_bp.barrier, smp_bp_finisher, NULL);
     }
     else {			/* Done */
+        ErtsTraceSession *session = erts_staging_trace_session;
 	Process* p = finish_bp.stager;
+        const enum erts_trace_session_state state =
+            erts_atomic_read_nob(&session->state);
+
+        if (state == ERTS_TRACE_SESSION_CLEARING) {
+
+            ASSERT(!finish_bp.install && finish_bp.local && finish_bp.global);
+            ASSERT(erts_refc_read(&session->dbg_bp_refc, 0) == 0);
+
+            /*
+             * Link into trace_cleaner_wait_list
+             */
+            erts_mtx_lock(&erts_trace_cleaner_lock);
+            session->next = erts_trace_cleaner_wait_list;
+            session->prev = NULL;
+            erts_trace_cleaner_wait_list = session;
+            erts_mtx_unlock(&erts_trace_cleaner_lock);
+
+            send_trace_cleaner_notification();
+        }
 #ifdef DEBUG
 	finish_bp.stager = NULL;
+        erts_staging_trace_session = NULL;
 #endif
-	erts_release_code_write_permission();
-	erts_smp_proc_lock(p, ERTS_PROC_LOCK_STATUS);
-	if (!ERTS_PROC_IS_EXITING(p)) {
-	    erts_resume(p, ERTS_PROC_LOCK_STATUS);
-	}
-	erts_smp_proc_unlock(p, ERTS_PROC_LOCK_STATUS);
-	erts_proc_dec_refc(p);
+	erts_release_code_mod_permission();
+        if (p) {
+            /*
+             * Operation initiated by BIF call which did refc++
+             * to keep session alive during entire call.
+             */
+            if (state == ERTS_TRACE_SESSION_ALIVE) {
+                erts_deref_trace_session(session);
+            }
+            /*else erts_trace_cleaner will do deref when done */
+
+            erts_proc_lock(p, ERTS_PROC_LOCK_STATUS);
+            if (!ERTS_PROC_IS_EXITING(p)) {
+                erts_resume(p, ERTS_PROC_LOCK_STATUS);
+            }
+            erts_proc_unlock(p, ERTS_PROC_LOCK_STATUS);
+            erts_proc_dec_refc(p);
+        }
+        else {
+            /*
+             * Operation initiated by session destructor as refc was 0.
+             */
+            ASSERT(erts_refc_read(&ERTS_MAGIC_BIN_FROM_DATA(session)->binary.intern.refc, 0) == 0);
+        }
     }
 }
-#endif /* ERTS_SMP */
 
-void
-erts_get_default_trace_pattern(int *trace_pattern_is_on,
-			       Binary **match_spec,
-			       Binary **meta_match_spec,
-			       struct trace_pattern_flags *trace_pattern_flags,
-			       Eterm *meta_tracer_pid)
+static void
+send_trace_cleaner_notification(void)
 {
-    ERTS_SMP_LC_ASSERT(erts_has_code_write_permission() ||
-		       erts_smp_thr_progress_is_blocking());
-    if (trace_pattern_is_on)
-	*trace_pattern_is_on = erts_default_trace_pattern_is_on;
-    if (match_spec)
-	*match_spec = erts_default_match_spec;
-    if (meta_match_spec)
-	*meta_match_spec = erts_default_meta_match_spec;
-    if (trace_pattern_flags)
-	*trace_pattern_flags = erts_default_trace_pattern_flags;
-    if (meta_tracer_pid)
-	*meta_tracer_pid = erts_default_meta_tracer_pid;
+    erts_queue_message(erts_trace_cleaner,
+                       0,
+                       erts_alloc_message(0, NULL),
+                       am_notify,
+                       am_system);
 }
 
-int erts_is_default_trace_enabled(void)
+BIF_RETTYPE
+erts_trace_cleaner_check_0(BIF_ALIST_1)
 {
-    ERTS_SMP_LC_ASSERT(erts_has_code_write_permission() ||
-		       erts_smp_thr_progress_is_blocking());
-    return erts_default_trace_pattern_is_on;
+    ErtsTraceSession *s, *next;
+    Binary* bin;
+
+    /*
+     * First release our list of cleaned sessions.
+     */
+    for (s = erts_trace_cleaner_do_list; s; s = next) {
+        next = s->next;
+
+        ASSERT(erts_refc_read(&s->dbg_bp_refc, 0) == 0);
+        ASSERT(erts_refc_read(&s->dbg_p_refc, 0) == 0);
+        ASSERT(erts_atomic_read_nob(&s->state) == ERTS_TRACE_SESSION_CLEARING);
+        erts_atomic_set_nob(&s->state, ERTS_TRACE_SESSION_DEAD);
+
+        bin = &ERTS_MAGIC_BIN_FROM_DATA(s)->binary;
+        if (erts_refc_read(&bin->intern.refc, 0) == 0) {
+            /*
+             * Initiated by destructor as refc became 0.
+             * No other references exist.
+            */
+            free_session(s);
+        }
+        else {
+            /*
+             * Initiated by trace_session_destroy() which did refc++
+             * do corresponding refc-- here.
+             */
+            erts_deref_trace_session(s);
+        }
+    }
+
+    /*
+     * Start a new cleaning round if there are sessions waiting.
+     */
+    erts_mtx_lock(&erts_trace_cleaner_lock);
+    erts_trace_cleaner_do_list = erts_trace_cleaner_wait_list;
+    erts_trace_cleaner_wait_list = NULL;
+    erts_mtx_unlock(&erts_trace_cleaner_lock);
+
+    return erts_trace_cleaner_do_list ? am_true : am_false;
+}
+
+BIF_RETTYPE
+erts_trace_cleaner_send_trace_clean_signal_1(BIF_ALIST_1)
+{
+    const Eterm to = BIF_ARG_1;
+
+    if (BIF_P != erts_trace_cleaner) {
+        BIF_ERROR(BIF_P, EXC_NOTSUP);
+    }
+
+    if (is_internal_pid(to)) {
+        const Eterm ret = erts_proc_sig_send_rpc_request(BIF_P, to, 0,
+                                                         handle_trace_clean_rpc,
+                                                         NULL);
+        return is_value(ret) ? am_true : am_false;
+    }
+    else if (is_internal_port(to)) {
+        Port *prt = erts_id2port_sflgs(to,
+                                       BIF_P,
+                                       ERTS_PROC_LOCK_MAIN,
+                                       ERTS_PORT_SFLGS_INVALID_LOOKUP);
+        if (prt) {
+            Uint reds = delete_unalive_trace_refs(&prt->common);
+            erts_port_release(prt);
+            BUMP_REDS(BIF_P, reds);
+        }
+        return am_false; /* done, no async signal sent */
+    }
+    BIF_ERROR(BIF_P, BADARG);
+}
+
+static Eterm
+handle_trace_clean_rpc(Process *p, void *arg, int *reds, ErlHeapFragment **hf)
+{
+    ErtsTraceSession *s;
+    ErtsTracerRef *ref;
+    int locked_all = 0;
+
+    ASSERT(arg == NULL);
+    ASSERT(erts_trace_cleaner_do_list);
+
+    for (s = erts_trace_cleaner_do_list; s; s = s->next) {
+
+        ASSERT(erts_atomic_read_nob(&s->state) == ERTS_TRACE_SESSION_CLEARING);
+
+        ref = get_tracer_ref(&p->common, s);
+        if (ref) {
+            if (!locked_all) {
+                erts_proc_lock(p, ERTS_PROC_LOCKS_ALL_MINOR);
+                locked_all = 1;
+            }
+            clear_tracer_ref(&p->common, ref);
+            delete_tracer_ref(&p->common, ref);
+        }
+    }
+
+    if (locked_all) {
+        erts_proc_unlock(p, ERTS_PROC_LOCKS_ALL_MINOR);
+    }
+
+    send_trace_clean_ack(p);
+
+    *reds = 0;
+    return NIL;
+}
+
+static void
+send_trace_clean_ack(Process *p)
+{
+    ErtsMessage *mp;
+    const Eterm msg = p->common.id;
+
+    /*
+     * Send own pid as ack back to erts_trace_cleaner
+     */
+    mp = erts_alloc_message(0, NULL);
+    ERL_MESSAGE_TOKEN(mp) = am_undefined;
+    erts_queue_proc_message(p, erts_trace_cleaner, 0, mp, msg);
+}
+
+int erts_is_on_load_trace_enabled(void)
+{
+    int ret = 0;
+    ERTS_LC_ASSERT(erts_has_code_mod_permission() ||
+                   erts_thr_progress_is_blocking());
+
+    erts_rwmtx_rlock(&erts_trace_session_list_lock);
+    for(ErtsTraceSession* s_p = &erts_trace_session_0; s_p; s_p = s_p->next) {
+	if(s_p->on_load_trace_pattern_is_on) {
+	    ret = 1;
+	    break;
+	}
+    }
+    erts_rwmtx_runlock(&erts_trace_session_list_lock);
+    return ret;
 }
 
 Uint 
 erts_trace_flag2bit(Eterm flag) 
 {
     switch (flag) {
+    case am_timestamp: return F_NOW_TS;
+    case am_strict_monotonic_timestamp: return F_STRICT_MON_TS;
+    case am_monotonic_timestamp: return F_MON_TS;
     case am_all: return TRACEE_FLAGS;
     case am_send: return F_TRACE_SEND;
     case am_receive: return F_TRACE_RECEIVE;
@@ -439,7 +757,6 @@ erts_trace_flag2bit(Eterm flag)
     case am_set_on_first_spawn: return F_TRACE_SOS1;
     case am_set_on_link: return F_TRACE_SOL;
     case am_set_on_first_link: return F_TRACE_SOL1;
-    case am_timestamp: return F_TIMESTAMP;
     case am_running: return F_TRACE_SCHED;
     case am_exiting: return F_TRACE_SCHED_EXIT;
     case am_garbage_collection: return F_TRACE_GC;
@@ -463,12 +780,12 @@ erts_trace_flag2bit(Eterm flag)
 ** occurred in the argument list.
 */
 int
-erts_trace_flags(Eterm List, 
-		 Uint *pMask, Eterm *pTracer, int *pCpuTimestamp)
+erts_trace_flags(ErtsTraceSession *session, Eterm List,
+                 Uint *pMask, ErtsTracer *pTracer, int *pCpuTimestamp)
 {
     Eterm list = List;
     Uint mask = 0;
-    Eterm tracer = NIL;
+    ErtsTracer tracer = erts_tracer_nil;
     int cpu_timestamp = 0;
     
     while (is_list(list)) {
@@ -480,72 +797,145 @@ erts_trace_flags(Eterm List,
 	} else if (item == am_cpu_timestamp) {
 	    cpu_timestamp = !0;
 #endif
-	} else if (is_tuple(item)) {
-	    Eterm* tp = tuple_val(item);
-	    
-	    if (arityval(tp[0]) != 2 || tp[1] != am_tracer) goto error;
-	    if (is_internal_pid(tp[2]) || is_internal_port(tp[2])) {
-		tracer = tp[2];
-	    } else goto error;
+        } else if (is_tuple(item) && ERTS_TRACER_IS_NIL(session->tracer)) {
+            ERTS_TRACER_CLEAR(&tracer);
+            tracer = erts_term_to_tracer(am_tracer, item);
+            if (tracer == THE_NON_VALUE)
+                goto error;
 	} else goto error;
 	list = CDR(list_val(list));
     }
-    if (is_not_nil(list)) goto error;
+    if (is_not_nil(list)) {
+        goto error;
+    }
     
-    if (pMask && mask)                  *pMask         = mask;
-    if (pTracer && tracer != NIL)       *pTracer       = tracer;
-    if (pCpuTimestamp && cpu_timestamp) *pCpuTimestamp = cpu_timestamp;
+    if (mask)                        *pMask         = mask;
+    if (!ERTS_TRACER_IS_NIL(tracer)) *pTracer       = tracer;
+    if (cpu_timestamp)               *pCpuTimestamp = cpu_timestamp;
     return !0;
+
  error:
+    if (tracer != THE_NON_VALUE)
+	ERTS_TRACER_CLEAR(&tracer);
     return 0;
 }
 
-Eterm trace_3(BIF_ALIST_3)
+static int
+start_trace(Process *c_p,
+	    ErtsTraceSession* session,
+	    ErtsTracer tracer,
+            ErtsPTabElementCommon *common,
+            int on, int mask)
 {
-    Process* p = BIF_P;
-    Eterm pid_spec = BIF_ARG_1;
-    Eterm how = BIF_ARG_2;
-    Eterm list = BIF_ARG_3;
+    /* We can use the common part of both port+proc without checking what it is
+       In the code below port is used for both proc and port */
+    Port *port = (Port*)common;
+    ErtsTracerRef* ref;
+
+#ifdef ERTS_ENABLE_LOCK_CHECK
+    if (is_internal_pid(common->id)) {
+        ERTS_LC_ASSERT(erts_proc_lc_my_proc_locks((Process*)common)
+                       == ERTS_PROC_LOCKS_ALL);
+    } else {
+        ASSERT(is_internal_port(common->id));
+        ERTS_LC_ASSERT(erts_lc_is_port_locked(port));
+    }
+#endif
+
+    ref = get_tracer_ref(common, session);
+    if (!ref) {
+	if (on)
+	    ref = new_tracer_ref(common, session);
+	else
+	    return 0;
+    }
+
+    if (on && !ERTS_TRACER_IS_NIL(ref->tracer)) {
+	if (ref->flags & TRACEE_FLAGS
+            && !ERTS_TRACER_COMPARE(ref->tracer, tracer)) {
+            /* This tracee is already being traced, and not by the
+             * tracer to be */
+            if (erts_is_tracer_enabled(ref->tracer, common)) {
+                /* The tracer is still in use */
+                return 1;
+            }
+            /* Current tracer now invalid */
+        }
+    }
+
+    if (!on) {
+	ref->flags &= ~mask;
+    }
+    else {
+	ref->flags |= mask;
+
+        if ((mask & F_TRACE_RECEIVE) && is_internal_pid(common->id)) {
+            Process *proc = (Process *) common;
+            erts_aint32_t state = erts_atomic32_read_nob(&proc->state);
+            if (state & ERTS_PSFLG_MSG_SIG_IN_Q)
+                erts_proc_notify_new_message(proc, ERTS_PROC_LOCKS_ALL);
+        }
+    }
+    ERTS_P_ALL_TRACE_FLAGS(port) = erts_sum_all_trace_flags(common);
+
+    if ((ref->flags & TRACEE_FLAGS) == 0) {
+	clear_tracer_ref(common, ref);
+	delete_tracer_ref(common, ref);
+    } else if (!ERTS_TRACER_IS_NIL(tracer))
+        erts_tracer_replace(common, ref, tracer);
+
+    return 0;
+}
+
+Eterm erts_internal_trace_3(BIF_ALIST_3)
+{
+    if (!erts_try_seize_code_mod_permission(BIF_P)) {
+        ERTS_BIF_YIELD3(BIF_TRAP_EXPORT(BIF_erts_internal_trace_3),
+                        BIF_P, BIF_ARG_1, BIF_ARG_2, BIF_ARG_3);
+    }
+    return trace(BIF_P, &erts_trace_session_0, BIF_ARG_1, BIF_ARG_2, BIF_ARG_3);
+}
+
+Eterm erts_internal_trace_4(BIF_ALIST_4)
+{
+    ErtsTraceSession* session;
+    Eterm ret;
+
+    if (!erts_try_seize_code_mod_permission(BIF_P)) {
+        ERTS_BIF_YIELD4(BIF_TRAP_EXPORT(BIF_erts_internal_trace_4),
+                        BIF_P, BIF_ARG_1, BIF_ARG_2, BIF_ARG_3, BIF_ARG_4);
+    }
+
+    if (!term_to_session(BIF_ARG_1, &session, false)) {
+        erts_release_code_mod_permission();
+        BIF_P->fvalue = am_session;
+        BIF_ERROR(BIF_P, BADARG | EXF_HAS_EXT_INFO);
+    }
+
+    ret = trace(BIF_P, session, BIF_ARG_2, BIF_ARG_3, BIF_ARG_4);
+
+    erts_deref_trace_session(session);
+    return ret;
+}
+
+static
+Eterm trace(Process* p, ErtsTraceSession *session,
+            Eterm pid_spec, Eterm how, Eterm list)
+{
     int on;
-    Eterm tracer = NIL;
+    ErtsTracer tracer = erts_tracer_nil;
     int matches = 0;
     Uint mask = 0;
     int cpu_ts = 0;
-#ifdef ERTS_SMP
     int system_blocked = 0;
-#endif
 
-    if (! erts_trace_flags(list, &mask, &tracer, &cpu_ts)) {
-	BIF_ERROR(p, BADARG);
+    ERTS_LC_ASSERT(erts_has_code_mod_permission());
+
+    if (! erts_trace_flags(session, list, &mask, &tracer, &cpu_ts)) {
+        erts_release_code_mod_permission();
+        p->fvalue = am_badopt;
+	BIF_ERROR(p, BADARG | EXF_HAS_EXT_INFO);
     }
-
-    if (!erts_try_seize_code_write_permission(BIF_P)) {
-	ERTS_BIF_YIELD3(bif_export[BIF_trace_3], BIF_P, BIF_ARG_1, BIF_ARG_2, BIF_ARG_3);
-    }
-
-    if (is_nil(tracer) || is_internal_pid(tracer)) {
-	Process *tracer_proc = erts_pid2proc(p,
-					     ERTS_PROC_LOCK_MAIN,
-					     is_nil(tracer) ? p->common.id : tracer,
-					     ERTS_PROC_LOCKS_ALL);
-	if (!tracer_proc)
-	    goto error;
-	ERTS_TRACE_FLAGS(tracer_proc) |= F_TRACER;
-	erts_smp_proc_unlock(tracer_proc,
-			     (tracer_proc == p
-			      ? ERTS_PROC_LOCKS_ALL_MINOR
-			      : ERTS_PROC_LOCKS_ALL));
-    } else if (is_internal_port(tracer)) {
-	Port *tracer_port = erts_id2port_sflgs(tracer,
-					       p,
-					       ERTS_PROC_LOCK_MAIN,
-					       ERTS_PORT_SFLGS_INVALID_TRACER_LOOKUP);
-	if (!tracer_port)
-	    goto error;
-	ERTS_TRACE_FLAGS(tracer_port) |= F_TRACER;
-	erts_port_release(tracer_port);
-    } else
-	goto error;
 
     switch (how) {
     case am_false: 
@@ -553,8 +943,20 @@ Eterm trace_3(BIF_ALIST_3)
 	break;
     case am_true: 
 	on = 1;
-	if (is_nil(tracer))
-	    tracer = p->common.id;
+        if (ERTS_TRACER_IS_NIL(tracer)) {
+	    if (ERTS_TRACER_IS_NIL(session->tracer)) {
+		tracer = erts_term_to_tracer(am_tracer, p->common.id);
+	    }
+	    else {
+		erts_tracer_update(&tracer, session->tracer);
+	    }
+	}
+
+        if (tracer == THE_NON_VALUE) {
+            tracer = erts_tracer_nil;
+            goto error;
+        }
+
 	break;
     default: 
 	goto error;
@@ -573,34 +975,20 @@ Eterm trace_3(BIF_ALIST_3)
 	}
 #endif
 
-	if (pid_spec == tracer)
-	    goto error;
-
 	tracee_port = erts_id2port_sflgs(pid_spec,
 					 p,
 					 ERTS_PROC_LOCK_MAIN,
 					 ERTS_PORT_SFLGS_INVALID_LOOKUP);
+
 	if (!tracee_port)
 	    goto error;
-	
-	if (tracer != NIL && port_already_traced(p, tracee_port, tracer)) {
+
+        if (start_trace(p, session, tracer, &tracee_port->common, on, mask)) {
 	    erts_port_release(tracee_port);
 	    goto already_traced;
-	}
-
-	if (on)
-	    ERTS_TRACE_FLAGS(tracee_port) |= mask;
-	else
-	    ERTS_TRACE_FLAGS(tracee_port) &= ~mask;
-	
-	if (!ERTS_TRACE_FLAGS(tracee_port))
-	    ERTS_TRACER_PROC(tracee_port) = NIL;
-	else if (tracer != NIL)
-	    ERTS_TRACER_PROC(tracee_port) = tracer;
-
-	erts_port_release(tracee_port);
-
-	matches = 1;
+        }
+        erts_port_release(tracee_port);
+        matches = 1;
     } else if (is_pid(pid_spec)) {
 	Process *tracee_p;
 
@@ -613,33 +1001,19 @@ Eterm trace_3(BIF_ALIST_3)
 	 * and not about to be tracing.
 	 */
 
-	if (pid_spec == tracer)
-	    goto error;
-
 	tracee_p = erts_pid2proc(p, ERTS_PROC_LOCK_MAIN,
 				 pid_spec, ERTS_PROC_LOCKS_ALL);
 	if (!tracee_p)
 	    goto error;
 
-	if (tracer != NIL && already_traced(p, tracee_p, tracer)) {
-	    erts_smp_proc_unlock(tracee_p,
+        if (start_trace(tracee_p, session, tracer, &tracee_p->common, on, mask)) {
+	    erts_proc_unlock(tracee_p,
 				 (tracee_p == p
 				  ? ERTS_PROC_LOCKS_ALL_MINOR
 				  : ERTS_PROC_LOCKS_ALL));
 	    goto already_traced;
-	}
-
-	if (on)
-	    ERTS_TRACE_FLAGS(tracee_p) |= mask;
-	else
-	    ERTS_TRACE_FLAGS(tracee_p) &= ~mask;
-
-	if ((ERTS_TRACE_FLAGS(tracee_p) & TRACEE_FLAGS) == 0)
-	    ERTS_TRACER_PROC(tracee_p) = NIL;
-	else if (tracer != NIL)
-	    ERTS_TRACER_PROC(tracee_p) = tracer;
-
-	erts_smp_proc_unlock(tracee_p,
+        }
+        erts_proc_unlock(tracee_p,
 			     (tracee_p == p
 			      ? ERTS_PROC_LOCKS_ALL_MINOR
 			      : ERTS_PROC_LOCKS_ALL));
@@ -665,12 +1039,12 @@ Eterm trace_3(BIF_ALIST_3)
 			    SysTimespec tp;
 			    int i;
 			    
-			    if (sys_get_proc_cputime(start, tp) < 0)
+			    if (sys_get_cputime(start, tp) < 0)
 				goto error;
 			    start = ((SysCpuTime)tp.tv_sec * 1000000000LL) + 
 				    (SysCpuTime)tp.tv_nsec;
 			    for (i = 0; i < 100; i++)
-				sys_get_proc_cputime(stop, tp);
+				sys_get_cputime(stop, tp);
 			    stop = ((SysCpuTime)tp.tv_sec * 1000000000LL) + 
 				   (SysCpuTime)tp.tv_nsec;
 			    if (start == 0) goto error;
@@ -690,24 +1064,36 @@ Eterm trace_3(BIF_ALIST_3)
 	}
 #endif
 	
-	if (pid_spec == am_all || pid_spec == am_existing) {
+	if (pid_spec == am_all || pid_spec == am_existing ||
+            pid_spec == am_ports || pid_spec == am_processes ||
+            pid_spec == am_existing_ports || pid_spec == am_existing_processes
+            ) {
 	    int i;
 	    int procs = 0;
 	    int ports = 0;
 	    int mods = 0;
 
 	    if (mask & (ERTS_PROC_TRACEE_FLAGS & ~ERTS_TRACEE_MODIFIER_FLAGS))
-		procs = 1;
+		procs = pid_spec != am_ports && pid_spec != am_existing_ports;
 	    if (mask & (ERTS_PORT_TRACEE_FLAGS & ~ERTS_TRACEE_MODIFIER_FLAGS))
-		ports = 1;
-	    if (mask & ERTS_TRACEE_MODIFIER_FLAGS)
-		mods = 1;
+		ports = pid_spec != am_processes && pid_spec != am_existing_processes;
+	    if (mask & ERTS_TRACEE_MODIFIER_FLAGS) {
+                if (pid_spec == am_ports || pid_spec == am_existing_ports)
+                    ports = 1;
+                else if (pid_spec == am_processes || pid_spec == am_existing_processes)
+                    procs = 1;
+                else
+                    mods = 1;
+            }
 
-#ifdef ERTS_SMP
-	    erts_smp_proc_unlock(p, ERTS_PROC_LOCK_MAIN);
-	    erts_smp_thr_progress_block();
+	    erts_proc_unlock(p, ERTS_PROC_LOCK_MAIN);
+	    erts_thr_progress_block();
 	    system_blocked = 1;
-#endif
+            /*
+             * This will not block dirty schedulers, so we still need to lock
+             * each process/port tracee when modifying their trace settings
+             * below.
+             */
 
 	    ok = 1;
 	    if (procs || mods) {
@@ -717,23 +1103,10 @@ Eterm trace_3(BIF_ALIST_3)
 		    Process* tracee_p = erts_pix2proc(i);
 		    if (! tracee_p) 
 			continue;
-		    if (tracer != NIL) {
-			if (tracee_p->common.id == tracer)
-			    continue;
-			if (already_traced(NULL, tracee_p, tracer))
-			    continue;
-		    }
-		    if (on) {
-			ERTS_TRACE_FLAGS(tracee_p) |= mask;
-		    } else {
-			ERTS_TRACE_FLAGS(tracee_p) &= ~mask;
-		    }
-		    if(!(ERTS_TRACE_FLAGS(tracee_p) & TRACEE_FLAGS)) {
-			ERTS_TRACER_PROC(tracee_p) = NIL;
-		    } else if (tracer != NIL) {
-			ERTS_TRACER_PROC(tracee_p) = tracer;
-		    }
-		    matches++;
+                    erts_proc_lock(tracee_p, ERTS_PROC_LOCKS_ALL);
+                    if (!start_trace(p, session, tracer, &tracee_p->common, on, mask))
+                        matches++;
+                    erts_proc_unlock(tracee_p, ERTS_PROC_LOCKS_ALL);
 		}
 	    }
 	    if (ports || mods) {
@@ -747,33 +1120,28 @@ Eterm trace_3(BIF_ALIST_3)
 		    state = erts_atomic32_read_nob(&tracee_port->state);
 		    if (state & ERTS_PORT_SFLGS_DEAD)
 			continue;
-		    if (tracer != NIL) {
-			if (tracee_port->common.id == tracer)
-			    continue;
-			if (port_already_traced(NULL, tracee_port, tracer))
-			    continue;
-		    }
-
-		    if (on) ERTS_TRACE_FLAGS(tracee_port) |= mask;
-		    else ERTS_TRACE_FLAGS(tracee_port) &= ~mask;
-		
-		    if (!(ERTS_TRACE_FLAGS(tracee_port) & TRACEE_FLAGS)) {
-			ERTS_TRACER_PROC(tracee_port) = NIL;
-		    } else if (tracer != NIL) {
-			ERTS_TRACER_PROC(tracee_port) = tracer;
-		    }
-		    /* matches are not counted for ports since it would violate compatibility */
-		    /* This could be a reason to modify this function or make a new one. */
+                    erts_port_lock(tracee_port);
+                    if (!start_trace(p, session, tracer, &tracee_port->common, on, mask))
+                        matches++;
+                    erts_port_release(tracee_port);
 		}
 	    }
 	}
 
-	if (pid_spec == am_all || pid_spec == am_new) {
-	    Uint def_flags = mask;
-	    Eterm def_tracer = tracer;
+	if (pid_spec == am_all || pid_spec == am_new
+            || pid_spec == am_ports || pid_spec == am_processes
+            || pid_spec == am_new_ports || pid_spec == am_new_processes
+            ) {
 
 	    ok = 1;
-	    erts_change_default_tracing(on, &def_flags, &def_tracer);
+            if (mask & ERTS_PROC_TRACEE_FLAGS &&
+                pid_spec != am_ports && pid_spec != am_new_ports)
+                erts_change_new_procs_tracing(session,
+                    on, mask & ERTS_PROC_TRACEE_FLAGS, tracer);
+            if (mask & ERTS_PORT_TRACEE_FLAGS &&
+                pid_spec != am_processes && pid_spec != am_new_processes)
+                erts_change_new_ports_tracing(
+                    session, on, mask & ERTS_PORT_TRACEE_FLAGS, tracer);
 
 #ifdef HAVE_ERTS_NOW_CPU
 	    if (cpu_ts && !on) {
@@ -792,13 +1160,12 @@ Eterm trace_3(BIF_ALIST_3)
 	    goto error;
     }
 
-#ifdef ERTS_SMP
     if (system_blocked) {
-	erts_smp_thr_progress_unblock();
-	erts_smp_proc_lock(p, ERTS_PROC_LOCK_MAIN);
+	erts_thr_progress_unblock();
+	erts_proc_lock(p, ERTS_PROC_LOCK_MAIN);
     }
-#endif
-    erts_release_code_write_permission();
+    erts_release_code_mod_permission();
+    ERTS_TRACER_CLEAR(&tracer);
 
     BIF_RET(make_small(matches));
 
@@ -807,224 +1174,596 @@ Eterm trace_3(BIF_ALIST_3)
 				  "** can only have one tracer per process\n");
 
  error:
+    ERTS_TRACER_CLEAR(&tracer);
 
-#ifdef ERTS_SMP
     if (system_blocked) {
-	erts_smp_thr_progress_unblock();
-	erts_smp_proc_lock(p, ERTS_PROC_LOCK_MAIN);
+	erts_thr_progress_unblock();
+	erts_proc_lock(p, ERTS_PROC_LOCK_MAIN);
     }
-#endif
-    erts_release_code_write_permission();
+    erts_release_code_mod_permission();
 
     BIF_ERROR(p, BADARG);
 }
 
-/* Check that the process to be traced is not already traced
- * by a valid other tracer than the tracer to be.
- */
-static int port_already_traced(Process *c_p, Port *tracee_port, Eterm tracer)
+static int
+tracer_session_destructor(Binary *bin)
 {
-    /*
-     * SMP build assumes that either system is blocked or:
-     * * main lock is held on c_p
-     * * all locks are held on port tracee_p
-     */
-    if ((ERTS_TRACE_FLAGS(tracee_port) & TRACEE_FLAGS)
-	&& ERTS_TRACER_PROC(tracee_port) != tracer) {
-	/* This tracee is already being traced, and not by the 
-	 * tracer to be */
-	if (is_internal_port(ERTS_TRACER_PROC(tracee_port))) {
-	    if (!erts_is_valid_tracer_port(ERTS_TRACER_PROC(tracee_port))) {
-		/* Current trace port now invalid 
-		 * - discard it and approve the new. */
-		goto remove_tracer;
-	    } else
-		return 1;
-	}
-	else if(is_internal_pid(ERTS_TRACER_PROC(tracee_port))) {
-	    Process *tracer_p = erts_proc_lookup(ERTS_TRACER_PROC(tracee_port));
-	    if (!tracer_p) {
-		/* Current trace process now invalid
-		 * - discard it and approve the new. */
-		goto remove_tracer;
-	    } else
-		return 1;
-	}
-	else {
-	remove_tracer:
-	    ERTS_TRACE_FLAGS(tracee_port) &= ~TRACEE_FLAGS;
-	    ERTS_TRACER_PROC(tracee_port) = NIL;
-	}
+    ErtsTraceSession *s = (ErtsTraceSession*) ERTS_MAGIC_BIN_DATA(bin);
+
+    if (erts_is_trace_session_alive(s)) {
+        /*
+         * trace_session_destroy() not called.
+         * We must initiate cleanup here without a process.
+         * We start with an aux job in order to seize the code mod permission.
+         */
+        Uint sched_id = erts_get_scheduler_id();
+        if (!sched_id)
+            sched_id = 1;
+        erts_schedule_misc_aux_work(sched_id, trace_session_destroy_aux, s);
+        return 0; /* don't free bin */
     }
-    return 0;
+
+    /*
+     * Session already cleared by trace_session_destroy().
+     * It must be DEAD now as it was kept alive during CLEARING with refc bump.
+     * Go ahead and free it.
+     */
+    ASSERT(erts_atomic_read_nob(&s->state) == ERTS_TRACE_SESSION_DEAD);
+    free_session(s);
+    return 0; /* already freed */
 }
 
-/* Check that the process to be traced is not already traced
- * by a valid other tracer than the tracer to be.
- */
-static int already_traced(Process *c_p, Process *tracee_p, Eterm tracer)
+static void free_session(ErtsTraceSession *session)
 {
-    /*
-     * SMP build assumes that either system is blocked or:
-     * * main lock is held on c_p
-     * * all locks multiple are held on tracee_p
-     */
-    if ((ERTS_TRACE_FLAGS(tracee_p) & TRACEE_FLAGS)
-	&& ERTS_TRACER_PROC(tracee_p) != tracer) {
-	/* This tracee is already being traced, and not by the 
-	 * tracer to be */
-	if (is_internal_port(ERTS_TRACER_PROC(tracee_p))) {
-	    if (!erts_is_valid_tracer_port(ERTS_TRACER_PROC(tracee_p))) {
-		/* Current trace port now invalid 
-		 * - discard it and approve the new. */
-		goto remove_tracer;
-	    } else
-		return 1;
-	}
-	else if(is_internal_pid(ERTS_TRACER_PROC(tracee_p))) {
-	    Process *tracer_p;
+    Binary* bin = &(ERTS_MAGIC_BIN_FROM_DATA(session)->binary);
+    ASSERT(erts_refc_read(&bin->intern.refc, 0) == 0);
+    ASSERT(erts_refc_read(&session->dbg_bp_refc, 0) == 0);
+    ASSERT(erts_refc_read(&session->dbg_p_refc, 0) == 0);
+    ASSERT(erts_atomic_read_nob(&session->state) == ERTS_TRACE_SESSION_DEAD);
+    ASSERT(ERTS_TRACER_IS_NIL(session->tracer));
+    ASSERT(ERTS_TRACER_IS_NIL(session->new_procs_tracer));
+    ASSERT(ERTS_TRACER_IS_NIL(session->new_ports_tracer));
+    ASSERT(ERTS_TRACER_IS_NIL(session->on_load_meta_tracer));
+    erts_magic_binary_free(bin);
+}
 
-	    tracer_p = erts_proc_lookup(ERTS_TRACER_PROC(tracee_p));
-	    if (!tracer_p) {
-		/* Current trace process now invalid
-		 * - discard it and approve the new. */
-		goto remove_tracer;
-	    } else
-		return 1;
-	}
-	else {
-	remove_tracer:
-	    ERTS_TRACE_FLAGS(tracee_p) &= ~TRACEE_FLAGS;
-	    ERTS_TRACER_PROC(tracee_p) = NIL;
-	}
+
+Eterm
+erts_internal_trace_session_create_3(BIF_ALIST_3)
+{
+    return trace_session_create(BIF_P, BIF_ARG_1, BIF_ARG_2, BIF_ARG_3);
+}
+
+static Eterm
+trace_session_create(Process* p, Eterm name, Eterm tracer_term, Eterm opts)
+{
+    Binary* bptr;
+    Eterm* hp;
+    Eterm m_ref;
+    Eterm weak_ref;
+    ErtsTracer tracer;
+    ErtsTraceSession* session;
+
+    if (is_not_nil(opts) || !is_atom(name)) {
+        BIF_ERROR(p, BADARG);
     }
-    return 0;
+
+    if (tracer_term == am_undefined) {
+        tracer = erts_tracer_nil;
+    }
+    else {
+        tracer = erts_term_to_tracer(THE_NON_VALUE, tracer_term);
+        if (tracer == THE_NON_VALUE) {
+            BIF_ERROR(p, BADARG);
+        }
+    }
+
+    bptr = erts_create_magic_binary_x(sizeof(ErtsTraceSession),
+                                      tracer_session_destructor,
+                                      ERTS_ALC_T_BINARY,
+                                      0);
+    session = (ErtsTraceSession*) ERTS_MAGIC_BIN_DATA(bptr);
+    if (!erts_trace_session_init(session, tracer, name)) {
+        ASSERT(erts_refc_read(&bptr->intern.refc, 0) == 0);
+        erts_bin_free(bptr);
+        BIF_ERROR(p, BADARG);
+    }
+
+    hp = HAlloc(p, ERTS_MAGIC_REF_THING_SIZE + ERTS_TRACE_SESSION_WEAK_REF_SZ + 3);
+    m_ref = erts_mk_magic_ref(&hp, &MSO(p), bptr);
+    weak_ref = erts_make_trace_session_weak_ref(session, &hp);
+    return TUPLE2(hp, m_ref, weak_ref);
+}
+
+Eterm
+erts_internal_trace_session_destroy_1(BIF_ALIST_1)
+{
+    ErtsTraceSession* session;
+
+    if (!erts_try_seize_code_mod_permission(BIF_P)) {
+        ERTS_BIF_YIELD1(BIF_TRAP_EXPORT(BIF_erts_internal_trace_session_destroy_1),
+                        BIF_P, BIF_ARG_1);
+    }
+
+    if (!term_to_session(BIF_ARG_1, &session, true)) {
+        erts_release_code_mod_permission();
+        BIF_P->fvalue = am_badopt;
+        BIF_ERROR(BIF_P, BADARG | EXF_HAS_EXT_INFO);
+    }
+    if (!erts_is_trace_session_alive(session)) {
+        erts_release_code_mod_permission();
+        erts_deref_trace_session(session);
+        BIF_RET(am_false);
+    }
+
+
+    if (erts_atomic_cmpxchg_nob(&session->state,
+                                ERTS_TRACE_SESSION_CLEARING,
+                                ERTS_TRACE_SESSION_ALIVE)
+        == ERTS_TRACE_SESSION_ALIVE) {
+
+        ASSERT(!erts_staging_trace_session);
+        erts_staging_trace_session = session;
+
+        trace_session_destroy(session);
+
+        finish_bp.stager = BIF_P;
+        erts_schedule_code_barrier(&finish_bp.barrier, smp_bp_finisher, NULL);
+
+        erts_proc_inc_refc(BIF_P);
+        erts_suspend(BIF_P, ERTS_PROC_LOCK_MAIN, NULL);
+        ERTS_BIF_YIELD_RETURN(BIF_P, am_true);
+    }
+    else {
+        erts_release_code_mod_permission();
+        erts_deref_trace_session(erts_staging_trace_session);
+    }
+    BIF_RET(am_false);
+}
+
+static void trace_session_destroy_aux(void *session_v)
+{
+    ErtsTraceSession *s = (ErtsTraceSession*) session_v;
+
+    if (!erts_try_seize_code_mod_permission_aux(trace_session_destroy_aux,
+                                                session_v)) {
+        return;
+    }
+
+    erts_lc_soften_code_mod_permission_check();
+
+    /*
+     * We came here from destructor as refc==0 and session was ALIVE.
+     * No one else could have done anything to the session.
+     */
+    ASSERT(erts_atomic_read_nob(&s->state) == ERTS_TRACE_SESSION_ALIVE);
+    erts_atomic_set_nob(&s->state, ERTS_TRACE_SESSION_CLEARING);
+
+    ASSERT(!erts_staging_trace_session);
+    erts_staging_trace_session = s;
+
+    trace_session_destroy(s);
+
+    finish_bp.stager = NULL;
+    erts_schedule_code_barrier(&finish_bp.barrier, smp_bp_finisher, NULL);
+}
+
+static void
+trace_session_destroy(ErtsTraceSession* session)
+{
+    erts_rwmtx_rwlock(&erts_trace_session_list_lock);
+    ASSERT(session->prev);
+#ifdef DEBUG
+    {
+        ErtsTraceSession *s;
+        for (s = erts_trace_session_0.next; s; s = s->next) {
+            if (s == session)
+                break;
+        }
+        ASSERT(s);
+    }
+#endif
+    session->prev->next = session->next;
+    if (session->next){
+        session->next->prev = session->prev;
+    }
+    session->next = NULL;
+    session->prev = NULL;
+
+    erts_rwmtx_rwunlock(&erts_trace_session_list_lock);
+
+    ERTS_TRACER_CLEAR(&session->tracer);
+    ERTS_TRACER_CLEAR(&session->new_procs_tracer);
+    ERTS_TRACER_CLEAR(&session->new_ports_tracer);
+    clear_on_load_trace_pattern(session);
+
+    prepare_clear_all_trace_pattern(session);
 }
 
 /*
  * Return information about a process or an external function being traced.
  */
-
 Eterm trace_info_2(BIF_ALIST_2)
 {
-    Process* p = BIF_P;
-    Eterm What = BIF_ARG_1;
-    Eterm Key = BIF_ARG_2;
-    Eterm res;
+    bool to_be_continued = false;
+    Eterm ret;
 
-    if (!erts_try_seize_code_write_permission(p)) {
-	ERTS_BIF_YIELD2(bif_export[BIF_trace_info_2], p, What, Key);
+    if (!erts_try_seize_code_mod_permission(BIF_P)) {
+        ERTS_BIF_YIELD2(BIF_TRAP_EXPORT(BIF_trace_info_2),
+                        BIF_P, BIF_ARG_1, BIF_ARG_2);
+    }
+    ret = trace_info(BIF_P, &erts_trace_session_0, BIF_ARG_1, BIF_ARG_2,
+                     &to_be_continued);
+    if (!to_be_continued) {
+        erts_release_code_mod_permission();
+    }
+    return ret;
+}
+
+/* Called by trace:info/3
+ *           trace:session_info/1
+ */
+Eterm erts_internal_trace_info_3(BIF_ALIST_3)
+{
+    ErtsTraceSession* session;
+    bool to_be_continued = false;
+    Eterm ret;
+
+    if (!erts_try_seize_code_mod_permission(BIF_P)) {
+        ERTS_BIF_YIELD3(BIF_TRAP_EXPORT(BIF_erts_internal_trace_info_3),
+                        BIF_P, BIF_ARG_1, BIF_ARG_2, BIF_ARG_3);
     }
 
-    if (What == am_on_load) {
-	res = trace_info_on_load(p, Key);
-    } else if (is_atom(What) || is_pid(What)) {
-	res = trace_info_pid(p, What, Key);
-    } else if (is_tuple(What)) {
-	res = trace_info_func(p, What, Key);
-    } else {
-	erts_release_code_write_permission();
-	BIF_ERROR(p, BADARG);
+    if (BIF_ARG_1 == am_any) {
+        /* trace:session_info */
+        session = NULL;
     }
-    erts_release_code_write_permission();
+    else if (!term_to_session(BIF_ARG_1, &session, false)) {
+        erts_release_code_mod_permission();
+        BIF_P->fvalue = am_session;
+        BIF_ERROR(BIF_P, BADARG | EXF_HAS_EXT_INFO);
+    }
+
+    ret = trace_info(BIF_P, session, BIF_ARG_2, BIF_ARG_3, &to_be_continued);
+    if (!to_be_continued) {
+        erts_release_code_mod_permission();
+        if (session) {
+            erts_deref_trace_session(session);
+        }
+    }
+    return ret;
+}
+
+static
+Eterm trace_info(Process* p, ErtsTraceSession* session, Eterm What, Eterm Key,
+                 bool *to_be_continued_p)
+{
+    Eterm res = THE_NON_VALUE;
+
+    if (session) {
+        if (What == am_on_load) {
+            res = trace_info_on_load(p, session, Key);
+        } else if (What == am_send || What == am_receive) {
+            res = trace_info_event(p, session, What, Key);
+        } else if (What == am_system && Key == am_all) {
+            res = trace_info_system(p, session);
+        } else if (is_atom(What) || is_pid(What) || is_port(What)) {
+            res = trace_info_pid(p, session, What, Key);
+        } else if (is_tuple(What)) {
+            res = trace_info_func(p, session, What, Key, to_be_continued_p);
+        } else {
+            goto badopt;
+        }
+    }
+    else {
+        if (is_atom(What)) {
+            res = trace_info_sessions(p, What, Key);
+        } else if (is_pid(What) || is_port(What)) {
+            res = trace_info_pid(p, NULL, What, Key);
+        } else if (is_tuple(What)) {
+            res = trace_info_func_sessions(p, What, Key);
+        } else {
+            goto badopt;
+        }
+    }
+
+    if (is_value(res) && is_internal_ref(res)) {
+        BIF_TRAP1(erts_await_result, p, res);
+    }
     BIF_RET(res);
+
+badopt:
+    p->fvalue = am_badopt;
+    BIF_ERROR(p, BADARG | EXF_HAS_EXT_INFO);
 }
 
 static Eterm
-trace_info_pid(Process* p, Eterm pid_spec, Eterm key)
+build_trace_flags_term(Eterm **hpp, Uint *szp, Uint32 trace_flags)
 {
-    Eterm tracer;
-    Uint trace_flags;
+
+#define ERTS_TFLAG__(F, FN)                             \
+    if (trace_flags & F) {                              \
+        if (szp)                                        \
+            sz += 2;                                    \
+        if (hp) {                                       \
+            res = CONS(hp, FN, res);                    \
+            hp += 2;                                    \
+        }                                               \
+    }
+
+    Eterm res;
+    Uint sz = 0;
+    Eterm *hp;
+
+    if (hpp) {
+        hp = *hpp;
+        res = NIL;
+    }
+    else {
+        hp = NULL;
+        res = THE_NON_VALUE;
+    }
+
+    ERTS_TFLAG__(F_NOW_TS, am_timestamp);
+    ERTS_TFLAG__(F_STRICT_MON_TS, am_strict_monotonic_timestamp);
+    ERTS_TFLAG__(F_MON_TS, am_monotonic_timestamp);
+    ERTS_TFLAG__(F_TRACE_SEND, am_send);
+    ERTS_TFLAG__(F_TRACE_RECEIVE, am_receive);
+    ERTS_TFLAG__(F_TRACE_SOS, am_set_on_spawn);
+    ERTS_TFLAG__(F_TRACE_CALLS, am_call);
+    ERTS_TFLAG__(F_TRACE_PROCS, am_procs);
+    ERTS_TFLAG__(F_TRACE_SOS1, am_set_on_first_spawn);
+    ERTS_TFLAG__(F_TRACE_SOL, am_set_on_link);
+    ERTS_TFLAG__(F_TRACE_SOL1, am_set_on_first_link);
+    ERTS_TFLAG__(F_TRACE_SCHED, am_running);
+    ERTS_TFLAG__(F_TRACE_SCHED_EXIT, am_exiting);
+    ERTS_TFLAG__(F_TRACE_GC, am_garbage_collection);
+    ERTS_TFLAG__(F_TRACE_ARITY_ONLY, am_arity);
+    ERTS_TFLAG__(F_TRACE_RETURN_TO, am_return_to);
+    ERTS_TFLAG__(F_TRACE_SILENT, am_silent);
+    ERTS_TFLAG__(F_TRACE_SCHED_NO, am_scheduler_id);
+    ERTS_TFLAG__(F_TRACE_PORTS, am_ports);
+    ERTS_TFLAG__(F_TRACE_SCHED_PORTS, am_running_ports);
+    ERTS_TFLAG__(F_TRACE_SCHED_PROCS, am_running_procs);
+
+    if (szp)
+        *szp += sz;
+
+    if (hpp)
+        *hpp = hp;
+
+    return res;
+
+#undef ERTS_TFLAG__
+}
+
+static Eterm
+build_trace_sessions_term(Eterm **hpp, Uint *szp, ErtsPTabElementCommon *t_p)
+{
+    ErtsTracerRef *ref;
+    Eterm res;
+    Uint sz = 0;
+    Eterm *hp;
+
+    if (hpp) {
+        hp = *hpp;
+        res = NIL;
+    }
+    else {
+        hp = NULL;
+        res = THE_NON_VALUE;
+    }
+
+    for (ref = t_p->tracee.first_ref; ref; ref = ref->next) {
+        if (erts_is_trace_session_alive(ref->session)) {
+            sz += ERTS_TRACE_SESSION_WEAK_REF_SZ + 2;
+            if (hp) {
+                Eterm weak_ref = erts_make_trace_session_weak_ref(ref->session, &hp);
+                res = CONS(hp, weak_ref, res);
+                hp += 2;
+            }
+        }
+    }
+
+    if (szp)
+        *szp += sz;
+
+    if (hpp)
+        *hpp = hp;
+
+    return res;
+
+#undef ERTS_TFLAG__
+}
+
+
+typedef struct {
+    Eterm key;
+    ErtsTraceSession* session;
+} ErtsTraceInfoProcReq;
+
+static Eterm
+trace_info_tracee(Process *c_p, void *arg, int *redsp, ErlHeapFragment **bpp)
+{
+    ErtsTraceSession *session;
+    ErtsTracerRef *ref;
+    ErtsTracer tracer = NIL;
+    Uint32 flags = 0;
+    Eterm key;
+    ErlHeapFragment *bp;
+    Eterm *hp, res;
+    Uint sz;
+
+    {
+        ErtsTraceInfoProcReq *tipr = (ErtsTraceInfoProcReq*) arg;
+        session = tipr->session;
+        key = tipr->key;
+        erts_free(ERTS_ALC_T_TRACE_INFO_REQ, tipr);
+    }
+
+    *redsp = 1;
+
+    if (ERTS_PROC_IS_EXITING(c_p)) {
+        if (session) {
+            erts_deref_trace_session(session);
+        }
+        return am_undefined;
+    }
+
+    sz = 3;
+
+    if (session) {
+        ref = get_tracer_ref(&c_p->common, session);
+        if (ref && erts_is_tracer_ref_proc_enabled(c_p, ERTS_PROC_LOCK_MAIN,
+                                                   &c_p->common, ref)) {
+            tracer = ref->tracer;
+            flags = ref->flags;
+        }
+        erts_deref_trace_session(session);
+    }
+
+    switch (key) {
+    case am_tracer:
+        erts_build_tracer_to_term(NULL, NULL, &sz, tracer);
+        bp = new_message_buffer(sz);
+        hp = bp->mem;
+        res = erts_build_tracer_to_term(&hp, &bp->off_heap,
+                                        NULL, tracer);
+        if (res == am_false)
+            res = NIL;
+        break;
+
+    case am_flags:
+        build_trace_flags_term(NULL, &sz, flags);
+        bp = new_message_buffer(sz);
+        hp = bp->mem;
+        res = build_trace_flags_term(&hp, NULL, flags);
+        break;
+
+    case am_session:
+        build_trace_sessions_term(NULL, &sz, &c_p->common);
+        bp = new_message_buffer(sz);
+        hp = bp->mem;
+        res = build_trace_sessions_term(&hp, NULL, &c_p->common);
+        break;
+
+    default:
+
+        ERTS_INTERNAL_ERROR("Key not supported");
+        res = NIL;
+        bp = NULL;
+        hp = NULL;
+        break;
+    }
+
+    *redsp += 2;
+
+    res = TUPLE2(hp, key, res);
+    *bpp = bp;
+    return res;
+}
+
+static Eterm
+trace_info_pid(Process* p, ErtsTraceSession* session, Eterm pid_spec, Eterm key)
+{
+    Eterm tracer = NIL;
+    Uint32 trace_flags = 0;
     Eterm* hp;
+    Eterm res_term;
 
-    if (pid_spec == am_new) {
-	erts_get_default_tracing(&trace_flags, &tracer);
+    ERTS_UNDEF(res_term, THE_NON_VALUE);
+
+    if (pid_spec == am_new || pid_spec == am_new_processes) {
+        ErtsTracer def_tracer;
+	erts_get_new_proc_tracing(session, &trace_flags, &def_tracer);
+        tracer = erts_tracer_to_term(p, def_tracer);
+        ERTS_TRACER_CLEAR(&def_tracer);
+    } else if (pid_spec == am_new_ports) {
+        ErtsTracer def_tracer;
+	erts_get_new_port_tracing(session, &trace_flags, &def_tracer);
+        tracer = erts_tracer_to_term(p, def_tracer);
+        ERTS_TRACER_CLEAR(&def_tracer);
+    } else if (is_internal_port(pid_spec)) {
+        ErtsTracerRef *ref;
+        Port *port = erts_id2port_sflgs(pid_spec, p, ERTS_PROC_LOCK_MAIN,
+                                        ERTS_PORT_SFLGS_INVALID_LOOKUP);
+
+        if (!port)
+            return am_undefined;
+
+        if (session) {
+            ref = get_tracer_ref(&port->common, session);
+            if (ref && erts_is_tracer_ref_proc_enabled(NULL, 0, &port->common, ref)) {
+                tracer = erts_tracer_to_term(p, ref->tracer);
+                trace_flags = ref->flags;
+            }
+        }
+        else {
+            Uint sz = 0;
+            build_trace_sessions_term(NULL, &sz, &port->common);
+            hp = HAllocX(p, sz, 3);
+            res_term = build_trace_sessions_term(&hp, NULL, &port->common);
+        }
+        erts_port_release(port);
+
     } else if (is_internal_pid(pid_spec)) {
-	Process *tracee;
-	tracee = erts_pid2proc(p, ERTS_PROC_LOCK_MAIN,
-			       pid_spec, ERTS_PROC_LOCKS_ALL);
+        ErtsTraceInfoProcReq *tipr;
+        Eterm ref;
 
-	if (!tracee) {
-	    return am_undefined;
-	} else {
-	    tracer = ERTS_TRACER_PROC(tracee);
-	    trace_flags = ERTS_TRACE_FLAGS(tracee);
-	}
+        if (session) {
+            if (key != am_flags && key != am_tracer)
+                goto error;
+        } else {
+            if (key != am_session)
+                goto error;
+        }
 
-	if (is_internal_pid(tracer)) {
-	    if (!erts_proc_lookup(tracer)) {
-	    reset_tracer:
-		ERTS_TRACE_FLAGS(tracee) &= ~TRACEE_FLAGS;
-		trace_flags = ERTS_TRACE_FLAGS(tracee);
-		tracer = ERTS_TRACER_PROC(tracee) = NIL;
-	    }
-	}
-	else if (is_internal_port(tracer)) {
-	    if (!erts_is_valid_tracer_port(tracer))
-		goto reset_tracer;
-	}
-#ifdef ERTS_SMP
-	erts_smp_proc_unlock(tracee,
-			     (tracee == p
-			      ? ERTS_PROC_LOCKS_ALL_MINOR
-			      : ERTS_PROC_LOCKS_ALL));
-#endif
+        tipr = erts_alloc(ERTS_ALC_T_TRACE_INFO_REQ, sizeof(ErtsTraceInfoProcReq));
+        tipr->key = key;
+        tipr->session = session;
+        if (session) {
+            erts_ref_trace_session(session);
+        }
+        ref = erts_proc_sig_send_rpc_request(p, pid_spec, !0,
+                                             trace_info_tracee,
+                                             tipr);
+
+        if (is_non_value(ref)) {
+            erts_free(ERTS_ALC_T_TRACE_INFO_REQ, tipr);
+            return am_undefined;
+        }
+
+        return ref;
     } else if (is_external_pid(pid_spec)
 	       && external_pid_dist_entry(pid_spec) == erts_this_dist_entry) {
 	    return am_undefined;
     } else {
-    error:
-	BIF_ERROR(p, BADARG);
+        p->fvalue = am_badopt;
+        BIF_ERROR(p, BADARG | EXF_HAS_EXT_INFO);
     }
 
-    if (key == am_flags) {
-	int num_flags = 19;	/* MAXIMUM number of flags. */
-	Uint needed = 3+2*num_flags;
-	Eterm flag_list = NIL;
-	Eterm* limit;
+    if (key == am_flags && session) {
+        Uint sz = 0;
+        Eterm *hp;
 
-#define FLAG0(flag_mask,flag) \
-  if (trace_flags & (flag_mask)) { flag_list = CONS(hp, flag, flag_list); hp += 2; } else {}
+        build_trace_flags_term(NULL, &sz, trace_flags);
 
-#if defined(DEBUG)
-    /*
-     * Check num_flags if this assertion fires.
-     */
-#  define FLAG ASSERT(num_flags-- > 0); FLAG0
-#else
-#  define FLAG FLAG0
-#endif
-        hp = HAlloc(p, needed);
-	limit = hp+needed;
-	FLAG(F_TRACE_SEND, am_send);
-	FLAG(F_TRACE_RECEIVE, am_receive);
-	FLAG(F_TRACE_SOS, am_set_on_spawn);
-	FLAG(F_TRACE_CALLS, am_call);
-	FLAG(F_TRACE_PROCS, am_procs);
-	FLAG(F_TRACE_SOS1, am_set_on_first_spawn);
-	FLAG(F_TRACE_SOL, am_set_on_link);
-	FLAG(F_TRACE_SOL1, am_set_on_first_link);
-	FLAG(F_TRACE_SCHED, am_running);
-	FLAG(F_TRACE_SCHED_EXIT, am_exiting);
-	FLAG(F_TRACE_GC, am_garbage_collection);
-	FLAG(F_TIMESTAMP, am_timestamp);
-	FLAG(F_TRACE_ARITY_ONLY, am_arity);
-	FLAG(F_TRACE_RETURN_TO, am_return_to);
-	FLAG(F_TRACE_SILENT, am_silent);
-	FLAG(F_TRACE_SCHED_NO, am_scheduler_id);
-	FLAG(F_TRACE_PORTS, am_ports);
-	FLAG(F_TRACE_SCHED_PORTS, am_running_ports);
-	FLAG(F_TRACE_SCHED_PROCS, am_running_procs);
-#undef FLAG0
-#undef FLAG
-	HRelease(p,limit,hp+3);
-	return TUPLE2(hp, key, flag_list);
-    } else if (key == am_tracer) {
-	hp = HAlloc(p, 3);
-	return TUPLE2(hp, key, tracer); /* Local pid or port */
+        hp = HAllocX(p, sz, 3);
+
+        res_term = build_trace_flags_term(&hp, NULL, trace_flags);
+
+    } else if (key == am_tracer && session) {
+        if (tracer == am_false)
+            tracer = NIL;
+        res_term = tracer;
+    } else if (key == am_session && !session) {
+        ASSERT(is_list(res_term) || is_nil(res_term));
     } else {
-	goto error;
+    error:
+        BIF_ERROR(p, BADARG);
     }
+    hp = HAlloc(p, 3);
+    return TUPLE2(hp, key, res_term);
 }
 
 #define FUNC_TRACE_NOEXIST      0
@@ -1034,6 +1773,7 @@ trace_info_pid(Process* p, Eterm pid_spec, Eterm key)
 #define FUNC_TRACE_META_TRACE   (1<<3)
 #define FUNC_TRACE_COUNT_TRACE  (1<<4)
 #define FUNC_TRACE_TIME_TRACE   (1<<5)
+#define FUNC_TRACE_MEMORY_TRACE (1<<6)
 /*
  * Returns either FUNC_TRACE_NOEXIST, FUNC_TRACE_UNTRACED,
  * FUNC_TRACE_GLOBAL_TRACE, or,
@@ -1047,130 +1787,386 @@ trace_info_pid(Process* p, Eterm pid_spec, Eterm key)
  * *ms_meta or *tracer_pid_meta is set.
  *
  * If the return value contains FUNC_TRACE_COUNT_TRACE, *count is set.
+ * If the return value contains FUNC_TRACE_TIME_TRACE, *call_time is set.
+ * If the return value contains FUNC_TRACE_MEMORY_TRACE, *call_memory is set.
  */
 static int function_is_traced(Process *p,
-			      Eterm mfa[3],
-			      Binary **ms,              /* out */
-			      Binary **ms_meta,         /* out */
-			      Eterm   *tracer_pid_meta, /* out */
-			      Uint    *count,           /* out */
-			      Eterm   *call_time)       /* out */
+                              ErtsTraceSession *session,
+                              const ErtsCodeMFA *mfa,
+                              int want,
+			      Binary    **ms,              /* out */
+			      Binary    **ms_meta,         /* out */
+			      ErtsTracer *tracer_pid_meta, /* out */
+			      Uint       *count)           /* out */
 {
-    Export e;
-    Export* ep;
-    BeamInstr* pc;
+    const ErtsCodeInfo *ci;
 
     /* First look for an export entry */
-    e.code[0] = mfa[0];
-    e.code[1] = mfa[1];
-    e.code[2] = mfa[2];
-    if ((ep = export_get(&e)) != NULL) {
-	pc = ep->code+3;
-	if (ep->addressv[erts_active_code_ix()] == pc &&
-	    *pc != (BeamInstr) em_call_error_handler) {
+    if (want & FUNC_TRACE_GLOBAL_TRACE) {
+        const Export *ep;
+        Export e;
 
-	    int r = 0;
+        e.info.mfa = *mfa;
+        if ((ep = export_get(&e)) != NULL) {
+            if (erts_is_export_trampoline_active(ep, erts_active_code_ix()) &&
+                ! BeamIsOpCode(ep->trampoline.common.op, op_call_error_handler)) {
 
-	    ASSERT(*pc == (BeamInstr) em_apply_bif ||
-		   *pc == (BeamInstr) BeamOp(op_i_generic_breakpoint));
+                ASSERT(BeamIsOpCode(ep->trampoline.common.op, op_i_generic_breakpoint));
 
-	    if (erts_is_trace_break(pc, ms, 0)) {
-		return FUNC_TRACE_GLOBAL_TRACE;
-	    }
+                if (erts_is_trace_break(session, &ep->info, ms, 0)) {
+                    return FUNC_TRACE_GLOBAL_TRACE;
+                }
 
-	    if (erts_is_trace_break(pc, ms, 1)) {
-		r |= FUNC_TRACE_LOCAL_TRACE;
-	    }
-	    if (erts_is_mtrace_break(pc, ms_meta, tracer_pid_meta)) {
-		r |= FUNC_TRACE_META_TRACE;
-	    }
-	    if (erts_is_time_break(p, pc, call_time)) {
-		r |= FUNC_TRACE_TIME_TRACE;
-	    }
-	    return r ? r : FUNC_TRACE_UNTRACED;
-	}
+                ASSERT(!erts_is_trace_break(session, &ep->info, ms, 1));
+                ASSERT(!erts_is_mtrace_break(session, &ep->info, ms_meta, tracer_pid_meta));
+                ASSERT(!erts_is_time_break(session, &ep->info));
+                ASSERT(!erts_is_memory_break(session, &ep->info));
+            }
+        }
     }
     
     /* OK, now look for breakpoint tracing */
-    if ((pc = erts_find_local_func(mfa)) != NULL) {
-	int r = 
-	    (erts_is_trace_break(pc, ms, 1)
-	     ? FUNC_TRACE_LOCAL_TRACE : 0) 
-	    | (erts_is_mtrace_break(pc, ms_meta, tracer_pid_meta)
-	       ? FUNC_TRACE_META_TRACE : 0)
-	    | (erts_is_count_break(pc, count)
-	       ? FUNC_TRACE_COUNT_TRACE : 0)
-	    | (erts_is_time_break(p, pc, call_time)
-	       ? FUNC_TRACE_TIME_TRACE : 0);
-	
-	return r ? r : FUNC_TRACE_UNTRACED;
+    if ((ci = erts_find_local_func(mfa)) != NULL) {
+	int got = 0;
+
+        if ((want & FUNC_TRACE_LOCAL_TRACE) && erts_is_trace_break(session, ci, ms, 1)) {
+            got |= FUNC_TRACE_LOCAL_TRACE;
+        }
+        if ((want & FUNC_TRACE_META_TRACE) && erts_is_mtrace_break(session, ci, ms_meta, tracer_pid_meta)) {
+            got |= FUNC_TRACE_META_TRACE;
+        }
+        if ((want & FUNC_TRACE_COUNT_TRACE) && erts_is_count_break(session, ci, count)) {
+            got |= FUNC_TRACE_COUNT_TRACE;
+        }	
+        if ((want & FUNC_TRACE_TIME_TRACE) && erts_is_time_break(session, ci)) {
+            got |= FUNC_TRACE_TIME_TRACE;
+        }
+        if ((want & FUNC_TRACE_MEMORY_TRACE) && erts_is_memory_break(session, ci)) {
+            got |= FUNC_TRACE_MEMORY_TRACE;
+        }
+	return got ? got : FUNC_TRACE_UNTRACED;
     } 
     return FUNC_TRACE_NOEXIST;
 }
 
-static Eterm
-trace_info_func(Process* p, Eterm func_spec, Eterm key)
+static Eterm function_traced_by_sessions(Process *p, const ErtsCodeMFA *mfa)
+{
+    const ErtsCodeInfo *ci;
+    const Export *ep;
+    Export e;
+    ErtsHeapFactory factory;
+    Eterm list = NIL;
+
+    ci = erts_find_local_func(mfa);
+    if (!ci) {
+        /* Function does not exists */
+        return am_undefined;
+    }
+
+    erts_factory_proc_init(&factory, p);
+
+    /* First look for an export entry */
+    e.info.mfa = *mfa;
+    ep = export_get(&e);
+    if (ep) {
+        if (erts_is_export_trampoline_active(ep, erts_active_code_ix()) &&
+            ! BeamIsOpCode(ep->trampoline.common.op, op_call_error_handler)) {
+
+	    ASSERT(BeamIsOpCode(ep->trampoline.common.op, op_i_generic_breakpoint));
+
+            list = erts_make_bp_session_list(&factory, &ep->info, list);
+	}
+    }
+
+    /* OK, now look for local breakpoint tracing */
+    if (ci) {
+        list = erts_make_bp_session_list(&factory, ci, list);
+    }
+
+    erts_factory_close(&factory);
+    return list;
+}
+
+static int get_mfa_tuple(Eterm func_spec, ErtsCodeMFA* mfa)
 {
     Eterm* tp;
-    Eterm* hp;
-    DeclareTmpHeap(mfa,3,p); /* Not really heap here, but might be when setting pattern */
-    Binary *ms = NULL, *ms_meta = NULL;
-    Uint count = 0;
-    Eterm traced = am_false;
-    Eterm match_spec = am_false;
-    Eterm retval = am_false;
-    Eterm meta = am_false;
-    Eterm call_time = NIL;
-    int r;
-
-
-    UseTmpHeap(3,p);
 
     if (!is_tuple(func_spec)) {
-	goto error;
+        return 0;
     }
     tp = tuple_val(func_spec);
     if (tp[0] != make_arityval(3)) {
-	goto error;
+        return 0;
     }
     if (!is_atom(tp[1]) || !is_atom(tp[2]) || !is_small(tp[3])) {
-	goto error;
+        return 0;
     }
-    mfa[0] = tp[1];
-    mfa[1] = tp[2];
-    mfa[2] = signed_val(tp[3]);
+    mfa->module = tp[1];
+    mfa->function = tp[2];
+    mfa->arity = signed_val(tp[3]);
+    return 1;
+}
 
-#ifdef ERTS_SMP
-    if ( (key == am_call_time) || (key == am_all)) {
-	erts_smp_proc_unlock(p, ERTS_PROC_LOCK_MAIN);
-	erts_smp_thr_progress_block();
+struct {
+    Process *p;
+    ErtsTraceSession *session;
+    ErtsCodeMFA mfa;
+    Eterm key;
+    int want;
+    int phase;
+    Binary *trap_mbin;
+    ErtsCodeBarrier barrier;
+} trace_info_state;
+
+static Eterm
+trace_info_func(Process* p, ErtsTraceSession* session,
+                Eterm func_spec, Eterm key, bool *to_be_continued_p)
+{
+    ErtsCodeMFA mfa;
+    int want;
+
+    ASSERT(session);
+
+    if (!get_mfa_tuple(func_spec, &mfa)) {
+        goto error;
     }
-#endif
 
-    r = function_is_traced(p, mfa, &ms, &ms_meta, &meta, &count, &call_time);
-
-#ifdef ERTS_SMP
-    if ( (key == am_call_time) || (key == am_all)) {
-	erts_smp_thr_progress_unblock();
-	erts_smp_proc_lock(p, ERTS_PROC_LOCK_MAIN);
+    switch (key) {
+    case am_traced:
+    case am_match_spec:
+        want = FUNC_TRACE_GLOBAL_TRACE | FUNC_TRACE_LOCAL_TRACE;
+        break;
+    case am_meta:
+    case am_meta_match_spec:
+        want = FUNC_TRACE_META_TRACE;
+        break;
+    case am_call_count:
+        want = FUNC_TRACE_COUNT_TRACE;
+        break;
+    case am_call_time:
+        want = FUNC_TRACE_TIME_TRACE;
+        break;
+    case am_call_memory:
+        want = FUNC_TRACE_MEMORY_TRACE;
+        break;
+    case am_all:
+        want = FUNC_TRACE_GLOBAL_TRACE | FUNC_TRACE_LOCAL_TRACE
+            | FUNC_TRACE_META_TRACE | FUNC_TRACE_COUNT_TRACE
+            | FUNC_TRACE_TIME_TRACE | FUNC_TRACE_MEMORY_TRACE;
+        break;
+    default:
+        goto error;
     }
-#endif
 
-    switch (r) {
+    if (want & (FUNC_TRACE_TIME_TRACE | FUNC_TRACE_MEMORY_TRACE)) {
+        const ErtsCodeInfo *ci = erts_find_local_func(&mfa);
+        if (ci) {
+            Eterm trap_ret;
+
+            if (erts_prepare_timem_trace_info(p, session,
+                                              want & FUNC_TRACE_TIME_TRACE,
+                                              want & FUNC_TRACE_MEMORY_TRACE,
+                                              ci)) {
+                Eterm trap_arg = trace_info_trap_arg(p);
+
+                erts_proc_inc_refc(p);
+                erts_suspend(p, ERTS_PROC_LOCK_MAIN, NULL);
+                ERTS_BIF_PREP_YIELD1(trap_ret, &bif_trace_info_finish_export,
+                                     p, trap_arg);
+
+                trace_info_state.p = p;
+                trace_info_state.session = session;
+                trace_info_state.mfa = mfa;
+                trace_info_state.key = key;
+                trace_info_state.want =  want;
+                trace_info_state.phase = 0;
+                erts_schedule_code_barrier(&trace_info_state.barrier,
+                                           trace_info_finisher, NULL);
+
+                *to_be_continued_p = true;
+                return trap_ret;
+            }
+        }
+    }
+    /*
+     * No need for scheduling. Just build result and return it.
+     */
+    return trace_info_func_epilogue(p, session, &mfa, key, want);
+
+error:
+    BIF_ERROR(p, BADARG);
+}
+
+/*
+ * Magic binary for trace:info trap.
+ * The only purpose is to make sure we clean up if the trapping process
+ * would be killed while waiting to be resumed.
+ */
+typedef struct {
+    bool is_active;
+} trace_info_trap_mbin_t;
+
+static Eterm trace_info_trap_arg(Process* p)
+{
+    Binary *mbin = erts_create_magic_binary_x(sizeof(trace_info_trap_mbin_t),
+                                              trace_info_trap_destructor,
+                                              ERTS_ALC_T_BINARY,
+                                              0);
+    trace_info_trap_mbin_t* titm = (trace_info_trap_mbin_t*) ERTS_MAGIC_BIN_DATA(mbin);
+    Eterm *hp = HAlloc(p, ERTS_MAGIC_REF_THING_SIZE);
+    Eterm trap_arg;
+
+    titm->is_active = true;
+
+    trap_arg = erts_mk_magic_ref(&hp, &MSO(p), mbin);
+    /*
+     * Do extra refc bump of magic binary to ensure destructor is not called
+     * before trace_info_finisher() is done.
+     */
+    trace_info_state.trap_mbin = mbin;
+    erts_refc_inc(&mbin->intern.refc, 1);
+
+    return trap_arg;
+}
+
+static int trace_info_trap_destructor(Binary *mbin)
+{
+    trace_info_trap_mbin_t *titm = (trace_info_trap_mbin_t*) ERTS_MAGIC_BIN_DATA(mbin);
+
+    if (titm->is_active) {
+        ErtsTraceSession *session = trace_info_state.session;
+        /*
+         * The caller of trace:info must have been killed while waiting
+         * to be resumed.
+         */
+        ASSERT(trace_info_state.p);
+        trace_info_state.p = NULL;
+        titm->is_active = false;
+        erts_free_timem_info();
+        erts_release_code_mod_permission();
+        erts_deref_trace_session(session);
+    }
+    return 1;
+}
+
+static void trace_info_finisher(void* null)
+{
+    ERTS_LC_ASSERT(erts_has_code_mod_permission());
+    ASSERT(trace_info_state.p);
+
+    switch (trace_info_state.phase++) {
+    case 0:
+        erts_commit_staged_bp();
+        erts_schedule_code_barrier(&trace_info_state.barrier,
+                                   trace_info_finisher, NULL);
+        break;
+
+    case 1:
+        erts_timem_info_collect();
+
+        /* Switch back and make the original hash tables active again. */
+        erts_commit_staged_bp();
+
+        erts_schedule_code_barrier(&trace_info_state.barrier,
+                                   trace_info_finisher, NULL);
+        break;
+    case 2: {
+        Process *p = trace_info_state.p;
+        Binary *trap_mbin = trace_info_state.trap_mbin;
+
+        erts_timem_info_consolidate();
+
+        trace_info_state.trap_mbin = NULL;
+        erts_bin_release(trap_mbin);
+        /*
+         * We are no longer guaranteed to be protected by code_mod_permission
+         * as trace_info_trap_destructor might have been called.
+         */
+
+        /*
+         * Resume caller of trace:info in bif_trace_info_finish_trap()
+         * (if still alive)
+         */
+        erts_proc_lock(p, ERTS_PROC_LOCK_STATUS);
+        if (!ERTS_PROC_IS_EXITING(p)) {
+            erts_resume(p, ERTS_PROC_LOCK_STATUS);
+        }
+        erts_proc_unlock(p, ERTS_PROC_LOCK_STATUS);
+        erts_proc_dec_refc(p);
+        break;
+    }
+    default:
+        ASSERT(!"Invalid trace_info_finisher phase");
+    }
+}
+
+static BIF_RETTYPE bif_trace_info_finish_trap(BIF_ALIST_1)
+{
+    Binary* bin;
+    trace_info_trap_mbin_t* titm;
+    ErtsTraceSession *session = trace_info_state.session;
+    Eterm bif_ret;
+
+    ASSERT(BIF_P == trace_info_state.p);
+
+    bif_ret = trace_info_func_epilogue(BIF_P,
+                                       trace_info_state.session,
+                                       &trace_info_state.mfa,
+                                       trace_info_state.key,
+                                       trace_info_state.want);
+
+    bin = erts_magic_ref2bin(BIF_ARG_1);
+    ASSERT(ERTS_MAGIC_BIN_DESTRUCTOR(bin) == trace_info_trap_destructor);
+    titm = (trace_info_trap_mbin_t*) ERTS_MAGIC_BIN_DATA(bin);
+    ASSERT(titm->is_active);
+    titm->is_active = false;
+    trace_info_state.p = NULL;
+
+    erts_release_code_mod_permission();
+    erts_deref_trace_session(session);
+
+    return bif_ret;
+}
+
+static Eterm
+trace_info_func_epilogue(Process* p,
+                         ErtsTraceSession* session,
+                         const ErtsCodeMFA *mfa,
+                         Eterm key,
+                         int want)
+{
+    Eterm call_time = am_false;
+    Eterm call_memory = am_false;
+    Eterm traced = am_false;
+    Eterm match_spec = am_false;
+    Eterm retval = am_false;
+    Binary *ms = NULL, *ms_meta = NULL;
+    ErtsTracer meta = erts_tracer_nil;
+    Uint call_count = 0;
+    Eterm* hp;
+    int got;
+
+    erts_build_timem_info(p, &call_time, &call_memory);
+    erts_free_timem_info();
+
+    got = function_is_traced(p, session, mfa, want, &ms, &ms_meta, &meta,
+                             &call_count);
+
+    switch (got) {
     case FUNC_TRACE_NOEXIST:
-	UnUseTmpHeap(3,p);
+        ASSERT(call_time == am_false && call_memory == am_false);
 	hp = HAlloc(p, 3);
 	return TUPLE2(hp, key, am_undefined);
-    case FUNC_TRACE_UNTRACED:
-	UnUseTmpHeap(3,p);
-	hp = HAlloc(p, 3);
-	return TUPLE2(hp, key, am_false);
     case FUNC_TRACE_GLOBAL_TRACE:
+        ASSERT(call_time == am_false && call_memory == am_false);
 	traced = am_global;
 	match_spec = NIL; /* Fix up later if it's asked for*/
 	break;
+    case FUNC_TRACE_UNTRACED:
+        hp = HAlloc(p, 3);
+        return TUPLE2(hp, key, am_false);
     default:
-	if (r & FUNC_TRACE_LOCAL_TRACE) {
+	if (got & FUNC_TRACE_LOCAL_TRACE) {
 	    traced = am_local;
 	    match_spec = NIL; /* Fix up later if it's asked for*/
 	}
@@ -1189,10 +2185,13 @@ trace_info_func(Process* p, Eterm func_spec, Eterm key)
 	retval = match_spec;
 	break;
     case am_meta:
-	retval = meta;
+        retval = erts_tracer_to_term(p, meta);
+        if (retval == am_false)
+            /* backwards compatibility */
+            retval = NIL;
 	break;
     case am_meta_match_spec:
-	if (r & FUNC_TRACE_META_TRACE) {
+	if (got & FUNC_TRACE_META_TRACE) {
 	    if (ms_meta) {
 		retval = MatchSetGetSource(ms_meta);
 		retval = copy_object(retval, p);
@@ -1202,44 +2201,61 @@ trace_info_func(Process* p, Eterm func_spec, Eterm key)
 	}
 	break;
     case am_call_count:
-	if (r & FUNC_TRACE_COUNT_TRACE) {
-	    retval = erts_make_integer(count, p);
+	if (got & FUNC_TRACE_COUNT_TRACE) {
+	    retval = erts_make_integer(call_count, p);
 	}
 	break;
     case am_call_time:
-	if (r & FUNC_TRACE_TIME_TRACE) {
+	if (got & FUNC_TRACE_TIME_TRACE) {
 	    retval = call_time;
 	}
 	break;
+    case am_call_memory:
+	if (got & FUNC_TRACE_MEMORY_TRACE) {
+	    retval = call_memory;
+	}
+	break;
     case am_all: {
-	Eterm match_spec_meta = am_false, c = am_false, t, ct = am_false;
+        Eterm match_spec_meta = am_false;
+        Eterm call_count_term = am_false;
+        Eterm t, m;
 	
+        /* ToDo: Rewrite this to loop and reuse the above cases */
+
 	if (ms) {
 	    match_spec = MatchSetGetSource(ms);
 	    match_spec = copy_object(match_spec, p);
 	}
-	if (r & FUNC_TRACE_META_TRACE) {
+	if (got & FUNC_TRACE_META_TRACE) {
 	    if (ms_meta) {
 		match_spec_meta = MatchSetGetSource(ms_meta);
 		match_spec_meta = copy_object(match_spec_meta, p);
 	    } else
 		match_spec_meta = NIL;
 	}
-	if (r & FUNC_TRACE_COUNT_TRACE) {
-	    c = erts_make_integer(count, p);
+	if (got & FUNC_TRACE_COUNT_TRACE) {
+            call_count_term = erts_make_integer(call_count, p);
 	}
-	if (r & FUNC_TRACE_TIME_TRACE) {
-	    ct = call_time;
+	if (!(got & FUNC_TRACE_TIME_TRACE)) {
+            call_time = am_false;
 	}
-	hp = HAlloc(p, (3+2)*6);
+        if (!(got & FUNC_TRACE_MEMORY_TRACE)) {
+            call_memory = am_false;
+	}
+
+        m = erts_tracer_to_term(p, meta);
+
+	hp = HAlloc(p, (3+2)*7);
 	retval = NIL;
-	t = TUPLE2(hp, am_call_count, c); hp += 3;
+	t = TUPLE2(hp, am_call_count, call_count_term); hp += 3;
 	retval = CONS(hp, t, retval); hp += 2;
-	t = TUPLE2(hp, am_call_time, ct); hp += 3;
+	t = TUPLE2(hp, am_call_time, call_time); hp += 3;
+        retval = CONS(hp, t, retval); hp += 2;
+	t = TUPLE2(hp, am_call_memory, call_memory); hp += 3;
 	retval = CONS(hp, t, retval); hp += 2;
 	t = TUPLE2(hp, am_meta_match_spec, match_spec_meta); hp += 3;
 	retval = CONS(hp, t, retval); hp += 2;
-	t = TUPLE2(hp, am_meta, meta); hp += 3;
+	t = TUPLE2(hp, am_meta, m); hp += 3;
 	retval = CONS(hp, t, retval); hp += 2;
 	t = TUPLE2(hp, am_match_spec, match_spec); hp += 3;
 	retval = CONS(hp, t, retval); hp += 2;
@@ -1247,23 +2263,38 @@ trace_info_func(Process* p, Eterm func_spec, Eterm key)
 	retval = CONS(hp, t, retval); hp += 2;
     }   break;
     default:
-	goto error;
+        erts_exit(ERTS_ABORT_EXIT, "Invalid key\n");
     }
-    UnUseTmpHeap(3,p);
     hp = HAlloc(p, 3);
     return TUPLE2(hp, key, retval);
+} 
 
- error:
-    UnUseTmpHeap(3,p);
-    BIF_ERROR(p, BADARG);
+static Eterm
+trace_info_func_sessions(Process* p, Eterm func_spec, Eterm key)
+{
+    Eterm* hp;
+    ErtsCodeMFA mfa;
+    Eterm session_list;
+
+    if (!get_mfa_tuple(func_spec, &mfa) || key != am_session) {
+        BIF_ERROR(p, BADARG);
+    }
+
+    erts_mtx_lock(&erts_dirty_bp_ix_mtx);
+
+    session_list = function_traced_by_sessions(p, &mfa);
+
+    erts_mtx_unlock(&erts_dirty_bp_ix_mtx);
+
+    hp = HAlloc(p, 3);
+    return TUPLE2(hp, am_session, session_list);
 }
 
 static Eterm
-trace_info_on_load(Process* p, Eterm key)
+trace_info_on_load(Process* p, ErtsTraceSession *session, Eterm key)
 {
     Eterm* hp;
-    
-    if (! erts_default_trace_pattern_is_on) {
+    if (! session->on_load_trace_pattern_is_on) {
 	hp = HAlloc(p, 3);
 	return TUPLE2(hp, key, am_false);
     }
@@ -1272,9 +2303,9 @@ trace_info_on_load(Process* p, Eterm key)
 	{
 	    Eterm traced = am_false;
 	    
-	    if (! erts_default_trace_pattern_flags.breakpoint) {
+	    if (! session->on_load_trace_pattern_flags.breakpoint) {
 		traced = am_global;
-	    } else if (erts_default_trace_pattern_flags.local) {
+	    } else if (session->on_load_trace_pattern_flags.local) {
 		traced = am_local;
 	    }
 	    hp = HAlloc(p, 3);
@@ -1284,10 +2315,10 @@ trace_info_on_load(Process* p, Eterm key)
 	{
 	    Eterm match_spec = am_false;
 	    
-	    if ((! erts_default_trace_pattern_flags.breakpoint) ||
-		erts_default_trace_pattern_flags.local) {
-		if (erts_default_match_spec) {
-		    match_spec = MatchSetGetSource(erts_default_match_spec);
+	    if ((! session->on_load_trace_pattern_flags.breakpoint) ||
+		session->on_load_trace_pattern_flags.local) {
+		if (session->on_load_match_spec) {
+		    match_spec = MatchSetGetSource(session->on_load_match_spec);
 		    match_spec = copy_object(match_spec, p);
 		    hp = HAlloc(p, 3);
 		} else {
@@ -1301,8 +2332,9 @@ trace_info_on_load(Process* p, Eterm key)
 	}
     case am_meta:
 	hp = HAlloc(p, 3);
-	if (erts_default_trace_pattern_flags.meta) {
-	    return TUPLE2(hp, key, erts_default_meta_tracer_pid);
+	if (session->on_load_trace_pattern_flags.meta) {
+            ASSERT(!ERTS_TRACER_IS_NIL(session->on_load_meta_tracer));
+	    return TUPLE2(hp, key, erts_tracer_to_term(p, session->on_load_meta_tracer));
 	} else {
 	    return TUPLE2(hp, key, am_false);
 	}
@@ -1310,10 +2342,10 @@ trace_info_on_load(Process* p, Eterm key)
 	{
 	    Eterm match_spec = am_false;
 	    
-	    if (erts_default_trace_pattern_flags.meta) {
-		if (erts_default_meta_match_spec) {
+	    if (session->on_load_trace_pattern_flags.meta) {
+		if (session->on_load_meta_match_spec) {
 		    match_spec = 
-			MatchSetGetSource(erts_default_meta_match_spec);
+			MatchSetGetSource(session->on_load_meta_match_spec);
 		    match_spec = copy_object(match_spec, p);
 		    hp = HAlloc(p, 3);
 		} else {
@@ -1327,54 +2359,61 @@ trace_info_on_load(Process* p, Eterm key)
 	}
     case am_call_count:
 	hp = HAlloc(p, 3);
-	if (erts_default_trace_pattern_flags.call_count) {
+	if (session->on_load_trace_pattern_flags.call_count) {
 	    return TUPLE2(hp, key, am_true);
 	} else {
 	    return TUPLE2(hp, key, am_false);
 	}
     case am_call_time:
 	hp = HAlloc(p, 3);
-	if (erts_default_trace_pattern_flags.call_time) {
+	if (session->on_load_trace_pattern_flags.call_time) {
+	    return TUPLE2(hp, key, am_true);
+	} else {
+	    return TUPLE2(hp, key, am_false);
+	}
+    case am_call_memory:
+	hp = HAlloc(p, 3);
+	if (session->on_load_trace_pattern_flags.call_memory) {
 	    return TUPLE2(hp, key, am_true);
 	} else {
 	    return TUPLE2(hp, key, am_false);
 	}
     case am_all:
 	{
-	    Eterm match_spec = am_false, meta_match_spec = am_false, r = NIL, t;
+	    Eterm match_spec = am_false, meta_match_spec = am_false, r = NIL, t, m;
 	    
-	    if (erts_default_trace_pattern_flags.local ||
-		(! erts_default_trace_pattern_flags.breakpoint)) {
+	    if (session->on_load_trace_pattern_flags.local ||
+		(! session->on_load_trace_pattern_flags.breakpoint)) {
 		match_spec = NIL;
 	    }
-	    if (erts_default_match_spec) {
-		match_spec = MatchSetGetSource(erts_default_match_spec);
+	    if (session->on_load_match_spec) {
+		match_spec = MatchSetGetSource(session->on_load_match_spec);
 		match_spec = copy_object(match_spec, p);
 	    }
-	    if (erts_default_trace_pattern_flags.meta) {
+	    if (session->on_load_trace_pattern_flags.meta) {
 		meta_match_spec = NIL;
 	    }
-	    if (erts_default_meta_match_spec) {
+	    if (session->on_load_meta_match_spec) {
 		meta_match_spec = 
-		    MatchSetGetSource(erts_default_meta_match_spec);
+		    MatchSetGetSource(session->on_load_meta_match_spec);
 		meta_match_spec = copy_object(meta_match_spec, p);
 	    }
+            m = (session->on_load_trace_pattern_flags.meta
+                 ? erts_tracer_to_term(p, session->on_load_meta_tracer) : am_false);
 	    hp = HAlloc(p, (3+2)*5 + 3);
 	    t = TUPLE2(hp, am_call_count, 
-		       (erts_default_trace_pattern_flags.call_count
+		       (session->on_load_trace_pattern_flags.call_count
 			? am_true : am_false)); hp += 3;
 	    r = CONS(hp, t, r); hp += 2;
 	    t = TUPLE2(hp, am_meta_match_spec, meta_match_spec); hp += 3;
 	    r = CONS(hp, t, r); hp += 2;
-	    t = TUPLE2(hp, am_meta, 
-		       (erts_default_trace_pattern_flags.meta
-			? erts_default_meta_tracer_pid : am_false)); hp += 3;
+	    t = TUPLE2(hp, am_meta, m); hp += 3;
 	    r = CONS(hp, t, r); hp += 2;
 	    t = TUPLE2(hp, am_match_spec, match_spec); hp += 3;
 	    r = CONS(hp, t, r); hp += 2;
 	    t = TUPLE2(hp, am_traced,
-		       (! erts_default_trace_pattern_flags.breakpoint ?
-			am_global : (erts_default_trace_pattern_flags.local ?
+		       (! session->on_load_trace_pattern_flags.breakpoint ?
+			am_global : (session->on_load_trace_pattern_flags.local ?
 				     am_local : am_false))); hp += 3;
 	    r = CONS(hp, t, r); hp += 2;
 	    return TUPLE2(hp, key, r);
@@ -1384,136 +2423,216 @@ trace_info_on_load(Process* p, Eterm key)
     }
 }
 
+static Eterm
+trace_info_sessions(Process* p, Eterm What, Eterm key)
+{
+    const ErtsBpIndex bp_ix = erts_active_bp_ix();
+    ErtsTraceSession *s;
+    ErtsHeapFactory factory;
+    Eterm *hp;
+    Eterm list = NIL;
+    Eterm ret;
+
+    if (key != am_session) {
+        BIF_ERROR(p, BADARG);
+    }
+
+    erts_factory_proc_init(&factory, p);
+    erts_rwmtx_rlock(&erts_trace_session_list_lock);
+    for (s = &erts_trace_session_0; s; s = s->next) {
+        int on;
+        switch (What) {
+        case am_any:       on = 1; break;
+        case am_on_load:   on = s->on_load_trace_pattern_is_on; break;
+        case am_send:      on = s->send_tracing[bp_ix].on; break;
+        case am_receive:   on = s->receive_tracing[bp_ix].on; break;
+        case am_new_processes:
+        case am_new:       on = s->new_procs_trace_flags; break;
+        case am_new_ports: on = s->new_ports_trace_flags; break;
+        default:
+            erts_rwmtx_runlock(&erts_trace_session_list_lock);
+            erts_factory_undo(&factory);
+            p->fvalue = am_badopt;
+            BIF_ERROR(p, BADARG | EXF_HAS_EXT_INFO);
+        }
+        if (on) {
+            Eterm weak_ref;
+            hp = erts_produce_heap(&factory, ERTS_TRACE_SESSION_WEAK_REF_SZ + 2, 30);
+            weak_ref = erts_make_trace_session_weak_ref(s, &hp);
+            list = CONS(hp, weak_ref, list);
+        }
+    }
+    erts_rwmtx_runlock(&erts_trace_session_list_lock);
+
+    hp = erts_produce_heap(&factory, 3, 0);
+    ret = TUPLE2(hp, am_session, list);
+    erts_factory_close(&factory);
+    return ret;
+}
+
+static Eterm
+trace_info_event(Process* p, ErtsTraceSession* session, Eterm event, Eterm key)
+{
+    ErtsTracingEvent* te;
+    Eterm retval;
+    Eterm* hp;
+
+    switch (event) {
+    case am_send: te = session->send_tracing;    break;
+    case am_receive: te = session->receive_tracing; break;
+    default:
+        goto error;
+    }
+
+    if (key != am_match_spec)
+        goto error;
+
+    te = &te[erts_active_bp_ix()];
+
+    if (te->on) {
+        if (!te->match_spec)
+            retval = am_true;
+        else
+            retval = copy_object(MatchSetGetSource(te->match_spec), p);
+    }
+    else
+        retval = am_false;
+
+    hp = HAlloc(p, 3);
+    return TUPLE2(hp, key, retval);
+
+ error:
+    BIF_ERROR(p, BADARG);
+}
+
+static Eterm
+trace_info_system(Process* p, ErtsTraceSession* session)
+{
+    Eterm *hp;
+    Eterm list;
+
+    list = system_monitor_make_list(p, session, &hp, 3);
+    return TUPLE2(hp, am_system, list);
+}
+
 #undef FUNC_TRACE_NOEXIST
 #undef FUNC_TRACE_UNTRACED
 #undef FUNC_TRACE_GLOBAL_TRACE
 #undef FUNC_TRACE_LOCAL_TRACE
 
+void change_on_load_trace_pattern(ErtsTraceSession *s,
+                                  enum erts_break_op on,
+                                  struct trace_pattern_flags flags,
+                                  Binary* match_prog_set,
+                                  ErtsTracer meta_tracer)
+{
+    if (flags.local || (! flags.breakpoint)) {
+        MatchSetUnref(s->on_load_match_spec);
+        s->on_load_match_spec = match_prog_set;
+        MatchSetRef(s->on_load_match_spec);
+    }
+    if (flags.meta) {
+        MatchSetUnref(s->on_load_meta_match_spec);
+        s->on_load_meta_match_spec = match_prog_set;
+        MatchSetRef(s->on_load_meta_match_spec);
+        erts_tracer_update(&s->on_load_meta_tracer, meta_tracer);
+    } else if (! flags.breakpoint) {
+        MatchSetUnref(s->on_load_meta_match_spec);
+        s->on_load_meta_match_spec = NULL;
+        ERTS_TRACER_CLEAR(&s->on_load_meta_tracer);
+    }
+    if (s->on_load_trace_pattern_flags.breakpoint &&
+        flags.breakpoint) {
+        /* Breakpoint trace -> breakpoint trace */
+        ASSERT(s->on_load_trace_pattern_is_on);
+        if (on) {
+            s->on_load_trace_pattern_flags.local
+                |= flags.local;
+            s->on_load_trace_pattern_flags.meta
+                |= flags.meta;
+            s->on_load_trace_pattern_flags.call_count
+                |= (on == 1) ? flags.call_count : 0;
+            s->on_load_trace_pattern_flags.call_time
+                |= (on == 1) ? flags.call_time : 0;
+            s->on_load_trace_pattern_flags.call_memory
+                |= (on == 1) ? flags.call_memory : 0;
+        } else {
+            s->on_load_trace_pattern_flags.local
+                &= ~flags.local;
+            s->on_load_trace_pattern_flags.meta
+                &= ~flags.meta;
+            s->on_load_trace_pattern_flags.call_count
+                &= ~flags.call_count;
+            s->on_load_trace_pattern_flags.call_time
+                &= ~flags.call_time;
+            s->on_load_trace_pattern_flags.call_memory
+                &= ~flags.call_memory;
+            if (! (s->on_load_trace_pattern_flags.breakpoint =
+                   s->on_load_trace_pattern_flags.local |
+                   s->on_load_trace_pattern_flags.meta |
+                   s->on_load_trace_pattern_flags.call_count |
+                   s->on_load_trace_pattern_flags.call_time |
+                   s->on_load_trace_pattern_flags.call_memory)) {
+                s->on_load_trace_pattern_is_on = !!on; /* i.e off */
+            }
+        }
+    } else if (! s->on_load_trace_pattern_flags.breakpoint &&
+               ! flags.breakpoint) {
+        /* Global call trace -> global call trace */
+        s->on_load_trace_pattern_is_on = !!on;
+    } else if (s->on_load_trace_pattern_flags.breakpoint &&
+               ! flags.breakpoint) {
+        /* Breakpoint trace -> global call trace */
+        if (on) {
+            s->on_load_trace_pattern_flags = flags; /* Struct copy */
+            s->on_load_trace_pattern_is_on = !!on;
+        }
+    } else {
+        ASSERT(! s->on_load_trace_pattern_flags.breakpoint &&
+               flags.breakpoint);
+        /* Global call trace -> breakpoint trace */
+        if (on) {
+            if (on != 1) {
+                flags.call_count = 0;
+                flags.call_time  = 0;
+                flags.call_memory  = 0;
+            }
+            flags.breakpoint = flags.local | flags.meta | flags.call_count |
+                flags.call_time| flags.call_memory;
+            s->on_load_trace_pattern_flags = flags; /* Struct copy */
+            s->on_load_trace_pattern_is_on = !!flags.breakpoint;
+        }
+    }
+}
+
+static void clear_on_load_trace_pattern(ErtsTraceSession *s)
+{
+    s->on_load_trace_pattern_is_on = 0;
+    s->on_load_trace_pattern_flags = erts_trace_pattern_flags_off;
+    MatchSetUnref(s->on_load_match_spec);
+    s->on_load_match_spec = NULL;
+    MatchSetUnref(s->on_load_meta_match_spec);
+    s->on_load_meta_match_spec = NULL;
+    ERTS_TRACER_CLEAR(&s->on_load_meta_tracer);
+}
+
+
 int
-erts_set_trace_pattern(Process*p, Eterm* mfa, int specified,
+erts_set_trace_pattern(ErtsCodeMFA *mfa, int specified,
 		       Binary* match_prog_set, Binary *meta_match_prog_set,
 		       int on, struct trace_pattern_flags flags,
-		       Eterm meta_tracer_pid, int is_blocking)
+		       ErtsTracer meta_tracer, int is_blocking)
 {
     const ErtsCodeIndex code_ix = erts_active_code_ix();
-    int matches = 0;
-    int i;
-    int n;
+    Uint i, n;
+    Uint matches = 0;
     BpFunction* fp;
 
     /*
-     * First work on normal functions (not real BIFs).
+     * First do "local" code breakpoint tracing
      */
+    erts_bp_match_functions(&finish_bp.f, mfa, specified, 0);
 
-    erts_bp_match_export(&finish_bp.e, mfa, specified);
-    fp = finish_bp.e.matching;
-    n = finish_bp.e.matched;
-
-    for (i = 0; i < n; i++) {
-	BeamInstr* pc = fp[i].pc;
-	Export* ep = (Export *)(((char *)(pc-3)) - offsetof(Export, code));
-
-	if (on && !flags.breakpoint) {
-	    /* Turn on global call tracing */
-	    if (ep->addressv[code_ix] != pc) {
-		fp[i].mod->curr.num_traced_exports++;
-#ifdef DEBUG
-		pc[-5] = (BeamInstr) BeamOp(op_i_func_info_IaaI);
-#endif
-		pc[0] = (BeamInstr) BeamOp(op_jump_f);
-		pc[1] = (BeamInstr) ep->addressv[code_ix];
-	    }
-	    erts_set_call_trace_bif(pc, match_prog_set, 0);
-	    if (ep->addressv[code_ix] != pc) {
-		pc[0] = (BeamInstr) BeamOp(op_i_generic_breakpoint);
-	    }
-	} else if (!on && flags.breakpoint) {
-	    /* Turn off breakpoint tracing -- nothing to do here. */
-	} else {
-	    /*
-	     * Turn off global tracing, either explicitly or implicitly
-	     * before turning on breakpoint tracing.
-	     */
-	    erts_clear_call_trace_bif(pc, 0);
-	    if (pc[0] == (BeamInstr) BeamOp(op_i_generic_breakpoint)) {
-		pc[0] = (BeamInstr) BeamOp(op_jump_f);
-	    }
-	}
-    }
-
-    /*
-    ** OK, now for the bif's
-    */
-    for (i = 0; i < BIF_SIZE; ++i) {
-	Export *ep = bif_export[i];
-	int j;
-	
-	if (!ExportIsBuiltIn(ep)) {
-	    continue;
-	}
-	
-	if (bif_table[i].f == bif_table[i].traced) {
-	    /* Trace wrapper same as regular function - untraceable */
-	    continue;
-	}
-	
-	for (j = 0; j < specified && mfa[j] == ep->code[j]; j++) {
-	    /* Empty loop body */
-	}
-	if (j == specified) {
-	    BeamInstr* pc = (BeamInstr *)bif_export[i]->code + 3;
-
-	    if (! flags.breakpoint) { /* Export entry call trace */
-		if (on) {
-		    erts_clear_call_trace_bif(pc, 1);
-		    erts_clear_mtrace_bif(pc);
-		    erts_set_call_trace_bif(pc, match_prog_set, 0);
-		} else { /* off */
-		    erts_clear_call_trace_bif(pc, 0);
-		}
-		matches++;
-	    } else { /* Breakpoint call trace */
-		int m = 0;
-		
-		if (on) {
-		    if (flags.local) {
-			erts_clear_call_trace_bif(pc, 0);
-			erts_set_call_trace_bif(pc, match_prog_set, 1);
-			m = 1;
-		    }
-		    if (flags.meta) {
-			erts_set_mtrace_bif(pc, meta_match_prog_set,
-					    meta_tracer_pid);
-			m = 1;
-		    }
-		    if (flags.call_time) {
-			erts_set_time_trace_bif(pc, on);
-			/* I don't want to remove any other tracers */
-			m = 1;
-		    }
-		} else { /* off */
-		    if (flags.local) {
-			erts_clear_call_trace_bif(pc, 1);
-			m = 1;
-		    }
-		    if (flags.meta) {
-			erts_clear_mtrace_bif(pc);
-			m = 1;
-		    }
-		    if (flags.call_time) {
-			erts_clear_time_trace_bif(pc);
-			m = 1;
-		    }
-		}
-		matches += m;
-	    }
-	}
-    }
-
-    /*
-    ** So, now for breakpoint tracing
-    */
-    erts_bp_match_functions(&finish_bp.f, mfa, specified);
     if (on) {
 	if (! flags.breakpoint) {
 	    erts_clear_all_breaks(&finish_bp.f);
@@ -1523,13 +2642,16 @@ erts_set_trace_pattern(Process*p, Eterm* mfa, int specified,
 	    }
 	    if (flags.meta) {
 		erts_set_mtrace_break(&finish_bp.f, meta_match_prog_set,
-				      meta_tracer_pid);
+				      meta_tracer);
 	    }
 	    if (flags.call_count) {
 		erts_set_count_break(&finish_bp.f, on);
 	    }
 	    if (flags.call_time) {
 		erts_set_time_break(&finish_bp.f, on);
+	    }
+            if (flags.call_memory) {
+		erts_set_memory_break(&finish_bp.f, on);
 	    }
 	}
     } else {
@@ -1545,23 +2667,66 @@ erts_set_trace_pattern(Process*p, Eterm* mfa, int specified,
 	if (flags.call_time) {
 	    erts_clear_time_break(&finish_bp.f);
 	}
+        if (flags.call_memory) {
+	    erts_clear_memory_break(&finish_bp.f);
+	}
+    }
+
+    /*
+     * Do export entries *after* module code, when breakpoints have been set
+     * and Export.is_bif_traced can be updated accordingly.
+     */
+    erts_bp_match_export(&finish_bp.e, mfa, specified);
+
+    fp = finish_bp.e.matching;
+    n = finish_bp.e.matched;
+
+    for (i = 0; i < n; i++) {
+        ErtsCodeInfo *ci_rw;
+        Export* ep;
+
+        /* Export entries are always writable, discard const. */
+        ci_rw = (ErtsCodeInfo *)fp[i].code_info;
+        ep = ErtsContainerStruct(ci_rw, Export, info);
+
+        if (on && !flags.breakpoint) {
+            /* Turn on global call tracing */
+            if (!erts_is_export_trampoline_active(ep, code_ix)) {
+                fp[i].mod->curr.num_traced_exports++;
+#if defined(DEBUG) && !defined(BEAMASM)
+                ep->info.u.op = BeamOpCodeAddr(op_i_func_info_IaaI);
+#endif
+                ep->trampoline.breakpoint.op = BeamOpCodeAddr(op_i_generic_breakpoint);
+                ep->trampoline.breakpoint.address =
+                    (BeamInstr) ep->dispatch.addresses[code_ix];
+            }
+            erts_set_export_trace(ep, match_prog_set);
+
+        } else if (!on && flags.breakpoint) {
+            /* Turn off breakpoint tracing -- nothing to do here. */
+        } else {
+            /*
+             * Turn off global tracing, either explicitly or implicitly
+             * before turning on breakpoint tracing.
+             */
+            erts_clear_export_trace(ci_rw);
+        }
+
+        ep->is_bif_traced = erts_export_is_bif_traced(ep);
     }
 
     finish_bp.current = 0;
     finish_bp.install = on;
     finish_bp.local = flags.breakpoint;
+    finish_bp.global = !flags.breakpoint;
 
-#ifdef ERTS_SMP
     if (is_blocking) {
-	ERTS_SMP_LC_ASSERT(erts_smp_thr_progress_is_blocking());
-#endif
+	ERTS_LC_ASSERT(erts_thr_progress_is_blocking());
 	while (erts_finish_breakpointing()) {
 	    /* Empty loop body */
 	}
-#ifdef ERTS_SMP
 	finish_bp.current = -1;
     }
-#endif
 
     if (flags.breakpoint) {
 	matches += finish_bp.f.matched;
@@ -1571,16 +2736,118 @@ erts_set_trace_pattern(Process*p, Eterm* mfa, int specified,
     return matches;
 }
 
+static void
+prepare_clear_all_trace_pattern(ErtsTraceSession* session)
+{
+    Uint i, n;
+    BpFunction* fp;
+
+    ERTS_LC_ASSERT(erts_has_code_mod_permission());
+
+    /*
+     * Clear all breakpoints in export entries for session
+     */
+    erts_bp_match_export(&finish_bp.e, NULL, 0);
+
+    fp = finish_bp.e.matching;
+    n = finish_bp.e.matched;
+
+    for (i = 0; i < n; i++) {
+        ErtsCodeInfo *ci_rw;
+
+        /* Export entries are always writable, discard const. */
+        ci_rw = (ErtsCodeInfo *)fp[i].code_info;
+
+        erts_clear_export_trace(ci_rw);
+    }
+
+    /*
+     * Clear all breakpoints in code for session
+     */
+    erts_bp_match_functions(&finish_bp.f, NULL, 0, 0);
+    erts_clear_all_breaks(&finish_bp.f);
+
+    clear_event_trace(erts_staging_trace_session->send_tracing);
+    clear_event_trace(erts_staging_trace_session->receive_tracing);
+
+    finish_bp.current = 0;
+    finish_bp.install = 0;
+    finish_bp.local = 1;
+    finish_bp.global = 1;
+}
+
+static void clear_event_trace(ErtsTracingEvent *et)
+{
+    const ErtsBpIndex ix = erts_staging_bp_ix();
+
+    MatchSetUnref(et[ix].match_spec);
+    et[ix].match_spec = NULL;
+    et[ix].on = 0;
+}
+
+static void set_event_trace(ErtsTracingEvent *et, Binary* match_spec)
+{
+    const ErtsBpIndex ix = erts_staging_bp_ix();
+
+    MatchSetUnref(et[ix].match_spec);
+    et[ix].match_spec = match_spec;
+    et[ix].on = 1;
+    MatchSetRef(match_spec);
+}
+
+
+static int
+stage_trace_event_pattern(Eterm event, Binary* match_spec, int on)
+{
+    ErtsTracingEvent* et;
+
+    switch (event) {
+    case am_send: et = erts_staging_trace_session->send_tracing; break;
+    case am_receive: et = erts_staging_trace_session->receive_tracing; break;
+    default: return -1;
+    }
+
+    if (on) {
+        set_event_trace(et, match_spec);
+    }
+    else {
+        clear_event_trace(et);
+    }
+
+    finish_bp.current = 0;
+    finish_bp.install = on;
+    finish_bp.local = 0;
+    finish_bp.global = 0;
+    finish_bp.e.matched = 0;
+    finish_bp.e.matching = NULL;
+    finish_bp.f.matched = 0;
+    finish_bp.f.matching = NULL;
+
+    return 1;
+}
+
+static void
+consolidate_event_tracing(ErtsTracingEvent te[])
+{
+    ErtsTracingEvent* src = &te[erts_active_bp_ix()];
+    ErtsTracingEvent* dst = &te[erts_staging_bp_ix()];
+
+    MatchSetUnref(dst->match_spec);
+    dst->on = src->on;
+    dst->match_spec = src->match_spec;
+    MatchSetRef(dst->match_spec);
+}
+
 int
 erts_finish_breakpointing(void)
 {
-    ERTS_SMP_LC_ASSERT(erts_has_code_write_permission());
+    ERTS_LC_ASSERT(erts_has_code_mod_permission());
 
     /*
-     * Memory barriers will be issued for all processes *before*
-     * each of the stages below. (Unless the other schedulers
-     * are blocked, in which case memory barriers will be issued
-     * when they are awaken.)
+     * Memory and instruction barriers will be issued for all schedulers
+     * *before* each of the stages below. (Unless the other schedulers
+     * are blocked, in which case memory barriers will be issued when
+     * they are awakened.)
      */
     switch (finish_bp.current++) {
     case 0:
@@ -1595,13 +2862,19 @@ erts_finish_breakpointing(void)
 	 */
 	if (finish_bp.install) {
 	    if (finish_bp.local) {
+                ASSERT(!finish_bp.global);
 		erts_install_breakpoints(&finish_bp.f);
-	    } else {
-		install_exp_breakpoints(&finish_bp.e);
+                return 1;
 	    }
+            if (finish_bp.global) {
+                install_exp_breakpoints(&finish_bp.e);
+                return 1;
+	    }
+            /* Neither local or global set for event tracing */
 	}
-	setup_bif_trace();
-	return 1;
+        /* Nothing to do here. Continue to next stage. */
+        finish_bp.current++;
+        ERTS_FALLTHROUGH();
     case 1:
 	/*
 	 * Switch index for the breakpoint data, activating the staged
@@ -1618,19 +2891,27 @@ erts_finish_breakpointing(void)
 	 */
 	if (finish_bp.install) {
 	    if (finish_bp.local) {
+                ASSERT(!finish_bp.global);
 		uninstall_exp_breakpoints(&finish_bp.e);
-	    } else {
-		erts_uninstall_breakpoints(&finish_bp.f);
 	    }
+            if (finish_bp.global) {
+                erts_uninstall_breakpoints(&finish_bp.f);
+            }
 	} else {
+            /* Both local and global can be set when a session is cleared */
 	    if (finish_bp.local) {
 		erts_uninstall_breakpoints(&finish_bp.f);
-	    } else {
+	    }
+            if (finish_bp.global) {
 		uninstall_exp_breakpoints(&finish_bp.e);
 	    }
 	}
-	reset_bif_trace();
-	return 1;
+        if (finish_bp.local || finish_bp.global) {
+            return 1;
+        }
+        /* Nothing done here. Continue to next stage. */
+        finish_bp.current++;
+        ERTS_FALLTHROUGH();
     case 3:
 	/*
 	 * Now all breakpoints have either been inserted or removed.
@@ -1640,13 +2921,18 @@ erts_finish_breakpointing(void)
 	 * updated).  If any breakpoints have been totally disabled,
 	 * deallocate the GenericBp structs for them.
 	 */
-	erts_consolidate_bif_bp_data();
 	clean_export_entries(&finish_bp.e);
-	erts_consolidate_bp_data(&finish_bp.e, 0);
-	erts_consolidate_bp_data(&finish_bp.f, 1);
+        erts_consolidate_all_bp_data(&finish_bp.f, &finish_bp.e);
 	erts_bp_free_matched_functions(&finish_bp.e);
 	erts_bp_free_matched_functions(&finish_bp.f);
-	return 0;
+        consolidate_event_tracing(erts_staging_trace_session->send_tracing);
+        consolidate_event_tracing(erts_staging_trace_session->receive_tracing);
+        return 1;
+    case 4:
+        /* All schedulers have run a code barrier (or will as soon as they
+         * awaken) after updating all breakpoints, it's safe to return now. */
+	erts_free_breakpoints();
+        return 0;
     default:
 	ASSERT(0);
     }
@@ -1660,13 +2946,14 @@ install_exp_breakpoints(BpFunctions* f)
     BpFunction* fp = f->matching;
     Uint ne = f->matched;
     Uint i;
-    Uint offset = offsetof(Export, code) + 3*sizeof(BeamInstr);
 
     for (i = 0; i < ne; i++) {
-	BeamInstr* pc = fp[i].pc;
-	Export* ep = (Export *) (((char *)pc)-offset);
+        /* Export entries are always writable, discard const. */
+        ErtsCodeInfo *ci_rw = (ErtsCodeInfo*)fp[i].code_info;
+        Export* ep = ErtsContainerStruct(ci_rw, Export, info);
+        erts_activate_export_trampoline(ep, code_ix);
 
-	ep->addressv[code_ix] = pc;
+	erts_install_additional_session_bp(ci_rw);
     }
 }
 
@@ -1677,17 +2964,19 @@ uninstall_exp_breakpoints(BpFunctions* f)
     BpFunction* fp = f->matching;
     Uint ne = f->matched;
     Uint i;
-    Uint offset = offsetof(Export, code) + 3*sizeof(BeamInstr);
 
     for (i = 0; i < ne; i++) {
-	BeamInstr* pc = fp[i].pc;
-	Export* ep = (Export *) (((char *)pc)-offset);
+        /* Export entries are always writable, discard const. */
+        ErtsCodeInfo *ci_rw = (ErtsCodeInfo*)fp[i].code_info;
+        Export* ep = ErtsContainerStruct(ci_rw, Export, info);
 
-	if (ep->addressv[code_ix] != pc) {
-	    continue;
-	}
-	ASSERT(*pc == (BeamInstr) BeamOp(op_jump_f));
-	ep->addressv[code_ix] = (BeamInstr *) ep->code[4];
+        if (erts_is_export_trampoline_active(ep, code_ix)
+            && erts_sum_all_session_flags(ci_rw) == 0) {
+
+            ASSERT(BeamIsOpCode(ep->trampoline.common.op, op_i_generic_breakpoint));
+            ep->dispatch.addresses[code_ix] =
+                (ErtsCodePtr)ep->trampoline.breakpoint.address;
+        }
     }
 }
 
@@ -1698,55 +2987,20 @@ clean_export_entries(BpFunctions* f)
     BpFunction* fp = f->matching;
     Uint ne = f->matched;
     Uint i;
-    Uint offset = offsetof(Export, code) + 3*sizeof(BeamInstr);
 
     for (i = 0; i < ne; i++) {
-	BeamInstr* pc = fp[i].pc;
-	Export* ep = (Export *) (((char *)pc)-offset);
+        /* Export entries are always writable, discard const. */
+        ErtsCodeInfo *ci_rw = (ErtsCodeInfo*)fp[i].code_info;
+        Export* ep = ErtsContainerStruct(ci_rw, Export, info);
 
-	if (ep->addressv[code_ix] == pc) {
-	    continue;
-	}
-	if (*pc == (BeamInstr) BeamOp(op_jump_f)) {
-	    ep->code[3] = (BeamInstr) 0;
-	    ep->code[4] = (BeamInstr) 0;
-	}
-    }
-}
+        if (erts_is_export_trampoline_active(ep, code_ix)) {
+            continue;
+        }
 
-static void
-setup_bif_trace(void)
-{
-    int i;
-
-    for (i = 0; i < BIF_SIZE; ++i) {
-	Export *ep = bif_export[i];
-	GenericBp* g = (GenericBp *) ep->fake_op_func_info_for_hipe[1];
-	if (g) {
-	    if (ExportIsBuiltIn(ep)) {
-		ASSERT(ep->code[4]);
-		ep->code[4] = (BeamInstr) bif_table[i].traced;
-	    }
-	}
-    }
-}
-
-static void
-reset_bif_trace(void)
-{
-    int i;
-    ErtsBpIndex active = erts_active_bp_ix();
-
-    for (i = 0; i < BIF_SIZE; ++i) {
-	Export *ep = bif_export[i];
-	BeamInstr* pc = ep->code+3;
-	GenericBp* g = (GenericBp *) pc[-4];
-	if (g && g->data[active].flags == 0) {
-	    if (ExportIsBuiltIn(ep)) {
-		ASSERT(ep->code[4]);
-		ep->code[4] = (BeamInstr) bif_table[i].f;
-	    }
-	}
+        if (BeamIsOpCode(ep->trampoline.common.op, op_i_generic_breakpoint)) {
+            ep->trampoline.breakpoint.op = (BeamInstr) 0;
+            ep->trampoline.breakpoint.address = (BeamInstr) 0;
+        }
     }
 }
 
@@ -1798,14 +3052,18 @@ Eterm erts_seq_trace(Process *p, Eterm arg1, Eterm arg2,
     } else if (arg1 == am_print) {
 	current_flag = SEQ_TRACE_PRINT; 
     } else if (arg1 == am_timestamp) {
-	current_flag = SEQ_TRACE_TIMESTAMP; 
+	current_flag = SEQ_TRACE_NOW_TS; 
+    } else if (arg1 == am_strict_monotonic_timestamp) {
+	current_flag = SEQ_TRACE_STRICT_MON_TS; 
+    } else if (arg1 == am_monotonic_timestamp) {
+	current_flag = SEQ_TRACE_MON_TS; 
     }
     else
 	current_flag = 0;
 
     if (current_flag && ( (arg2 == am_true) || (arg2 == am_false)) ) {
 	/* Flags */
-        new_seq_trace_token(p);
+        new_seq_trace_token(p, 0);
         flags = unsigned_val(SEQ_TRACE_TOKEN_FLAGS(p));
 	if (build_result) {
 	    old_value = flags & current_flag ? am_true : am_false;
@@ -1820,14 +3078,11 @@ Eterm erts_seq_trace(Process *p, Eterm arg1, Eterm arg2,
 	return old_value;
     }
     else if (arg1 == am_label) {
-	if (! is_small(arg2)) {
-	    return THE_NON_VALUE;
-	}
-        new_seq_trace_token(p);
+        new_seq_trace_token(p, is_not_immed(arg2));
 	if (build_result) {
 	    old_value = SEQ_TRACE_TOKEN_LABEL(p);
 	}
-	SEQ_TRACE_TOKEN_LABEL(p) = arg2;
+        SEQ_TRACE_TOKEN_LABEL(p) = arg2;
     	return old_value;
     }
     else if (arg1 == am_serial) {
@@ -1839,7 +3094,7 @@ Eterm erts_seq_trace(Process *p, Eterm arg1, Eterm arg2,
 	if ((*tp != make_arityval(2)) || is_not_small(*(tp+1)) || is_not_small(*(tp+2))) {
 	    return THE_NON_VALUE;
         }
-        new_seq_trace_token(p);
+        new_seq_trace_token(p, 0);
 	if (build_result) {
 	    hp = HAlloc(p,3);
 	    old_value = TUPLE2(hp, SEQ_TRACE_TOKEN_LASTCNT(p),
@@ -1874,22 +3129,28 @@ Eterm erts_seq_trace(Process *p, Eterm arg1, Eterm arg2,
     }
 }
 
-void
-new_seq_trace_token(Process* p)
+static void
+new_seq_trace_token(Process* p, int ensure_new_heap)
 {
     Eterm* hp;
 
-    if (SEQ_TRACE_TOKEN(p) == NIL
-#ifdef USE_VM_PROBES
-	|| SEQ_TRACE_TOKEN(p) == am_have_dt_utag
-#endif
-	) {
+    if (have_no_seqtrace(SEQ_TRACE_TOKEN(p))) {
 	hp = HAlloc(p, 6);
 	SEQ_TRACE_TOKEN(p) = TUPLE5(hp, make_small(0),		/* Flags  */ 
 				    make_small(0),		/* Label  */
 				    make_small(0),		/* Serial */
 				    p->common.id, /* Internal pid */	/* From   */
 				    make_small(p->seq_trace_lastcnt));
+    }
+    else if (ensure_new_heap) {
+        Eterm* tpl = tuple_val(SEQ_TRACE_TOKEN(p));
+        ASSERT(arityval(tpl[0]) == 5);
+
+        if (!ErtsInBetween(tpl, p->high_water, p->hend)) {
+            hp = HAlloc(p, 6);
+            sys_memcpy(hp, tpl, 6*sizeof(Eterm));
+            SEQ_TRACE_TOKEN(p) = make_tuple(hp);
+        }
     }
 }
 
@@ -1903,13 +3164,12 @@ BIF_RETTYPE erl_seq_trace_info(Process *p, Eterm item)
 	BIF_ERROR(p, BADARG);
     }
 
-    if (SEQ_TRACE_TOKEN(p) == NIL
-#ifdef USE_VM_PROBES
-	|| SEQ_TRACE_TOKEN(p) == am_have_dt_utag
-#endif
-	) {
-	if ((item == am_send) || (item == am_receive) || 
-	    (item == am_print) || (item == am_timestamp)) {
+    if (have_no_seqtrace(SEQ_TRACE_TOKEN(p))) {
+	if ((item == am_send) || (item == am_spawn) ||
+        (item == am_receive) || (item == am_print)
+        || (item == am_timestamp)
+	    || (item == am_monotonic_timestamp)
+	    || (item == am_strict_monotonic_timestamp)) {
 	    hp = HAlloc(p,3);
 	    res = TUPLE2(hp, item, am_false);
 	    BIF_RET(res);
@@ -1927,7 +3187,11 @@ BIF_RETTYPE erl_seq_trace_info(Process *p, Eterm item)
     } else if (item == am_print) {
 	current_flag = SEQ_TRACE_PRINT; 
     } else if (item == am_timestamp) {
-	current_flag = SEQ_TRACE_TIMESTAMP; 
+	current_flag = SEQ_TRACE_NOW_TS; 
+    } else if (item == am_strict_monotonic_timestamp) {
+	current_flag = SEQ_TRACE_STRICT_MON_TS; 
+    } else if (item == am_monotonic_timestamp) {
+	current_flag = SEQ_TRACE_MON_TS; 
     } else {
 	current_flag = 0;
     }
@@ -1964,14 +3228,10 @@ BIF_RETTYPE seq_trace_info_1(BIF_ALIST_1)
  */
 BIF_RETTYPE seq_trace_print_1(BIF_ALIST_1)    
 {
-    if (SEQ_TRACE_TOKEN(BIF_P) == NIL 
-#ifdef USE_VM_PROBES
-	|| SEQ_TRACE_TOKEN(BIF_P) == am_have_dt_utag
-#endif
-	) {
+    if (have_no_seqtrace(SEQ_TRACE_TOKEN(BIF_P))) {
 	BIF_RET(am_false);
     }
-    seq_trace_update_send(BIF_P);
+    seq_trace_update_serial(BIF_P);
     seq_trace_output(SEQ_TRACE_TOKEN(BIF_P), BIF_ARG_1, 
 		     SEQ_TRACE_PRINT, NIL, BIF_P);
     BIF_RET(am_true);
@@ -1987,202 +3247,458 @@ BIF_RETTYPE seq_trace_print_1(BIF_ALIST_1)
  */
 BIF_RETTYPE seq_trace_print_2(BIF_ALIST_2)    
 {
-    if (SEQ_TRACE_TOKEN(BIF_P) == NIL
-#ifdef USE_VM_PROBES
-	|| SEQ_TRACE_TOKEN(BIF_P) == am_have_dt_utag
-#endif
-	) {
+    if (have_no_seqtrace(SEQ_TRACE_TOKEN(BIF_P))) {
 	BIF_RET(am_false);
     }
-    if (!(is_atom(BIF_ARG_1) || is_small(BIF_ARG_1))) {
-	BIF_ERROR(BIF_P, BADARG);
-    }
-    if (SEQ_TRACE_TOKEN_LABEL(BIF_P) != BIF_ARG_1)
+    if (!EQ(BIF_ARG_1, SEQ_TRACE_TOKEN_LABEL(BIF_P)))
 	BIF_RET(am_false);
-    seq_trace_update_send(BIF_P);
+    seq_trace_update_serial(BIF_P);
     seq_trace_output(SEQ_TRACE_TOKEN(BIF_P), BIF_ARG_2, 
 		     SEQ_TRACE_PRINT, NIL, BIF_P);
     BIF_RET(am_true);
 }
 
-void erts_system_monitor_clear(Process *c_p) {
-#ifdef ERTS_SMP
-    if (c_p) {
-	erts_smp_proc_unlock(c_p, ERTS_PROC_LOCK_MAIN);
-	erts_smp_thr_progress_block();
+void erts_system_monitor_clear(ErtsTraceSession *session)
+{
+    struct system_monitor_session prev = session->system_monitor;
+
+    erts_set_system_monitor(session, NIL);
+    for (int i = 0; i < ERTS_SYSMON_LIMIT_CNT; i++) {
+        session->system_monitor.limits[i] = 0;
     }
-#endif
-    erts_set_system_monitor(NIL);
-    erts_system_monitor_long_gc = 0;
-    erts_system_monitor_long_schedule = 0;
-    erts_system_monitor_large_heap = 0;
-    erts_system_monitor_flags.busy_port = 0;
-    erts_system_monitor_flags.busy_dist_port = 0;
-#ifdef ERTS_SMP
-    if (c_p) {
-	erts_smp_thr_progress_unblock();
-	erts_smp_proc_lock(c_p, ERTS_PROC_LOCK_MAIN);
-    }
-#endif
+    session->system_monitor.flags.busy_port = false;
+    session->system_monitor.flags.busy_dist_port = false;
+    session->system_monitor.long_msgq_off = -1;
+
+    update_sysmon_globals(session, &prev);
 }
 
-
-static Eterm system_monitor_get(Process *p)
+static Eterm system_monitor_get(ErtsTraceSession *session, Process *p)
 {
     Eterm *hp;
-    Eterm system_monitor = erts_get_system_monitor();
+    Eterm res;
+    Eterm system_monitor = erts_get_system_monitor(session);
     
     if (system_monitor == NIL) {
 	return am_undefined;
-    } else {
-	Eterm res;
-	Uint hsz = 3 + (erts_system_monitor_flags.busy_dist_port ? 2 : 0) +
-	    (erts_system_monitor_flags.busy_port ? 2 : 0); 
-	Eterm long_gc = NIL;
-	Eterm long_schedule = NIL;
-	Eterm large_heap = NIL;
+    }
 
-	if (erts_system_monitor_long_gc != 0) {
-	    hsz += 2+3;
-	    (void) erts_bld_uint(NULL, &hsz, erts_system_monitor_long_gc);
-	}
-	if (erts_system_monitor_long_schedule != 0) {
-	    hsz += 2+3;
-	    (void) erts_bld_uint(NULL, &hsz, erts_system_monitor_long_schedule);
-	}
-	if (erts_system_monitor_large_heap != 0) {
-	    hsz += 2+3;
-	    (void) erts_bld_uint(NULL, &hsz, erts_system_monitor_large_heap);
-	}
+    res = system_monitor_make_list(p, session, &hp, 3);
 
-	hp = HAlloc(p, hsz);
-	if (erts_system_monitor_long_gc != 0) {
-	    long_gc = erts_bld_uint(&hp, NULL, erts_system_monitor_long_gc);
-	}
-	if (erts_system_monitor_long_schedule != 0) {
-	    long_schedule = erts_bld_uint(&hp, NULL, 
-					  erts_system_monitor_long_schedule);
-	}
-	if (erts_system_monitor_large_heap != 0) {
-	    large_heap = erts_bld_uint(&hp, NULL, erts_system_monitor_large_heap);
-	}
-	res = NIL;
-	if (long_gc != NIL) {
-	    Eterm t = TUPLE2(hp, am_long_gc, long_gc); hp += 3;
-	    res = CONS(hp, t, res); hp += 2;
-	}
-	if (long_schedule != NIL) {
-	    Eterm t = TUPLE2(hp, am_long_schedule, long_schedule); hp += 3;
-	    res = CONS(hp, t, res); hp += 2;
-	}
-	if (large_heap != NIL) {
-	    Eterm t = TUPLE2(hp, am_large_heap, large_heap); hp += 3;
-	    res = CONS(hp, t, res); hp += 2;
-	}
-	if (erts_system_monitor_flags.busy_port) {
-	    res = CONS(hp, am_busy_port, res); hp += 2;
-	}
-	if (erts_system_monitor_flags.busy_dist_port) {
-	    res = CONS(hp, am_busy_dist_port, res); hp += 2;
-	}
-	return TUPLE2(hp, system_monitor, res);
+    return TUPLE2(hp, system_monitor, res);
+}
+
+static Eterm system_monitor_make_list(Process *p, ErtsTraceSession *session,
+                                      Eterm** hpp, Uint extra)
+{
+    Uint hsz = ((session->system_monitor.flags.busy_dist_port ? 2 : 0) +
+                (session->system_monitor.flags.busy_port ? 2 : 0));
+    Eterm long_gc = NIL;
+    Eterm long_schedule = NIL;
+    Eterm large_heap = NIL;
+    Eterm long_msgq_off = NIL;
+    Eterm long_msgq_on = NIL;
+    Eterm res;
+    Eterm *hp;
+#ifdef DEBUG
+    Eterm *hp_end;
+#endif
+
+    if (session->system_monitor.long_msgq_off >= 0) {
+        ASSERT(session->system_monitor.limits[ERTS_SYSMON_LONG_MSGQ]
+               > (Uint)session->system_monitor.long_msgq_off);
+        hsz += 2+3+3;
+        (void) erts_bld_uint(NULL, &hsz,
+                             (Uint) session->system_monitor.long_msgq_off);
+        (void) erts_bld_uint(NULL, &hsz,
+                             session->system_monitor.limits[ERTS_SYSMON_LONG_MSGQ]);
+    }
+    if (session->system_monitor.limits[ERTS_SYSMON_LONG_GC] != 0) {
+        hsz += 2+3;
+        erts_bld_uint(NULL, &hsz, session->system_monitor.limits[ERTS_SYSMON_LONG_GC]);
+    }
+    if (session->system_monitor.limits[ERTS_SYSMON_LONG_SCHEDULE] != 0) {
+        hsz += 2+3;
+        erts_bld_uint(NULL, &hsz, session->system_monitor.limits[ERTS_SYSMON_LONG_SCHEDULE]);
+    }
+    if (session->system_monitor.limits[ERTS_SYSMON_LARGE_HEAP] != 0) {
+        hsz += 2+3;
+        erts_bld_uint(NULL, &hsz, session->system_monitor.limits[ERTS_SYSMON_LARGE_HEAP]);
+    }
+
+    hp = HAlloc(p, hsz + extra);
+#ifdef DEBUG
+    hp_end = hp + hsz;
+#endif
+    if (session->system_monitor.long_msgq_off >= 0) {
+        long_msgq_off = erts_bld_uint(&hp, NULL,
+                                      session->system_monitor.long_msgq_off);
+        long_msgq_on =  erts_bld_uint(&hp, NULL,
+                                      session->system_monitor.limits[ERTS_SYSMON_LONG_MSGQ]);
+    }
+    if (session->system_monitor.limits[ERTS_SYSMON_LONG_GC] != 0) {
+        long_gc = erts_bld_uint(&hp, NULL, session->system_monitor.limits[ERTS_SYSMON_LONG_GC]);
+    }
+    if (session->system_monitor.limits[ERTS_SYSMON_LONG_SCHEDULE] != 0) {
+        long_schedule = erts_bld_uint(&hp, NULL, session->system_monitor.limits[ERTS_SYSMON_LONG_SCHEDULE]);
+    }
+    if (session->system_monitor.limits[ERTS_SYSMON_LARGE_HEAP] != 0) {
+        large_heap = erts_bld_uint(&hp, NULL, session->system_monitor.limits[ERTS_SYSMON_LARGE_HEAP]);
+    }
+    res = NIL;
+    if (long_msgq_off != NIL) {
+        Eterm t;
+        ASSERT(long_msgq_on != NIL);
+        t = TUPLE2(hp, long_msgq_off, long_msgq_on); hp += 3;
+        t = TUPLE2(hp, am_long_message_queue, t); hp += 3;
+        res = CONS(hp, t, res); hp += 2;
+    }
+    if (long_gc != NIL) {
+        Eterm t = TUPLE2(hp, am_long_gc, long_gc); hp += 3;
+        res = CONS(hp, t, res); hp += 2;
+    }
+    if (long_schedule != NIL) {
+        Eterm t = TUPLE2(hp, am_long_schedule, long_schedule); hp += 3;
+        res = CONS(hp, t, res); hp += 2;
+    }
+    if (large_heap != NIL) {
+        Eterm t = TUPLE2(hp, am_large_heap, large_heap); hp += 3;
+        res = CONS(hp, t, res); hp += 2;
+    }
+    if (session->system_monitor.flags.busy_port) {
+        res = CONS(hp, am_busy_port, res); hp += 2;
+    }
+    if (session->system_monitor.flags.busy_dist_port) {
+        res = CONS(hp, am_busy_dist_port, res); hp += 2;
+    }
+    ASSERT(hp == hp_end);
+    *hpp = hp;
+    return res;
+}
+
+
+/*
+ * Backend for erlang:system_monitor/0
+ * but also called directly by tests with undocumented tracer-less sesssions.
+*/
+BIF_RETTYPE erts_internal_system_monitor_1(BIF_ALIST_1)
+{
+    ErtsTraceSession *session;
+    Eterm res;
+
+    if (BIF_ARG_1 == am_legacy) {
+        session = &erts_trace_session_0;
+    }
+    else if (!term_to_session(BIF_ARG_1, &session, false)) {
+        BIF_ERROR(BIF_P, BADARG);
+    }
+    res = system_monitor_get(session, BIF_P);
+    erts_deref_trace_session(session);
+    BIF_RET(res);
+}
+
+/*
+ * Backend for erlang:system_monitor/1,2
+ * and trace:system/3
+ * but also called directly by tests with undocumented tracer-less sesssions.
+*/
+BIF_RETTYPE erts_internal_system_monitor_3(BIF_ALIST_3)
+{
+    ErtsTraceSession *session;
+    Eterm res;
+
+    if (BIF_ARG_1 == am_legacy) {
+        session = &erts_trace_session_0;
+    }
+    else if (!term_to_session(BIF_ARG_1, &session, false)) {
+        BIF_ERROR(BIF_P, BADARG);
+    }
+
+    res = system_monitor(BIF_P, session, BIF_ARG_2, BIF_ARG_3);
+
+    erts_deref_trace_session(session);
+    return res;
+}
+
+static Sint calc_sysmon_global_msgq_off_max(void)
+{
+    Sint max_limit = -1;
+
+    erts_rwmtx_rlock(&erts_trace_session_list_lock);
+    for (ErtsTraceSession *s = &erts_trace_session_0; s; s = s->next) {
+        if (s->system_monitor.long_msgq_off > max_limit) {
+            max_limit = s->system_monitor.long_msgq_off;
+        }
+    }
+    erts_rwmtx_runlock(&erts_trace_session_list_lock);
+    return max_limit;
+}
+
+static Uint calc_sysmon_global_limit(Uint limit_ix)
+{
+    ErtsTraceSession *s;
+    Uint min_limit = 0;
+
+    erts_rwmtx_rlock(&erts_trace_session_list_lock);
+    for (s = &erts_trace_session_0; s; s = s->next) {
+        if (s->system_monitor.limits[limit_ix]-1 < min_limit-1) {
+            min_limit = s->system_monitor.limits[limit_ix];
+        }
+    }
+    erts_rwmtx_runlock(&erts_trace_session_list_lock);
+    return min_limit;
+}
+
+static void
+set_sysmon_global_limit(Uint *global_limit, ErtsTraceSession *session,
+                        Uint limit_ix)
+{
+    const Uint new_limit = session->system_monitor.limits[limit_ix];
+
+    ASSERT(limit_ix < ERTS_SYSMON_LIMIT_CNT);
+
+    /* Trick: Do -1 with underflow to compare 0 (off) as UINT_MAX */
+
+    if (new_limit - 1 < *global_limit - 1) {
+        /* Enable or lower limit */
+        *global_limit = new_limit;
+        ASSERT(*global_limit == calc_sysmon_global_limit(limit_ix));
+    }
+    else if (new_limit != *global_limit) {
+        *global_limit = calc_sysmon_global_limit(limit_ix);
+    }
+    else {
+        ASSERT(*global_limit == calc_sysmon_global_limit(limit_ix));
     }
 }
 
-
-BIF_RETTYPE system_monitor_0(BIF_ALIST_0)
+static void set_sysmon_global_enabled_cnt(bool was_enabled, bool is_enabled,
+                                          Sint *counter_p)
 {
-    BIF_RET(system_monitor_get(BIF_P));
-}
-
-BIF_RETTYPE system_monitor_1(BIF_ALIST_1)
-{
-    Process* p = BIF_P;
-    Eterm spec = BIF_ARG_1;
-
-    if (spec == am_undefined) {
-	BIF_RET(system_monitor(p, spec, NIL));
-    } else if (is_tuple(spec)) {
-	Eterm *tp = tuple_val(spec);
-	if (tp[0] != make_arityval(2)) goto error;
-	BIF_RET(system_monitor(p, tp[1], tp[2]));
+    if (was_enabled != is_enabled) {
+        if (is_enabled) {
+            (*counter_p)++;
+        }
+        else {
+            ASSERT(was_enabled);
+            ASSERT(*counter_p > 0);
+            (*counter_p)--;
+        }
     }
- error:
-    BIF_ERROR(p, BADARG);
 }
 
-BIF_RETTYPE system_monitor_2(BIF_ALIST_2)
+static void update_sysmon_globals(ErtsTraceSession *s,
+                                  struct system_monitor_session* prev)
 {
-    return system_monitor(BIF_P, BIF_ARG_1, BIF_ARG_2);
+    ERTS_LC_ASSERT(erts_thr_progress_is_blocking());
+
+    set_sysmon_global_limit(&erts_system_monitor_long_gc, s,
+                            ERTS_SYSMON_LONG_GC);
+    set_sysmon_global_limit(&erts_system_monitor_long_schedule, s,
+                            ERTS_SYSMON_LONG_SCHEDULE);
+    set_sysmon_global_limit(&erts_system_monitor_large_heap, s,
+                            ERTS_SYSMON_LARGE_HEAP);
+    set_sysmon_global_limit(&erts_system_monitor_long_msgq_on, s,
+                            ERTS_SYSMON_LONG_MSGQ);
+
+    if (s->system_monitor.long_msgq_off > erts_system_monitor_long_msgq_off) {
+        erts_system_monitor_long_msgq_off = s->system_monitor.long_msgq_off;
+        ASSERT(erts_system_monitor_long_msgq_off == calc_sysmon_global_msgq_off_max());
+    }
+    else if (s->system_monitor.long_msgq_off != erts_system_monitor_long_msgq_off) {
+        erts_system_monitor_long_msgq_off = calc_sysmon_global_msgq_off_max();
+    }
+    else {
+        ASSERT(erts_system_monitor_long_msgq_off == calc_sysmon_global_msgq_off_max());
+    }
+
+    set_sysmon_global_enabled_cnt(prev->flags.busy_port,
+                                  s->system_monitor.flags.busy_port,
+                                  &erts_system_monitor_busy_port_cnt);
+    set_sysmon_global_enabled_cnt(prev->flags.busy_dist_port,
+                                  s->system_monitor.flags.busy_dist_port,
+                                  &erts_system_monitor_busy_dist_port_cnt);
+#ifdef DEBUG
+    {
+        Sint busy_port_cnt = 0, busy_dist_port_cnt = 0;
+        erts_rwmtx_rlock(&erts_trace_session_list_lock);
+        for (s = &erts_trace_session_0; s; s = s->next) {
+            if (s->system_monitor.flags.busy_port) busy_port_cnt++;
+            if (s->system_monitor.flags.busy_dist_port) busy_dist_port_cnt++;
+        }
+        erts_rwmtx_runlock(&erts_trace_session_list_lock);
+        ASSERT(busy_port_cnt == erts_system_monitor_busy_port_cnt);
+        ASSERT(busy_dist_port_cnt == erts_system_monitor_busy_dist_port_cnt);
+    }
+#endif
 }
+
+static bool term_to_limit(Eterm term, Uint *limit_p, Uint min_limit)
+{
+    if (term == am_false) {
+        *limit_p = 0;
+        return true;
+    }
+    if (term_to_Uint(term, limit_p)) {
+        if (*limit_p < min_limit) *limit_p = min_limit;
+        return true;
+    }
+    return false;
+}
+
+static bool term_to_boolean(Eterm term, bool *bool_p)
+{
+    switch (term) {
+    case am_true: *bool_p = true; return true;
+    case am_false: *bool_p = false; return true;
+    }
+    return false;
+}
+
 
 static BIF_RETTYPE
-system_monitor(Process *p, Eterm monitor_pid, Eterm list)
+system_monitor(Process *p, ErtsTraceSession *session,
+               Eterm monitor_pid, Eterm list)
 {
-    Eterm prev;
-    int system_blocked = 0;
+    Eterm return_term;
+    bool system_blocked = false;
 
-    if (monitor_pid == am_undefined || list == NIL) {
-	prev = system_monitor_get(p);
-	erts_system_monitor_clear(p);
-	BIF_RET(prev);
-    }
-    if (is_not_list(list)) goto error;
+    if (is_not_list(list) && is_not_nil(list)) goto error;
     else {
-	Uint long_gc, long_schedule, large_heap;
-	int busy_port, busy_dist_port;
+        struct system_monitor_session prev;
+        struct system_monitor_session want;
 
-	system_blocked = 1;
-	erts_smp_proc_unlock(p, ERTS_PROC_LOCK_MAIN);
-	erts_smp_thr_progress_block();
+        if (!ERTS_TRACER_IS_NIL(session->tracer)
+            && !is_internal_pid(session->tracer)) {
+            /* ToDo: Should we support ports and NIFs for system_monitor? */
+            goto error;
+        }
 
-	if (!erts_pid2proc(p, ERTS_PROC_LOCK_MAIN, monitor_pid, 0))
-	    goto error;
+	system_blocked = true;
+	erts_proc_unlock(p, ERTS_PROC_LOCK_MAIN);
+	erts_thr_progress_block();
+        erts_proc_lock(p, ERTS_PROC_LOCK_MAIN);        
 
-	for (long_gc = 0, long_schedule = 0, large_heap = 0, 
-		 busy_port = 0, busy_dist_port = 0;
-	     is_list(list);
-	     list = CDR(list_val(list))) {
-	    Eterm t = CAR(list_val(list));
-	    if (is_tuple(t)) {
-		Eterm *tp = tuple_val(t);
-		if (arityval(tp[0]) != 2) goto error;
-		if (tp[1] == am_long_gc) {
-		    if (! term_to_Uint(tp[2], &long_gc)) goto error;
-		    if (long_gc < 1) long_gc = 1;
-		} else if (tp[1] == am_long_schedule) {
-		    if (! term_to_Uint(tp[2], &long_schedule)) goto error;
-		    if (long_schedule < 1) long_schedule = 1;
-		} else if (tp[1] == am_large_heap) {
-		    if (! term_to_Uint(tp[2], &large_heap)) goto error;
-		    if (large_heap < 16384) large_heap = 16384;
-		    /* 16 Kword is not an unnatural heap size */
-		} else goto error;
-	    } else if (t == am_busy_port) {
-		busy_port = !0;
-	    } else if (t == am_busy_dist_port) {
-		busy_dist_port = !0;
-	    } else goto error;
+        prev = session->system_monitor;
+
+        if (ERTS_TRACER_IS_NIL(session->tracer)) {
+            /*
+             * Old erlang:system_monitor API
+             * We use monitor_pid argument
+             * and treat list as the new state (missing items are disabled)
+             */
+            if (monitor_pid == am_undefined || list == NIL) {
+                monitor_pid = NIL;
+                list = NIL;
+            }
+            else if (!erts_pid2proc(p, ERTS_PROC_LOCK_MAIN, monitor_pid, 0))
+                goto error;
+            return_term = system_monitor_get(session, p);
+            want.receiver = monitor_pid;
+            want.limits[ERTS_SYSMON_LONG_GC] = 0;
+            want.limits[ERTS_SYSMON_LONG_SCHEDULE] = 0;
+            want.limits[ERTS_SYSMON_LARGE_HEAP] = 0;
+            want.limits[ERTS_SYSMON_LONG_MSGQ] = 0;
+            want.long_msgq_off = -1;
+            want.flags.busy_port = false;
+            want.flags.busy_dist_port = false;
+        }
+        else {
+            /*
+             * New trace module API
+             * We use session tracer (ignore monitor_pid argument)
+             * and treat list as diff to apply (missing items are unchanged)
+             */
+            if (monitor_pid != am_session) {
+                goto error;
+            }
+            want = prev;
+            want.receiver = session->tracer;
+            return_term = am_ok;
+        }
+
+	for ( ; is_list(list); list = CDR(list_val(list))) {
+            Eterm t = CAR(list_val(list));
+            Eterm *tp;
+            Eterm fake_tuple[3];
+
+            if (!is_tuple_arity(t,2)) {
+                if (is_atom(t)) {
+                    t = TUPLE2(fake_tuple, t, am_true);
+                }
+                else {
+                    goto error;
+                }
+            }
+            tp = tuple_val(t);
+
+            switch (tp[1]) {
+            case am_long_gc:
+                if (!term_to_limit(tp[2], &want.limits[ERTS_SYSMON_LONG_GC], 1)) {
+                    goto error;
+                }
+                break;
+            case am_long_schedule:
+                if (!term_to_limit(tp[2], &want.limits[ERTS_SYSMON_LONG_SCHEDULE], 1)) {
+                    goto error;
+                }
+                break;
+            case am_large_heap:
+                /* 16 Kword is not an unnatural heap size */
+                if (!term_to_limit(tp[2], &want.limits[ERTS_SYSMON_LARGE_HEAP],
+                                   16384)) {
+                    goto error;
+                }
+                break;
+            case am_long_message_queue:
+                if (tp[2] == am_false) {
+                    want.limits[ERTS_SYSMON_LONG_MSGQ] = 0;
+                    want.long_msgq_off = -1;
+                } else if (is_tuple_arity(tp[2], 2)) {
+                    tp = tuple_val(tp[2]);
+                    if (!term_to_Sint(tp[1], &want.long_msgq_off)) goto error;
+                    if (!term_to_limit(tp[2], &want.limits[ERTS_SYSMON_LONG_MSGQ],
+                                       0)) {
+                        goto error;
+                    }
+                    if (want.long_msgq_off < 0
+                        || want.limits[ERTS_SYSMON_LONG_MSGQ] <= 0
+                        || want.long_msgq_off >= want.limits[ERTS_SYSMON_LONG_MSGQ]) {
+                        goto error;
+                    }
+                } else {
+                    goto error;
+                }
+                break;
+            case am_busy_port:
+                if (!term_to_boolean(tp[2], &want.flags.busy_port)) {
+                    goto error;
+                }
+                break;
+            case am_busy_dist_port:
+                if (!term_to_boolean(tp[2], &want.flags.busy_dist_port)) {
+                    goto error;
+                }
+                break;
+            default:
+                goto error;
+            }
 	}
-	if (is_not_nil(list)) goto error;
-	prev = system_monitor_get(p);
-	erts_set_system_monitor(monitor_pid);
-	erts_system_monitor_long_gc = long_gc;
-	erts_system_monitor_long_schedule = long_schedule;
-	erts_system_monitor_large_heap = large_heap;
-	erts_system_monitor_flags.busy_port = !!busy_port;
-	erts_system_monitor_flags.busy_dist_port = !!busy_dist_port;
+	if (is_not_nil(list)) {
+            goto error;
+        }
 
-	erts_smp_thr_progress_unblock();
-	erts_smp_proc_lock(p, ERTS_PROC_LOCK_MAIN);
-	BIF_RET(prev);
+	session->system_monitor = want;
+        update_sysmon_globals(session, &prev);
+
+        erts_thr_progress_unblock();
+	BIF_RET(return_term);
     }
 
  error:
 
     if (system_blocked) {
-	erts_smp_thr_progress_unblock();
-	erts_smp_proc_lock(p, ERTS_PROC_LOCK_MAIN);
+	erts_thr_progress_unblock();
     }
 
     BIF_ERROR(p, BADARG);
@@ -2191,23 +3707,19 @@ system_monitor(Process *p, Eterm monitor_pid, Eterm list)
 /* Begin: Trace for System Profiling */
 
 void erts_system_profile_clear(Process *c_p) {
-#ifdef ERTS_SMP
     if (c_p) {
-	erts_smp_proc_unlock(c_p, ERTS_PROC_LOCK_MAIN);
-	erts_smp_thr_progress_block();
+	erts_proc_unlock(c_p, ERTS_PROC_LOCK_MAIN);
+	erts_thr_progress_block();
     }
-#endif
     erts_set_system_profile(NIL);
     erts_system_profile_flags.scheduler = 0;
     erts_system_profile_flags.runnable_procs = 0;
     erts_system_profile_flags.runnable_ports = 0;
     erts_system_profile_flags.exclusive = 0;
-#ifdef ERTS_SMP
     if (c_p) {
-	erts_smp_thr_progress_unblock();
-	erts_smp_proc_lock(c_p, ERTS_PROC_LOCK_MAIN);
+	erts_thr_progress_unblock();
+	erts_proc_lock(c_p, ERTS_PROC_LOCK_MAIN);
     }
-#endif
 }
 
 static Eterm system_profile_get(Process *p) {
@@ -2237,6 +3749,7 @@ static Eterm system_profile_get(Process *p) {
 	if (erts_system_profile_flags.exclusive) {
 	    res = CONS(hp, am_exclusive, res); hp += 2;
 	}
+
     	return TUPLE2(hp, system_profile, res);
     }
 }
@@ -2255,6 +3768,7 @@ BIF_RETTYPE system_profile_2(BIF_ALIST_2)
     int system_blocked = 0;
     Process *profiler_p = NULL;
     Port *profiler_port = NULL;
+    int ts;
 
     if (profiler == am_undefined || list == NIL) {
 	prev = system_profile_get(p);
@@ -2267,8 +3781,8 @@ BIF_RETTYPE system_profile_2(BIF_ALIST_2)
 	int scheduler, runnable_procs, runnable_ports, exclusive;
 	system_blocked = 1;
 	
-	erts_smp_proc_unlock(p, ERTS_PROC_LOCK_MAIN);
-	erts_smp_thr_progress_block();
+	erts_proc_unlock(p, ERTS_PROC_LOCK_MAIN);
+	erts_thr_progress_block();
 
 	/* Check if valid process, no locks are taken */
 
@@ -2286,7 +3800,8 @@ BIF_RETTYPE system_profile_2(BIF_ALIST_2)
 	    goto error;
 	}
 
-	for (scheduler = 0, runnable_ports = 0, runnable_procs = 0, exclusive = 0;
+	for (ts = ERTS_TRACE_FLG_NOW_TIMESTAMP, scheduler = 0,
+		 runnable_ports = 0, runnable_procs = 0, exclusive = 0;
 	    is_list(list);
 	    list = CDR(list_val(list))) {
 	    
@@ -2299,6 +3814,12 @@ BIF_RETTYPE system_profile_2(BIF_ALIST_2)
 		exclusive = !0;
 	    } else if (t == am_scheduler) {
 		scheduler = !0;
+	    } else if (t == am_timestamp) {
+		ts = ERTS_TRACE_FLG_NOW_TIMESTAMP;
+	    } else if (t == am_strict_monotonic_timestamp) {
+		ts = ERTS_TRACE_FLG_STRICT_MONOTONIC_TIMESTAMP;
+	    } else if (t == am_monotonic_timestamp) {
+		ts = ERTS_TRACE_FLG_MONOTONIC_TIMESTAMP;
 	    } else goto error;
 	}	
 	if (is_not_nil(list)) goto error;
@@ -2311,9 +3832,9 @@ BIF_RETTYPE system_profile_2(BIF_ALIST_2)
 	erts_system_profile_flags.runnable_ports = !!runnable_ports;
 	erts_system_profile_flags.runnable_procs = !!runnable_procs;
 	erts_system_profile_flags.exclusive = !!exclusive;
-
-	erts_smp_thr_progress_unblock();
-	erts_smp_proc_lock(p, ERTS_PROC_LOCK_MAIN);
+	erts_system_profile_ts_type = ts;
+	erts_thr_progress_unblock();
+	erts_proc_lock(p, ERTS_PROC_LOCK_MAIN);
 	
 	BIF_RET(prev);
 		
@@ -2321,58 +3842,84 @@ BIF_RETTYPE system_profile_2(BIF_ALIST_2)
 
     error:
 	if (system_blocked) {
-	    erts_smp_thr_progress_unblock();
-	    erts_smp_proc_lock(p, ERTS_PROC_LOCK_MAIN);
+	    erts_thr_progress_unblock();
+	    erts_proc_lock(p, ERTS_PROC_LOCK_MAIN);
     	}
 
     BIF_ERROR(p, BADARG);
 }
 /* End: Trace for System Profiling */
 
+/* Trace delivered send an aux work message to all schedulers
+   and when all schedulers have acknowledged that they have seen
+   the message the message is sent to the requesting process.
+
+   IMPORTANT: We have to make sure that the all messages sent
+   using enif_send have been delivered before we send the message
+   to the caller.
+
+   There used to be a separate implementation for when only a pid
+   is passed in, but since this is not performance critical code
+   we now use the same approach for both.
+*/
+
+typedef struct {
+    Process *proc;
+    Eterm ref;
+    Eterm ref_heap[ERTS_REF_THING_SIZE];
+    Eterm target;
+    erts_atomic32_t refc;
+} ErtsTraceDeliveredAll;
+
+static void
+reply_trace_delivered_all(void *vtdarp)
+{
+    ErtsTraceDeliveredAll *tdarp = (ErtsTraceDeliveredAll *) vtdarp;
+
+    if (erts_atomic32_dec_read_nob(&tdarp->refc) == 0) {
+        Eterm ref_copy, msg;
+        Process *rp = tdarp->proc;
+        Eterm *hp = NULL;
+        ErlOffHeap *ohp;
+        ErlHeapFragment *bp;
+        bp = new_message_buffer(4 + NC_HEAP_SIZE(tdarp->ref));
+        hp = &bp->mem[0];
+        ohp = &bp->off_heap;
+
+        ref_copy = STORE_NC(&hp, ohp, tdarp->ref);
+        msg = TUPLE3(hp, am_trace_delivered, tdarp->target, ref_copy);
+
+        erts_send_sys_msg_proc(rp->common.id, rp->common.id, msg, bp);
+
+	erts_free(ERTS_ALC_T_MISC_AUX_WORK, vtdarp);
+        erts_proc_dec_refc(rp);
+    }
+}
+
 BIF_RETTYPE
 trace_delivered_1(BIF_ALIST_1)
 {
-    DECL_AM(trace_delivered);
-#ifdef ERTS_SMP
-    ErlHeapFragment *bp;
-#else
-    ErtsProcLocks locks = 0;
-#endif
-    Eterm *hp;
-    Eterm msg, ref, msg_ref;
-    Process *p;
-    if (BIF_ARG_1 == am_all) {
-	p = NULL;
-    } else if (! (p = erts_pid2proc(BIF_P, ERTS_PROC_LOCK_MAIN,
-				    BIF_ARG_1, ERTS_PROC_LOCKS_ALL))) {
-	if (is_not_internal_pid(BIF_ARG_1)) {
-	    BIF_ERROR(BIF_P, BADARG);
-	}
+
+    if (BIF_ARG_1 == am_all || is_internal_pid(BIF_ARG_1)) {
+        Eterm *hp, ref;
+        ErtsTraceDeliveredAll *tdarp =
+            erts_alloc(ERTS_ALC_T_MISC_AUX_WORK, sizeof(ErtsTraceDeliveredAll));
+
+        tdarp->proc = BIF_P;
+        ref = erts_make_ref(BIF_P);
+        hp = &tdarp->ref_heap[0];
+        tdarp->ref = STORE_NC(&hp, NULL, ref);
+        tdarp->target = BIF_ARG_1;
+        erts_atomic32_init_nob(&tdarp->refc,
+                                   (erts_aint32_t) erts_no_schedulers);
+        erts_proc_add_refc(BIF_P, 1);
+        erts_schedule_multi_misc_aux_work(0,
+                                          1,
+                                          erts_no_schedulers,
+                                          reply_trace_delivered_all,
+                                          (void *) tdarp);
+        BIF_RET(ref);
+    } else {
+        BIF_ERROR(BIF_P, BADARG);
     }
-    
-    ref = erts_make_ref(BIF_P);
-
-#ifdef ERTS_SMP
-    bp = new_message_buffer(REF_THING_SIZE + 4);
-    hp = &bp->mem[0];
-    msg_ref = STORE_NC(&hp, &bp->off_heap, ref);
-#else
-    hp = HAlloc(BIF_P, 4);
-    msg_ref = ref;
-#endif
-
-    msg = TUPLE3(hp, AM_trace_delivered, BIF_ARG_1, msg_ref);
-
-#ifdef ERTS_SMP
-    erts_send_sys_msg_proc(BIF_P->common.id, BIF_P->common.id, msg, bp);
-    if (p)
-	erts_smp_proc_unlock(p,
-			     (BIF_P == p
-			      ? ERTS_PROC_LOCKS_ALL_MINOR
-			      : ERTS_PROC_LOCKS_ALL));
-#else
-    erts_send_message(BIF_P, BIF_P, &locks, msg, ERTS_SND_FLG_NO_SEQ_TRACE);
-#endif
-
-    BIF_RET(ref);
 }

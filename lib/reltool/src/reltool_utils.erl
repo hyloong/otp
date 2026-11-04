@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2009-2013. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2009-2026. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -18,6 +20,9 @@
 %% %CopyrightEnd%
 
 -module(reltool_utils).
+-moduledoc false.
+
+-compile([{nowarn_possibly_unsafe_function, {erlang, list_to_atom, 1}}]).
 
 %% Public
 -export([root_dir/0, erl_libs/0, lib_dirs/1,
@@ -47,6 +52,9 @@
 
 	 call/2, cast/2, reply/3]).
 
+%% For testing
+-export([erl_libs/2]).
+
 -include_lib("kernel/include/file.hrl").
 -include_lib("wx/include/wx.hrl").
 -include("reltool.hrl").
@@ -55,7 +63,15 @@ root_dir() ->
     code:root_dir().
 
 erl_libs() ->
-    string:tokens(os:getenv("ERL_LIBS", ""), ":;").
+    erl_libs(os:getenv("ERL_LIBS", ""), os:type()).
+
+erl_libs(ErlLibs, OsType) when is_list(ErlLibs) ->
+  Sep =
+    case OsType of
+      {win32, _} -> ";";
+      _          -> ":"
+    end,
+  string:lexemes(ErlLibs, Sep).
 
 lib_dirs(Dir) ->
     case erl_prim_loader:list_dir(Dir) of
@@ -109,8 +125,8 @@ prim_consult(Bin) when is_binary(Bin) ->
 	    {error, Module:format_error(Reason)}
     end;
 prim_consult(FullName) when is_list(FullName) ->
-    case erl_prim_loader:get_file(FullName) of
-        {ok, Bin, _} ->
+    case erl_prim_loader:read_file(FullName) of
+        {ok, Bin} ->
 	    prim_consult(Bin);
         error ->
             {error, file:format_error(enoent)}
@@ -154,7 +170,12 @@ default_rels() ->
 	  rel_apps = []},
      #rel{name = "start_sasl",
 	  vsn = "1.0",
-	  rel_apps = [#rel_app{name = sasl}]}
+          rel_apps = [#rel_app{name = sasl}]},
+     #rel{name = "no_dot_erlang", %% Needed by escript and erlc
+          vsn = "1.0",
+          rel_apps = [],
+          load_dot_erlang = false
+         }
     ].
 
 choose_default(Tag, Profile, InclDefs)
@@ -286,7 +307,7 @@ split_app_dir(Dir) ->
     {Name, Vsn} = split_app_name(Base),
     Vsn2 =
 	try
-	    [list_to_integer(N) || N <- string:tokens(Vsn, ".")]
+	    [list_to_integer(N) || N <- string:lexemes(Vsn, ".")]
 	catch
 	    _:_ ->
 		Vsn
@@ -380,7 +401,7 @@ select_items(ListCtrl, OldItems, NewItems) ->
 		    false -> false
 		end
 	end,
-    case lists:zf(Filter, OldItems) of
+    case lists:filtermap(Filter, OldItems) of
 	[] ->
 	    %% None of the old selections are valid. Select the first.
 	    select_item(ListCtrl, NewItems);
@@ -427,7 +448,7 @@ scroll_size(ObjRef) ->
 safe_keysearch(Key, Pos, List, Mod, Line) ->
     case lists:keysearch(Key, Pos, List) of
         false ->
-            io:format("~w(~w): lists:keysearch(~p, ~w, ~p) -> false\n",
+            io:format("~w(~w): lists:keysearch(~tp, ~w, ~tp) -> false\n",
                       [Mod, Line, Key, Pos, List]),
             erlang:error({Mod, Line, lists, keysearch, [Key, Pos, List]});
         {value, Val} ->
@@ -498,8 +519,8 @@ read_file(File) ->
             throw_error("read file ~ts: ~ts", [File, Text])
     end.
 
-write_file(File, IoList) ->
-    case file:write_file(File, IoList) of
+write_file(File, Bin) ->
+    case file:write_file(File, Bin) of
         ok ->
 	    ok;
         {error, Reason} ->
@@ -559,8 +580,8 @@ recursive_copy_file(From, To) ->
     end.
 
 copy_file(From, To) ->
-    case erl_prim_loader:get_file(From) of
-	{ok, Bin, _} ->
+    case erl_prim_loader:read_file(From) of
+	{ok, Bin} ->
 	    case file:write_file(To, Bin) of
 		ok ->
 		    FromInfo = read_file_info(From),
@@ -601,7 +622,7 @@ do_decode_regexps(Key, [Regexp | Regexps], Acc) ->
 			      Regexps,
 			      [#regexp{source = Regexp, compiled = MP} | Acc]);
         _ ->
-            Text = lists:flatten(io_lib:format("~p", [{Key, Regexp}])),
+            Text = lists:flatten(io_lib:format("~tp", [{Key, Regexp}])),
             throw({error, "Illegal option: " ++ Text})
     end;
 do_decode_regexps(_Key, [], Acc) ->

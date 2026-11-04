@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2003-2011. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2003-2025. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -20,21 +22,29 @@
 -module(ms_transform_SUITE).
 -author('pan@erix.ericsson.se').
 
--include_lib("test_server/include/test_server.hrl").
+-include_lib("common_test/include/ct.hrl").
 
 -export([all/0, suite/0,groups/0,init_per_suite/1, end_per_suite/1, 
+	 init_per_testcase/2, end_per_testcase/2,
 	 init_per_group/2,end_per_group/2]).
 -export([basic_ets/1]).
 -export([basic_dbg/1]).
 -export([from_shell/1]).
 -export([records/1]).
 -export([record_index/1]).
--export([multipass/1]).
+-export([map_pattern/1]).
+-export([map_expr_in_head/1]).
+-export([map_pattern_from_shell/1]).
+-export([map_expr_in_head_from_shell/1]).
+-export([map_exprs/1]).
+-export([map_exprs_from_shell/1]).
 -export([top_match/1]).
+-export([multipass/1]).
 -export([old_guards/1]).
 -export([autoimported/1]).
 -export([semicolon/1]).
 -export([bitsyntax/1]).
+-export([binary_bifs/1]).
 -export([record_defaults/1]).
 -export([andalso_orelse/1]).
 -export([float_1_function/1]).
@@ -42,24 +52,29 @@
 -export([warnings/1]).
 -export([no_warnings/1]).
 -export([eep37/1]).
--export([init_per_testcase/2, end_per_testcase/2]).
+-export([otp_14454/1]).
+-export([otp_16824/1]).
+-export([unused_record/1]).
 
 init_per_testcase(_Func, Config) ->
-    Dog=test_server:timetrap(test_server:seconds(360)),
-    [{watchdog, Dog}|Config].
+    Config.
 
-end_per_testcase(_Func, Config) ->
-    Dog=?config(watchdog, Config),
-    test_server:timetrap_cancel(Dog).
+end_per_testcase(_Func, _Config) ->
+    ok.
 
-suite() -> [{ct_hooks,[ts_install_cth]}].
+suite() ->
+    [{ct_hooks,[ts_install_cth]},
+     {timetrap,{minutes,6}}].
 
 all() -> 
     [from_shell, basic_ets, basic_dbg, records,
-     record_index, multipass, bitsyntax, record_defaults,
+     record_index, multipass, bitsyntax, binary_bifs, record_defaults,
      andalso_orelse, float_1_function, action_function,
      warnings, no_warnings, top_match, old_guards, autoimported,
-     semicolon, eep37].
+     semicolon, eep37, otp_14454, otp_16824, unused_record,
+     map_pattern, map_expr_in_head,
+     map_pattern_from_shell, map_expr_in_head_from_shell,
+     map_exprs, map_exprs_from_shell].
 
 groups() -> 
     [].
@@ -79,94 +94,91 @@ end_per_group(_GroupName, Config) ->
 
 %% This may be subject to change
 -define(WARN_NUMBER_SHADOW,50).
-warnings(suite) ->
-    [];
-warnings(doc) ->
-    ["Check that shadowed variables in fun head generate warning"];
+
+%% Check that shadowed variables in fun head generate warning.
 warnings(Config) when is_list(Config) ->
-    ?line setup(Config),
+    setup(Config),
     Prog = <<"A=5, "
-	    "ets:fun2ms(fun({A,B}) "
-	    "            when is_integer(A) and (A+5 > B) -> "
-	    "              A andalso B "
-	    "            end)">>,
-    ?line [{_,[{_,ms_transform,{?WARN_NUMBER_SHADOW,'A'}}]}] =
+	     "ets:fun2ms(fun({A,B}) "
+	     "            when is_integer(A) and (A+5 > B) -> "
+	     "              A andalso B "
+	     "            end)">>,
+    [{_,[{{1,22},ms_transform,{?WARN_NUMBER_SHADOW,'A'}}]}] =
 	compile_ww(Prog),
+    [{_,[{1,ms_transform,{50,'A'}}]}] =
+        compile_ww(<<>>,Prog,[{error_location,line}]),
     Prog2 = <<"C = 5,
                ets:fun2ms(fun ({A,B} =
-                                       C) when is_integer(A) and (A+5 > B) ->
+				   C) when is_integer(A) and (A+5 > B) ->
                                   {A andalso B,C}
                           end)">>,
-    [{_,[{3,ms_transform,{?WARN_NUMBER_SHADOW,'C'}}]}] =
-	compile_ww(Prog2),
-    Rec3 = <<"-record(a,{a,b,c,d=foppa}).">>,
-    Prog3 = <<"A = 3,
+    [{_,[{{3,8},ms_transform,{?WARN_NUMBER_SHADOW,'C'}}]}] =
+	      compile_ww(Prog2),
+	      Rec3 = <<"-record(a,{a,b,c,d=foppa}).">>,
+	      Prog3 = <<"A = 3,
                C = 5,
-               ets:fun2ms(fun (C
-                                 = #a{a = A, b = B})
-                              when is_integer(A) and (A+5 > B) ->
-                                  {A andalso B,C}
-                          end)">>,
-    [{_,[{3,ms_transform,{?WARN_NUMBER_SHADOW,'C'}},
-         {4,ms_transform,{?WARN_NUMBER_SHADOW,'A'}}]}] =
-	compile_ww(Rec3,Prog3),
-    Rec4 = <<"-record(a,{a,b,c,d=foppa}).">>,
-    Prog4 = <<"A=3,C=5, "
-	     "F = fun(B) -> B*3 end,"
-	     "erlang:display(F(A)),"
-	     "ets:fun2ms(fun(#a{a = A, b = B} = C) "
-	     "            when is_integer(A) and (A+5 > B) -> "
-	     "              {A andalso B,C} "
-	     "            end)">>,
-    ?line [{_,[{_,ms_transform,{?WARN_NUMBER_SHADOW,'A'}},
-	       {_,ms_transform,{?WARN_NUMBER_SHADOW,'C'}}]}] =
-	compile_ww(Rec4,Prog4),
-    Rec5 = <<"-record(a,{a,b,c,d=foppa}).">>,
-    Prog5 = <<"A=3,C=5, "
-	     "F = fun(B) -> B*3 end,"
-	     "erlang:display(F(A)),"
-	     "B = ets:fun2ms(fun(#a{a = A, b = B} = C) "
-	     "            when is_integer(A) and (A+5 > B) -> "
-	     "              {A andalso B,C} "
-	     "            end)">>,
-    ?line [{_,[{_,ms_transform,{?WARN_NUMBER_SHADOW,'A'}},
-	       {_,ms_transform,{?WARN_NUMBER_SHADOW,'C'}}]}] =
-	compile_ww(Rec5,Prog5),
-    Prog6 = <<"   X=bar, "
-	     "    A = case X of"
-	     "       foo ->"
-	     "          foo;"
-	     "       Y ->"
-	     "          ets:fun2ms(fun(Y) ->" % This is a warning
-	     "                         3*Y"
-	     "                     end)"
-	     "   end,"
-	     "   ets:fun2ms(fun(Y) ->" % Y out of "scope" here, so no warning
-	     "                  {3*Y,A}"
-	     "              end)">>,
-    ?line [{_,[{_,ms_transform,{?WARN_NUMBER_SHADOW,'Y'}}]}] =
-	compile_ww(Prog6),
-    Prog7 = <<"   X=bar, "
-	     "    A = case X of"
-	     "       foo ->"
-	     "          Y = foo;"
-	     "       Y ->"
-	     "          bar"
-	     "   end,"
-	     "   ets:fun2ms(fun(Y) ->" % Y exported from case and safe, so warn
-	     "                  {3*Y,A}"
-	     "              end)">>,
-    ?line [{_,[{_,ms_transform,{?WARN_NUMBER_SHADOW,'Y'}}]}] =
-	compile_ww(Prog7),
-    ok.
+			ets:fun2ms(fun (C
+					= #a{a = A, b = B})
+					 when is_integer(A) and (A+5 > B) ->
+					   {A andalso B,C}
+				   end)">>,
+    [{_,[{{3,20},ms_transform,{?WARN_NUMBER_SHADOW,'C'}},
+         {{4,15},ms_transform,{?WARN_NUMBER_SHADOW,'A'}}]}] =
+			compile_ww(Rec3,Prog3),
+			Rec4 = <<"-record(a,{a,b,c,d=foppa}).">>,
+			Prog4 = <<"A=3,C=5, "
+				  "F = fun(B) -> B*3 end,"
+				  "erlang:display(F(A)),"
+				  "ets:fun2ms(fun(#a{a = A, b = B} = C) "
+				  "            when is_integer(A) and (A+5 > B) -> "
+				  "              {A andalso B,C} "
+				  "            end)">>,
+			[{_,[{_,ms_transform,{?WARN_NUMBER_SHADOW,'A'}},
+			     {_,ms_transform,{?WARN_NUMBER_SHADOW,'C'}}]}] =
+			compile_ww(Rec4,Prog4),
+			Rec5 = <<"-record(a,{a,b,c,d=foppa}).">>,
+			Prog5 = <<"A=3,C=5, "
+				  "F = fun(B) -> B*3 end,"
+				  "erlang:display(F(A)),"
+				  "B = ets:fun2ms(fun(#a{a = A, b = B} = C) "
+				  "            when is_integer(A) and (A+5 > B) -> "
+				  "              {A andalso B,C} "
+				  "            end)">>,
+			[{_,[{_,ms_transform,{?WARN_NUMBER_SHADOW,'A'}},
+			     {_,ms_transform,{?WARN_NUMBER_SHADOW,'C'}}]}] =
+			compile_ww(Rec5,Prog5),
+			Prog6 = <<"   X=bar, "
+				  "    A = case X of"
+				  "       foo ->"
+				  "          foo;"
+				  "       Y ->"
+				  "          ets:fun2ms(fun(Y) ->" % This is a warning
+				  "                         3*Y"
+				  "                     end)"
+				  "   end,"
+				  "   ets:fun2ms(fun(Y) ->" % Y out of "scope" here, so no warning
+				  "                  {3*Y,A}"
+				  "              end)">>,
+			[{_,[{_,ms_transform,{?WARN_NUMBER_SHADOW,'Y'}}]}] =
+			compile_ww(Prog6),
+			Prog7 = <<"   X=bar, "
+				  "    A = case X of"
+				  "       foo ->"
+				  "          Y = foo;"
+				  "       Y ->"
+				  "          bar"
+				  "   end,"
+				  "   ets:fun2ms(fun(Y) ->" % Y exported from case and safe, so warn
+				  "                  {3*Y,A}"
+				  "              end)">>,
+			[{_,[{_,ms_transform,{?WARN_NUMBER_SHADOW,'Y'}}]}] =
+			compile_ww(Prog7),
+			ok.
 
-no_warnings(suite) ->
-    [];
-no_warnings(doc) ->
-    ["Check that variables bound in other function clauses don't generate "
-     "warning"];
+%% Check that variables bound in other function clauses don't generate
+%% warning.
 no_warnings(Config) when is_list(Config) ->
-    ?line setup(Config),
+    setup(Config),
     Prog = <<"tmp(X) when X > 100 ->\n",
 	     "   Y=X,\n"
 	     "   Y;\n"
@@ -174,188 +186,199 @@ no_warnings(Config) when is_list(Config) ->
 	     "   ets:fun2ms(fun(Y) ->\n"
 	     "                  {X, 3*Y}\n"
 	     "              end)">>,
-    ?line [] = compile_no_ww(Prog),
+    [] = compile_no_ww(Prog),
 
     Prog2 = <<"tmp(X) when X > 100 ->\n",
-	     "   Y=X,\n"
-	     "   Y;\n"
-	     "tmp(X) when X < 200 ->\n"
-	     "   ok;\n"
-	     "tmp(X) ->\n"
-	     "   ets:fun2ms(fun(Y) ->\n"
-	     "                  {X, 3*Y}\n"
-	     "              end)">>,
-    ?line [] = compile_no_ww(Prog2),
+	      "   Y=X,\n"
+	      "   Y;\n"
+	      "tmp(X) when X < 200 ->\n"
+	      "   ok;\n"
+	      "tmp(X) ->\n"
+	      "   ets:fun2ms(fun(Y) ->\n"
+	      "                  {X, 3*Y}\n"
+	      "              end)">>,
+    [] = compile_no_ww(Prog2),
     ok.
 
-andalso_orelse(suite) ->
-    [];
-andalso_orelse(doc) ->
-    ["Tests that andalso and orelse are allowed in guards."];
+%% Test that andalso and orelse are allowed in guards.
 andalso_orelse(Config) when is_list(Config) ->
-    ?line setup(Config),
-    ?line [{{'$1','$2'},
-	    [{'and',{is_integer,'$1'},{'>',{'+','$1',5},'$2'}}],
-	    [{'andalso','$1','$2'}]}] = 
+    setup(Config),
+    [{{'$1','$2'},
+      [{'and',{is_integer,'$1'},{'>',{'+','$1',5},'$2'}}],
+      [{'andalso','$1','$2'}]}] =
 	compile_and_run(<<"ets:fun2ms(fun({A,B}) "
-			 "            when is_integer(A) and (A+5 > B) -> "
-			 "              A andalso B "
-			 "            end)">>),
-    ?line [{{'$1','$2'},
-	    [{'or',{is_atom,'$1'},{'>',{'+','$1',5},'$2'}}],
-	    [{'orelse','$1','$2'}]}] = 
+			  "            when is_integer(A) and (A+5 > B) -> "
+			  "              A andalso B "
+			  "            end)">>),
+    [{{'$1','$2'},
+      [{'or',{is_atom,'$1'},{'>',{'+','$1',5},'$2'}}],
+      [{'orelse','$1','$2'}]}] =
 	compile_and_run(<<"ets:fun2ms(fun({A,B}) "
-			 "            when is_atom(A) or (A+5 > B) -> "
-			 "              A orelse B "
-			 "            end)">>),
-    ?line [{{'$1','$2'},
-            [{'andalso',{is_integer,'$1'},{'>',{'+','$1',5},'$2'}}],
-            ['$1']}] = 
+			  "            when is_atom(A) or (A+5 > B) -> "
+			  "              A orelse B "
+			  "            end)">>),
+    [{{'$1','$2'},
+      [{'andalso',{is_integer,'$1'},{'>',{'+','$1',5},'$2'}}],
+      ['$1']}] =
         compile_and_run(
-	    <<"ets:fun2ms(fun({A,B}) when is_integer(A) andalso (A+5 > B) ->"
-	     "			 A "
-	     "		 end)">>),
-    ?line [{{'$1','$2'},
-            [{'orelse',{is_atom,'$1'},{'>',{'+','$1',5},'$2'}}],
-            ['$1']}] =
+	  <<"ets:fun2ms(fun({A,B}) when is_integer(A) andalso (A+5 > B) ->"
+	    "			 A "
+	    "		 end)">>),
+    [{{'$1','$2'},
+      [{'orelse',{is_atom,'$1'},{'>',{'+','$1',5},'$2'}}],
+      ['$1']}] =
         compile_and_run(
-	    <<"ets:fun2ms(fun({A,B}) when is_atom(A) orelse (A+5 > B) -> "
-	     "			 A "
-	     "		 end)">>),
+	  <<"ets:fun2ms(fun({A,B}) when is_atom(A) orelse (A+5 > B) -> "
+	    "			 A "
+	    "		 end)">>),
     ok.
-    
-    
-bitsyntax(suite) ->
-    [];
-bitsyntax(doc) ->
-    ["Tests that bitsyntax works and does not work where appropriate"];
+
+
+%% Test that bitsyntax works and does not work where appropriate.
 bitsyntax(Config) when is_list(Config) ->
-    ?line setup(Config),
-    ?line [{'_',[],
-	    [<<0,27,0,27>>]}] =
+    setup(Config),
+    [{'_',[],
+      [<<0,27,0,27>>]}] =
 	compile_and_run(<<"A = 27, "
 			  "ets:fun2ms(fun(_) -> <<A:16,27:16>> end)">>),
-    ?line  [{{<<15,47>>,
-	      '$1',
-	      '$2'},
-	     [{'=:=','$1',
-	       <<0,27>>},
-	      {'=:=','$2',
-	       <<27,28,19>>}],
-	     [<<188,0,13>>]}] =
+    [{{<<15,47>>,
+       '$1',
+       '$2'},
+      [{'=:=','$1',
+	<<0,27>>},
+       {'=:=','$2',
+	<<27,28,19>>}],
+      [<<188,0,13>>]}] =
 	compile_and_run(<<"A = 27, "
 			  "ets:fun2ms("
                           "  fun({<<15,47>>,B,C}) "
 			  "  when B =:= <<A:16>>, C =:= <<27,28,19>> -> "
 			  "    <<A:4,12:4,13:16>> "
 			  "  end)">>),
-    ?line expect_failure(
-	    <<>>,
-	    <<"ets:fun2ms(fun({<<15,47>>,B,C}) "
-	     "            when B =:= <<16>>, C =:= <<27,28,19>> -> "
-	     "              <<B:4,12:4,13:16>> "
-	     "            end)">>),
-    ?line expect_failure(
-	    <<>>,
-	    <<"ets:fun2ms(fun({<<A:15,47>>,B,C}) "
-	     "            when B =:= <<16>>, C =:= <<27,28,19>> -> "
-	     "              <<B:4,12:4,13:16>> "
-	     "            end)">>),
+    expect_failure(
+      <<>>,
+      <<"ets:fun2ms(fun({<<15,47>>,B,C}) "
+	"            when B =:= <<16>>, C =:= <<27,28,19>> -> "
+	"              <<B:4,12:4,13:16>> "
+	"            end)">>),
+    expect_failure(
+      <<>>,
+      <<"ets:fun2ms(fun({<<A:15,47>>,B,C}) "
+	"            when B =:= <<16>>, C =:= <<27,28,19>> -> "
+	"              <<B:4,12:4,13:16>> "
+	"            end)">>),
     ok.
 
-record_defaults(suite) ->
-    [];
-record_defaults(doc) ->
-    ["Tests that record defaults works"];
+
+%% Test that binary BIFs byte_size/1, binary_part/2, binary_part/3 are accepted
+binary_bifs(Config) when is_list(Config) ->
+    setup(Config),
+    TestSet = [{<<"hello">>, <<"world">>}, {<<"souldn't">>, <<"match">>}],
+    RunMS = fun(MS) -> ets:match_spec_run(TestSet, ets:match_spec_compile(MS)) end,
+    % check byte_size/1
+    MS1 = compile_and_run(<<"ets:fun2ms(fun({A, B}) when byte_size(A) == 5 -> {A, byte_size(B)} end)">>),
+    [{{'$1','$2'},
+      [{'==',{byte_size,'$1'},5}],
+      [{{'$1',{byte_size,'$2'}}}]}] = MS1,
+    [{<<"hello">>, 5}] = RunMS(MS1),
+    % check binary_part/2
+    MS2 = compile_and_run(<<"ets:fun2ms(fun({A, B}) when binary_part(A, {1, 2}) == <<\"el\">> -> binary_part(B, {2, 3}) end)">>),
+    [{{'$1','$2'},
+      [{'==',{binary_part,'$1',{{1,2}}},<<"el">>}],
+      [{binary_part,'$2',{{2,3}}}]}] = MS2,
+    [<<"rld">>] = RunMS(MS2),
+    % check binary_part/3
+    MS3 = compile_and_run(<<"ets:fun2ms(fun({A, B}) when binary_part(A, 1, 2) == <<\"el\">> -> binary_part(B, 2, 3) end)">>),
+    [{{'$1','$2'},
+      [{'==',{binary_part,'$1',1,2},<<"el">>}],
+      [{binary_part,'$2',2,3}]}] = MS3,
+    [<<"rld">>] = RunMS(MS3),
+    ok.
+
+%% Test that record defaults works.
 record_defaults(Config) when is_list(Config) ->
-    ?line setup(Config),    
-    ?line [{{<<27>>,{a,5,'$1',hej,hej}},
-	    [],
-	    [{{a,hej,{'*','$1',2},flurp,flurp}}]}] = 
+    setup(Config),
+    [{{<<27>>,{a,5,'$1',hej,hej}},
+      [],
+      [{{a,hej,{'*','$1',2},flurp,flurp}}]}] =
 	compile_and_run(<<"-record(a,{a,b,c,d=foppa}).">>,
 			<<"ets:fun2ms(fun({<<27>>,#a{a=5, b=B,_=hej}}) -> "
-		                        "#a{a=hej,b=B*2,_=flurp} "
-	                              "end)">>),
+			  "#a{a=hej,b=B*2,_=flurp} "
+			  "end)">>),
     ok.
 
-basic_ets(suite) ->
-    [];
-basic_ets(doc) ->
-    ["Tests basic ets:fun2ms"];
+%% Test basic ets:fun2ms.
 basic_ets(Config) when is_list(Config) ->
-    ?line setup(Config),
-    ?line [{{a,b},[],[true]}] = compile_and_run(
-				  <<"ets:fun2ms(fun({a,b}) -> true end)">>),
-    ?line [{{'$1',foo},[{is_list,'$1'}],[{{{hd,'$1'},'$_'}}]},
+    setup(Config),
+    [{{a,b},[],[true]}] = compile_and_run(
+			    <<"ets:fun2ms(fun({a,b}) -> true end)">>),
+    [{{'$1',foo},[{is_list,'$1'}],[{{{hd,'$1'},'$_'}}]},
      {{'$1','$1'},[{is_tuple,'$1'}],[{{{element,1,'$1'},'$*'}}]}] =
 	compile_and_run(<<"ets:fun2ms(fun({X,foo}) when is_list(X) -> ",
-			                     "{hd(X),object()};",
-			                "({X,X}) when is_tuple(X) ->",
-			                     "{element(1,X),bindings()}",
-			             "end)">>),
-    ?line [{{'$1','$2'},[],[{{'$2','$1'}}]}] =
+			  "{hd(X),object()};",
+			  "({X,X}) when is_tuple(X) ->",
+			  "{element(1,X),bindings()}",
+			  "end)">>),
+    [{{'$1','$2'},[],[{{'$2','$1'}}]}] =
 	compile_and_run(<<"ets:fun2ms(fun({A,B}) -> {B,A} end)">>),
-    ?line [{{'$1','$2'},[],[['$2','$1']]}] =
+    [{{'$1','$2'},[],[['$2','$1']]}] =
 	compile_and_run(<<"ets:fun2ms(fun({A,B}) -> [B,A] end)">>),
+    [{{"foo" ++ '_','$1'},[],['$1']}] =
+        compile_and_run(<<"ets:fun2ms(fun({\"foo\" ++ _, X}) -> X end)">>),
     ok.
 
-basic_dbg(suite) ->
-    [];
-basic_dbg(doc) ->
-    ["Tests basic ets:fun2ms"];
+%% Tests basic dbg:fun2ms.
 basic_dbg(Config) when is_list(Config) ->
-    ?line setup(Config),
-    ?line [{[a,b],[],[{message,banan},{return_trace}]}] =
+    setup(Config),
+    [{[a,b],[],[{message,banan},{return_trace}]}] =
 	compile_and_run(<<"dbg:fun2ms(fun([a,b]) -> message(banan), ",
-			"return_trace() end)">>),
-    ?line [{['$1','$2'],[],[{{'$2','$1'}}]}] = 
+			  "return_trace() end)">>),
+    [{['$1','$2'],[],[{{'$2','$1'}}]}] =
 	compile_and_run(<<"dbg:fun2ms(fun([A,B]) -> {B,A} end)">>),
-    ?line [{['$1','$2'],[],[['$2','$1']]}] =
+    [{['$1','$2'],[],[['$2','$1']]}] =
 	compile_and_run(<<"dbg:fun2ms(fun([A,B]) -> [B,A] end)">>),
-    ?line [{['$1','$2'],[],['$*']}] =
+    [{['$1','$2'],[],['$*']}] =
 	compile_and_run(<<"dbg:fun2ms(fun([A,B]) -> bindings() end)">>),
-    ?line [{['$1','$2'],[],['$_']}] =
+    [{['$1','$2'],[],['$_']}] =
 	compile_and_run(<<"dbg:fun2ms(fun([A,B]) -> object() end)">>),
+    [{[],[],[{return_trace}]}] =
+	compile_and_run(<<"dbg:fun2ms(fun([]) -> return_trace() end)">>),
     ok.
 
-from_shell(suite) ->
-    [];
-from_shell(doc) ->
-    ["Test calling of ets/dbg:fun2ms from the shell"]; 
+%% Test calling of ets/dbg:fun2ms from the shell.
 from_shell(Config) when is_list(Config) ->
-    ?line setup(Config),
-    ?line Fun = do_eval("fun({a,b}) -> true end"),
-    ?line [{{a,b},[],[true]}] = apply(ets,fun2ms,[Fun]),
-    ?line [{{a,b},[],[true]}] = do_eval("ets:fun2ms(fun({a,b}) -> true end)"),
-    ?line Fun2 = do_eval("fun([a,b]) -> message(banan), return_trace() end"),
-    ?line [{[a,b],[],[{message,banan},{return_trace}]}]
+    setup(Config),
+    Fun = do_eval("fun({a,b}) -> true end"),
+    [{{a,b},[],[true]}] = apply(ets,fun2ms,[Fun]),
+    [{{a,b},[],[true]}] = do_eval("ets:fun2ms(fun({a,b}) -> true end)"),
+    Fun2 = do_eval("fun([a,b]) -> message(banan), return_trace() end"),
+    [{[a,b],[],[{message,banan},{return_trace}]}]
 	= apply(dbg,fun2ms,[Fun2]),
-    ?line [{[a,b],[],[{message,banan},{return_trace}]}] =
+    [{[a,b],[],[{message,banan},{return_trace}]}] =
 	do_eval(
 	  "dbg:fun2ms(fun([a,b]) -> message(banan), return_trace() end)"),
+    [{{"foo" ++ '_','$1'},[],['$1']}] =
+        do_eval("ets:fun2ms(fun({\"foo\" ++ _, X}) -> X end)"),
     ok.
 
-records(suite) ->
-    [];
-records(doc) ->
-    ["Tests expansion of records in fun2ms"];
+%% Tests expansion of records in fun2ms.
 records(Config) when is_list(Config) ->
-    ?line setup(Config),
-    ?line RD = <<"-record(t, {"
-	             "t1 = [],"
-	             "t2 = foo,"
-	             "t3,"
-	             "t4"
-	            "}).">>,
-    ?line [{{t,'$1','$2',foo,'_'},[{is_list,'$1'}],[{{{hd,'$1'},'$_'}}]},
+    setup(Config),
+    RD = <<"-record(t, {"
+	   "t1 = [] :: list(),"
+	   "t2 = foo :: atom(),"
+	   "t3,"
+	   "t4"
+	   "}).">>,
+    [{{t,'$1','$2',foo,'_'},[{is_list,'$1'}],[{{{hd,'$1'},'$_'}}]},
      {{t,'_','_','_','_'},[{'==',{element,2,'$_'},nisse}],[{{'$*'}}]}] =
 	compile_and_run(RD,<<
-   "ets:fun2ms(fun(#t{t1 = X, t2 = Y, t3 = foo}) when is_list(X) -> 
+			     "ets:fun2ms(fun(#t{t1 = X, t2 = Y, t3 = foo}) when is_list(X) ->
  		       {hd(X),object()}; 
- 		  (#t{}) when (object())#t.t1 == nisse -> 
- 		       {bindings()}  
- 	       end)">>),
-    ?line [{{t,'$1','$2','_',foo},
+			     (#t{}) when (object())#t.t1 == nisse ->
+				   {bindings()}
+			   end)">>),
+    [{{t,'$1','$2','_',foo},
       [{'==',{element,4,'$_'},7},{is_list,'$1'}],
       [{{{hd,'$1'},'$_'}}]},
      {'$1',[{is_record,'$1',t,5}],
@@ -373,7 +396,7 @@ records(Config) when is_list(Config) ->
 		       }  
  	       end)"
 			>>),
-    ?line [{[{t,'$1','$2',foo,'_'}],[{is_list,'$1'}],[{{{hd,'$1'},'$_'}}]},
+    [{[{t,'$1','$2',foo,'_'}],[{is_list,'$1'}],[{{{hd,'$1'},'$_'}}]},
      {[{t,'_','_','_','_'}],[{'==',{element,2,{hd,'$_'}},nisse}],[{{'$*'}}]}]=
 	compile_and_run(RD,<<
     "dbg:fun2ms(fun([#t{t1 = X, t2 = Y, t3 = foo}]) when is_list(X) -> 
@@ -385,78 +408,119 @@ records(Config) when is_list(Config) ->
     ok.
 
 
-record_index(suite) ->
-    [];
-record_index(doc) ->
-    ["Tests expansion of records in fun2ms, part 2"];
+%% Test expansion of records in fun2ms, part 2.
 record_index(Config) when is_list(Config) ->
-    ?line setup(Config),
-    ?line RD = <<"-record(a,{a,b}).">>,
-    ?line [{{2},[],[true]}] = compile_and_run(RD,
+    setup(Config),
+    RD = <<"-record(a,{a,b}).">>,
+    [{{2},[],[true]}] = compile_and_run(RD,
 			  <<"ets:fun2ms(fun({#a.a}) -> true end)">>),
-    ?line [{{2},[],[2]}] = compile_and_run(RD,
+    [{{2},[],[2]}] = compile_and_run(RD,
 			  <<"ets:fun2ms(fun({#a.a}) -> #a.a end)">>),
-    ?line [{{2,'$1'},[{'>','$1',2}],[2]}] = compile_and_run(RD,
+    [{{2,'$1'},[{'>','$1',2}],[2]}] = compile_and_run(RD,
 		    <<"ets:fun2ms(fun({#a.a,A}) when A > #a.a -> #a.a end)">>),
     ok.
 
-top_match(suite) ->
-    [];
-top_match(doc) ->
-    ["Tests matching on top level in head to give alias for object()"];
+map_pattern(Config) when is_list(Config) ->
+    setup(Config),
+    MS = [{{key, #{foo => '$1'}},[],['$1']}],
+    MS = compile_and_run(<<"ets:fun2ms(fun({key, #{foo := V}}) -> V end)">>),
+    ok.
+
+map_expr_in_head(Config) when is_list(Config) ->
+    setup(Config),
+    MS = [{{key, #{foo => '$1'}},[],['$1']}],
+    %% Accidentally it is possible to use => instead of := in the fun head,
+    %% in compiled code.
+    %% Although this is not an intended behaviour it is kept to
+    %% maintain backwards compatibility.
+    MS = compile_and_run(<<"ets:fun2ms(fun({key, #{foo => V}}) -> V end)">>),
+    ok.
+
+map_pattern_from_shell(Config) when is_list(Config) ->
+    MS = [{{key, #{foo => '$1'}},[],['$1']}],
+    MS = do_eval("ets:fun2ms(fun({key, #{foo := V}}) -> V end)"),
+    ok.
+
+map_expr_in_head_from_shell(Config) when is_list(Config) ->
+    setup(Config),
+    MS = [{{key, #{foo => '$1'}},[],['$1']}],
+    %% Accidentally it is possible to use => instead of := in the fun head,
+    %% in compiled code. This behaviour is kept for backwards compatibility.
+
+    %% As a side-effect, it is also possible to do the same with
+    %% `transform_from_shell/3', if the AST of the shell fun is
+    %% created bypassing the linter. (The linter would prevent
+    %% constructing such invalid syntax, so normally this is not
+    %% possible in the Erlang shell)
+    MS = do_eval("ets:fun2ms(fun({key, #{foo => V}}) -> V end)"),
+    ok.
+
+map_exprs(Config) when is_list(Config) ->
+    setup(Config),
+    MSGuard = [{{key,'$1','$2'}, [{'=:=','$1',#{foo => '$2'}}], ['$1']}],
+    MSGuard = compile_and_run(
+                <<"ets:fun2ms(fun({key, V1, V2}) when V1 =:= #{foo => V2} -> V1 end)">>),
+    MSBody = [{{key,'$1'}, [], [#{foo => '$1'}]}],
+    MSBody = compile_and_run(
+                <<"ets:fun2ms(fun({key, V}) -> #{foo => V} end)">>),
+    ok.
+
+map_exprs_from_shell(Config) when is_list(Config) ->
+    setup(Config),
+    MSGuard = [{{key,'$1','$2'}, [{'=:=','$1',#{foo => '$2'}}], ['$1']}],
+    MSGuard = do_eval("ets:fun2ms(fun({key, V1, V2}) when V1 =:= #{foo => V2} -> V1 end)"),
+    MSBody = [{{key,'$1'}, [], [#{foo => '$1'}]}],
+    MSBody = do_eval("ets:fun2ms(fun({key, V}) -> #{foo => V} end)"),
+    ok.
+
+%% Tests matching on top level in head to give alias for object().
 top_match(Config) when is_list(Config) ->
-    ?line setup(Config),
-    ?line RD = <<"-record(a,{a,b}).">>,
-    ?line [{{a,3,'_'},[],['$_']}] = 
+    setup(Config),
+    RD = <<"-record(a,{a,b}).">>,
+    [{{a,3,'_'},[],['$_']}] =
 	compile_and_run(RD,
 			<<"ets:fun2ms(fun(A = #a{a=3}) -> A end)">>),
-    ?line [{{a,3,'_'},[],['$_']}] = 
+    [{{a,3,'_'},[],['$_']}] =
 	compile_and_run(RD,
 			<<"ets:fun2ms(fun(#a{a=3} = A) -> A end)">>),
-    ?line [{[a,b],[],['$_']}] = 
+    [{[a,b],[],['$_']}] =
 	compile_and_run(RD,
 			<<"dbg:fun2ms(fun(A = [a,b]) -> A end)">>),
-    ?line [{[a,b],[],['$_']}] = 
+    [{[a,b],[],['$_']}] =
 	compile_and_run(RD,
 			<<"dbg:fun2ms(fun([a,b] = A) -> A end)">>),
-    ?line expect_failure(RD,
+    expect_failure(RD,
 			 <<"ets:fun2ms(fun({a,A = {_,b}}) -> A end)">>),
-    ?line expect_failure(RD,
+    expect_failure(RD,
 			 <<"dbg:fun2ms(fun([a,A = {_,b}]) -> A end)">>),
-    ?line expect_failure(RD,
+    expect_failure(RD,
 			 <<"ets:fun2ms(fun(A#a{a = 2}) -> A end)">>),
     ok.
 
-multipass(suite) ->
-    [];
-multipass(doc) ->
-    ["Tests that multi-defined fields in records give errors."];
+%% Tests that multi-defined fields in records give errors.
 multipass(Config) when is_list(Config) ->
-    ?line setup(Config),
-    ?line RD = <<"-record(a,{a,b}).">>,
-    ?line expect_failure(RD,<<"ets:fun2ms(fun(A) -> #a{a=2,a=3} end)">>), 
-    ?line expect_failure(RD,<<"ets:fun2ms(fun(A) -> A#a{a=2,a=3} end)">>),
-    ?line expect_failure(RD,<<"ets:fun2ms(fun(A) when A =:= #a{a=2,a=3} ->",
+    setup(Config),
+    RD = <<"-record(a,{a,b}).">>,
+    expect_failure(RD,<<"ets:fun2ms(fun(A) -> #a{a=2,a=3} end)">>),
+    expect_failure(RD,<<"ets:fun2ms(fun(A) -> A#a{a=2,a=3} end)">>),
+    expect_failure(RD,<<"ets:fun2ms(fun(A) when A =:= #a{a=2,a=3} ->",
 			 " true end)">>), 
-    ?line expect_failure(RD,<<"ets:fun2ms(fun({A,B})when A =:= B#a{a=2,a=3}->",
+    expect_failure(RD,<<"ets:fun2ms(fun({A,B})when A =:= B#a{a=2,a=3}->",
 			 "true end)">>),
-    ?line expect_failure(RD,<<"ets:fun2ms(fun(#a{a=3,a=3}) -> true end)">>),
-    ?line compile_and_run(RD,<<"ets:fun2ms(fun(A) -> #a{a=2,b=3} end)">>), 
-    ?line compile_and_run(RD,<<"ets:fun2ms(fun(A) -> A#a{a=2,b=3} end)">>),
-    ?line compile_and_run(RD,<<"ets:fun2ms(fun(A) when A =:= #a{a=2,b=3} ->",
+    expect_failure(RD,<<"ets:fun2ms(fun(#a{a=3,a=3}) -> true end)">>),
+    compile_and_run(RD,<<"ets:fun2ms(fun(A) -> #a{a=2,b=3} end)">>),
+    compile_and_run(RD,<<"ets:fun2ms(fun(A) -> A#a{a=2,b=3} end)">>),
+    compile_and_run(RD,<<"ets:fun2ms(fun(A) when A =:= #a{a=2,b=3} ->",
 			 " true end)">>), 
-    ?line compile_and_run(RD,<<"ets:fun2ms(fun({A,B})when A=:= B#a{a=2,b=3}->",
+    compile_and_run(RD,<<"ets:fun2ms(fun({A,B})when A=:= B#a{a=2,b=3}->",
 			 "true end)">>),
-    ?line compile_and_run(RD,<<"ets:fun2ms(fun(#a{a=3,b=3}) -> true end)">>),
+    compile_and_run(RD,<<"ets:fun2ms(fun(#a{a=3,b=3}) -> true end)">>),
     ok.
 
 
-old_guards(suite) ->
-    [];
-old_guards(doc) ->
-    ["Tests that old type tests in guards are translated"];
+%% Test that old type tests in guards are translated.
 old_guards(Config) when is_list(Config) ->
-    ?line setup(Config),
+    setup(Config),
     Tests = [
 	     {atom,is_atom},
 	     {float,is_float},
@@ -469,7 +533,7 @@ old_guards(Config) when is_list(Config) ->
 	     {tuple,is_tuple},
 	     {binary,is_binary},
 	     {function,is_function}],
-    ?line lists:foreach(
+    lists:foreach(
 	    fun({Old,New}) ->
 		    Bin = list_to_binary([<<"ets:fun2ms(fun(X) when ">>,
 					  atom_to_list(Old),
@@ -482,15 +546,15 @@ old_guards(Config) when is_list(Config) ->
 		    end
 	    end,
 	    Tests),
-    ?line RD = <<"-record(a,{a,b}).">>,
-    ?line [{'$1',[{is_record,'$1',a,3}],[true]}] =
+    RD = <<"-record(a,{a,b}).">>,
+    [{'$1',[{is_record,'$1',a,3}],[true]}] =
 	compile_and_run(RD,
 			<<"ets:fun2ms(fun(X) when record(X,a) -> true end)">>),
-    ?line expect_failure
+    expect_failure
 	    (RD,
 	     <<"ets:fun2ms(fun(X) when integer(X) and constant(X) -> "
 	      "true end)">>),
-    ?line [{'$1',[{is_integer,'$1'},
+    [{'$1',[{is_integer,'$1'},
 		  {is_float,'$1'},
 		  {is_atom,'$1'},
 		  {is_list,'$1'},
@@ -511,18 +575,17 @@ old_guards(Config) when is_list(Config) ->
 			     >>),
     ok.
     
-autoimported(suite) ->
-    [];
-autoimported(doc) ->
-    ["Tests use of autoimported bif's used like erlang:'+'(A,B) in guards"
-     " and body."];
+%% Test use of autoimported BIFs used like erlang:'+'(A,B) in guards
+%% and body.
 autoimported(Config) when is_list(Config) ->
-    ?line setup(Config),
+    setup(Config),
     Allowed = [
 	       {abs,1},
 	       {element,2},
 	       {hd,1},
 	       {length,1},
+               {max,2},
+               {min,2},
 	       {node,0},
 	       {node,1},
 	       {round,1},
@@ -530,7 +593,7 @@ autoimported(Config) when is_list(Config) ->
 	       {tl,1},
 	       {trunc,1},
 	       {self,0},
-               %{float,1}, see float_1_function/1
+               %%{float,1}, see float_1_function/1
 	       {is_atom,1},
 	       {is_float,1},
 	       {is_integer,1},
@@ -547,8 +610,8 @@ autoimported(Config) when is_list(Config) ->
 	       {'or',2,infix},
 	       {'xor',2,infix},
 	       {'not',1},
-	       %{'andalso',2,infix},
-	       %{'orelse',2,infix},
+	       %%{'andalso',2,infix},
+	       %%{'orelse',2,infix},
 	       {'+',1},
 	       {'+',2,infix},
 	       {'-',1},
@@ -571,8 +634,8 @@ autoimported(Config) when is_list(Config) ->
 	       {'=:=',2,infix},
 	       {'/=',2,infix},
 	       {'=/=',2,infix}],
-    ?line RD = <<"-record(a,{a,b}).">>,
-    ?line lists:foreach(
+    RD = <<"-record(a,{a,b}).">>,
+    lists:foreach(
 	    fun({A,0}) ->
 		    L = atom_to_list(A),
 		    Bin1 = list_to_binary(
@@ -687,85 +750,76 @@ autoimported(Config) when is_list(Config) ->
 	    Allowed),
     ok.
 
-semicolon(suite) ->
-    [];
-semicolon(doc) ->
-    ["Tests semicolon in guards of match_specs."];
+%% Test semicolon in guards of match_specs.
 semicolon(Config) when is_list(Config) ->
-    ?line setup(Config),
-    ?line Res01 = compile_and_run
+    setup(Config),
+    Res01 = compile_and_run
 		   (<<"ets:fun2ms(fun(X) when is_integer(X); "
 		     "is_float(X) -> true end)">>),
-    ?line Res02 = compile_and_run
+    Res02 = compile_and_run
 		   (<<"ets:fun2ms(fun(X) when is_integer(X) -> true; "
 		     "(X) when is_float(X) -> true end)">>),
-    ?line Res01 = Res02,
-    ?line Res11 = compile_and_run
+    Res01 = Res02,
+    Res11 = compile_and_run
 		   (<<"ets:fun2ms(fun(X) when is_integer(X); "
 		     "is_float(X); atom(X) -> true end)">>),
-    ?line Res12 = compile_and_run
+    Res12 = compile_and_run
 		   (<<"ets:fun2ms(fun(X) when is_integer(X) -> true; "
 		     "(X) when is_float(X) -> true; "
 		     "(X) when is_atom(X) -> true end)">>),
-    ?line Res11 = Res12,
+    Res11 = Res12,
     ok.
     
     
-float_1_function(suite) ->
-    [];
-float_1_function(doc) ->
-    ["OTP-5297. The function float/1."];
+%% OTP-5297. The function float/1.
 float_1_function(Config) when is_list(Config) ->
-    ?line setup(Config),
+    setup(Config),
     RunMS = fun(L, MS) -> 
                     ets:match_spec_run(L, ets:match_spec_compile(MS)) 
             end,
-    ?line MS1 = compile_and_run
+    MS1 = compile_and_run
                   (<<"ets:fun2ms(fun(X) -> float(X) end)">>),
-    ?line [F1] = RunMS([3], MS1),
-    ?line true = is_float(F1) and (F1 == 3),
+    [F1] = RunMS([3], MS1),
+    true = is_float(F1) andalso F1 == 3,
                   
-    ?line MS1b = compile_and_run
+    MS1b = compile_and_run
                   (<<"dbg:fun2ms(fun(X) -> float(X) end)">>),
-    ?line [F2] = RunMS([3], MS1b),
-    ?line true = is_float(F2) and (F2 == 3),
+    [F2] = RunMS([3], MS1b),
+    true = is_float(F2) andalso F2 == 3,
                   
-    ?line MS2 = compile_and_run
+    MS2 = compile_and_run
             (<<"ets:fun2ms(fun(X) when is_pid(X) or float(X) -> true end)">>),
-    ?line [] = RunMS([3.0], MS2),
+    [] = RunMS([3.0], MS2),
 
-    ?line MS3 = compile_and_run
+    MS3 = compile_and_run
             (<<"dbg:fun2ms(fun(X) when is_pid(X); float(X) -> true end)">>),
-    ?line [true] = RunMS([3.0], MS3),
+    [true] = RunMS([3.0], MS3),
 
-    ?line MS4 = compile_and_run
+    MS4 = compile_and_run
             (<<"ets:fun2ms(fun(X) when erlang:float(X) > 1 -> big;"
                "              (_) -> small end)">>),
-    ?line [small,big] = RunMS([1.0, 3.0], MS4),
+    [small,big] = RunMS([1.0, 3.0], MS4),
 
-    ?line MS5 = compile_and_run
+    MS5 = compile_and_run
             (<<"ets:fun2ms(fun(X) when float(X) > 1 -> big;"
                "              (_) -> small end)">>),
-    ?line [small,big] = RunMS([1.0, 3.0], MS5),
+    [small,big] = RunMS([1.0, 3.0], MS5),
 
     %% This is the test from autoimported/1.
-    ?line [{'$1',[{is_float,'$1'}],[{float,'$1'}]}] = 
+    [{'$1',[{is_float,'$1'}],[{float,'$1'}]}] =
         compile_and_run
             (<<"ets:fun2ms(fun(X) when float(X) -> float(X) end)">>),
-    ?line [{'$1',[{float,'$1'}],[{float,'$1'}]}] =
+    [{'$1',[{float,'$1'}],[{float,'$1'}]}] =
         compile_and_run
            (<<"ets:fun2ms(fun(X) when erlang:'float'(X) -> "
               "erlang:'float'(X) end)">>),
     ok.
 
 
-action_function(suite) ->
-    [];
-action_function(doc) ->
-    ["Test all 'action functions'."];
+%% Test all 'action functions'.
 action_function(Config) when is_list(Config) ->
-    ?line setup(Config),
-    ?line [{['$1','$2'],[],
+    setup(Config),
+    [{['$1','$2'],[],
 	    [{set_seq_token,label,0},
 	     {get_seq_token},
 	     {message,'$1'},
@@ -778,7 +832,7 @@ action_function(Config) when is_list(Config) ->
 	    "message(X), "
 	    "return_trace(), "
 	    "exception_trace() end)">>),
-    ?line [{['$1','$2'],[],
+    [{['$1','$2'],[],
 	    [{process_dump},
 	     {enable_trace,send},
 	     {enable_trace,'$2',send},
@@ -791,7 +845,7 @@ action_function(Config) when is_list(Config) ->
 	    "enable_trace(Y, send), "
 	    "disable_trace(procs), "
 	    "disable_trace(Y, procs) end)">>),
-    ?line [{['$1','$2'],
+    [{['$1','$2'],
 	    [],
 	    [{display,'$1'},
 	     {caller},
@@ -807,6 +861,16 @@ action_function(Config) when is_list(Config) ->
 	    "silent(true), "
 	    "trace([send], [procs]), "
 	    "trace(Y, [procs], [send])  end)">>),
+    [{['$1','$2'],
+             [],
+             [{caller_line},
+              {current_stacktrace},
+              {current_stacktrace,3}]}] =
+        compile_and_run
+          (<<"dbg:fun2ms(fun([X,Y]) -> "
+             "caller_line(),"
+             "current_stacktrace(),"
+             "current_stacktrace(3) end)">>),
     ok.
 
 
@@ -819,9 +883,41 @@ eep37(Config) when is_list(Config) ->
                           "F()">>).
 
 
+otp_14454(Config) when is_list(Config) ->
+    setup(Config),
+    [{'$1',[],[{'band','$1',136}]}] =
+        compile_and_run(
+          <<"ets:fun2ms(fun(A) -> A band ( -(-17) bsl 3) end)">>),
+    [{'$1',[],[{'band','$1',136}]}] =
+        compile_and_run(
+          <<"ets:fun2ms(fun(A) -> A band ( erlang:'bsl'(-(-17), 3)) end)">>),
+    ok.
+
+
+otp_16824(Config) when is_list(Config) ->
+    setup(Config),
+    Prog = <<
+      "-module(tmp).\n",
+      "-include_lib(\"stdlib/include/ms_transform.hrl\").\n",
+      "-export([tmp/1]).\n\n",
+      "tmp(_) -> ets:fun2ms(fun(<<>>) -> 1 end).\n">>,
+    FN = temp_name(),
+    ok = file:write_file(FN, Prog),
+    {ok, Forms} = parse_file(FN),
+    {error,[{_, [{{5,25},ms_transform,_}]}], []} =
+        compile:forms(Forms, [return]),
+    ok.
+
+%% OTP-17186.
+unused_record(Config) when is_list(Config) ->
+    setup(Config),
+    Record = <<"-record(r, {f}).\n\n">>,
+    Expr = <<"ets:fun2ms(fun(#r{}) -> e end)">>,
+    [] = compile_ww(Record, Expr),
+    ok.
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-% Helpers
+%% Helpers
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
 setup(Config) ->
@@ -832,14 +928,13 @@ temp_name() ->
     Conf = get(mts_config),
     C = get(mts_tf_counter),
     put(mts_tf_counter,C+1),
-    filename:join([?config(priv_dir,Conf),
+    filename:join([proplists:get_value(priv_dir,Conf),
 		   "tempfile"++integer_to_list(C)++".tmp"]).
 
 
 expect_failure(Recs,Code) ->
     case (catch compile_and_run(Recs,Code)) of
 	      {'EXIT',_Foo} ->
-		  %erlang:display(_Foo),
 		  ok;
 	      Other ->
 		  exit({expected,failure,got,Other})
@@ -857,14 +952,18 @@ compile_and_run(Records,Expr) ->
     Expr/binary,".\n">>,
     FN=temp_name(),
     file:write_file(FN,Prog),
-    {ok,Forms} = epp:parse_file(FN,"",""),
+    {ok,Forms} = parse_file(FN),
     {ok,tmp,Bin} = compile:forms(Forms),
     code:load_binary(tmp,FN,Bin),
     tmp:tmp().
 
 compile_ww(Expr) ->
     compile_ww(<<>>,Expr).
+
 compile_ww(Records,Expr) ->
+    compile_ww(Records,Expr,[]).
+
+compile_ww(Records,Expr, Opts) ->
     Prog = <<
 	"-module(tmp).\n",
     "-include_lib(\"stdlib/include/ms_transform.hrl\").\n",
@@ -875,10 +974,9 @@ compile_ww(Records,Expr) ->
     Expr/binary,".\n">>,
     FN=temp_name(),
     file:write_file(FN,Prog),
-    {ok,Forms} = epp:parse_file(FN,"",""),
+    {ok,Forms} = parse_file(FN),
     {ok,tmp,_Bin,Wlist} = compile:forms(Forms,[return_warnings,
-					       nowarn_unused_vars,
-					       nowarn_unused_record]),
+					       nowarn_unused_vars | Opts]),
     Wlist.
 
 compile_no_ww(Expr) ->
@@ -889,16 +987,18 @@ compile_no_ww(Expr) ->
     Expr/binary,".\n">>,
     FN=temp_name(),
     file:write_file(FN,Prog),
-    {ok,Forms} = epp:parse_file(FN,"",""),
+    {ok,Forms} = parse_file(FN),
     {ok,tmp,_Bin,Wlist} = compile:forms(Forms,[return_warnings,
-					       nowarn_unused_vars,
-					       nowarn_unused_record]),
+					       nowarn_unused_vars]),
     Wlist.
+
+parse_file(FN) ->
+    epp:parse_file(FN, [{location, {1,1}}]).
 
 do_eval(String) ->
     {done,{ok,T,_},[]} = erl_scan:tokens(
 			   [],
 			   String++".\n",1),
     {ok,Tree} = erl_parse:parse_exprs(T),
-    {value,Res,[]} =  erl_eval:exprs(Tree,[]),
+    {value,Res,[]} =  erl_eval:exprs(Tree,[],none,none),
     Res.

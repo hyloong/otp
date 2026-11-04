@@ -1,8 +1,10 @@
 /*
  * %CopyrightBegin%
- * 
- * Copyright Ericsson AB 2001-2014. All Rights Reserved.
- * 
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Copyright Ericsson AB 2001-2025. All Rights Reserved.
+ *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
@@ -14,15 +16,17 @@
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  * See the License for the specific language governing permissions and
  * limitations under the License.
- * 
+ *
  * %CopyrightEnd%
  */
 #include <stdio.h>
+#include <string.h>
 #include <stdlib.h>
 #include <errno.h>
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <fcntl.h>
+#include <ctype.h>
 #ifndef __WIN32__
 #include <unistd.h>
 #endif
@@ -43,9 +47,9 @@ static int fd_to_erl;		/* File descriptor to Erlang. */
 
 static int packet_loop();
 static void ensure_buf_big_enough();
-static int readn();
+static int readn(int fd, unsigned char *buf, int len);
 static void reply(char* buf, unsigned size);
-static void dump();
+static void dump(unsigned char* buf, int sz, int max);
 
 void
 run_tests(char* argv0, TestCase test_cases[], unsigned number)
@@ -198,8 +202,8 @@ void free_packet(char* packet)
  * -----		----------------------------
  * [$b|Bytes]		{bytes, Bytes}
  * [$e]			eot
- * [$f]			test_server:fail()
- * [$f|Reason]		test_server:fail(Reason)
+ * [$f]			ct:fail()
+ * [$f|Reason]		ct:fail(Reason)
  * [$t|EncodedTerm]	{term, Term}
  * [$N]			'NULL'
  * [$m|Message]		io:format("~s", [Message])   (otherwise ignored)
@@ -211,7 +215,7 @@ void free_packet(char* packet)
  * you implement a test case entirely in C code.
  *
  * If the ok argument is zero, a [$f] reply will be sent to the
- * Erlang side (causing test_server:fail() to be called); otherwise,
+ * Erlang side (causing ct:fail() to be called); otherwise,
  * the atom 'eot' will be sent to Erlang.
  *
  * If you need to provide more details on a failure, use the fail() function.
@@ -251,23 +255,28 @@ do_report(file, line, ok)
 
 
 /*
- * This function causes a call to test_server:fail(Reason) on the
+ * This function causes a call to ct:fail(Reason) on the
  * Erlang side.
  */
 
-void do_fail(char* file, int line, char* reason)
+void do_fail(const char* file, int line, const char* reason, ...)
 {
+    va_list ap;
     char sbuf[2048];
+    char* sp = sbuf;
 
-    sbuf[0] = 'f';
-    sprintf(sbuf+1, "%s, line %d: %s", file, line, reason);
+    *sp++ = 'f';
+    sp += sprintf(sp, "%s, line %d: ", file, line);
+    va_start(ap, reason);
+    sp += vsprintf(sp, reason, ap);
+    va_end(ap);
     reply(sbuf, 1+strlen(sbuf+1));
 }
 
 /*
  * This function sends a message to the Erlang side.
  * The message will be written to the test servers log file,
- * but will otherwise be completly ignored.
+ * but will otherwise be completely ignored.
  */
 
 void message(char* format, ...)
@@ -403,3 +412,18 @@ dump(buf, sz, max)
     }
 }
 
+/* Own stupid strcmp as the standard strcmp seems to
+** cause valgrind false positives
+** "Conditional jump or move depends on uninitialised value(s)"
+*/
+int my_strcmp(const char *s1, const char *s2)
+{
+    while (1) {
+        int r = (*s1 - *s2);
+        if (r || !*s1) {
+            return r;
+        }
+        s1++;
+        s2++;
+    }
+}

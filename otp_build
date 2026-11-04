@@ -2,7 +2,9 @@
 #
 # %CopyrightBegin%
 #
-# Copyright Ericsson AB 2002-2014. All Rights Reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Copyright Ericsson AB 2002-2025. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -19,22 +21,26 @@
 # %CopyrightEnd%
 #
 
-# Expected autoconf version
-EXPECTED_AUTOCONF_VERSION=2.59
+USE_AUTOCONF_VERSION=2.72
+
+autoconf_aux_dirs="./erts/autoconf ./lib/common_test/test_server"
+
+install_sh_master="./make/autoconf/install-sh"
+config_guess_master="./make/autoconf/config.guess"
+config_sub_master="./make/autoconf/config.sub"
 
 # Global configuration variables
 #
-# NOTE: lazy_configure depends on '.' always being last directory
 if [ -z "$ONLY_ERTS" ]; then
-    AUTOCONF_SUBDIRS="lib lib/* lib/test_server/src"
+    AUTOCONF_SUBDIRS="lib lib/* lib/common_test/test_server"
 fi
-AUTOCONF_SUBDIRS="$AUTOCONF_SUBDIRS erts ."
+AUTOCONF_SUBDIRS="$AUTOCONF_SUBDIRS make erts"
 
 # `bootstrap_apps' should include application that are built, or
 # partly built in one of the bootstrap phases. Applications that
 # only get some static includes copied into the bootstrap directory
 # should not be included.
-bootstrap_apps="erts lib/asn1 lib/compiler lib/hipe lib/ic lib/kernel lib/parsetools lib/sasl lib/snmp lib/stdlib lib/syntax_tools"
+bootstrap_apps="erts lib/asn1 lib/compiler lib/erl_interface lib/kernel lib/jinterface lib/parsetools lib/sasl lib/snmp lib/stdlib lib/syntax_tools lib/wx"
 
 # We will quote a bit more than needed, but the important thing is that
 # all that needs quoting will be quoted...
@@ -43,16 +49,21 @@ DONT_QUOTE="A-Za-z0-9~/=_+-"
 # Utility functions
 usage ()
 {
-    echo "Available options (-a switch select all applications):"
-    echo "    setup [-a] [<configure parameters>] - does autoconf, configure and boot."
-    echo "    all [-a] <dir> - does autoconf, configure, boot, release"
+    echo "Available commands:"
+    echo "    setup [-a|-s|-t] [<configure parameters>] - does autoconf, configure and boot"
+    echo "    all [-a|-s|-t] <dir> - does autoconf, configure, boot, release"
     echo "    autoconf - (re)build the configure scripts"
     echo "    configure [<configure parameters>] - does the actual configuration"
-    echo "    boot [-a] - bootstraps and builds the system (after configure)"
+    echo "    boot [-a|-s|-t] - bootstraps and builds the system (after configure)"
     echo "    release <target_dir> - creates a small release to <target_dir>"
-    echo "    release [-a] <target_dir> - creates full release to <target_dir>"
-    echo "    smp [-a] - build an Erlang system, smp flavor only"
+    echo "    release [-a|-s|-t] <target_dir> - creates full release to <target_dir>"
     echo "    tests <dir> - Build testsuites to <dir>"
+    echo "    check [--help|...] - Perform various build checks. See --help for more info"
+    echo "                         and options."
+    echo ""
+    echo "-a builds all applications"
+    echo "-s builds a small system (default)"
+    echo "-t builds a tiny system"
     echo ""
     echo "These are for cleaning up an open source distribution"
     echo "with prebuilt files, so that it resembles the clean developers"
@@ -60,48 +71,29 @@ usage ()
     echo "    remove_prebuilt_files - create a minimal source tree"
     echo "    save_bootstrap - recreate primary bootstrap"
     echo ""
+    echo "Special targets for setting up the build environment:"
+    echo "    download_ex_doc             - download the correct ExDoc version from github"
+    echo "    update_ex_doc [--no-commit] - update and maybe commit new ex_doc version"
+    echo ""
+    echo "Special targets for setting up gdb tooling:"
+    echo "    download_gdb_tools             - download the correct gdb tooling version from github"
+    echo "    update_gdb_tools [--no-commit] - update and maybe commit new gdb tooling version"
+    echo ""
     echo "Special targets for Windows(tm) build:"
     echo "    debuginfo_win32 <dir> - adds debug emulator and pdb files to <dir>"
     echo "    installer_win32 <dir> - creates a windows installer from <dir>" 
     echo ""
     echo "Before trying to build on windows, consider the following option"
     echo "    env_win32 [<arch>] - echo environment settings for win32 with visual C++, use with eval"
-    echo "                         The optional <arch> can be x64 for 64bit Windows 7" 
-    echo "                         or x86 for 32bit Windows XP+"
+    echo "                         The optional <arch> can be x64 for 64bit Windows"
+    echo "                         or x86 for 32bit Windows"
     echo "    env_win64 - echo environment settings for win32 with visual C++, use with eval"
-    echo "                Note that env_win32 x64 gives the same result, Windows 7 64bit"
-    echo "    env_mingw32 - echo environment settings for win32 with MinGW, use with eval"
-    echo "                  - experimental!"
-    echo "    env_msys64 - echo environment settings for win32 with visual C++ running "
-    echo "                 msys and mingw, use with eval"
-    echo "                  - experimental!"
+    echo "                Note that env_win32 x64 gives the same result, Windows 64bit"
     echo ""
-    echo "Before trying to build for vxworks, consider the following option"
-    echo "    env_vxworks <cpu>  - echo environment settings for vxworks, use with eval"
-    echo ""
-    case $version_controller in
-	none)
-	    ;;
-	git)
-	    echo ""
-	    echo "update_primary [--no-commit] - build and maybe commit a new primary bootstrap"
-	    ;;
-    esac
-
-    case $version_controller in
-	none)
-	    ;;
-	git)
-	    echo ""
-	    echo "update_preloaded [--no-commit] - build and maybe commit the preloaded modules"
-	    ;;
-    esac
-}
-
-git_required ()
-{
-    echo "This operation must be run in a git repository."
-    exit 1
+    echo "update_primary [--no-commit]      - build and maybe commit a new primary bootstrap"
+    echo "update_preloaded [--no-commit]    - build and maybe commit the preloaded modules"
+    echo "update_deprecations [--no-commit] - build and maybe commit deprecations"
+    echo "update_configure [--no-commit]    - build and maybe commit configure scripts"
 }
 
 hide_vars ()
@@ -137,9 +129,9 @@ check_erltop ()
 {
         ERLTOP_FORCED=false
 	if [ "X$ERL_TOP" = "X" ]; then
-		if [ -f ./otp_build -a -f ./erts/autoconf/config.guess ]; then
+		if [ -f ./otp_build -a -f ./make/autoconf/config.guess ]; then
 		    ERLTOP_FORCED=true
-		    ERL_TOP=`/bin/pwd`
+		    ERL_TOP=`pwd`
 		    export ERL_TOP
 		else
 		    echo "The environment variable ERL_TOP must be set." >&2
@@ -189,16 +181,25 @@ set_config_flags ()
 	#   (in the cross compilation case the whole command line as well as
 	#   the cross configuration have been moved here). 
 
-	if target_contains free_source; then
-		CONFIG_FLAGS="$CONFIG_FLAGS --host=$TARGET"
-	fi
-	# Link SSL static for win32 binary distributions if not overridden
 	if target_contains win32; then
-	    XX=`echo $* | grep -v dynamic-ssl-lib`
-	    if [ "$*" = "$XX" ]; then 
-		CONFIG_FLAGS="--disable-dynamic-ssl-lib $CONFIG_FLAGS"
+		if [ "$CONFIG_SUBTYPE" = "win64" ]; then
+			build_type=local-x86_64-pc-windows
+			host_type=local-x86_64-pc-windows
+			target_type=local-x86_64-pc-windows
+		elif [ "$CONFIG_SUBTYPE" = "arm64" ]; then
+			build_type=local-aarch64-pc-windows
+			host_type=local-aarch64-pc-windows
+			target_type=local-aarch64-pc-windows
+		elif [ "$CONFIG_SUBTYPE" = "x64_arm64" ]; then
+			build_type=local-x86_64-pc-windows
+			host_type=local-aarch64-pc-windows
+			target_type=local-aarch64-pc-windows
+	    else
+			build_type=local-x86-pc-windows
+			host_type=local-x86-pc-windows
+			target_type=local-x86-pc-windows
 	    fi
-	    CONFIG_FLAGS="--build=$BUILDSYS build_alias=win32 --host=win32 --target=win32 $CONFIG_FLAGS" 
+	    CONFIG_FLAGS="--build=$build_type --host=$host_type --target=$target_type $CONFIG_FLAGS" 
 	fi
 	    
 
@@ -215,142 +216,100 @@ set_config_flags ()
 
 NL="\
 "
-create_lib_configure_in()
+
+do_update_configure ()		
 {
-    cd $ERL_TOP
+    get_do_commit $1
 
-    # Multiple versions of autoconf generates code that
-    # don't work on all platforms (e.g. SunOS 5.8) if
-    # sub directories are soft links. Internally at Ericsson
-    # some OTP application directories are soft links.
-    # An added "/." solves this problem.
-
-    sdirs=
-    for lib_app in $bootstrap_apps; do
-	case $lib_app in
-	    lib/*)
-		if [ -f "$lib_app/configure.in" ]; then
-		    app=`echo "$lib_app" | sed "s|lib/\(.*\)|\1|"`
-		    sdirs="${sdirs}test ! -f $app/configure || AC_CONFIG_SUBDIRS($app/.)${NL}"
-		fi;;
-	    *)
-		;;
-	esac
-    done
-
-    sed_bootstrap="s%@BOOTSTRAP_CONFIGURE_APPS@%$sdirs%g"
-
-    sdirs=
-    for lib_app in lib/*; do
-	is_bapp=false
-	for bapp in $bootstrap_apps; do
-	    test $bapp != $lib_app || { is_bapp=true; break; }
-	done
-	if [ $is_bapp = false ] && [ -f "$lib_app/configure.in" ]; then
-	    app=`echo "$lib_app" | sed "s|lib/\(.*\)|\1|"`
-	    sdirs="${sdirs}    test ! -f $app/configure || AC_CONFIG_SUBDIRS($app/.)${NL}"
-	fi
-    done
-
-    sed_non_bootstrap="s%@NON_BOOTSTRAP_CONFIGURE_APPS@%$sdirs%g"
-    
-    rm -f lib/configure.in
-    sed "$sed_bootstrap;$sed_non_bootstrap" > lib/configure.in < lib/configure.in.src || {
-	echo "Failed to create lib/configure.in"
+    export AUTOCONF_VERSION="$USE_AUTOCONF_VERSION"
+    ac_ver_blob=`autoconf --version`
+    if [ $? -ne 0 ]; then
+	echo "ERROR: Failed to check autoconf version! You need to have autoconf of version $USE_AUTOCONF_VERSION in path." 1>&2
 	exit 1
-    }
-}
+    fi
+    ac_ver=`echo $ac_ver_blob | sed "s|[^0-9]*\([0-9][^ \t\n]*\).*|\1|"`
+    case $ac_ver in
+	$USE_AUTOCONF_VERSION)
+	    ;;
+	*)
+	    echo "ERROR: autoconf of version $ac_ver found in path! You need to have autoconf of version $USE_AUTOCONF_VERSION in path." 1>&2
+	    exit 1;;
+    esac
+    
+    out_files=
 
-distribute_config_helpers ()
-{
-    aclocal_dirs=". ./lib/erl_interface ./lib/odbc ./lib/wx ./lib/megaco"
-    autoconf_aux_dirs="./lib/common_test/priv/auxdir ./lib/erl_interface/src/auxdir ./lib/test_server/src ./lib/wx/autoconf"
-
-    aclocal_master="./erts/aclocal.m4"
-    install_sh_master="./erts/autoconf/install-sh"
-    config_guess_master="./erts/autoconf/config.guess"
-    config_sub_master="./erts/autoconf/config.sub"
-
-    for dir in $aclocal_dirs; do
-	$install_sh_master -m 644 -t "$dir" "$aclocal_master"
-    done
+    install_sh=`basename $install_sh_master`
+    config_guess=`basename $config_guess_master`
+    config_sub=`basename $config_sub_master`
 
     for dir in $autoconf_aux_dirs; do
 	$install_sh_master -d "$dir"
 	$install_sh_master -t "$dir" "$install_sh_master"
+	out_files="$out_files $dir/$install_sh"
 	$install_sh_master -t "$dir" "$config_guess_master"
+	out_files="$out_files $dir/$config_guess"
 	$install_sh_master -t "$dir" "$config_sub_master"
+	out_files="$out_files $dir/$config_sub"
     done
-}
-
-do_autoconf ()		
-{
-        create_lib_configure_in
-	distribute_config_helpers
-
-        if target_contains win32; then
-	    # Select the correct autoconf on cygwin
-	    save_want_autoconf_ver=$WANT_AUTOCONF_VER
-	    WANT_AUTOCONF_VER=$EXPECTED_AUTOCONF_VERSION
-	    export WANT_AUTOCONF_VER
-	fi
-	exp_ac_vsn=$EXPECTED_AUTOCONF_VERSION
-	ac_vsn_blob=`autoconf --version`
-	ac_vsn=`echo x$ac_vsn_blob | sed "s|[^0-9]*\([0-9][^ \t\n]*\).*|\1|"`
-	case "$ac_vsn" in
-	    $exp_ac_vsn)
-		;;
-	    *)
-		echo "***************************************************" 1>&2
-		echo "***************************************************" 1>&2
-		echo "*** WARNING: System might fail to configure or"      1>&2
-		echo "***          might be erroneously configured"        1>&2
-		echo "***          since autoconf version $ac_vsn is used" 1>&2
-		echo "***          instead of version $exp_ac_vsn!"        1>&2
-		echo "***************************************************" 1>&2
-		echo "***************************************************" 1>&2
-		;;
-	esac
-
-	if [ ! -z "$OVERRIDE_CONFIGURE" ]; then
-	    echo "Autoconf disabled on target $TARGET, but is performed on host" >&2
-	    # We still use erts configure for erl_interface and VxWorks
-	    case "$TARGET" in
-		*vxworks*)
-		    AUTOCONF_SUBDIRS=`echo $AUTOCONF_SUBDIRS | \
-					sed -e 's,lib/erl_interface,,' \
-					    -e 's,lib/gs,,' \
-					    -e 's,lib/megaco,,'`
-		    ;;
-	    esac
-	fi
 	
-	hide_vars OVERRIDE_TARGET TARGET
-	TARGET=$BUILDSYS
-	export TARGET
+    hide_vars OVERRIDE_TARGET TARGET
+    TARGET=$BUILDSYS
+    export TARGET
 
-	for d in $AUTOCONF_SUBDIRS; do
-	    file="$d/configure.in"
-	    [ -f "$file" ] || continue
-	    echo ""
-	    [ ! -d "$d/autom4te.cache" ] || {
-		echo "=== cleaning $d/autom4te.cache"
-		rm -f "$d"/autom4te.cache/*
-	    }
-	    echo "=== running autoconf in $d"
-	    ( cd "$d" && autoconf ) || exit 1
-	    chdr=`cat "$file" | sed -n "s|.*\(AC_CONFIG_HEADER\).*|\1|p"`
-	    [ "$chdr" = "AC_CONFIG_HEADER" ] || continue
-	    echo "=== running autoheader in $d"
-	    ( cd "$d" && autoheader ) || exit 1
-	done
+    for d in $AUTOCONF_SUBDIRS; do
+	file="$d/configure.ac"
+	[ -f "$file" ] || continue
+	echo ""
+	[ ! -d "$d/autom4te.cache" ] || {
+	    echo "=== cleaning $d/autom4te.cache"
+	    rm -f "$d"/autom4te.cache/*
+	}
+	[ ! -f "$d/configure" ] || {
+	    echo "=== cleaning $d/configure"
+	    rm -f "$d"/configure
+	}
 
-	restore_vars OVERRIDE_TARGET TARGET
+	echo "=== running autoconf in $d"
+	( cd "$d" && autoconf -B "$ERL_TOP/make/autoconf") || exit 1
+	out_files="$out_files $d/configure"
+	chdr=`cat "$file" | sed -n "s|.*\(AC_CONFIG_HEADER\).*|\1|p"`
+	[ "$chdr" = "AC_CONFIG_HEADER" ] || continue
+	echo "=== running autoheader in $d"
+	( cd "$d" && autoheader -B "$ERL_TOP/make/autoconf") || exit 1
+	out_files="$out_files $d/config.h.in"
+    done
 
-        if target_contains win32; then
-	    WANT_AUTOCONF_VER=$save_want_autoconf_ver
-	    export WANT_AUTOCONF_VER
+    echo ""
+    echo "=== creating ./configure"
+    bootstrap_lib_apps=`echo $bootstrap_apps | sed "s|erts||g"`
+    cat "$ERL_TOP/configure.src" \
+	| sed "s|@BOOTSTRAP_LIB_APP_DIRS@|$bootstrap_lib_apps|g" \
+	      > "$ERL_TOP/configure"
+    chmod +x "$ERL_TOP/configure"
+    out_files="./configure $out_files"
+
+    restore_vars OVERRIDE_TARGET TARGET
+
+    if [ $do_commit != true ]; then
+	echo "Updated: $out_files"
+    else
+	git add $out_files
+	if [ $? -ne 0 ]; then
+	    echo "Failed to stage files for commit" 1>&2
+	    exit 1
 	fi
+	git diff --cached --quiet
+	if [ $? -eq 0 ]; then
+	    echo "No files changed, so nothing to commit."
+	else
+            git commit --no-verify -m 'Update configure scripts'
+	    if [ $? -ne 0 ]; then
+		echo "Failed to commit files" 1>&2
+		exit 1
+	    fi
+	    echo "Updated configure scripts!"
+	fi
+    fi
 }
 
 run_configure ()
@@ -412,8 +371,8 @@ try_cross_configure ()
 
 	    test "X$build_value" != "X" || build_value="$BUILDSYS"
 
-	    build_sys=`$ERL_TOP/erts/autoconf/config.sub "$build_value"` || exit 1
-	    host_sys=`$ERL_TOP/erts/autoconf/config.sub "$host_value"` || exit 1
+	    build_sys=`"$ERL_TOP/make/autoconf/config.sub" "$build_value"` || exit 1
+	    host_sys=`"$ERL_TOP/make/autoconf/config.sub" "$host_value"` || exit 1
 
 	    
 	    test "$host_sys" = "$build_sys" || cross_configure=yes
@@ -523,137 +482,14 @@ do_configure ()
     # Get `erl_build_tool_vars'
     . "$ERL_TOP/erl-build-tool-vars.sh" || exit 1
 
-    if [ ! -z "$OVERRIDE_CONFIGURE" ]; then
-	case $TARGET in
-	    vxworks_*)
-		( cd erts/autoconf && \
-		  $ERL_TOP/erts/autoconf/configure.vxworks $TARGET )
-		  echo "Configuring for build system too..." >&2
-		  hide_vars OVERRIDE_TARGET TARGET
-		  TARGET=$BUILDSYS
-		  export TARGET
-		  set_config_flags "$@"
-		  run_configure "$@"
-		  restore_vars OVERRIDE_TARGET TARGET;;
-	    *)
-		echo "Unexpected target when ordinary configure is" \
-			"overridden" >&2
-		echo 'check if $OVERRIDE_CONFIGURE and $OVERRIDE_TAGET' \
-		        'environments are correct.' >&2
-		exit 1;;
-	esac
-    else
-	maybe_copy_static_cache
-	try_cross_configure "$@"
-	if [ $cross_configure = no ]; then
-	    CONFIG_FLAGS=
-	    set_config_flags "$@"
-	    run_configure "$@"
-	fi
-    fi
-}
-
-do_lazy_configure ()
-{
-    setup_make
-    if [ "x$OVERRIDE_TARGET" != "x" -a "x$OVERRIDE_TARGET" != "xwin32" ]; then
-	echo "Not supported for cross compilation" >&2
-	exit 1
-    fi
     maybe_copy_static_cache
-    CONFIG_FLAGS=
-    set_config_flags "$@"
-    CONFIGURE_FLAGS="$@"
-    [ "$CONFIG_FLAGS" = "" ] || CONFIGURE_FLAGS="$CONFIG_FLAGS $CONFIGURE_FLAGS"
-    for c_dir in $AUTOCONF_SUBDIRS; do
-	if test -f $ERL_TOP/$c_dir/configure.in; then
-	    dir=$ERL_TOP/$c_dir
-	    echo ""
-	    echo "=== Begin configuring $dir"
-	    xc_dep= ;
-	    xcs_dep= ;
-	    test -d $dir/$TARGET || mkdir $dir/$TARGET
-	    test -f $dir/aclocal.m4 && xc_dep="$xcs_dep $dir/aclocal.m4"
-	    test -f $dir/acsite.m4 && xc_dep="$xcs_dep $dir/acsite.m4"
-	    test x$c_dir = x"erts" && xcs_dep="$xcs_dep $dir/config.h.in"
-	    $MAKE -f $ERL_TOP/make/lazy_configure.mk                         \
-		MAKE="$MAKE" TARGET=$TARGET                                  \
-		ERL_TOP=$ERL_TOP                                             \
-		CONFIGURE_FLAGS="$CONFIGURE_FLAGS"                           \
-		CONFIGURE_DIR=$dir                                           \
-		EXTRA_CONFIGURE_DEPENDENCIES=$xc_dep                         \
-		EXTRA_CONFIG_STATUS_DEPENDENCIES=$xcs_dep                    \
-		EXPECTED_AUTOCONF_VERSION=$EXPECTED_AUTOCONF_VERSION         \
-		lazy_configure
-	    echo "=== Done configuring $dir"
-	    echo ""
-	fi
-    done
-}
-
-do_lazy_configure_clean ()
-{
-    setup_make
-    if [ "x$OVERRIDE_TARGET" != "x" -a "x$OVERRIDE_TARGET" != "xwin32" ]; then
-	echo "Not supported for cross compilation" >&2
-	exit 1
+    try_cross_configure "$@"
+    if [ $cross_configure = no ]; then
+	CONFIG_FLAGS=
+	set_config_flags "$@"
+	run_configure "$@"
     fi
-    for c_dir in $AUTOCONF_SUBDIRS; do
-	if test -f $ERL_TOP/$c_dir/configure.in; then
-	    dir=$ERL_TOP/$c_dir
-	    echo ""
-	    echo "=== Begin cleaning configure in $dir"
-	    xc_dep= ;
-	    xcs_dep= ;
-	    test -d $dir/$TARGET || mkdir $dir/$TARGET
-	    test -f $dir/aclocal.m4 && xc_dep="$xcs_dep $dir/aclocal.m4"
-	    test -f $dir/acsite.m4 && xc_dep="$xcs_dep $dir/acsite.m4"
-	    test x$c_dir = x"erts" && xcs_dep="$xcs_dep $dir/config.h.in"
-	    $MAKE -f $ERL_TOP/make/lazy_configure.mk                         \
-		MAKE="$MAKE" TARGET=$TARGET                                  \
-		ERL_TOP=$ERL_TOP                                             \
-		CONFIGURE_DIR=$dir                                           \
-		EXPECTED_AUTOCONF_VERSION=$EXPECTED_AUTOCONF_VERSION         \
-		lazy_configure_clean
-	    echo "=== Done cleaning configure in $dir"
-	    echo ""
-	fi
-    done
-
 }
-
-do_lazy_configure_target_clean ()
-{
-    setup_make
-    if [ "x$OVERRIDE_TARGET" != "x" -a "x$OVERRIDE_TARGET" != "xwin32" ]; then
-	echo "Not supported for cross compilation" >&2
-	exit 1
-    fi
-    for c_dir in $AUTOCONF_SUBDIRS; do
-	if test -f $ERL_TOP/$c_dir/configure.in; then
-	    dir=$ERL_TOP/$c_dir
-	    echo ""
-	    echo "=== Begin target cleaning configure in $dir"
-	    xc_dep= ;
-	    xcs_dep= ;
-	    test -d $dir/$TARGET || mkdir $dir/$TARGET
-	    test -f $dir/aclocal.m4 && xc_dep="$xcs_dep $dir/aclocal.m4"
-	    test -f $dir/acsite.m4 && xc_dep="$xcs_dep $dir/acsite.m4"
-	    test x$c_dir = x"erts" && xcs_dep="$xcs_dep $dir/config.h.in"
-	    $MAKE -f $ERL_TOP/make/lazy_configure.mk                         \
-		MAKE="$MAKE" TARGET=$TARGET                                  \
-		ERL_TOP=$ERL_TOP                                             \
-		CONFIGURE_DIR=$dir                                           \
-		EXPECTED_AUTOCONF_VERSION=$EXPECTED_AUTOCONF_VERSION         \
-		lazy_configure_target_clean
-	    echo "=== Done target cleaning configure in $dir"
-	    echo ""
-	fi
-    done
-
-}
-
-    
 
 echo_setenv ()
 {
@@ -679,7 +515,7 @@ echo_env_erltop ()
     if [ X"$ERL_TOP" = X"" -o "$ERLTOP_FORCED" = "true" ]; then
 	if [ -f ./otp_build ]; then
 	    # Seems to be current directory...
-	    echo_setenv ERL_TOP `/bin/pwd` ';'
+	    echo_setenv ERL_TOP `pwd` ';'
 	else
 	    echo "You need to either set ERL_TOP first or stand in the same" \ 
 		"directory as this script resides in." >&2
@@ -710,74 +546,9 @@ echo_envinfo ()
     fi
 }
 
-echo_env_vxworks ()
-{
-    if [ -z "$1" ]; then 
-	echo "env_vxworks requires CPU architecture as parameter (ppc603, ppc860 etc)." >&2
-	exit 1
-    fi
-    echo_env_erltop
-    echo_setenv OVERRIDE_CONFIGURE true ';'
-    echo_setenv OVERRIDE_TARGET vxworks_$1
-    echo_envinfo
-}
-
-echo_env_win32 ()
-{
-    #echo_envinfo
-    if [ X"$SHELL" = X"" ]; then
-	echo "You need to export the shell variable first," \
-		"for bourne-like shells, type:" >&2
-	echo 'export SHELL' >&2
-	echo "and for csh-like shells, type:" >&2
-	echo 'setenv SHELL $SHELL' >&2
-	echo " - then try again." >&2
-	exit 1
-    fi
-    echo_env_erltop
-    # Try to cope with paths containing unexpected things like stray 
-    # mixed paths (c:/something/bin) and quotes. Only C and D drive
-    # handled.
-    CCYGPATH=`cygpath c:\\`
-    DCYGPATH=`cygpath d:\\`
-    P2=`echo :$PATH | \
-	sed "s,\",,g;s,:[cC]:,:$CCYGPATH,g;s,:[dD]:,:$DCYGPATH,g;s,^:,,"`
-    P3=""
-    save_ifs=$IFS
-    IFS=:
-    for p in $P2; do
-	if [ -d "$p" ]; then
-	    C1="`(cygpath -d $p 2>/dev/null || cygpath -w $p)`" 2> /dev/null
-	    C2=`cygpath "$C1" 2> /dev/null` 2> /dev/null
-	else
-	    C2=""
-	fi
-	if [ ! -z "$C2" ]; then
-	    if [ -z "$P3" ];then 
-		P3="$C2"
-	    else 
-		P3="$P3:$C2"
-	    fi
-	fi
-    done
-    IFS=$save_ifs
-    WIN32_WRAPPER_PATH="$ERL_TOP/erts/etc/win32/cygwin_tools/vc:$ERL_TOP/erts/etc/win32/cygwin_tools"
-
-    
-    echo_setenv OVERRIDE_TARGET win32 ';'
-    echo_setenv CC cc.sh ';'
-    echo_setenv CXX cc.sh ';'
-    echo_setenv AR ar.sh ';'
-    echo_setenv RANLIB true ';'
-    if [ -f "$ERL_TOP/erts/autoconf/win32.config.cache.static" ]; then
-	echo_setenv OVERRIDE_CONFIG_CACHE_STATIC  "$ERL_TOP/erts/autoconf/win32.config.cache.static" ';'
-    fi
-    echo_setenv OVERRIDE_CONFIG_CACHE "$ERL_TOP/erts/autoconf/win32.config.cache" ';'
-    echo_setenv WIN32_WRAPPER_PATH "$WIN32_WRAPPER_PATH" ';'
-    echo_setenv PATH "$WIN32_WRAPPER_PATH:$P3" ';'
-    echo_envinfo
-}
-
+#
+#  Cygwin build without microsoft visual C++ (dead?)
+#
 echo_env_mingw32 ()
 {
     #echo_envinfo
@@ -854,8 +625,9 @@ echo_env_mingw32 ()
 # N.B. In Erlang, and the build system, win32 means windows, so we keep
 # everything as terget win32, but add the CONFIG_SUBTYPE win64, which can
 # be handled by configure, setting WINDOWS_64BIT in headers and such
-echo_env_win64 ()
+echo_env_cygwin ()
 {
+    X64=$1
     #echo_envinfo
     if [ X"$SHELL" = X"" ]; then
 	echo "You need to export the shell variable first," \
@@ -895,24 +667,33 @@ echo_env_win64 ()
     IFS=$save_ifs
     WIN32_WRAPPER_PATH="$ERL_TOP/erts/etc/win32/cygwin_tools/vc:$ERL_TOP/erts/etc/win32/cygwin_tools"
 
-    
     echo_setenv OVERRIDE_TARGET win32 ';'
-    echo_setenv CONFIG_SUBTYPE win64 ';'
+    if [ X"$X64" = X"true" ]; then
+        echo_setenv CONFIG_SUBTYPE win64 ';'
+    fi
     echo_setenv CC cc.sh ';'
     echo_setenv CXX cc.sh ';'
     echo_setenv AR ar.sh ';'
     echo_setenv RANLIB true ';'
-    if [ -f "$ERL_TOP/erts/autoconf/win64.config.cache.static" ]; then
-	echo_setenv OVERRIDE_CONFIG_CACHE_STATIC  "$ERL_TOP/erts/autoconf/win64.config.cache.static" ';'
+    if [ X"$X64" = X"true" ]; then
+        if [ -f "$ERL_TOP/make/autoconf/win64.config.cache.static" ]; then
+	    echo_setenv OVERRIDE_CONFIG_CACHE_STATIC  "$ERL_TOP/make/autoconf/win64.config.cache.static" ';'
+        fi
+        echo_setenv OVERRIDE_CONFIG_CACHE "$ERL_TOP/make/autoconf/win64.config.cache" ';'
+    else
+        if [ -f "$ERL_TOP/make/autoconf/win32.config.cache.static" ]; then
+	    echo_setenv OVERRIDE_CONFIG_CACHE_STATIC  "$ERL_TOP/make/autoconf/win32.config.cache.static" ';'
+        fi
+        echo_setenv OVERRIDE_CONFIG_CACHE "$ERL_TOP/make/autoconf/win32.config.cache" ';'
     fi
-    echo_setenv OVERRIDE_CONFIG_CACHE "$ERL_TOP/erts/autoconf/win64.config.cache" ';'
     echo_setenv WIN32_WRAPPER_PATH "$WIN32_WRAPPER_PATH" ';'
     echo_setenv PATH "$WIN32_WRAPPER_PATH:$P3" ';'
     echo_envinfo
 }
 
-echo_env_msys32 ()
+echo_env_msys ()
 {
+    X64=$1
     #echo_envinfo
     if [ X"$SHELL" = X"" ]; then
 	echo "You need to export the shell variable first," \
@@ -952,23 +733,32 @@ echo_env_msys32 ()
     WIN32_WRAPPER_PATH="$ERL_TOP/erts/etc/win32/msys_tools/vc:$ERL_TOP/erts/etc/win32/msys_tools"
 
     echo_setenv OVERRIDE_TARGET win32 ';'
+    if [ X"$X64" = X"true" ]; then
+        echo_setenv CONFIG_SUBTYPE win64 ';'
+    fi
     echo_setenv CC cc.sh ';'
     echo_setenv CXX cc.sh ';'
     echo_setenv AR ar.sh ';'
     echo_setenv RANLIB true ';'
-    if [ -f "$ERL_TOP/erts/autoconf/win32.config.cache.static" ]; then
-	echo_setenv OVERRIDE_CONFIG_CACHE_STATIC  "$ERL_TOP/erts/autoconf/win32.config.cache.static" ';'
+    if [ X"$X64" = X"true" ]; then
+        if [ -f "$ERL_TOP/make/autoconf/win64.config.cache.static" ]; then
+	    echo_setenv OVERRIDE_CONFIG_CACHE_STATIC  "$ERL_TOP/make/autoconf/win64.config.cache.static" ';'
+        fi
+        echo_setenv OVERRIDE_CONFIG_CACHE "$ERL_TOP/make/autoconf/win64.config.cache" ';'
+    else
+        if [ -f "$ERL_TOP/make/autoconf/win32.config.cache.static" ]; then
+	    echo_setenv OVERRIDE_CONFIG_CACHE_STATIC  "$ERL_TOP/make/autoconf/win32.config.cache.static" ';'
+        fi
+        echo_setenv OVERRIDE_CONFIG_CACHE "$ERL_TOP/make/autoconf/win32.config.cache" ';'
     fi
-
-    echo_setenv OVERRIDE_CONFIG_CACHE "$ERL_TOP/erts/autoconf/win32.config.cache" ';'
     echo_setenv WIN32_WRAPPER_PATH "$WIN32_WRAPPER_PATH" ';'
     echo_setenv PATH "$WIN32_WRAPPER_PATH:$P3" ';'
     echo_envinfo
 }
 
-
-echo_env_msys64 ()
+echo_env_wsl ()
 {
+    ARCH=$1
     #echo_envinfo
     if [ X"$SHELL" = X"" ]; then
 	echo "You need to export the shell variable first," \
@@ -980,49 +770,79 @@ echo_env_msys64 ()
 	exit 1
     fi
     echo_env_erltop
-    # Try to cope with paths containing unexpected things like stray 
-    # mixed paths (c:/something/bin) and quotes. Only C and D drive
-    # handled.
-    P2=`echo :$PATH | \
-	sed "s,\",,g;s,:\([a-zA-Z]\):,:/\L\1,g;s,^:,,"`
-    P3=""
-    save_pwd=`pwd`
-    save_ifs=$IFS
-    IFS=:
-    for p in $P2; do
-	if [ -d "$p" ]; then
-	    C1=`(cd "$p" && cmd //C "for %i in (".") do @echo %~fsi")`
-	    C2=`echo "$C1" | sed 's,^\([a-zA-Z]\):\\\\,/\L\1/,;s,\\\\,/,g'`
-	else
-	    C2=""
-	fi
-	if [ ! -z "$C2" ]; then
-	    if [ -z "$P3" ];then 
-		P3="$C2"
-	    else 
-		P3="$P3:$C2"
-	    fi
-	fi
-    done
-    IFS=$save_ifs
-    WIN32_WRAPPER_PATH="$ERL_TOP/erts/etc/win32/msys_tools/vc:$ERL_TOP/erts/etc/win32/msys_tools"
 
+    WIN32_WRAPPER_PATH="$ERL_TOP/erts/etc/win32/wsl_tools/vc:$ERL_TOP/erts/etc/win32/wsl_tools"
+
+    if [ ! -n "`lookup_prog_in_path cl`" ]; then
+        if [ X"$ARCH" = X"x64" ]; then
+            setup_win32_cl_env "x64" `wslpath -a -m erts/etc/win32/wsl_tools/SetupWSLcross.bat`
+        elif [ X"$ARCH" = X"arm64" ]; then
+            setup_win32_cl_env "arm64" `wslpath -a -m erts/etc/win32/wsl_tools/SetupWSLcross.bat`
+        elif [ X"$ARCH" = X"x64_arm64" ]; then
+            setup_win32_cl_env "x64_arm64" `wslpath -a -m erts/etc/win32/wsl_tools/SetupWSLcross.bat`
+        else
+            setup_win32_cl_env "x86" `wslpath -a -m erts/etc/win32/wsl_tools/SetupWSLcross.bat`
+        fi
+    fi
     echo_setenv OVERRIDE_TARGET win32 ';'
-    echo_setenv CONFIG_SUBTYPE win64 ';'
+    if [ X"$ARCH" = X"x64" ]; then
+        echo_setenv CONFIG_SUBTYPE win64 ';'
+    elif [ X"$ARCH" = X"arm64" -o X"$ARCH" = X"x64_arm64" ]; then
+        echo_setenv CONFIG_SUBTYPE "$ARCH" ';'
+    fi
+    echo_setenv WSLcross true ';'
     echo_setenv CC cc.sh ';'
     echo_setenv CXX cc.sh ';'
     echo_setenv AR ar.sh ';'
     echo_setenv RANLIB true ';'
-    if [ -f "$ERL_TOP/erts/autoconf/win64.config.cache.static" ]; then
-	echo_setenv OVERRIDE_CONFIG_CACHE_STATIC  "$ERL_TOP/erts/autoconf/win64.config.cache.static" ';'
+    if [ X"$ARCH" = X"x64" ]; then
+        if [ -f "$ERL_TOP/make/autoconf/win64.config.cache.static" ]; then
+	    echo_setenv OVERRIDE_CONFIG_CACHE_STATIC  "$ERL_TOP/make/autoconf/win64.config.cache.static" ';'
+        fi
+        echo_setenv OVERRIDE_CONFIG_CACHE "$ERL_TOP/make/autoconf/win64.config.cache" ';'
+    elif [ X"$ARCH" = X"arm64" -o X"$ARCH" = X"x64_arm64" ]; then
+        if [ -f "$ERL_TOP/make/autoconf/win64-$ARCH.config.cache.static" ]; then
+	    echo_setenv OVERRIDE_CONFIG_CACHE_STATIC  "$ERL_TOP/make/autoconf/win64-$ARCH.config.cache.static" ';'
+        fi
+        echo_setenv OVERRIDE_CONFIG_CACHE "$ERL_TOP/make/autoconf/win64-$ARCH.config.cache" ';'
+    else
+        if [ -f "$ERL_TOP/make/autoconf/win32.config.cache.static" ]; then
+	    echo_setenv OVERRIDE_CONFIG_CACHE_STATIC  "$ERL_TOP/make/autoconf/win32.config.cache.static" ';'
+        fi
+        echo_setenv OVERRIDE_CONFIG_CACHE "$ERL_TOP/make/autoconf/win32.config.cache" ';'
     fi
-
-    echo_setenv OVERRIDE_CONFIG_CACHE "$ERL_TOP/erts/autoconf/win64.config.cache" ';'
     echo_setenv WIN32_WRAPPER_PATH "$WIN32_WRAPPER_PATH" ';'
-    echo_setenv PATH "$WIN32_WRAPPER_PATH:$P3" ';'
+    echo_setenv PATH "$WIN32_WRAPPER_PATH:$PATH" ';'
     echo_envinfo
 }
 
+
+setup_win32_cl_env ()
+{
+    eval `cmd.exe /c $2 $1`
+    echo_setenv INCLUDE "$INCLUDE" ';'
+    echo_setenv LIB "$LIB" ';'
+    echo_setenv LIBPATH "$LIBPATH" ';'
+    echo_setenv VCToolsRedistDir "$VCToolsRedistDir" ';'
+    echo_setenv WSLENV "$WSLENV:WSLPATH/l:CLASSPATH/l" ';'
+
+    save_ifs=$IFS
+    IFS=:
+    WSLPATH=""
+    for p in $PATH; do
+	if [ -d "$p" ]; then
+	    case "$p" in
+		/mnt/c/*)
+		    WSLPATH=$WSLPATH:$p
+		    ;;
+		*)
+		    ;;
+	    esac
+	fi
+    done
+    IFS=$save_ifs
+    echo_setenv WSLPATH "$WSLPATH" ';'
+}
 
 lookup_prog_in_path ()
 {
@@ -1065,13 +885,47 @@ setup_make ()
 
 get_do_commit ()
 {
-    if [ "x$1" = "x" ]; then
-	do_commit=true
-    elif [ "$1" = "--no-commit" ]; then
-	do_commit=false
+    case $version_controller in
+	git)
+	    if [ "x$1" = "x" ]; then
+		do_commit=true
+	    elif [ "$1" = "--no-commit" ]; then
+		do_commit=false
+	    else
+		echo "Unknown option '$1'" 1>&2
+		exit 1
+	    fi;;
+	none)
+	    do_commit=false;;
+    esac
+}
+  
+do_deprecations_git ()
+{
+    get_do_commit $1
+    setup_make
+
+    $MAKE MAKE="$MAKE" BOOTSTRAP_ROOT=$BOOTSTRAP_ROOT TARGET=$TARGET \
+        deprecations || exit 1;
+
+    $MAKE MAKE="$MAKE" BOOTSTRAP_ROOT=$BOOTSTRAP_ROOT TARGET=$TARGET \
+        primary_bootstrap || exit 1;
+
+    if [ $do_commit = true ]; then
+        git add -A bootstrap/lib/stdlib/ebin/otp_internal.beam
+        git add -A lib/stdlib/src/otp_internal.erl
+        git commit --no-verify -m 'Update deprecations'
+        echo ""
+        echo "Deprecations updated and committed."
+        echo ""
     else
-	echo "Unknown option '$1'" 1>&2
-	exit 1
+        echo ""
+        echo "Deprecations updated. Use the following commands to stage "
+        echo "changed files:"
+        echo ""
+        echo "$ git add bootstrap/lib/stdlib/ebin/otp_internal.beam"
+        echo "$ git add lib/stdlib/src/otp_internal.erl"
+        echo ""
     fi
 }
   
@@ -1093,10 +947,14 @@ do_primary_git ()
 	    -name '*.app' -o -name '*.appup' |
         xargs git reset HEAD
 	git commit --no-verify -m 'Update primary bootstrap'
+        git checkout HEAD -- bootstrap
 	echo "Primary bootstrap updated and commited."
     else
 	echo ""
-	echo "Primary bootstrap rebuilt. Use \"git add bootstrap/...\" to stage changed files."
+	echo "Primary bootstrap rebuilt."
+	if [ $version_controller = git ]; then
+	    echo "Use \"git add bootstrap/...\" to stage changed files."
+	fi
 	echo ""
     fi
 }
@@ -1105,16 +963,19 @@ do_update_prel_git ()
 {
     get_do_commit $1
     setup_make
-    (cd $ERL_TOP/erts/preloaded/src && $MAKE MAKE="$MAKE" BOOTSTRAP_ROOT=$BOOTSTRAP_ROOT TARGET=$TARGET clean)
+    (cd "$ERL_TOP/erts/preloaded/src" && $MAKE MAKE="$MAKE" BOOTSTRAP_ROOT=$BOOTSTRAP_ROOT TARGET=$TARGET clean)
     $MAKE MAKE="$MAKE" BOOTSTRAP_ROOT=$BOOTSTRAP_ROOT TARGET=$TARGET preloaded || exit 1
-    (cd $ERL_TOP/erts/preloaded/src && $MAKE MAKE="$MAKE" BOOTSTRAP_ROOT=$BOOTSTRAP_ROOT TARGET=$TARGET copy)
+    (cd "$ERL_TOP/erts/preloaded/src" && $MAKE MAKE="$MAKE" BOOTSTRAP_ROOT=$BOOTSTRAP_ROOT TARGET=$TARGET copy)
     if [ $do_commit = true ]; then
-	git add -A $ERL_TOP/erts/preloaded/ebin/*.beam
+	git add -A "$ERL_TOP/erts/preloaded/ebin/*.beam"
 	git commit -m 'Update preloaded modules'
 	echo "Preloaded updated and commited."
     else
 	echo ""
-	echo "Preloaded rebuilt. Use \"git add erts/preloaded/ebin/...\" to stage changed beam files."
+	echo "Preloaded rebuilt."
+	if [ $version_controller = git ]; then
+	    echo "Use \"git add erts/preloaded/ebin/...\" to stage changed beam files."
+	fi
 	echo ""
     fi
 }
@@ -1137,7 +998,9 @@ do_boot ()
     fi
 
     # Build it (including bootstrap if not cross compiling)
-    $MAKE MAKE="$MAKE" BOOTSTRAP_ROOT=$BOOTSTRAP_ROOT TARGET=$TARGET all || exit 1
+    $MAKE MAKE="$MAKE" BOOTSTRAP_ROOT=$BOOTSTRAP_ROOT TARGET=$TARGET \
+        TYPE="$TYPE" FLAVOR="$FLAVOR" \
+        all || exit 1
 }
 
 do_boot_emu ()
@@ -1146,7 +1009,9 @@ do_boot_emu ()
     if [ X`$MAKE is_cross_configured` = Xyes ]; then
 	TARGET=`$MAKE target_configured`
     fi
-    $MAKE MAKE="$MAKE" BOOTSTRAP_ROOT=$BOOTSTRAP_ROOT TARGET=$TARGET emulator || exit 1
+    $MAKE MAKE="$MAKE" BOOTSTRAP_ROOT=$BOOTSTRAP_ROOT TARGET=$TARGET \
+        TYPE="$TYPE" FLAVOR="$FLAVOR" \
+        emulator || exit 1
 }
 
 do_release ()
@@ -1156,6 +1021,7 @@ do_release ()
 	TARGET=`$MAKE target_configured`
     fi
     $MAKE MAKE="$MAKE" BOOTSTRAP_ROOT=$BOOTSTRAP_ROOT TARGET=$TARGET \
+        TYPE="$TYPE" FLAVOR="$FLAVOR" \
 	RELEASE_ROOT=$1 OTP_STRICT_INSTALL=$OTP_STRICT_INSTALL \
 	release || exit 1
 }
@@ -1173,30 +1039,244 @@ do_tests ()
     fi
 }
 
+do_check ()
+{
+    exec $ERL_TOP/scripts/otp_build_check "$@"
+}
+
+do_download_ex_doc ()
+{
+    SHASUM_FORMAT=
+
+    ## Download ex_doc and place in $ERL_TOP/bin folder
+    curl -s -L "$(cat "$ERL_TOP/make/ex_doc_link")" > "$ERL_TOP/bin/ex_doc"
+    chmod +x "$ERL_TOP/bin/ex_doc"
+
+    choose_available_shasum     # sets the SHASUM_FORMAT
+    check_shasum "ex_doc" "$ERL_TOP/bin" "$ERL_TOP/make"
+
+    echo "Downloaded ex_doc to $ERL_TOP/bin/ex_doc"
+}
+
+do_download_gdb_tools ()
+{
+    set_common_vars
+
+    if [ ! -d "$GDB_TOOLS_INSTALL_PATH" ]
+    then
+        clone_gdb_tools
+    fi
+
+    cwd=$(pwd);
+
+    cd "$GDB_TOOLS_INSTALL_PATH" || exit 1
+
+    CURRENT_GDB_VERSION=$(git log HEAD --oneline --no-abbrev-commit -n1 | cut -d" " -f1)
+
+    if [ "$CURRENT_GDB_VERSION" != "$GDB_TOOLS_VSN" ]; then
+        echo "Setting up gdb_tools"
+        git fetch gdb_tools > /dev/null || exit 1
+        git checkout "$GDB_TOOLS_VSN" > /dev/null || exit 1
+    else
+        exit 0
+    fi
+
+    cd "$cwd" || exit 1
+    
+    echo "Downloaded gdb-tools for Erlang/OTP $OTP_VERSION"
+
+    exit 0
+}
+
+set_common_vars() {
+    GDB_TOOLS_INSTALL_PATH="$ERL_TOP/erts/etc/unix/gdb-tools"
+    GDB_TOOLS_VSN_PATH="$ERL_TOP/make"
+    GDB_REPO=$(cat "$GDB_TOOLS_VSN_PATH/gdb_tools_link" | grep -v "^//")
+
+    # Version of gdb-tools to download
+    GDB_TOOLS_VSN=$(cat "$GDB_TOOLS_VSN_PATH/gdb_tools_vsn" | grep -v "^//")
+
+    # SHASUM_FORMAT has values: sha256sum, sha1sum, shasum
+    SHASUM_FORMAT=
+
+    OTP_VERSION=
+    set_otp_version
+}
+
+clone_gdb_tools ()
+{
+    echo "Downloading gdb-tools for Erlang/OTP $OTP_VERSION"
+    echo "git clone --origin gdb_tools $GDB_REPO $GDB_TOOLS_INSTALL_PATH"
+    (git clone --origin gdb_tools "$GDB_REPO" "$GDB_TOOLS_INSTALL_PATH" > /dev/null 2>&1)  || {
+        echo "Downloading gdb_tools failed. Please check your source tree, and report this error."
+        exit 1
+        }
+}
+
+clean_file ()
+{
+    rm -rf "$1"
+}
+
+set_otp_version ()
+{
+    OTP_VERSION=$(cat $ERL_TOP/OTP_VERSION | cut -d. -f1)
+    if [ $OTP_VERSION -le 24 ]
+    then
+        echo "OTP version $OTP_VERSION is too old. Please update to a newer OTP version"
+        exit 1
+    fi
+}
+
+do_update_gdb_tools ()
+{
+    get_do_commit $1
+    set_common_vars
+
+    if [ $do_commit = true ] && test -n "$(git status --porcelain --untracked-files=no)"
+    then
+        echo "'otp_build update_gdb_tools' will create a commit."
+        echo "Git's working directory is not clean."
+        echo "Please stash or commit the working directory before proceeding."
+        exit 1
+    fi
+
+
+    if grep "rc" "$ERL_TOP/OTP_VERSION" > /dev/null
+    then
+        if [ -d "$GDB_TOOLS_INSTALL_PATH" ]
+        then
+            cd "$GDB_TOOLS_INSTALL_PATH" && \
+                git fetch $GDB_REPO && \
+                GDB_TOOLS_VSN=$(git log gdb_tools/master --oneline --no-abbrev-commit -n1 | cut -d" " -f1) && \
+                cat <<EOF > "$ERL_TOP/make/gdb_tools_vsn"
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: 2024 Ericsson and the Erlang/OTP contributors
+$GDB_TOOLS_VSN
+EOF
+        else
+            echo "Please, download gdb_tools invoking the command: \`otp_build download_gdb_tools\`"
+            exit 1
+        fi
+    else
+        echo "Please look in repo: $GDB_REPO the commit sha you are interested."
+        echo "Copy that commit into $ERL_TOP/make/gdb_tools_vsn and run \`otp_build download_gdb_tools\`"
+        exit 1
+    fi
+
+    out_files=  # why is this needed. it was needed for elixir
+
+    echo "Successfully updated gdb_tools"
+    if [ $do_commit != true ]; then
+        echo "Updated: make/gdb_tools_vsn make/jit-reader.c.sha256sum"
+    else
+        set_common_vars
+        git add "$ERL_TOP/make/gdb_tools_vsn" \
+                "$GDB_TOOLS_VSN_PATH/jit-reader.c.sha256sum" \
+                "$GDB_TOOLS_VSN_PATH/jit-reader.h.sha256sum" > /dev/null
+        git commit -m  "Updated gdb_tools version to $GDB_TOOLS_VSN" > /dev/null
+    fi
+    echo "Run \`otp_build download_gdb_tools\` to complete the installation of the update"
+}
+
+choose_available_shasum ()
+{
+    if command -v sha256sum > /dev/null; then
+        SHASUM_FORMAT="sha256sum"
+    elif command -v sha1sum > /dev/null; then
+        SHASUM_FORMAT="sha1sum"
+    elif command -v shasum > /dev/null; then
+        # shasum produces the same sha as sha1sum.
+        SHASUM_FORMAT="sha1sum"
+    else
+        echo "Neither sha1sum nor sha256sum nor shasum found" >&2
+        exit 1
+    fi
+}
+
+# $1: expected file,
+#     e.g., `jit-reader.c`, `ex_doc`
+# $2: path to expeted file,
+#     e.g., `$ERL_TOP/bin`, which is where `ex_doc` is found.
+#     makes easy to find errors in the path.
+# $3: path where shasum lives
+#     e.g., `$ERL_TOP/make` in case of sha256sum and sha1sum files.
+check_shasum()
+{
+    case $SHASUM_FORMAT in
+        "sha256sum" )
+            if ! (cd "$3" && sha256sum -c "$1.$SHASUM_FORMAT" > /dev/null); then
+                echo "The sha256sum check of $2/$1 failed!" >&2
+                exit 1
+            fi;;
+        "sha1sum" )
+            if ! (cd "$3" && sha1sum -c "$1.$SHASUM_FORMAT" > /dev/null); then
+                echo "The sha1sum check of $2/$1 failed!" >&2
+                exit 1
+            fi;;
+        "shasum" )
+            if ! (cd "$3" && shasum -a 1 -c "$1.$SHASUM_FORMAT" > /dev/null); then
+                echo "The shasum check of $2/$1 failed!" >&2
+                exit 1
+            fi
+    esac
+}
+
+## Update make/ex_doc_link, make/ex_doc.sha256sum and make/ex_doc.sha1sum
+do_update_ex_doc ()
+{
+    get_do_commit $1
+
+    OTP_VERSION=$(awk -F. '{ print $1 }' "$ERL_TOP/OTP_VERSION")
+    EX_DOC_VSN=$(curl --silent -qI https://github.com/elixir-lang/ex_doc/releases/latest | awk -F '/' '/^location/ {print  substr($NF, 1, length($NF)-1)}')
+    if grep "rc" "$ERL_TOP/OTP_VERSION" > /dev/null || curl --silent -Li "https://github.com/elixir-lang/ex_doc/releases/download/${EX_DOC_VSN}/ex_doc_otp_${OTP_VERSION}" > /dev/null; then
+        OTP_VERSION="$(($OTP_VERSION-1))"
+    fi
+    if command -v sha1sum > /dev/null && command -v sha256sum > /dev/null; then
+        echo "https://github.com/elixir-lang/ex_doc/releases/download/${EX_DOC_VSN}/ex_doc_otp_${OTP_VERSION}" > "$ERL_TOP/make/ex_doc_link"
+        echo "${EX_DOC_VSN}" > "$ERL_TOP/make/ex_doc_vsn"
+        curl -sL "https://github.com/elixir-lang/ex_doc/releases/download/${EX_DOC_VSN}/ex-doc-otp-${OTP_VERSION}.sha256sum" | sed 's:ex_doc.*$:../bin/ex_doc:' > "$ERL_TOP/make/ex_doc.sha256sum"
+        curl -sL "https://github.com/elixir-lang/ex_doc/releases/download/${EX_DOC_VSN}/ex-doc-otp-${OTP_VERSION}.sha1sum" | sed 's:ex_doc.*$:../bin/ex_doc:' > "$ERL_TOP/make/ex_doc.sha1sum"
+        if do_download_ex_doc; then
+
+            out_files=
+
+            ## do_download_ex_doc checked sha1sum, we check sha256sum here to make sure
+            ## both are correct.
+            if ! (cd "$ERL_TOP/make" && sha256sum --status -c "ex_doc.sha256sum"); then
+                echo "The sha256sum check of $ERL_TOP/bin/ex_doc failed!" >&2
+                exit 1
+            fi
+            echo "Successfully updated ex_doc"
+            if [ $do_commit != true ]; then
+                echo "Updated: make/ex_doc_link make/ex_doc_vsn make/ex_doc_link.sha256sum make/ex_doc_link.sha1sum"
+            else
+                git add $ERL_TOP/make/ex_doc_link $ERL_TOP/make/ex_doc_vsn  $ERL_TOP/make/ex_doc.sha256sum $ERL_TOP/make/ex_doc.sha1sum
+                git commit -m  "Updated ex_doc version to ${EX_DOC_VSN}"
+            fi
+        fi
+    else
+        echo "You need to have both sha1sum and sha256sum installed to update ex_doc"
+        exit 1
+    fi
+}
+
 do_debuginfo_win32 ()
 {
     setup_make
-    (cd erts/emulator && $MAKE MAKE="$MAKE" TARGET=$TARGET FLAVOR=smp debug &&\
-	$MAKE MAKE="$MAKE" TARGET=$TARGET FLAVOR=plain debug) || exit 1
+    (cd erts/emulator && $MAKE MAKE="$MAKE" TARGET=$TARGET debug) || exit 1
     if [ -z "$1" ]; then
-	RELDIR=$ERL_TOP/release/$TARGET
+       RELDIR="$ERL_TOP/release/$TARGET"
     else
-	RELDIR="$1"
+       RELDIR="$1"
     fi
-    BINDIR=$ERL_TOP/bin/$TARGET
-    EVSN=`grep '^VSN' erts/vsn.mk | sed 's,^VSN.*=[^0-9]*\([0-9].*\)$,@\1,g;s,^[^@].*,,g;s,^@,,g'`
-    for f in beam.debug.dll beam.debug.smp.dll beam.pdb beam.smp.pdb erl.pdb werl.pdb erlexec.pdb; do
-	if [ -f $BINDIR/$f ]; then
-	    rm -f $RELDIR/erts-$EVSN/bin/$f
-	    cp $BINDIR/$f $RELDIR/erts-$EVSN/bin/$f
-	fi
-    done
+    (cd erts/emulator && $MAKE release RELEASE_ROOT="$RELDIR" MAKE="$MAKE" TARGET=$TARGET TYPE=debug) || exit 1
 }
 
 do_installer_win32 ()
 {
     setup_make
-    installer_dir=$ERL_TOP/erts/etc/win32/nsis
+    installer_dir="$ERL_TOP/erts/etc/win32/nsis"
     (cd $installer_dir; $MAKE MAKE="$MAKE" TARGET=$TARGET TESTROOT=$1 release) || exit 1
 }
 
@@ -1240,7 +1320,7 @@ do_copy_primary_bootstrap ()
     cp -f $lib_src/compiler/ebin/*.beam $bootstrap/lib/compiler/ebin
 
     # bootstrap bin
-    if [ $bootstrap_src_top != $ERL_TOP ]; then
+    if [ $bootstrap_src_top != "$ERL_TOP" ]; then
 	test -d $bootstrap/bin || mkdir -p  $bootstrap/bin
 	cp -f $bootstrap_src_top/bin/* $bootstrap/bin
     fi
@@ -1249,22 +1329,22 @@ do_copy_primary_bootstrap ()
 
 do_save_bootstrap ()
 {
-    if [ ! -f $ERL_TOP/prebuilt.files ]; then
+    if [ ! -f "$ERL_TOP/prebuilt.files" ]; then
 	echo "This is not a pre-built source distribution" 1>&2
 	exit 1
     fi
-    if  [ -d $ERL_TOP/bootstrap/lib ]; then
+    if  [ -d "$ERL_TOP/bootstrap/lib" ]; then
 	echo "Bootstrap already exist" 1>&2
 	exit 1
     fi
 
-    do_copy_primary_bootstrap $ERL_TOP $ERL_TOP
+    do_copy_primary_bootstrap "$ERL_TOP" "$ERL_TOP"
 }
 
 do_remove_prebuilt_files ()
 {
     do_save_bootstrap
-    for file in $ERL_TOP/`cat $ERL_TOP/prebuilt.files` ; do
+    for file in "$ERL_TOP"/`cat "$ERL_TOP/prebuilt.files"` ; do
 	rm -f $file
     done
 }
@@ -1273,7 +1353,7 @@ do_remove_prebuilt_files ()
 
 check_erltop
 
-cd $ERL_TOP
+cd "$ERL_TOP"
 
 determine_version_controller
 
@@ -1287,7 +1367,7 @@ unset ${erl_otp_flags}
 # Target first guess, won't necessarily hold, may be changed for 
 # certain parameters.
 if [ X"$TARGET" = X"" ]; then
-	TARGET=`$ERL_TOP/erts/autoconf/config.guess`
+	TARGET=`"$ERL_TOP/make/autoconf/config.guess"`
 fi
 BUILDSYS=$TARGET
 
@@ -1314,8 +1394,13 @@ case $TARGET in
 		'the command'
 	    exit 1
 	fi;;
-	*)
-	;;
+    *)
+        if [ -x /bin/wslpath -a X"$OVERRIDE_TARGET" = X"" \
+                -a X"$1" != X"env_win32" -a X"$1" != X"env_msys32" -a X"$1" != X"env_msys64" ]; then
+            echo "Building linux binary; if you intended to cross build for win32 (x64) use"  >&2
+            echo '   eval `./otp_build env_win32 x64`\n' >&2
+        fi
+        ;;
 esac
 
 if [ ! -z "$OVERRIDE_TARGET" ]; then
@@ -1339,74 +1424,69 @@ if [ X"$1" = X"" ]; then
 fi
 
 if [ X"$2" = X"-a" ]; then
-    minus_a_flag=true
+    minus_x_flag=true
     OTP_SMALL_BUILD=
-else
+elif [ X"$2" = X"-s" ]; then
+    minus_x_flag=true
     OTP_SMALL_BUILD=true
-    minus_a_flag=false
+elif [ X"$2" = X"-t" ]; then
+    minus_x_flag=true
+    OTP_TINY_BUILD=true
+else
+    minus_x_flag=false
+    OTP_SMALL_BUILD=true
 fi
-export OTP_SMALL_BUILD
+export OTP_SMALL_BUILD OTP_TINY_BUILD
 
-TYPE=
+TYPE=$TYPE
 case "$1" in
  	all)
- 		do_autoconf; 
  		do_configure; 
  		do_boot;
- 		if [ $minus_a_flag = true ]; then 
+		if [ $minus_x_flag = true ]; then
  		    shift
  		fi;
  		do_release "$2";;
 	setup)
 		shift;
-		if [ $minus_a_flag = true ]; then 
+		if [ $minus_x_flag = true ]; then
 		    shift
 		fi;
-		do_autoconf; 
 		do_configure "$@";
 		do_boot;;
-	lazy_setup)
-		shift;
-		if [ $minus_a_flag = true ]; then 
-		    shift
-		fi;
-		do_lazy_configure "$@";
-		do_boot;;
 	autoconf)
-		do_autoconf;;
+	    echo ""
+	    echo "*** It is not necessary to execute './otp_build autoconf' anymore! ***"
+	    echo ""
+	    echo "All configure scripts have been committed in the repository and are"
+	    echo "therefore always available. If you need to update them, execute"
+	    echo "'./otp_build update_configure [--no-commit]'. Ensure that you have"
+	    echo "autoconf version $USE_AUTOCONF_VERSION in your PATH before updating the configure"
+	    echo "scritps."
+	    echo ""
+	    echo "The only effect of executing './otp_build autoconf' is printing of this"
+	    echo "message."
+	    echo ""
+	    exit 0;;
 	configure)
 		shift;
 		do_configure "$@";;
-	lazy_configure)
-		shift;
-		do_lazy_configure "$@";;
-	lazy_configure_clean)
-		shift;
-		do_lazy_configure_clean;;
-	lazy_configure_target_clean)
-		shift;
-		do_lazy_configure_target_clean;;
 	opt)
 		do_boot;;
-	plain|smp)
-		if [ $minus_a_flag = false ]; then 
+	smp)
+		if [ $minus_x_flag = false ]; then
 		    TYPE=opt
 		fi;
 		FLAVOR=$1
-		if [ $FLAVOR = opt ]; then
-		    FLAVOR=plain
-		fi
 		do_boot;;
+	update_configure)
+	    do_update_configure "$2";;
+	update_deprecations)
+	        do_deprecations_git "$2";;
 	update_primary)
-		case $version_controller in
-		    git) do_primary_git "$2";;
-		    none) git_required ;;
-		esac ;;
+	        do_primary_git "$2";;
 	update_preloaded)
-		case $version_controller in
-		    git) do_update_prel_git "$2";;
-		    none) git_required ;;
-		esac ;;
+	        do_update_prel_git "$2";;
         primary)
 	        echo "Primary bootstrap is under version control since R13";
 		echo "Use update_primary if you really are";
@@ -1416,12 +1496,12 @@ case "$1" in
         emulator)
 	        do_boot_emu;;
 	release)
-		if [ $minus_a_flag = true ]; then 
+		if [ $minus_x_flag = true ]; then
 		    shift
 		fi;
 		do_release "$2";;
 	tests)
-		if [ $minus_a_flag = true ]; then 
+		if [ $minus_x_flag = true ]; then
 		    shift
 		fi;
 		do_tests "$2";;
@@ -1430,43 +1510,74 @@ case "$1" in
         save_bootstrap)
 		do_save_bootstrap;;
         copy_primary_bootstrap)
-		do_copy_primary_bootstrap $2 $3;;
+	        do_copy_primary_bootstrap $2 $3;;
+        download_gdb_tools)
+            do_download_gdb_tools;;
+        update_gdb_tools)
+            do_update_gdb_tools $2;;
+        download_ex_doc)
+                do_download_ex_doc;;
+        update_ex_doc)
+                do_update_ex_doc $2;;
 	installer_win32)
-		if [ $minus_a_flag = true ]; then 
+		if [ $minus_x_flag = true ]; then
 		    shift
 		fi;
 		do_installer_win32 "$2";;
 	debuginfo_win32)
-		if [ $minus_a_flag = true ]; then 
+		if [ $minus_x_flag = true ]; then
 		    shift
 		fi;
 		do_debuginfo_win32 "$2";;
 	env_win32)
-	        if [ x"$2" = x"x64" -o x"$2" = x"amd64" ]; then
-		    if [ -x /usr/bin/msysinfo ]; then
-			echo_env_msys64
-		    else
-			echo_env_win64
-		    fi
+		if [ x"$2" = x"x64" -o x"$2" = x"amd64" ]; then
+			ISX64=true
+			WSL_ARCH=x64
+		elif [ x"$2" = x"arm64" ]; then
+			ISX64=false
+			WSL_ARCH=arm64
+		elif [ x"$2" = x"x64_arm64" ]; then
+			ISX64=false
+			WSL_ARCH=x64_arm64
 		else
-		    if [ -x /usr/bin/msysinfo ]; then
-			echo_env_msys32
-		    else
-			echo_env_win32
-		    fi
+			ISX64=false
+			WSL_ARCH=x86
+		fi
+		if [ -x /bin/wslpath ]; then
+			echo_env_wsl $WSL_ARCH
+		elif [ -x /usr/bin/msys-?.0.dll ]; then
+			echo_env_msys $ISX64
+		else
+			echo_env_cygwin $ISX64
 		fi;;
 	env_mingw32)
 		echo_env_mingw32;;
 	env_win64)
-		echo_env_win64;;
+		if [ -x /bin/wslpath ]; then
+			if [ x"$2" = x"arm64" ]; then
+				WSL_ARCH=arm64
+			elif [ x"$2" = x"x64_arm64" ]; then
+				WSL_ARCH=x64_arm64
+			else
+				WSL_ARCH=x64
+			fi
+			echo_env_wsl $WSL_ARCH
+		elif [ -x /usr/bin/msys-?.0.dll ]; then
+			echo_env_msys true
+		else
+			echo_env_cygwin true
+		fi;;
+	env_msys32)
+		echo_env_msys;;
 	env_msys64)
-		echo_env_msys64;;
-	env_vxworks)
-		echo_env_vxworks "$2";;
+		echo_env_msys true;;
 	env_cross)
 		echo_env_cross "$2";;
         env_bootstrap)
 	        echo_env_bootstrap;;
+	check)
+		shift;
+		do_check "$@";;
 	*)
 		usage;;
 esac

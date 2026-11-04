@@ -1,8 +1,10 @@
 %%
 %% %CopyrightBegin%
-%% 
-%% Copyright Ericsson AB 2015-2015. All Rights Reserved.
-%% 
+%%
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2015-2025. All Rights Reserved.
+%%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
 %% You may obtain a copy of the License at
@@ -14,22 +16,34 @@
 %% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 %% See the License for the specific language governing permissions and
 %% limitations under the License.
-%% 
+%%
 %% %CopyrightEnd%
 %%
 %%
 -module(httpd_custom).
+-moduledoc false.
 
--export([response_header/1, request_header/1]).
--export([customize_headers/3]).
+-export([response_header/1, request_header/1, response_default_headers/0]).
+-export([customize_headers/3, response_default_headers/1]).
 
--include_lib("inets/src/inets_app/inets_internal.hrl").
+-include("../inets_app/inets_internal.hrl").
+
+-behaviour(httpd_custom_api).
+
+%%--------------------------------------------------------------------
+%% Behavior API -----------------------------------
+%%--------------------------------------------------------------------
 
 response_header(Header) -> 
     {true, httpify(Header)}.
 request_header(Header) -> 
     {true, Header}.
+response_default_headers() ->
+    [].
 
+%%--------------------------------------------------------------------
+%% Internal API  -----------------------------------
+%%--------------------------------------------------------------------
 customize_headers(?MODULE, Function, Arg) ->
     ?MODULE:Function(Arg);
 customize_headers(Module, Function, Arg) ->
@@ -43,6 +57,20 @@ customize_headers(Module, Function, Arg) ->
 	    ?MODULE:Function(Arg)
     end.
 
+response_default_headers(?MODULE) ->
+    response_default_headers();
+response_default_headers(Module) ->
+    try Module:response_default_headers() of
+	Defaults ->
+	    [{http_util:to_lower(Key), Value} ||  {Key, Value} <- Defaults, 
+						  is_list(Key), is_list(Value)]
+    catch
+	_:_ ->
+	    ?MODULE:response_default_headers()
+    end.
+%%--------------------------------------------------------------------
+%% Internal functions -----------------------------------
+%%--------------------------------------------------------------------
 httpify({Key0, Value}) ->
     %% make sure first letter is capital (defacto standard)
     Words1 = string:tokens(Key0, "-"),

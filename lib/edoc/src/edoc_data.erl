@@ -1,21 +1,35 @@
 %% =====================================================================
-%% This library is free software; you can redistribute it and/or modify
-%% it under the terms of the GNU Lesser General Public License as
-%% published by the Free Software Foundation; either version 2 of the
-%% License, or (at your option) any later version.
+%% %CopyrightBegin%
 %%
-%% This library is distributed in the hope that it will be useful, but
-%% WITHOUT ANY WARRANTY; without even the implied warranty of
-%% MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
-%% Lesser General Public License for more details.
+%% SPDX-License-Identifier: Apache-2.0 OR LGPL-2.1-or-later
 %%
-%% You should have received a copy of the GNU Lesser General Public
-%% License along with this library; if not, write to the Free Software
-%% Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307
-%% USA
+%% Copyright Ericsson AB 2009-2026. All Rights Reserved.
+%% Copyright 2003 Richard Carlsson
 %%
+%% Licensed under the Apache License, Version 2.0 (the "License");
+%% you may not use this file except in compliance with the License.
+%% You may obtain a copy of the License at
+%%
+%%     http://www.apache.org/licenses/LICENSE-2.0
+%%
+%% Unless required by applicable law or agreed to in writing, software
+%% distributed under the License is distributed on an "AS IS" BASIS,
+%% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+%% See the License for the specific language governing permissions and
+%% limitations under the License.
+%%
+%% Alternatively, you may use this file under the terms of the GNU Lesser
+%% General Public License (the "LGPL") as published by the Free Software
+%% Foundation; either version 2.1, or (at your option) any later version.
+%% If you wish to allow use of your version of this file only under the
+%% terms of the LGPL, you should delete the provisions above and replace
+%% them with the notice and other provisions required by the LGPL; see
+%% <http://www.gnu.org/licenses/>. If you do not delete the provisions
+%% above, a recipient may use your version of this file under the terms of
+%% either the Apache License or the LGPL.
+%%
+%% %CopyrightEnd%
 %% @private
-%% @copyright 2003 Richard Carlsson
 %% @author Richard Carlsson <carlsson.richard@gmail.com>
 %% @see edoc
 %% @end
@@ -26,9 +40,12 @@
 
 -module(edoc_data).
 
--export([module/4, overview/4, type/2]).
+-compile([{nowarn_possibly_unsafe_function, {erlang, list_to_atom, 1}},
+          nowarn_deprecated_catch]).
 
--export([hidden_filter/2, get_all_tags/1]).
+-export([module/4, overview/4, type/3]).
+
+-export([hidden_filter/2, get_all_tags/1, get_entry/2, get_tags/2]).
 
 -include("edoc.hrl").
 
@@ -71,11 +88,19 @@
 %% <!ELEMENT callbacks (callback+)>
 %% <!ELEMENT typedecls (typedecl+)>
 %% <!ELEMENT typedecl (typedef, description?)>
+%% <!ATTLIST typedecl
+%%   label CDATA #REQUIRED
+%%   line CDATA #REQUIRED>
 %% <!ELEMENT functions (function+)>
 
 %% NEW-OPTIONS: private, hidden, todo
 %% DEFER-OPTIONS: edoc_extract:source/4
 
+-spec module(Module, Entries, Env, Opts) -> edoc:edoc_module() when
+      Module :: edoc:module_meta(),
+      Entries :: [edoc:entry()],
+      Env :: edoc:env(),
+      Opts :: proplists:proplist().
 module(Module, Entries, Env, Opts) ->
     Name = atom_to_list(Module#module.name),
     HeaderEntry = get_entry(module, Entries),
@@ -104,7 +129,7 @@ module(Module, Entries, Env, Opts) ->
 	    ++ sees(HeaderTags, Env)
 	    ++ references(HeaderTags)
 	    ++ todos(HeaderTags, Opts)
-	    ++ [{typedecls, types(AllTags, Env)},
+	    ++ [{typedecls, types(AllTags, Env, Opts)},
 		{functions, functions(Functions, Env, Opts)}
 		| callbacks(Functions, Module, Env, Opts)])
 	  },
@@ -129,15 +154,14 @@ module_args(none) ->
 module_args(Vs) ->
     [{args, [{arg, [{argName, [atom_to_list(V)]}]} || V <- Vs]}].
 
-types(Tags, Env) ->
-    [{typedecl, [{label, edoc_types:to_label(Def)}],
-      [edoc_types:to_xml(Def, Env)] ++ description(Doc)}
-     || #tag{name = type, data = {Def, Doc}} <- Tags].
+types(Tags, Env, Opts) ->
+    [{typedecl, [{label, edoc_types:to_label(Def)}, {line, Line}],
+      [edoc_types:to_xml(Def, Env, Opts)] ++ description(Doc)}
+     || #tag{name = type, line = Line, data = {Def, Doc}} <- Tags].
 
 functions(Es, Env, Opts) ->
     [function(N, As, Export, Ts, Env, Opts)
-     || #entry{name = {_,_}=N, args = As, export = Export, data = Ts}
-	    <- Es].
+     || #entry{name = {_,_}=N, args = As, export = Export, data = Ts} <- Es].
 
 hidden_filter(Es, Opts) ->
     Private = proplists:get_bool(private, Opts),
@@ -217,6 +241,8 @@ callback({N, A}, _Env, _Opts) ->
 %%   name CDATA #REQUIRED
 %%   arity CDATA #REQUIRED
 %%   exported NMTOKEN(yes | no) #REQUIRED
+%%   private NMTOKEN(yes | no) #IMPLIED
+%%   hidden NMTOKEN(yes | no) #IMPLIED
 %%   label CDATA #IMPLIED>
 %% <!ELEMENT args (arg*)>
 %% <!ELEMENT arg (argName, description?)>
@@ -225,24 +251,20 @@ callback({N, A}, _Env, _Opts) ->
 %% <!ELEMENT throws (type, localdef*)>
 %% <!ELEMENT equiv (expr, see?)>
 %% <!ELEMENT expr (#PCDATA)>
-
-function({N, A}, As, Export, Ts, Env, Opts) ->
-    {Args, Ret, Spec} = signature(Ts, As, Env),
+function({N, A}, []=As, Export, Ts, Env, Opts)->
+    function({N, A}, [As], Export, Ts, Env, Opts);
+function({N, A}, [HAs | _]=As, Export, Ts, Env, Opts) when not is_list(HAs) ->
+    function({N, A}, [As], Export, Ts, Env, Opts);
+function({N, A}, As0, Export, Ts, Env, Opts) ->
     {function, [{name, atom_to_list(N)},
 		{arity, integer_to_list(A)},
-      		{exported, case Export of
-			       true -> "yes";
-			       false -> "no"
-			   end},
+		{exported, yes_or_no(Export)},
+		{private, yes_or_no(is_private(Ts))},
+		{hidden, yes_or_no(is_hidden(Ts))},
 		{label, edoc_refs:to_label(edoc_refs:function(N, A))}],
-     [{args, [{arg, [{argName, [atom_to_list(A)]}] ++ description(D)}
-	      || {A, D} <- Args]}]
-     ++ Spec
-     ++ case Ret of
-	    [] -> [];
-	    _ -> [{returns, description(Ret)}]
-	end
-     ++ get_throws(Ts, Env)
+     lists:append([get_args(lists:nth(Clause, As0), Ts, Clause, Env, Opts)
+                   || Clause <- lists:seq(1, length(As0))])
+     ++ get_throws(Ts, Env, Opts)
      ++ get_equiv(Ts, Env)
      ++ get_doc(Ts)
      ++ get_since(Ts)
@@ -251,11 +273,24 @@ function({N, A}, As, Export, Ts, Env, Opts) ->
      ++ todos(Ts, Opts)
     }.
 
-get_throws(Ts, Env) ->
+get_args(As, Ts, Clause, Env, Opts) ->
+    {Args, Ret, Spec} = signature(Ts, As, Clause, Env, Opts),
+    [{args, [{arg, [{argName, [atom_to_list(A)]}] ++ description(D)}
+     || {A, D} <- Args]}]
+    ++ Spec
+    ++ case Ret of
+           [] -> [];
+           _ -> [{returns, description(Ret)}]
+       end.
+
+yes_or_no(true) -> "yes";
+yes_or_no(false) -> "no".
+
+get_throws(Ts, Env, Opts) ->
     case get_tags(throws, Ts) of
 	[Throws] ->
 	    Type = Throws#tag.data,
-	    [edoc_types:to_xml(Type, Env)];
+	    [edoc_types:to_xml(Type, Env, Opts)];
 	[] ->
 	    []
     end.
@@ -323,8 +358,6 @@ get_deprecated(Ts, F, A, Env) ->
 	    case otp_internal:obsolete(M, F, A) of
 		{Tag, Text} when Tag =:= deprecated; Tag =:= removed ->
 		    deprecated([Text]);
-		{Tag, Repl, _Rel} when Tag =:= deprecated; Tag =:= removed ->
-		    deprecated(Repl, Env);
 		_ ->
 		    []
 	    end;
@@ -332,21 +365,8 @@ get_deprecated(Ts, F, A, Env) ->
 	    Es
     end.
 
-deprecated(Repl, Env) ->
-    {Text, Ref} = replacement_function(Env#env.module, Repl),
-    Desc = ["Use ", {a, href(Ref, Env), [{code, [Text]}]}, " instead."],
-    deprecated(Desc).
-
 deprecated(Desc) ->
     [{deprecated, description(Desc)}].
-
-replacement_function(M0, {M,F,A}) when is_list(A) ->
-    %% refer to the largest listed arity - the most general version
-    replacement_function(M0, {M,F,lists:last(lists:sort(A))});
-replacement_function(M, {M,F,A}) ->
-    {io_lib:fwrite("~w/~w", [F, A]), edoc_refs:function(F, A)};
-replacement_function(_, {M,F,A}) ->
-    {io_lib:fwrite("~w:~w/~w", [M, F, A]), edoc_refs:function(M, F, A)}.
 
 get_expr_ref(Expr) ->
     case catch {ok, erl_syntax_lib:analyze_application(Expr)} of
@@ -394,7 +414,10 @@ sees(Tags, Env) ->
 see(Ref, [], Env) ->
     see(Ref, [edoc_refs:to_string(Ref)], Env);
 see(Ref, XML, Env) ->
-    {see, [{name, edoc_refs:to_string(Ref)}] ++ href(Ref, Env), XML}.
+    {DocgenRel, DocgenURI} = edoc_refs:get_docgen_link(Ref),
+    Attrs = [{'docgen-rel', DocgenRel},
+	     {'docgen-href', DocgenURI}] ++ href(Ref, Env),
+    {see, Attrs, XML}.
 
 href(Ref, Env) ->
     [{href, edoc_refs:get_uri(Ref, Env)}]
@@ -416,10 +439,10 @@ todos(Tags, Opts) ->
 	    []
     end.
 
-signature(Ts, As, Env) ->
+signature(Ts, As, Clause, Env, Opts) ->
     case get_tags(spec, Ts) of
 	[T] ->
-	    Spec = T#tag.data,
+            Spec = maybe_nth(Clause, T#tag.data),
 	    R = merge_returns(Spec, Ts),
 	    As0 = edoc_types:arg_names(Spec),
 	    Ds0 = edoc_types:arg_descs(Spec),
@@ -428,11 +451,16 @@ signature(Ts, As, Env) ->
 	    As1 = merge_args(As0, As, Ds0, P),
 	    %% check_params(As1, P),
 	    Spec1 = edoc_types:set_arg_names(Spec, [A || {A,_} <- As1]),
-	    {As1, R, [edoc_types:to_xml(Spec1, Env)]};
+	    {As1, R, [edoc_types:to_xml(Spec1, Env, Opts)]};
 	[] ->
 	    S = sets:new(),
 	    {[{A, ""} || A <- fix_argnames(As, S, 1)], [], []}
     end.
+
+maybe_nth(N, List) when is_list(List) ->
+    lists:nth(N, List);
+maybe_nth(1, Other) ->
+    Other.
 
 params(Ts) ->
     [T#tag.data || T <- get_tags(param, Ts)].
@@ -507,8 +535,8 @@ get_tags(_, []) -> [].
 
 %% ---------------------------------------------------------------------
 
-type(T, Env) ->
-    xmerl_lib:expand_element({type, [edoc_types:to_xml(T, Env)]}).
+type(T, Env, Opts) ->
+    xmerl_lib:expand_element({type, [edoc_types:to_xml(T, Env, Opts)]}).
 
 %% <!ELEMENT overview (title, description?, author*, copyright?, version?,
 %%                     since?, see*, reference*, todo?, modules)>

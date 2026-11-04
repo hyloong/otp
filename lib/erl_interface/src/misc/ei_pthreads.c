@@ -1,8 +1,10 @@
 /*
  * %CopyrightBegin%
- * 
- * Copyright Ericsson AB 2001-2009. All Rights Reserved.
- * 
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Copyright Ericsson AB 2001-2025. All Rights Reserved.
+ *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
@@ -14,7 +16,7 @@
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  * See the License for the specific language governing permissions and
  * limitations under the License.
- * 
+ *
  * %CopyrightEnd%
  *
 
@@ -38,25 +40,6 @@ static LONG volatile tls_init_mutex = 0;
 #endif
 #endif
 
-#if defined(VXWORKS)
-
-/* 
-   Moved to each of the erl_*threads.c files, as they seem to know how
-   to get thread-safety. 
-*/
-static volatile int __erl_errno;
-volatile int *__erl_errno_place(void)
-{
-    /* This check is somewhat insufficient, double task var entries will occur
-       if __erl_errno is actually -1, which on the other hand is an invalid 
-       error code. */
-    if (taskVarGet(taskIdSelf(), &__erl_errno) == ERROR) {
-	taskVarAdd(taskIdSelf(), &__erl_errno);
-    }
-    return &__erl_errno;
-}
-#endif /* VXWORKS */
-
 #if defined(__WIN32__)
 
 #ifdef USE_DECLSPEC_THREAD
@@ -78,7 +61,7 @@ static void tls_init_once(void)
 	errno_tls_index = TlsAlloc();
 	if (errno_tls_index == TLS_OUT_OF_INDEXES) {
 	    fprintf(stderr, 
-		    "FATAL ERROR: can not allocate TLS index for "
+		    "FATAL ERROR: cannot allocate TLS index for "
 		    "erl_errno (error code = %d)!\n",GetLastError());
 	    exit(1);
 	}
@@ -106,7 +89,7 @@ volatile int *__erl_errno_place(void)
 
 #endif /* __WIN32__ */
 
-#if defined(_REENTRANT) && !defined(VXWORKS) && !defined(__WIN32__)
+#if defined(_REENTRANT) && !defined(__WIN32__)
 
 #if defined(HAVE_PTHREAD_H) || defined(HAVE_MIT_PTHREAD_H)
 
@@ -114,7 +97,7 @@ void *ei_m_create(void)
 { 
   pthread_mutex_t *l;
  
-  if ((l = malloc(sizeof(*l)))) { /* FIXME get memory or abort */
+  if ((l = malloc(sizeof(pthread_mutex_t)))) { /* FIXME get memory or abort */
     pthread_mutex_init(l,NULL);
   }
 
@@ -177,7 +160,7 @@ static void erl_errno_key_alloc(void)
  * If pthread functions fail we fall back to using fallback_errno
  * so that the main thread (actually not a thread in all ascpects)
  * still will set and get an erl_errno value.
- * Actually this is a bit to nice, it would be preferrable to exit fatal
+ * Actually this is a bit to nice, it would be preferable to exit fatal
  * as we do on windows, but we might break some code with one thread
  * but still compiled with -D_REENTRANT, so we'll leave it here.
  */
@@ -206,6 +189,7 @@ volatile int *__erl_errno_place(void)
 	use_fallback = 1;
 	return &fallback_errno;
     }
+    *erl_errno_p = 0;
 
     if (pthread_setspecific(erl_errno_key, erl_errno_p) != 0 ||
 	(erl_errno_p = pthread_getspecific(erl_errno_key)) == NULL) {
@@ -218,9 +202,9 @@ volatile int *__erl_errno_place(void)
 
 #endif /* HAVE_PTHREAD_H || HAVE_MIT_PTHREAD_H */
 
-#endif /* _REENTRANT && !VXWORKS && !__WIN32__ */
+#endif /* _REENTRANT && !__WIN32__ */
 
-#if !defined(_REENTRANT) && !defined(VXWORKS) && !defined(__WIN32__)
+#if !defined(_REENTRANT) && !defined(__WIN32__)
 
 volatile int __erl_errno;
 

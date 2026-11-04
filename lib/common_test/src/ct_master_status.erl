@@ -1,8 +1,10 @@
 %%
 %% %CopyrightBegin%
-%% 
-%% Copyright Ericsson AB 2006-2013. All Rights Reserved.
-%% 
+%%
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2006-2025. All Rights Reserved.
+%%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
 %% You may obtain a copy of the License at
@@ -14,17 +16,18 @@
 %% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 %% See the License for the specific language governing permissions and
 %% limitations under the License.
-%% 
+%%
 %% %CopyrightEnd%
 %%
 
-%%% @doc Logging functionality for Common Test Master.
+%%% doc Logging functionality for Common Test Master.
 %%%
-%%% <p>This module keeps a list of <code>{Node,Status}</code>
+%%% This module keeps a list of {Node,Status}
 %%% tuples. It is possible to anytime during a test run get
 %%% a snapshot of the test status. The module is an event
-%%% handler for the master event manager.</p>
+%%% handler for the master event manager.
 -module(ct_master_status).
+-moduledoc false.
 
 -behaviour(gen_event).
 
@@ -71,7 +74,7 @@ init(_) ->
 %%
 handle_event(#event{name=Name,node=Node,data=Data},State) ->
     print("~n=== ~w ===~n", [?MODULE]),
-    print("~w on ~w: ~p~n", [Name,Node,Data]),
+    print("~tw on ~w: ~tp~n", [Name,Node,Data]),
     {ok,State}.
 
 %%--------------------------------------------------------------------

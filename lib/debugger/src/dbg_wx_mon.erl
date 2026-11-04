@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2008-2014. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2008-2026. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -20,6 +22,9 @@
 
 %%
 -module(dbg_wx_mon).
+-moduledoc false.
+
+-compile([{nowarn_possibly_unsafe_function, {erlang, binary_to_term, 1}}]).
 
 -include_lib("kernel/include/file.hrl").
 -include_lib("wx/include/wx.hrl").
@@ -119,9 +124,9 @@ init(CallingPid, Mode, SFile) ->
 		init2(CallingPid, Mode, SFile, GS)
 	    catch 
 		exit:stop -> stop;
-		Error:Reason ->
+		Error:Reason:Stacktrace ->
 		    io:format("~p: Crashed {~p,~p} in~n  ~p",
-			      [?MODULE, Error, Reason, erlang:get_stacktrace()])
+			      [?MODULE, Error, Reason, Stacktrace])
 	    end
     end.
 
@@ -135,7 +140,7 @@ init2(CallingPid, Mode, SFile, GS) ->
 
     %% Start other necessary stuff
     dbg_wx_win:init(),     
-    dbg_wx_winman:start(), % Debugger window manager
+    _ = dbg_wx_winman:start(), % Debugger window manager
 
     %% Create monitor window
     Title = "Monitor",
@@ -339,7 +344,7 @@ gui_cmd('Delete All Modules', State) ->
     lists:foreach(fun(Mod) -> int:nn(Mod) end, int:interpreted()),
     State;
 gui_cmd({module, Mod, What}, State) ->
-    case What of
+    _ = case What of
 	delete -> int:nn(Mod);
 	view -> 
 	    Window = dbg_wx_mon_win:get_window(State#state.win),
@@ -355,7 +360,7 @@ gui_cmd('Next', State) ->
     int:next((State#state.focus)#pinfo.pid),
     State;
 gui_cmd('Continue', State) ->
-    int:continue((State#state.focus)#pinfo.pid),
+    _ = int:continue((State#state.focus)#pinfo.pid),
     State;
 gui_cmd('Finish ', State) ->
     int:finish((State#state.focus)#pinfo.pid),
@@ -551,7 +556,7 @@ menus() ->
 	       {'Save Settings...', 2},
 	       separator,
 	       {'Exit', 0}]},
-     {'Edit', [{'Refresh', no},
+     {'Edit', [{'Refresh', 0},
 	       {'Kill All', no}]},
      {'Module', [{'Interpret...', 0},
 		 {'Delete All Modules', no},
@@ -714,7 +719,7 @@ load_settings2(Settings, State) ->
     lists:foreach(fun(Break) ->
 			  {{Mod, Line}, [Status, Action, _, Cond]} =
 			      Break,
-			  int:break(Mod, Line),
+			  _ = int:break(Mod, Line),
 			  if
 			      Status =:= inactive ->
 				  int:disable_break(Mod, Line);

@@ -1,8 +1,10 @@
 %%
 %% %CopyrightBegin%
-%% 
-%% Copyright Ericsson AB 2000-2013. All Rights Reserved.
-%% 
+%%
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2000-2025. All Rights Reserved.
+%%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
 %% You may obtain a copy of the License at
@@ -14,7 +16,7 @@
 %% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 %% See the License for the specific language governing permissions and
 %% limitations under the License.
-%% 
+%%
 %% %CopyrightEnd%
 %%
 
@@ -24,6 +26,7 @@
 %%----------------------------------------------------------------------
 
 -module(megaco_binary_encoder).
+-moduledoc false.
 
 -behaviour(megaco_encoder).
 
@@ -55,38 +58,37 @@ encode_message(EC,
 	       #'MegacoMessage'{mess = #'Message'{version = V}} = MegaMsg) ->
     encode_message(EC, V, MegaMsg).
 
+%% <BACKWARD-COMPAT-CLAUSE>
 encode_message([{version3,_}|EC], 1, MegaMsg) ->
     AsnMod   = megaco_ber_media_gateway_control_v1,
     TransMod = megaco_binary_transformer_v1,
     ?BIN_LIB:encode_message(EC, MegaMsg, AsnMod, TransMod, io_list);
+%% </BACKWARD-COMPAT-CLAUSE>
+
 encode_message(EC, 1, MegaMsg) ->
     AsnMod   = megaco_ber_media_gateway_control_v1,
     TransMod = megaco_binary_transformer_v1,
     ?BIN_LIB:encode_message(EC, MegaMsg, AsnMod, TransMod, io_list);
+
+%% <BACKWARD-COMPAT-CLAUSE>
 encode_message([{version3,_}|EC], 2, MegaMsg) ->
     AsnMod   = megaco_ber_media_gateway_control_v2,
     TransMod = megaco_binary_transformer_v2,
     ?BIN_LIB:encode_message(EC, MegaMsg, AsnMod, TransMod, io_list);
+%% </BACKWARD-COMPAT-CLAUSE>
+
 encode_message(EC, 2, MegaMsg) ->
     AsnMod   = megaco_ber_media_gateway_control_v2,
     TransMod = megaco_binary_transformer_v2,
     ?BIN_LIB:encode_message(EC, MegaMsg, AsnMod, TransMod, io_list);
+
+%% <BACKWARD-COMPAT-CLAUSE>
 encode_message([{version3,v3}|EC], 3, MegaMsg) ->
     AsnMod   = megaco_ber_media_gateway_control_v3,
     TransMod = megaco_binary_transformer_v3,
     ?BIN_LIB:encode_message(EC, MegaMsg, AsnMod, TransMod, io_list);
-encode_message([{version3,prev3c}|EC], 3, MegaMsg) ->
-    AsnMod   = megaco_ber_media_gateway_control_prev3c,
-    TransMod = megaco_binary_transformer_prev3c,
-    ?BIN_LIB:encode_message(EC, MegaMsg, AsnMod, TransMod, io_list);
-encode_message([{version3,prev3b}|EC], 3, MegaMsg) ->
-    AsnMod   = megaco_ber_media_gateway_control_prev3b,
-    TransMod = megaco_binary_transformer_prev3b,
-    ?BIN_LIB:encode_message(EC, MegaMsg, AsnMod, TransMod, io_list);
-encode_message([{version3,prev3a}|EC], 3, MegaMsg) ->
-    AsnMod   = megaco_ber_media_gateway_control_prev3a,
-    TransMod = megaco_binary_transformer_prev3a,
-    ?BIN_LIB:encode_message(EC, MegaMsg, AsnMod, TransMod, io_list);
+%% </BACKWARD-COMPAT-CLAUSE>
+
 encode_message(EC, 3, MegaMsg) ->
     AsnMod   = megaco_ber_media_gateway_control_v3,
     TransMod = megaco_binary_transformer_v3,
@@ -99,38 +101,37 @@ encode_message(EC, 3, MegaMsg) ->
 %% Return {ok, Binary} | {error, Reason}
 %%----------------------------------------------------------------------
 
+%% <BACKWARD-COMPAT-CLAUSE>
 encode_transaction([{version3,_}|EC], 1, Trans) ->
     AsnMod   = megaco_ber_media_gateway_control_v1,
     TransMod = megaco_binary_transformer_v1,
     ?BIN_LIB:encode_transaction(EC, Trans, AsnMod, TransMod, io_list);
+%% </BACKWARD-COMPAT-CLAUSE>
+
 encode_transaction(EC, 1, Trans) ->
     AsnMod   = megaco_ber_media_gateway_control_v1,
     TransMod = megaco_binary_transformer_v1,
     ?BIN_LIB:encode_transaction(EC, Trans, AsnMod, TransMod, io_list);
+
+%% <BACKWARD-COMPAT-CLAUSE>
 encode_transaction([{version3,_}|EC], 2, Trans) ->
     AsnMod   = megaco_ber_media_gateway_control_v2,
     TransMod = megaco_binary_transformer_v2,
     ?BIN_LIB:encode_transaction(EC, Trans, AsnMod, TransMod, io_list);
+%% </BACKWARD-COMPAT-CLAUSE>
+
 encode_transaction(EC, 2, Trans) ->
     AsnMod   = megaco_ber_media_gateway_control_v2,
     TransMod = megaco_binary_transformer_v2,
     ?BIN_LIB:encode_transaction(EC, Trans, AsnMod, TransMod, io_list);
+
+%% <BACKWARD-COMPAT-CLAUSE>
 encode_transaction([{version3,v3}|EC], 3, Trans) ->
     AsnMod   = megaco_ber_media_gateway_control_v3,
     TransMod = megaco_binary_transformer_v3,
     ?BIN_LIB:encode_transaction(EC, Trans, AsnMod, TransMod, io_list);
-encode_transaction([{version3,prev3c}|EC], 3, Trans) ->
-    AsnMod   = megaco_ber_media_gateway_control_prev3c,
-    TransMod = megaco_binary_transformer_prev3c,
-    ?BIN_LIB:encode_transaction(EC, Trans, AsnMod, TransMod, io_list);
-encode_transaction([{version3,prev3b}|EC], 3, Trans) ->
-    AsnMod   = megaco_ber_media_gateway_control_prev3b,
-    TransMod = megaco_binary_transformer_prev3b,
-    ?BIN_LIB:encode_transaction(EC, Trans, AsnMod, TransMod, io_list);
-encode_transaction([{version3,prev3a}|EC], 3, Trans) ->
-    AsnMod   = megaco_ber_media_gateway_control_prev3a,
-    TransMod = megaco_binary_transformer_prev3a,
-    ?BIN_LIB:encode_transaction(EC, Trans, AsnMod, TransMod, io_list);
+%% </BACKWARD-COMPAT-CLAUSE>
+
 encode_transaction(EC, 3, Trans) ->
     AsnMod   = megaco_ber_media_gateway_control_v3,
     TransMod = megaco_binary_transformer_v3,
@@ -141,44 +142,41 @@ encode_transaction(EC, 3, Trans) ->
 %% Convert a list of ActionRequest record's into a binary
 %% Return {ok, DeepIoList} | {error, Reason}
 %%----------------------------------------------------------------------
+
+%% <BACKWARD-COMPAT-CLAUSE>
 encode_action_requests([{version3,_}|EC], 1, ActReqs) 
   when is_list(ActReqs) ->
     AsnMod   = megaco_ber_media_gateway_control_v1,
     TransMod = megaco_binary_transformer_v1,
     ?BIN_LIB:encode_action_requests(EC, ActReqs, AsnMod, TransMod, io_list);
+%% </BACKWARD-COMPAT-CLAUSE>
+
 encode_action_requests(EC, 1, ActReqs) when is_list(ActReqs) ->
     AsnMod   = megaco_ber_media_gateway_control_v1,
     TransMod = megaco_binary_transformer_v1,
     ?BIN_LIB:encode_action_requests(EC, ActReqs, AsnMod, TransMod, io_list);
+
+%% <BACKWARD-COMPAT-CLAUSE>
 encode_action_requests([{version3,_}|EC], 2, ActReqs) 
   when is_list(ActReqs) ->
     AsnMod   = megaco_ber_media_gateway_control_v2,
     TransMod = megaco_binary_transformer_v2,
     ?BIN_LIB:encode_action_requests(EC, ActReqs, AsnMod, TransMod, io_list);
+%% </BACKWARD-COMPAT-CLAUSE>
+
 encode_action_requests(EC, 2, ActReqs) when is_list(ActReqs) ->
     AsnMod   = megaco_ber_media_gateway_control_v2,
     TransMod = megaco_binary_transformer_v2,
     ?BIN_LIB:encode_action_requests(EC, ActReqs, AsnMod, TransMod, io_list);
+
+%% <BACKWARD-COMPAT-CLAUSE>
 encode_action_requests([{version3,v3}|EC], 3, ActReqs) 
   when is_list(ActReqs) ->
     AsnMod   = megaco_ber_media_gateway_control_v3,
     TransMod = megaco_binary_transformer_v3,
     ?BIN_LIB:encode_action_requests(EC, ActReqs, AsnMod, TransMod, io_list);
-encode_action_requests([{version3,prev3c}|EC], 3, ActReqs) 
-  when is_list(ActReqs) ->
-    AsnMod   = megaco_ber_media_gateway_control_prev3c,
-    TransMod = megaco_binary_transformer_prev3c,
-    ?BIN_LIB:encode_action_requests(EC, ActReqs, AsnMod, TransMod, io_list);
-encode_action_requests([{version3,prev3b}|EC], 3, ActReqs) 
-  when is_list(ActReqs) ->
-    AsnMod   = megaco_ber_media_gateway_control_prev3b,
-    TransMod = megaco_binary_transformer_prev3b,
-    ?BIN_LIB:encode_action_requests(EC, ActReqs, AsnMod, TransMod, io_list);
-encode_action_requests([{version3,prev3a}|EC], 3, ActReqs) 
-  when is_list(ActReqs) ->
-    AsnMod   = megaco_ber_media_gateway_control_prev3a,
-    TransMod = megaco_binary_transformer_prev3a,
-    ?BIN_LIB:encode_action_requests(EC, ActReqs, AsnMod, TransMod, io_list);
+%% </BACKWARD-COMPAT-CLAUSE>
+
 encode_action_requests(EC, 3, ActReqs) when is_list(ActReqs) ->
     AsnMod   = megaco_ber_media_gateway_control_v3,
     TransMod = megaco_binary_transformer_v3,
@@ -189,38 +187,38 @@ encode_action_requests(EC, 3, ActReqs) when is_list(ActReqs) ->
 %% Convert a ActionRequest record into a binary
 %% Return {ok, DeepIoList} | {error, Reason}
 %%----------------------------------------------------------------------
+
+%% <BACKWARD-COMPAT-CLAUSE>
 encode_action_request([{version3,_}|EC], 1, ActReq) ->
     AsnMod   = megaco_ber_media_gateway_control_v1,
     TransMod = megaco_binary_transformer_v1,
     ?BIN_LIB:encode_action_request(EC, ActReq, AsnMod, TransMod, io_list);
+%% </BACKWARD-COMPAT-CLAUSE>
+
 encode_action_request(EC, 1, ActReq) ->
     AsnMod   = megaco_ber_media_gateway_control_v1,
     TransMod = megaco_binary_transformer_v1,
     ?BIN_LIB:encode_action_request(EC, ActReq, AsnMod, TransMod, io_list);
+
+%% <BACKWARD-COMPAT-CLAUSE>
 encode_action_request([{version3,_}|EC], 2, ActReq) ->
     AsnMod   = megaco_ber_media_gateway_control_v2,
     TransMod = megaco_binary_transformer_v2,
     ?BIN_LIB:encode_action_request(EC, ActReq, AsnMod, TransMod, io_list);
+%% </BACKWARD-COMPAT-CLAUSE>
+
 encode_action_request(EC, 2, ActReq) ->
     AsnMod   = megaco_ber_media_gateway_control_v2,
     TransMod = megaco_binary_transformer_v2,
     ?BIN_LIB:encode_action_request(EC, ActReq, AsnMod, TransMod, io_list);
+
+%% <BACKWARD-COMPAT-CLAUSE>
 encode_action_request([{version3,v3}|EC], 3, ActReq) ->
     AsnMod   = megaco_ber_media_gateway_control_v3,
     TransMod = megaco_binary_transformer_v3,
     ?BIN_LIB:encode_action_request(EC, ActReq, AsnMod, TransMod, io_list);
-encode_action_request([{version3,prev3c}|EC], 3, ActReq) ->
-    AsnMod   = megaco_ber_media_gateway_control_prev3c,
-    TransMod = megaco_binary_transformer_prev3c,
-    ?BIN_LIB:encode_action_request(EC, ActReq, AsnMod, TransMod, io_list);
-encode_action_request([{version3,prev3b}|EC], 3, ActReq) ->
-    AsnMod   = megaco_ber_media_gateway_control_prev3b,
-    TransMod = megaco_binary_transformer_prev3b,
-    ?BIN_LIB:encode_action_request(EC, ActReq, AsnMod, TransMod, io_list);
-encode_action_request([{version3,prev3a}|EC], 3, ActReq) ->
-    AsnMod   = megaco_ber_media_gateway_control_prev3a,
-    TransMod = megaco_binary_transformer_prev3a,
-    ?BIN_LIB:encode_action_request(EC, ActReq, AsnMod, TransMod, io_list);
+%% </BACKWARD-COMPAT-CLAUSE>
+
 encode_action_request(EC, 3, ActReq) ->
     AsnMod   = megaco_ber_media_gateway_control_v3,
     TransMod = megaco_binary_transformer_v3,
@@ -242,26 +240,14 @@ encode_action_reply(_EC, _V, _AcionReply) ->
 %% Return {ok, Version} | {error, Reason}
 %%----------------------------------------------------------------------
 
+%% <BACKWARD-COMPAT-CLAUSE>
 version_of([{version3,v3}|EC], Binary) ->
     Decoders = [megaco_ber_media_gateway_control_v1,
 		megaco_ber_media_gateway_control_v2,
 		megaco_ber_media_gateway_control_v3],
     ?BIN_LIB:version_of(EC, Binary, dynamic, Decoders);
-version_of([{version3,prev3c}|EC], Binary) ->
-    Decoders = [megaco_ber_media_gateway_control_v1,
-		megaco_ber_media_gateway_control_v2,
-		megaco_ber_media_gateway_control_prev3c],
-    ?BIN_LIB:version_of(EC, Binary, dynamic, Decoders);
-version_of([{version3,prev3b}|EC], Binary) ->
-    Decoders = [megaco_ber_media_gateway_control_v1,
-		megaco_ber_media_gateway_control_v2,
-		megaco_ber_media_gateway_control_prev3b],
-    ?BIN_LIB:version_of(EC, Binary, dynamic, Decoders);
-version_of([{version3,prev3a}|EC], Binary) ->
-    Decoders = [megaco_ber_media_gateway_control_v1,
-		megaco_ber_media_gateway_control_v2,
-		megaco_ber_media_gateway_control_prev3a],
-    ?BIN_LIB:version_of(EC, Binary, dynamic, Decoders);
+%% </BACKWARD-COMPAT-CLAUSE>
+
 version_of(EC, Binary) ->
     Decoders = [megaco_ber_media_gateway_control_v1,
 		megaco_ber_media_gateway_control_v2,
@@ -277,6 +263,7 @@ version_of(EC, Binary) ->
 decode_message(EC, Binary) ->
     decode_message(EC, 1, Binary).
 
+%% <BACKWARD-COMPAT-CLAUSE>
 decode_message([{version3,v3}|EC], dynamic, Binary) ->
     Decoders = [{megaco_ber_media_gateway_control_v1,
 		 megaco_binary_transformer_v1},
@@ -285,30 +272,8 @@ decode_message([{version3,v3}|EC], dynamic, Binary) ->
 		{megaco_ber_media_gateway_control_v3,
 		 megaco_binary_transformer_v3}],
     ?BIN_LIB:decode_message_dynamic(EC, Binary, Decoders, binary);
-decode_message([{version3,prev3c}|EC], dynamic, Binary) ->
-    Decoders = [{megaco_ber_media_gateway_control_v1,
-		 megaco_binary_transformer_v1},
-		{megaco_ber_media_gateway_control_v2,
-		 megaco_binary_transformer_v2},
-		{megaco_ber_media_gateway_control_prev3c,
-		 megaco_binary_transformer_prev3c}],
-    ?BIN_LIB:decode_message_dynamic(EC, Binary, Decoders, binary);
-decode_message([{version3,prev3b}|EC], dynamic, Binary) ->
-    Decoders = [{megaco_ber_media_gateway_control_v1,
-		 megaco_binary_transformer_v1},
-		{megaco_ber_media_gateway_control_v2,
-		 megaco_binary_transformer_v2},
-		{megaco_ber_media_gateway_control_prev3b,
-		 megaco_binary_transformer_prev3b}],
-    ?BIN_LIB:decode_message_dynamic(EC, Binary, Decoders, binary);
-decode_message([{version3,prev3a}|EC], dynamic, Binary) ->
-    Decoders = [{megaco_ber_media_gateway_control_v1,
-		 megaco_binary_transformer_v1},
-		{megaco_ber_media_gateway_control_v2,
-		 megaco_binary_transformer_v2},
-		{megaco_ber_media_gateway_control_prev3a,
-		 megaco_binary_transformer_prev3a}],
-    ?BIN_LIB:decode_message_dynamic(EC, Binary, Decoders, binary);
+%% </BACKWARD-COMPAT-CLAUSE>
+
 decode_message(EC, dynamic, Binary) ->
     Decoders = [{megaco_ber_media_gateway_control_v1,
 		 megaco_binary_transformer_v1},
@@ -321,10 +286,12 @@ decode_message(EC, dynamic, Binary) ->
 
 %% -- Version 1 --
  
+%% <BACKWARD-COMPAT-CLAUSE>
 decode_message([{version3,_}|EC], 1, Binary) ->
     AsnMod   = megaco_ber_media_gateway_control_v1,
     TransMod = megaco_binary_transformer_v1,
     ?BIN_LIB:decode_message(EC, Binary, AsnMod, TransMod, binary);
+%% </BACKWARD-COMPAT-CLAUSE>
 
 decode_message(EC, 1, Binary) ->
     AsnMod   = megaco_ber_media_gateway_control_v1,
@@ -334,10 +301,12 @@ decode_message(EC, 1, Binary) ->
 
 %% -- Version 2 --
  
+%% <BACKWARD-COMPAT-CLAUSE>
 decode_message([{version3,_}|EC], 2, Binary) ->
     AsnMod   = megaco_ber_media_gateway_control_v2,
     TransMod = megaco_binary_transformer_v2,
     ?BIN_LIB:decode_message(EC, Binary, AsnMod, TransMod, binary);
+%% </BACKWARD-COMPAT-CLAUSE>
 
 decode_message(EC, 2, Binary) ->
     AsnMod   = megaco_ber_media_gateway_control_v2,
@@ -347,22 +316,12 @@ decode_message(EC, 2, Binary) ->
 
 %% -- Version 3 --
  
+%% <BACKWARD-COMPAT-CLAUSE>
 decode_message([{version3,v3}|EC], 3, Binary) ->
     AsnMod   = megaco_ber_media_gateway_control_v3,
     TransMod = megaco_binary_transformer_v3,
     ?BIN_LIB:decode_message(EC, Binary, AsnMod, TransMod, binary);
-decode_message([{version3,prev3c}|EC], 3, Binary) ->
-    AsnMod   = megaco_ber_media_gateway_control_prev3c,
-    TransMod = megaco_binary_transformer_prev3c,
-    ?BIN_LIB:decode_message(EC, Binary, AsnMod, TransMod, binary);
-decode_message([{version3,prev3b}|EC], 3, Binary) ->
-    AsnMod   = megaco_ber_media_gateway_control_prev3b,
-    TransMod = megaco_binary_transformer_prev3b,
-    ?BIN_LIB:decode_message(EC, Binary, AsnMod, TransMod, binary);
-decode_message([{version3,prev3a}|EC], 3, Binary) ->
-    AsnMod   = megaco_ber_media_gateway_control_prev3a,
-    TransMod = megaco_binary_transformer_prev3a,
-    ?BIN_LIB:decode_message(EC, Binary, AsnMod, TransMod, binary);
+%% </BACKWARD-COMPAT-CLAUSE>
 
 decode_message(EC, 3, Binary) ->
     AsnMod   = megaco_ber_media_gateway_control_v3,
@@ -370,58 +329,46 @@ decode_message(EC, 3, Binary) ->
     ?BIN_LIB:decode_message(EC, Binary, AsnMod, TransMod, binary).
 
 
+%% <BACKWARD-COMPAT-CLAUSE>
 decode_mini_message([{version3,v3}|EC], dynamic, Bin) ->
     Mods = [megaco_ber_media_gateway_control_v1,
 	    megaco_ber_media_gateway_control_v2,
 	    megaco_ber_media_gateway_control_v3],
     ?BIN_LIB:decode_mini_message_dynamic(EC, Bin, Mods, binary);
-decode_mini_message([{version3,prev3c}|EC], dynamic, Bin) ->
-    Mods = [megaco_ber_media_gateway_control_v1,
-	    megaco_ber_media_gateway_control_v2,
-	    megaco_ber_media_gateway_control_prev3c],
-    ?BIN_LIB:decode_mini_message_dynamic(EC, Bin, Mods, binary);
-decode_mini_message([{version3,prev3b}|EC], dynamic, Bin) ->
-    Mods = [megaco_ber_media_gateway_control_v1,
-	    megaco_ber_media_gateway_control_v2,
-	    megaco_ber_media_gateway_control_prev3b],
-    ?BIN_LIB:decode_mini_message_dynamic(EC, Bin, Mods, binary);
-decode_mini_message([{version3,prev3a}|EC], dynamic, Bin) ->
-    Mods = [megaco_ber_media_gateway_control_v1,
-	    megaco_ber_media_gateway_control_v2,
-	    megaco_ber_media_gateway_control_prev3a],
-    ?BIN_LIB:decode_mini_message_dynamic(EC, Bin, Mods, binary);
+%% </BACKWARD-COMPAT-CLAUSE>
+
 decode_mini_message(EC, dynamic, Bin) ->
     Mods = [megaco_ber_media_gateway_control_v1,
 	    megaco_ber_media_gateway_control_v2,
 	    megaco_ber_media_gateway_control_v3],
     ?BIN_LIB:decode_mini_message_dynamic(EC, Bin, Mods, binary);
 
+%% <BACKWARD-COMPAT-CLAUSE>
 decode_mini_message([{version3,_}|EC], 1, Bin) ->
     AsnMod = megaco_ber_media_gateway_control_v1,
     ?BIN_LIB:decode_mini_message(EC, Bin, AsnMod, binary);
+%% </BACKWARD-COMPAT-CLAUSE>
+
 decode_mini_message(EC, 1, Bin) ->
     AsnMod = megaco_ber_media_gateway_control_v1,
     ?BIN_LIB:decode_mini_message(EC, Bin, AsnMod, binary);
 
+%% <BACKWARD-COMPAT-CLAUSE>
 decode_mini_message([{version3,_}|EC], 2, Bin) ->
     AsnMod = megaco_ber_media_gateway_control_v2,
     ?BIN_LIB:decode_mini_message(EC, Bin, AsnMod, binary);
+%% </BACKWARD-COMPAT-CLAUSE>
+
 decode_mini_message(EC, 2, Bin) ->
     AsnMod = megaco_ber_media_gateway_control_v2,
     ?BIN_LIB:decode_mini_message(EC, Bin, AsnMod, binary);
 
+%% <BACKWARD-COMPAT-CLAUSE>
 decode_mini_message([{version3,v3}|EC], 3, Bin) ->
     AsnMod = megaco_ber_media_gateway_control_v3,
     ?BIN_LIB:decode_mini_message(EC, Bin, AsnMod, binary);
-decode_mini_message([{version3,prev3c}|EC], 3, Bin) ->
-    AsnMod = megaco_ber_media_gateway_control_prev3c,
-    ?BIN_LIB:decode_mini_message(EC, Bin, AsnMod, binary);
-decode_mini_message([{version3,prev3b}|EC], 3, Bin) ->
-    AsnMod = megaco_ber_media_gateway_control_prev3b,
-    ?BIN_LIB:decode_mini_message(EC, Bin, AsnMod, binary);
-decode_mini_message([{version3,prev3a}|EC], 3, Bin) ->
-    AsnMod = megaco_ber_media_gateway_control_prev3a,
-    ?BIN_LIB:decode_mini_message(EC, Bin, AsnMod, binary);
+%% </BACKWARD-COMPAT-CLAUSE>
+
 decode_mini_message(EC, 3, Bin) ->
     AsnMod = megaco_ber_media_gateway_control_v3,
     ?BIN_LIB:decode_mini_message(EC, Bin, AsnMod, binary).

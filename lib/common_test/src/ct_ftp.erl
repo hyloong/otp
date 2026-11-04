@@ -1,8 +1,10 @@
 %%
 %% %CopyrightBegin%
-%% 
-%% Copyright Ericsson AB 2003-2013. All Rights Reserved.
-%% 
+%%
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2003-2026. All Rights Reserved.
+%%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
 %% You may obtain a copy of the License at
@@ -14,17 +16,16 @@
 %% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 %% See the License for the specific language governing permissions and
 %% limitations under the License.
-%% 
+%%
 %% %CopyrightEnd%
 %%
 
-%%% @doc FTP client module (based on the FTP support of the INETS application).
-%%%
-%%% @type connection() = handle() | ct:target_name()
-%%% @type handle() = ct_gen_conn:handle(). Handle for a specific
-%%% ftp connection.
-
 -module(ct_ftp).
+-moduledoc """
+FTP client module (based on the `ftp` application).
+""".
+
+-deprecated([{'_','_',"Legacy protocol support will be dropped in OTP-30"}]).
 
 %% API
 -export([get/3,put/3, open/1,close/1, send/2,send/3, 
@@ -35,83 +36,89 @@
 
 -include("ct_util.hrl").
 
+%% All ftp functions are deprecated. This whole module will be removed
+%% when ftp is removed
+-compile(nowarn_deprecated_function).
+
 -record(state,{ftp_pid,target_name}).
 
 -define(DEFAULT_PORT,21).
 
+-doc "Reference to opened FTP connection associated to either a `handle` or `target_name`.".
+-type connection() :: handle() | ct:target_name().
+-doc "Handle for a specific FTP connection, see module `m:ct`.".
+-type handle() :: ct:handle().
+-export_type([connection/0, handle/0]).
+
 %%%=================================================================
 %%% API
 
-%%%-----------------------------------------------------------------
-%%% @spec put(KeyOrName,LocalFile,RemoteFile) -> ok | {error,Reason}
-%%%      KeyOrName = Key | Name
-%%%      Key = atom()
-%%%      Name = ct:target_name()
-%%%      LocalFile = string()
-%%%      RemoteFile = string()
-%%%
-%%% @doc Open a ftp connection and send a file to the remote host.
-%%%
-%%% <p><code>LocalFile</code> and <code>RemoteFile</code> must be
-%%% absolute paths.</p>
-%%%
-%%% <p>If the target host is a "special" node, the ftp address must be
-%%% specified in the config file like this:</p>
-%%% <pre>
-%%% {node,[{ftp,IpAddr}]}.</pre>
-%%%
-%%% <p>If the target host is something else, e.g. a unix host, the
-%%% config file must also include the username and password (both
-%%% strings):</p>
-%%% <pre>
-%%% {unix,[{ftp,IpAddr},
-%%%        {username,Username},
-%%%        {password,Password}]}.</pre>
-%%% @see ct:require/2
+-doc """
+Opens an FTP connection and sends a file to the remote host.
+
+`LocalFile` and `RemoteFile` must be absolute paths.
+
+If the target host is a "special" node, the FTP address must be specified in the
+configuration file as follows:
+
+```erlang
+{node,[{ftp,IpAddr}]}.
+```
+
+If the target host is something else, for example, a UNIX host, the
+configuration file must also include the username and password (both strings):
+
+```erlang
+{unix,[{ftp,IpAddr},
+       {username,Username},
+       {password,Password}]}.
+```
+
+See also `ct:require/2`.
+""".
+-spec put(KeyOrName, LocalFile, RemoteFile) -> 'ok' | {'error', Reason}
+              when KeyOrName :: ct:key_or_name(),
+                   LocalFile :: file:filename(),
+                   RemoteFile :: file:filename(),
+                   Reason :: term().
 put(KeyOrName,LocalFile,RemoteFile) ->
     Fun = fun(Ftp) -> send(Ftp,LocalFile,RemoteFile) end,
     open_and_do(KeyOrName,Fun).
 
-%%%-----------------------------------------------------------------
-%%% @spec get(KeyOrName,RemoteFile,LocalFile) -> ok | {error,Reason}
-%%%      KeyOrName = Key | Name
-%%%      Key = atom()
-%%%      Name = ct:target_name()
-%%%      RemoteFile = string()
-%%%      LocalFile = string()
-%%%
-%%% @doc Open a ftp connection and fetch a file from the remote host.
-%%%
-%%% <p><code>RemoteFile</code> and <code>LocalFile</code> must be
-%%% absolute paths.</p>
-%%%
-%%% <p>The config file must be as for put/3.</p>
-%%% @see put/3
-%%% @see ct:require/2
+-doc """
+Opens an FTP connection and fetches a file from the remote host.
+
+`RemoteFile` and `LocalFile` must be absolute paths.
+
+The configuration file must be as for [`ct_ftp:put/3`](`put/3`).
+
+See also `ct:require/2`.
+""".
+-spec get(KeyOrName, RemoteFile, LocalFile) -> 'ok' | {'error', Reason}
+              when KeyOrName :: ct:key_or_name(),
+                   RemoteFile :: file:filename(),
+                   LocalFile :: file:filename(),
+                   Reason :: term().
 get(KeyOrName,RemoteFile,LocalFile) ->
     Fun = fun(Ftp) -> recv(Ftp,RemoteFile,LocalFile) end,
     open_and_do(KeyOrName,Fun).
 
+-doc """
+Opens an FTP connection to the specified node.
 
-%%%-----------------------------------------------------------------
-%%% @spec open(KeyOrName) -> {ok,Handle} | {error,Reason}
-%%%      KeyOrName = Key | Name
-%%%      Key = atom()
-%%%      Name = ct:target_name()
-%%%      Handle = handle()
-%%% 
-%%% @doc Open an FTP connection to the specified node.
-%%% <p>You can open one connection for a particular <code>Name</code> and
-%%% use the same name as reference for all subsequent operations. If you
-%%% want the connection to be associated with <code>Handle</code> instead 
-%%% (in case you need to open multiple connections to a host for example), 
-%%% simply use <code>Key</code>, the configuration variable name, to 
-%%% specify the target. Note that a connection that has no associated target 
-%%% name can only be closed with the handle value.</p>
-%%%
-%%% <p>See <c>ct:require/2</c> for how to create a new <c>Name</c></p>
-%%%
-%%% @see ct:require/2
+You can open a connection for a particular `Name` and use the same name as
+reference for all following subsequent operations. If you want the connection to
+be associated with `Handle` instead (if you, for example, need to open multiple
+connections to a host), use `Key`, the configuration variable name, to specify
+the target. A connection without an associated target name can only be closed
+with the handle value.
+
+For information on how to create a new `Name`, see `ct:require/2`.
+""".
+-spec open(KeyOrName) -> {'ok', Handle} | {'error', Reason}
+              when KeyOrName :: ct:key_or_name(),
+                   Handle :: handle(),
+                   Reason :: term().
 open(KeyOrName) ->
     case ct_util:get_key_from_name(KeyOrName) of
 	{ok,node} ->
@@ -119,19 +126,19 @@ open(KeyOrName) ->
 	_ ->
 	    case ct:get_config(KeyOrName) of
 		undefined ->
-		    log(heading(open,KeyOrName),"Failed: ~p\n",
+		    log(heading(open,KeyOrName),"Failed: ~tp\n",
 			[{not_available,KeyOrName}]),
 		    {error,{not_available,KeyOrName}};
 		_ ->
 		    case ct:get_config({KeyOrName,username}) of
 			undefined ->
-			    log(heading(open,KeyOrName),"Failed: ~p\n",
+			    log(heading(open,KeyOrName),"Failed: ~tp\n",
 				[{not_available,{KeyOrName,username}}]),
 			    {error,{not_available,{KeyOrName,username}}};
 			Username ->
 			    case ct:get_config({KeyOrName,password}) of
 				undefined ->
-				    log(heading(open,KeyOrName),"Failed: ~p\n",
+				    log(heading(open,KeyOrName),"Failed: ~tp\n",
 					[{not_available,{KeyOrName,password}}]),
 				    {error,{not_available,{KeyOrName,password}}};
 				Password ->
@@ -145,32 +152,37 @@ open(KeyOrName,Username,Password) ->
     log(heading(open,KeyOrName),"",[]),
     case ct:get_config({KeyOrName,ftp}) of
 	undefined ->
-	    log(heading(open,KeyOrName),"Failed: ~p\n",
+	    log(heading(open,KeyOrName),"Failed: ~tp\n",
 		[{not_available,{KeyOrName,ftp}}]),
 	    {error,{not_available,{KeyOrName,ftp}}};
 	Addr ->
 	    ct_gen_conn:start(KeyOrName,full_addr(Addr),{Username,Password},?MODULE)
     end.
 
+-doc """
+Sends a file over FTP.
 
-%%%-----------------------------------------------------------------
-%%% @spec send(Connection,LocalFile) -> ok | {error,Reason}
-%%%
-%%% @doc Send a file over FTP.
-%%% <p>The file will get the same name on the remote host.</p>
-%%% @see send/3
+The file gets the same name on the remote host.
+
+See also [`ct_ftp:send/3`](`send/3`).
+""".
+-spec send(Connection, LocalFile) -> 'ok' | {'error', Reason}
+              when Connection :: connection(),
+                   LocalFile :: file:filename(),
+                   Reason :: term().
 send(Connection,LocalFile) ->
     send(Connection,LocalFile,filename:basename(LocalFile)).
 
-%%%-----------------------------------------------------------------
-%%% @spec send(Connection,LocalFile,RemoteFile) -> ok | {error,Reason}
-%%%      Connection = connection()
-%%%      LocalFile = string()
-%%%      RemoteFile = string()
-%%%
-%%% @doc Send a file over FTP.
-%%%
-%%% <p>The file will be named <code>RemoteFile</code> on the remote host.</p>
+-doc """
+Sends a file over FTP.
+
+The file is named `RemoteFile` on the remote host.
+""".
+-spec send(Connection, LocalFile, RemoteFile) -> 'ok' | {'error', Reason}
+              when Connection :: connection(),
+                   LocalFile :: file:filename(),
+                   RemoteFile :: file:filename(),
+                   Reason :: term().
 send(Connection,LocalFile,RemoteFile) ->
     case get_handle(Connection) of
 	{ok,Pid} ->
@@ -179,24 +191,30 @@ send(Connection,LocalFile,RemoteFile) ->
 	    Error
     end.
 
-%%%-----------------------------------------------------------------
-%%% @spec recv(Connection,RemoteFile) -> ok | {error,Reason}
-%%%
-%%% @doc Fetch a file over FTP.
-%%% <p>The file will get the same name on the local host.</p>
-%%% @see recv/3
+-doc """
+Fetches a file over FTP.
+
+The file gets the same name on the local host.
+
+See also [`ct_ftp:recv/3`](`recv/3`).
+""".
+-spec recv(Connection, RemoteFile) -> 'ok' | {'error', Reason}
+              when Connection :: connection(),
+                   RemoteFile :: file:filename(),
+                   Reason :: term().
 recv(Connection,RemoteFile) ->
     recv(Connection,RemoteFile,filename:basename(RemoteFile)).
 
-%%%-----------------------------------------------------------------
-%%% @spec recv(Connection,RemoteFile,LocalFile) -> ok | {error,Reason}
-%%%      Connection = connection()
-%%%      RemoteFile = string()
-%%%      LocalFile = string()
-%%%
-%%% @doc Fetch a file over FTP.
-%%%
-%%% <p>The file will be named <code>LocalFile</code> on the local host.</p>
+-doc """
+Fetches a file over FTP.
+
+The file is named `LocalFile` on the local host.
+""".
+-spec recv(Connection, RemoteFile, LocalFile) -> 'ok' | {'error', Reason}
+              when Connection :: connection(),
+                   RemoteFile :: file:filename(),
+                   LocalFile :: file:filename(),
+                   Reason :: term().
 recv(Connection,RemoteFile,LocalFile) ->
     case get_handle(Connection) of
 	{ok,Pid} ->
@@ -205,12 +223,13 @@ recv(Connection,RemoteFile,LocalFile) ->
 	    Error
     end.
 
-%%%-----------------------------------------------------------------
-%%% @spec cd(Connection,Dir) -> ok | {error,Reason}
-%%%      Connection = connection()
-%%%      Dir = string()
-%%%
-%%% @doc Change directory on remote host.
+-doc """
+Changes directory on remote host.
+""".
+-spec cd(Connection, Dir) -> 'ok' | {'error', Reason}
+              when Connection :: connection(),
+                   Dir :: file:filename(),
+                   Reason :: term().
 cd(Connection,Dir) ->
     case get_handle(Connection) of
 	{ok,Pid} ->
@@ -219,13 +238,14 @@ cd(Connection,Dir) ->
 	    Error
     end.
 
-%%%-----------------------------------------------------------------
-%%% @spec ls(Connection,Dir) -> {ok,Listing} | {error,Reason}
-%%%      Connection = connection()
-%%%      Dir = string()
-%%%      Listing = string()
-%%%
-%%% @doc List the directory Dir.
+-doc """
+Lists directory `Dir`.
+""".
+-spec ls(Connection, Dir) -> {'ok', Listing} | {'error', Reason}
+                when Connection :: connection(),
+                    Dir :: file:filename(),
+                    Listing :: string(),
+                    Reason :: term().
 ls(Connection,Dir) ->
     case get_handle(Connection) of
 	{ok,Pid} ->
@@ -234,12 +254,13 @@ ls(Connection,Dir) ->
 	    Error
     end.
 
-%%%-----------------------------------------------------------------
-%%% @spec type(Connection,Type) -> ok | {error,Reason}
-%%%      Connection = connection()
-%%%      Type = ascii | binary
-%%%
-%%% @doc Change file transfer type
+-doc """
+Changes the file transfer type.
+""".
+-spec type(Connection, Type) -> 'ok' | {'error', Reason}
+              when Connection :: connection(),
+                   Type :: ascii | binary,
+                   Reason :: term().
 type(Connection,Type) ->
     case get_handle(Connection) of
 	{ok,Pid} ->
@@ -248,12 +269,13 @@ type(Connection,Type) ->
 	    Error
     end.
     
-%%%-----------------------------------------------------------------
-%%% @spec delete(Connection,File) -> ok | {error,Reason}
-%%%      Connection = connection()
-%%%      File = string()
-%%%
-%%% @doc Delete a file on remote host
+-doc """
+Deletes a file on remote host.
+""".
+-spec delete(Connection, File) -> 'ok' | {'error', Reason}
+              when Connection :: connection(),
+                   File :: file:filename(),
+                   Reason :: term().
 delete(Connection,File) ->
     case get_handle(Connection) of
 	{ok,Pid} ->
@@ -262,11 +284,12 @@ delete(Connection,File) ->
 	    Error
     end.
 
-%%%-----------------------------------------------------------------
-%%% @spec close(Connection) -> ok | {error,Reason}
-%%%      Connection = connection()
-%%%
-%%% @doc Close the FTP connection.
+-doc """
+Closes the FTP connection.
+""".
+-spec close(Connection) -> 'ok' | {'error', Reason}
+              when Connection :: connection(),
+                   Reason :: term().
 close(Connection) ->
     case get_handle(Connection) of
 	{ok,Pid} ->
@@ -279,21 +302,21 @@ close(Connection) ->
 %%%=================================================================
 %%% Callback functions
 
-%% @hidden
+-doc false.
 init(KeyOrName,{IP,Port},{Username,Password}) ->
     case ftp_connect(IP,Port,Username,Password) of
 	{ok,FtpPid} ->
 	    log(heading(init,KeyOrName), 
-		"Opened ftp connection:\nIP: ~p\nUsername: ~p\nPassword: ~p\n",
-		[IP,Username,lists:duplicate(length(Password),$*)]),
+		"Opened ftp connection:\nIP: ~tp\nUsername: ~tp\nPassword: ~p\n",
+		[IP,Username,lists:duplicate(string:length(Password),$*)]),
 	    {ok,FtpPid,#state{ftp_pid=FtpPid,target_name=KeyOrName}};
 	Error ->
 	    Error
     end.
 	    
 ftp_connect(IP,Port,Username,Password) ->
-    inets:start(),
-    case inets:start(ftpc,[{host,IP},{port,Port}]) of
+    _ = ftp:start(),
+    case ftp:open(IP,[{port,Port}]) of
 	{ok,FtpPid} ->
 	    case ftp:user(FtpPid,Username,Password) of
 		ok ->
@@ -305,43 +328,43 @@ ftp_connect(IP,Port,Username,Password) ->
 	    {error,{open,Reason}}
     end.
 
-%% @hidden
+-doc false.
 handle_msg({send,LocalFile,RemoteFile},State) ->
     log(heading(send,State#state.target_name),
-	"LocalFile: ~p\nRemoteFile: ~p\n",[LocalFile,RemoteFile]),
+	"LocalFile: ~tp\nRemoteFile: ~tp\n",[LocalFile,RemoteFile]),
     Result = ftp:send(State#state.ftp_pid,LocalFile,RemoteFile),
     {Result,State};
 handle_msg({recv,RemoteFile,LocalFile},State) ->
     log(heading(recv,State#state.target_name),
-	"RemoteFile: ~p\nLocalFile: ~p\n",[RemoteFile,LocalFile]),
+	"RemoteFile: ~tp\nLocalFile: ~tp\n",[RemoteFile,LocalFile]),
     Result = ftp:recv(State#state.ftp_pid,RemoteFile,LocalFile),
     {Result,State};
 handle_msg({cd,Dir},State) ->
-    log(heading(cd,State#state.target_name),"Dir: ~p\n",[Dir]),
+    log(heading(cd,State#state.target_name),"Dir: ~tp\n",[Dir]),
     Result = ftp:cd(State#state.ftp_pid,Dir),
     {Result,State};
 handle_msg({ls,Dir},State) ->
-    log(heading(ls,State#state.target_name),"Dir: ~p\n",[Dir]),
+    log(heading(ls,State#state.target_name),"Dir: ~tp\n",[Dir]),
     Result = ftp:ls(State#state.ftp_pid,Dir),
     {Result,State};
 handle_msg({type,Type},State) ->
-    log(heading(type,State#state.target_name),"Type: ~p\n",[Type]),
+    log(heading(type,State#state.target_name),"Type: ~tp\n",[Type]),
     Result = ftp:type(State#state.ftp_pid,Type),
     {Result,State};
 handle_msg({delete,File},State) ->
-    log(heading(delete,State#state.target_name),"Delete file: ~p\n",[File]),
+    log(heading(delete,State#state.target_name),"Delete file: ~tp\n",[File]),
     Result = ftp:delete(State#state.ftp_pid,File),
     {Result,State}.
 
-%% @hidden
+-doc false.
 reconnect(_Addr,_State) ->
     {error,no_reconnection_of_ftp}.
 
-%% @hidden
+-doc false.
 terminate(FtpPid,State) ->
     log(heading(terminate,State#state.target_name),
 	"Closing FTP connection.\nHandle: ~p\n",[FtpPid]),
-    inets:stop(ftpc,FtpPid).
+    ftp:close(FtpPid).
 
 
 %%%=================================================================
@@ -368,7 +391,7 @@ call(Pid,Msg) ->
 
 
 heading(Function,Name) ->
-    io_lib:format("ct_ftp:~w ~p",[Function,Name]).
+    io_lib:format("ct_ftp:~tw ~tp",[Function,Name]).
 
 log(Heading,Str,Args) ->
     ct_gen_conn:log(Heading,Str,Args).

@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2002-2012. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2002-2025. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -26,7 +28,7 @@
 -compile(export_all).
 
 -include("odbc_test.hrl").
--include("test_server.hrl").
+-include_lib("common_test/include/ct.hrl").
 
 unique_table_name() ->                              
     lists:reverse(lists:foldl(fun($@, Acc) -> [$t, $A |Acc] ;
@@ -35,7 +37,7 @@ unique_table_name() ->
 			      [], atom_to_list(node()))).
 
 match_float(Float, Match, Delta) ->
-    (Float < Match + Delta) and (Float > Match - Delta).
+    Float < Match + Delta andalso Float > Match - Delta.
 
 odbc_check() ->
     case os:type() of
@@ -61,13 +63,13 @@ odbc_check() ->
     end.
 
 check_row_count(Count, Count) ->
-    test_server:format("Correct row count Count: ~p~n", [Count]),   
+    ct:pal("Correct row count Count: ~p~n", [Count]),   
     true;
 check_row_count(_, undefined) ->
-    test_server:format("Undefined row count ~n", []),  
+    ct:pal("Undefined row count ~n", []),  
     true;
 check_row_count(Expected, Count) ->
-    test_server:format("Incorrect row count Expected ~p Got ~p~n",
+    ct:pal("Incorrect row count Expected ~p Got ~p~n",
 		       [Expected, Count]),   
     false.
 

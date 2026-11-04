@@ -1,3 +1,24 @@
+> %CopyrightBegin%
+>
+> SPDX-License-Identifier: Apache-2.0
+>
+> Copyright 2004-2010 held by the authors. All Rights Reserved.
+> Copyright Ericsson AB 2009-2025. All Rights Reserved.
+>
+> Licensed under the Apache License, Version 2.0 (the "License");
+> you may not use this file except in compliance with the License.
+> You may obtain a copy of the License at
+>
+>     http://www.apache.org/licenses/LICENSE-2.0
+>
+> Unless required by applicable law or agreed to in writing, software
+> distributed under the License is distributed on an "AS IS" BASIS,
+> WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+> See the License for the specific language governing permissions and
+> limitations under the License.
+>
+> %CopyrightEnd%
+
 ==============================================================================
 	Major features, additions and changes between Dialyzer versions
 		(in reversed chronological order)
@@ -135,7 +156,7 @@ Version 1.9.1 (in Erlang/OTP R13B)
 Version 1.9.0 (in Erlang/OTP R13A)
 ----------------------------------
  - The analysis accepts opaque type declarations and detects violations of
-   opaqueness of terms of such types.  Starting with R13, many Erlang/OTP
+   opacity of terms of such types.  Starting with R13, many Erlang/OTP
    standard libraries (array, dict, digraph, ets, gb_sets, gb_trees, queue,
    and sets) contain opaque type declarations of their main data types.
    Dialyzer will spit out warnings in code that explicitly depends on the
@@ -181,7 +202,7 @@ Version 1.8.0 (in Erlang/OTP R12B-2)
  - Dialyzer has a new warning option -Wunmatched_returns which warns for
    function calls that ignore the return value.
    This catches many common programming errors (e.g. calling file:close/1
-   and not checking for the absense of errors), interface discrepancies
+   and not checking for the absence of errors), interface discrepancies
    (e.g. a function returning multiple values when in reality the function
    is void and only called for its side-effects), calling the wrong function
    (e.g. io_lib:format/1 instead of io:format/1), and even possible
@@ -257,7 +278,7 @@ Version 1.5.1 (in Erlang/OTP R11B-3)
 Version 1.5.0 (in Erlang/OTP R11B-2)
 ------------------------------------
  - Dialyzer's building of PLT is based on a different type inference algorithm.
-   More specifically, Dialyzer uses inferrence of refined success typings to
+   More specifically, Dialyzer uses inference of refined success typings to
    infer function prototypes.  As a result, Dialyzer bases its analysis on a
    significantly more powerful basis and thus is able to detect more
    discrepancies.  The downside is that building the PLT is a considerably

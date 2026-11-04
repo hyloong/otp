@@ -5,7 +5,9 @@
 ##
 ## %CopyrightBegin%
 ##
-## Copyright Ericsson AB 2012. All Rights Reserved.
+## SPDX-License-Identifier: Apache-2.0
+##
+## Copyright Ericsson AB 2012-2025. All Rights Reserved.
 ##
 ## Licensed under the Apache License, Version 2.0 (the "License");
 ## you may not use this file except in compliance with the License.
@@ -31,7 +33,7 @@ IFS='
 	 '
 
 APACHE_MODS_AVAILABLE_DIR="/etc/apache2/mods-available"
-MODS="authz_host.load mime.conf mime.load ssl.conf ssl.load"
+MODS="access_compat.load authz_core.load authz_host.load mime.conf mime.load mpm_event.conf mpm_event.load socache_shmcb.load ssl.conf ssl.load"
 
 APACHE_HTTP_PORT=8080
 APACHE_HTTPS_PORT=8443
@@ -169,6 +171,8 @@ MaxRequestsPerChild 0
 ViaProxyName "tinyproxy"
 
 ConnectPort $APACHE_HTTPS_PORT
+# to test connect error
+ConnectPort $APACHE_HTTP_PORT
 EOF
 	(tinyproxy -d -c tinyproxy.conf 1>/dev/null 2>&1 </dev/null &)&
 	wait_for_pidfile tinyproxy.pid

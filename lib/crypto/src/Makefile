@@ -1,7 +1,9 @@
 #
 # %CopyrightBegin%
 #
-# Copyright Ericsson AB 1999-2014. All Rights Reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Copyright Ericsson AB 1999-2025. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -39,8 +41,7 @@ MODULES= \
 	crypto \
 	crypto_ec_curves
 
-HRL_FILES= 
-
+HRL_FILES=
 ERL_FILES= $(MODULES:%=%.erl)
 
 TARGET_FILES= $(MODULES:%=$(EBIN)/%.$(EMULATOR))
@@ -56,16 +57,16 @@ APPUP_TARGET= $(EBIN)/$(APPUP_FILE)
 # ----------------------------------------------------
 # FLAGS
 # ----------------------------------------------------
-ERL_COMPILE_FLAGS += +warn_obsolete_guard -DCRYPTO_VSN=\"$(VSN)\" -Werror
+ERL_COMPILE_FLAGS += -DCRYPTO_VSN=\"$(VSN)\" -Werror -I../include
 
 # ----------------------------------------------------
 # Targets
 # ----------------------------------------------------
 
-debug opt valgrind: $(TARGET_FILES) $(APP_TARGET) $(APPUP_TARGET) 
+$(TYPES): $(TARGET_FILES) $(APP_TARGET) $(APPUP_TARGET)
 
 clean:
-	rm -f $(TARGET_FILES) $(APP_TARGET) $(APPUP_TARGET) 
+	rm -f $(TARGET_FILES) $(APP_TARGET) $(APPUP_TARGET)
 	rm -f errs core *~
 
 $(APP_TARGET): $(APP_SRC) ../vsn.mk
@@ -78,7 +79,7 @@ docs:
 
 # ----------------------------------------------------
 # Release Target
-# ---------------------------------------------------- 
+# ----------------------------------------------------
 include $(ERL_TOP)/make/otp_release_targets.mk
 
 release_spec: opt
@@ -90,9 +91,7 @@ release_spec: opt
 
 release_docs_spec:
 
-
-
-
-
-
-
+# ----------------------------------------------------
+# Dependencies
+# ----------------------------------------------------
+include $(ERL_TOP)/make/dep.mk

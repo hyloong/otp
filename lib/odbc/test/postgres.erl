@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2006-2013. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2006-2025. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -27,7 +29,7 @@
 
 %-------------------------------------------------------------------------
 connection_string() ->
-    case test_server:os_type() of
+    case os:type() of
 	{unix, sunos} ->
 	    "DSN=Postgres;UID=odbctest";
 	{unix, linux} ->
@@ -207,7 +209,7 @@ bit_true_selected() ->
 
 %-------------------------------------------------------------------------
 float_min() ->
-    1.79e-307. 
+    5.0e-324.
 float_max() ->
     1.79e+308.
 
@@ -215,7 +217,7 @@ create_float_table() ->
     " (FIELD float)".
 
 float_underflow() ->
-    "1.80e-308".
+    "2.4e-324".
 float_overflow() ->
     "1.80e+308".
 
@@ -288,7 +290,7 @@ describe_string() ->
 	 {"str4",{sql_varchar,10}}]}.
 
 describe_floating() ->
-    {ok,[{"f",sql_real},{"r",sql_real},{"d",{sql_float,15}}]}.
+    {ok,[{"f",sql_real},{"r",sql_real},{"d",{sql_float,17}}]}.
 describe_dec_num() ->
     {ok,[{"mydec",{sql_numeric,9,3}},{"mynum",{sql_numeric,9,2}}]}.
 
